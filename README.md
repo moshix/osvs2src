@@ -1,6 +1,10 @@
-This is the stuff in assembly language. 
+OS/VS2 Source
+=============
 
-If you need this, then you know what it is. If you don't need it, then it don't matter. 
+In FX Assembler
+
+Does it work? Yes.
+Is it awesome? Yes. 
 
 enjoy!
 
