@@ -1,0 +1,320 @@
+ TITLE 'IGG019BV--CHANNEL AND ABNORMAL END APPENDAGES FOR OFFSET READ'  00001019
+IGG019BV CSECT                                                          00400019
+*                                                                     * 00410002
+*MODULE NAME - IGG019BV                                               * 00460002
+*                                                                     * 00510002
+*DESCRIPTIVE NAME - CHANNEL AND ABNORMAL END APPENDAGES, OFFSET READ  * 00560002
+*             OF A KEYED VARIABLE SPANNED BDAM DATA SET               * 00570002
+*                                                                     * 00610002
+*COPYRIGHT - NONE                                                     * 00660002
+*                                                                     * 00710002
+*CHANGE ACTIVITY                                                      * 00760002
+*                                                                     * 00810002
+*        RELEASE 20 DELETIONS                                           01200019
+*3495416000,572000                                               20201  01400020
+*        RELEASE 21 DELETIONS                                           01600019
+*                                                                       01610002
+*        RELEASE VS2-2 DELETIONS                                        01650002
+*688000,756000-792000,804000-856000                              Y02072 01700002
+*                                                                       04020019
+*STATUS CHANGE LEVEL 003                                                04320002
+*                                                                       04800019
+*FUNCTION-OPERATION--CHANNEL END APPENDAGE FOR OFFSET READ FUNCTION     05200019
+*                    OF A KEYED VS BDAM DATA SET USING THE SEQUENTIAL   05250002
+*                    ACCESS METHOD                                      05300002
+*     1. THE MODULE RECEIVES CONTROL FROM THE I/O INTERRUPTION          05600019
+*        SUPERVISOR AT CHANNEL END EXIT.                                06000019
+*     2. IF THE APPENDAGE FINDS A UNIT EXCEPTION BIT ON IN THE CHANNEL  06400019
+*        STATUS WORD, IT RETURNS TO THE I/O INTERRUPTION SUPERVISOR     06800019
+*        IMMEDIATELY.                                                   07200019
+*     3. IF THE UNIT CHECK BIT IS ON, THE ABNORMAL ROUTINE IS BRANCHED  07210019
+*        TO.  THE ABNORMAL ROUTINE CHANGES9                             07220019
+*     4. IF A KEY WAS NOT READ (READ DATA IN CCW) THE COMMAND IS        07600019
+*        CHANGED BACK TO READ KEY AND DATA.                             08000019
+*     5. IF A KEY WAS EXPECTED (READ KEY AND DATA IN CCW) AND THERE     08400019
+*        WAS NO KEY TO READ (KEY LENGTH=0 IN COUNT JUST READ), THEN     08800019
+*        THE READ MUST BE RESCHEDULED WITH AN OFFSET.                   09200019
+*     6. THE APPENDAGE CALCULATES THE LENGTH OF THE BLOCK AND COMPARES  09600019
+*        IT TO THAT IN THE BLOCK LENGTH FIELD.  IF THE LENGTHS ARE      10000019
+*        EQUAL, IT TURNS OFF ERROR INDICATORS IN THE ECB.               10400019
+*     7. IF THE LENGTHS ARE UNEQUAL, THE CURRENT CHANNEL PROGRAM IS     10800019
+*        CHANGED TO READ KEY AND DATA AND CONTROL IS RETURNED TO THE    11200019
+*        I/O INTERRUPT SUPERVISOR IMMEDIATELY.  THE I/O INTERRUPTION    11600019
+*        SUPERVISOR THEN SETS THE ECB TO SHOW THAT THE CHANNEL PROGRAM  12000019
+*        EXECUTED WITH AN ERROR CONDITION.                              12400019
+*     8. THE APPENDAGE CHECKS THE SEGMENT DESCRIPTOR WORD TO SEE IF     12800002
+*        ANOTHER SEGMENT IS TO FOLLOW.  IF THERE IS, THE NEXT CHANNEL   13200019
+*        PROGRAM IS CHANGED TO READ DATA.                               13600019
+*                                                                       14000019
+*ENTRY POINTS--ENTRY TO THIS ROUTINE IS FROM IOS AFTER CHANNEL END      14400019
+*              FROM A READ COMMAND                                      14800019
+*                                                                       15200019
+*INPUT--IOB AND USERS RECORD                                            15600019
+*                                                                       16000019
+*OUTPUT--THE INCORRECT LENGTH INDICATOR IN THE CSW IS RESET IF THE      16400002
+*        LENGTH OF THE RECORD BEING CHECKED IS CORRECT, AND THE NEXT    16800019
+*        CHANNEL PROGRAM IS READIED FOR AN OFFSET READ IF APPLICABLE.   17200019
+*                                                                       17600019
+*EXTERNAL ROUTINES--NONE                                                18000019
+*                                                                       18400019
+*EXITS NORMAL--THE CSW WRONG LENGTH INDICATOR IS TURNED OFF AND THE     18800019
+*              IOB EXCEPTION FLAG IS TURNED OFF AND CONTROL IS PASSED   19200019
+*              TO IOS.                                                  19600019
+*                                                                       20000019
+*EXITS ERROR--RETURN TO IOS WITH THE CSW WRONG LENGTH INDICATOR AND     20400019
+*             THE IOB EXCEPTION FLAG ON.                                20800019
+*                                                                       21200019
+*MACROS--MODESET                                                        21250002
+*                                                                       21300002
+*ATTRIBUTES--ENABLED, REENTRANT,SUPERVISOR STATE.  ENTRY IS IN SUPER-   21600002
+*             VISOR KEY.  MODESET IS ISSUED TO PROCESS IN USER KEY      21650002
+*             THE LOCAL LOCK IS HELD THROUGHOUT PROCESSING.             21660002
+         EJECT                                                          21700002
+*                                                                       22000019
+*                       REGISTER EQUATES                                22050002
+*                                                                       22100002
+R0       EQU   0                        REGISTER SAVED           Y02072 22150002
+RQER     EQU   1                        POINTER TO RQE           Y02072 22200002
+IOBRR    EQU   2                        BASE FOR IOS IOB                22400002
+DCBR     EQU   4                        BASE FOR DCB                    22800019
+CPR      EQU   6                        BASE FOR CHANNEL PGM     Y02072 22802002
+BLKDESWD EQU   9                        ADDR OF BLK DESCRIPTOR WORD     22810019
+KEYLEN   EQU   10                       REG FOR KEY LENGTH              23600019
+WORKR    EQU   11                       WORK REGISTER                   24000019
+RESIDCTR EQU   WORKR                    REG FOR CSW RESIDUAL COUNT      24400019
+WORKR2   EQU   12                       WORK REGISTER                   24800019
+SAVER    EQU   13                       POINTER TO IOS SAVEAREA         25210002
+RETRNR   EQU   14                       RETURN REGISTER                 25600019
+BASER    EQU   15                       BASE FOR MODULE                 26000019
+R15      EQU   15                       WORK REGISTER            Y02072 26050002
+*                                                                       26400019
+*                         CONSTANT EQUATES                              26800019
+*                                                                       27200019
+UNITEXCP EQU   X'01'                    UNIT EXCEPTION BIT IN CSW       27600019
+UNITCHEK EQU   X'02'                    UNIT CHECK BIT IN CSW           27610019
+CYLNEND  EQU   X'20'                    CYLINDER END BIT IN SENSE BYTE  27620019
+FILEPRTK EQU   X'04'                    FILE PROTECT SENSE BIT          27630019
+RDKYDATA EQU   X'8E'                    READ KEY & DATA COMMAND         28000019
+READDATA EQU   X'86'                    READ DATA COMMAND               28400019
+RDKEYBIT EQU   X'08'                    READ KEY BIT                    28800019
+KEYBTOFF EQU   X'F7'                    TO TURN KEY BIT OFF             29200019
+NOKEY    EQU   0                        TEST COUNT FIELD FOR KEY        29600019
+CLRBYTE  EQU   0                        TO CLEAR HIGH ORDER BYTE        30000019
+CCHHRLEN EQU   5                        LENGTH OF CCHHR                 30010019
+ONEIOB   EQU   1                        TO TEST FOR ONE IOB             30020019
+IOBLNGTH EQU   40                       LENGTH OF IOB                   30400019
+SEGCODE  EQU   6                        OFFSET TO SEGMENT CODE FROM     30800019
+*                                       BLOCK DESCRIPTOR WORD           31200002
+LASTSEG  EQU   8                        BCR CODE FOR LAST SEG IN RCD    31600019
+BYTELEN  EQU   8                        NUMBER OF BITS/BYTE FOR A SLL   32000019
+CPRETRY  EQU   8                        RETURN OFFSET TO IOS FOR A      32400019
+*                                       CHANNEL PROGRAM RETRY           32800002
+LLDIS    EQU   0                        OFFSET TO LL IN BLK DESCRIPTOR  33200019
+*                                       WORD                            33600002
+SCNDBYT  EQU   1                        SECOND BYTE OF LL IN BDW        34000019
+ONES     EQU   1                        BCR CODE FOR TM--ONES           34400019
+NOTEQUAL EQU   7                        BCR CODE FOR NOT EQUAL          34800019
+IFLGERBT EQU   X'3F'                    ERROR BIT IN DCBIFLG            35200019
+FLG1ERBT EQU   X'FB'                    ERROR BIT IN IOBFLAG1           35600019
+SKIPFLAG EQU   X'10'                    SKIP FLAG IN CCW                36000019
+SLIBIT   EQU   X'BF'                    SLI BIT IN CCW                  36400019
+RCDCONTN EQU   X'01'                                                    36800019
+         EJECT                                                          36850002
+         USING IHADCB,DCBR              BASE FOR DCB                    37200019
+         USING IGG019BV,BASER           BASE FOR MODULE                 37600019
+         USING IOBSTDRD,IOBRR           BASE FOR IOB             Y02072 38000002
+         USING DEFCP,CPR                BASE FOR CHANNEL PROGRAM        38010019
+         USING RQE,RQER                 ESTABLISH RQE BASE       Y02072 38060002
+*                                                                       39200019
+BEGIN    EQU   *                                                        39600019
+         STM   R0,R15,0(SAVER)          ST REGS IN IOS SAVEAREA  Y02072 39650002
+         TM    CSWSTAT1,UNITEXCP        TEST FOR UNIT EXCEPTION         40400019
+         BOR   RETRNR                   RETURN IF ON             Y02072 40800002
+*                                                                       40800102
+         MODESET  KEYADDR=RQEPRT,WORKREG=6  CHANGE TO USER KEY   Y02072 40800402
+*                                                                       40800802
+         CLI   DCBNCP,ONEIOB            ONE IOB                         40801019
+         BE    ONECP                    YES--BRANCH                     40802019
+         LR    WORKR,IOBRR               ADDR OF IOS IOB                40803002
+         SH    WORKR,PREFXLEN           ADDR OF IOB CHAIN               40804019
+         LR    WORKR2,IOBRR              SAVE IOB ADDR                  40805002
+         L     IOBRR,0(WORKR)            NEXT IOB                       40806002
+         AH    IOBRR,PREFXLEN            IOS IOB                        40807002
+         LA    CPR,IOBLNGTH(IOBRR)       ADDR OF CHANNEL PROGRAM        40808002
+         MVC   IOBCC(CCHHRLEN),CPCOUNT  MOVE SEEK ADDR INTO IOBSEEK     40809002
+         LR    IOBRR,WORKR2              RESTORE CURRENT IOB ADDR       40809102
+ONECP    EQU   *                                                 Y02072 40809202
+         LA    CPR,IOBLNGTH(IOBRR)       RESET TO CURRENT IOB           40809302
+         TM    CSWSTAT1,UNITCHEK        TEST FOR UNIT CHECK             40810019
+         BO    ABNORML                  ABNORMAL CHANNEL END            40820019
+         TM    RKDFLAGS,SKIPFLAG        TEST FOR SKIP FLAG              41200019
+         BO    RETURN                   YES, BRANCH              20201  41400020
+         SR    KEYLEN,KEYLEN            ZERO FOR IC                     41610019
+         IC    KEYLEN,DCBKEYLE          GET KEY LENGTH                  41620019
+         TM    RKDCC,RDKEYBIT           IS COMMAND READ KEY & DATA      42000019
+         BZ    CHNGCP                   NO-BRANCH                       42400019
+         LR    WORKR,IOBRR               ADDR OF IOS IOB                42410002
+         SH    WORKR,PREFXLEN           ADDR OF IOB CHAIN               42420019
+         L     CPR,0(WORKR)             NEXT IOB                        42430019
+         AH    CPR,PREFXLEN             IOS IOB                         42440019
+         LA    CPR,IOBLNGTH(CPR)        ADDR OF CHANNEL PROGRAM         42450019
+         CLI   KEYLNGTH,NOKEY           CHECK COUNT FOR ZERO KEY LENGTH 42800019
+         LA    CPR,IOBLNGTH(IOBRR)       RESET TO CURRENT IOB           42810002
+         BNE   CKLENGTH                 BRANCH IF KEY WAS READ          43200019
+*                                                                       43600019
+* A KEY WAS EXPECTED BUT NOT READ, THEREFORE THE SEGMENT IS NOT OFFSET  44000019
+* IN THE BUFFER.  THE READ MUST BE RESCHEDULED WITH THE REQUIRED        44400019
+* OFFSET.                                                               44800019
+*                                                                       45200019
+         L     WORKR,RKDDATAD           GET BUFFER ADDR                 46400019
+         LA    WORKR,CLRBYTE(WORKR)     CLEAR HIGH ORDER BYTE           46800019
+         AR    WORKR,KEYLEN             OFFSET BUFFER ADDR BY KEY LEN   47200019
+         ST    WORKR,RKDDATAD           STORE NEW BUFFER ADDR           47600019
+         MVI   RKDCC,READDATA           COMMAND CODE--READ DATA         48000019
+         LH    WORKR,RKDBYTCT           GET BYTE COUNT                  48400019
+         SR    WORKR,KEYLEN             DECREMENT BYTE COUNT BY KEY LEN 48410019
+         STH   WORKR,RKDBYTCT           INSERT NEW BYTE COUNT           49200019
+         NI    DCBIFLGS,IFLGERBT        TURN OFF ERROR BITS IN DCBIFLG  49600019
+         NI    IOBFLAG1,FLG1ERBT        TURN OFF ERROR BIT IN IOBFLAG1  50000019
+         MVC   IOBERRCT,ZERO            ZERO OUT ERROR COUNT IN IOB     50400019
+*                                                                       50450002
+         MODESET  KEYADDR=IOSKEY,WORKREG=3   RETURN TO IOS KEY   Y02072 50500002
+*                                                                       50510002
+         LM    R0,R15,0(SAVER)          RESTORE IOS REGISTERS    Y02072 50550002
+         LA    RETRNR,CPRETRY(RETRNR)   IOS ENTRY FOR RETRY             50800019
+         BR    RETRNR                   RETURN                          51200019
+*                                                                       51600019
+CHNGCP   EQU   *                                                        52000019
+* THERE WAS NO KEY READ WITH THIS SEGMENT, THEREFORE THE CHANNEL        52400019
+* PROGRAM MUST BE REINITIALIZED WITH A COMMAND CODE TO READ KEY & DATA  52800019
+*                                                                       53600019
+         LTR   KEYLEN,KEYLEN            TEST FOR ZERO KEY LENGTH M4877  53700019
+         BZ    AFTRKDCC                 BYPASS COMMAND CHANGE    M4877  53800019
+         OI    RKDCC,RDKEYBIT           CHANGE COMMAND--READ KEY & DATA 54000019
+*                                                                       55600019
+AFTRKDCC EQU   *                                                 M4877  55605019
+         L     BLKDESWD,RKDCC           ADDR OF BUFFER                  55610019
+         LA    BLKDESWD,CLRBYTE(BLKDESWD)  CLEAR HIGH ORDER BYTE        55620019
+         B     CKLEN2                   GO TO CHECK LENGTH              55630019
+*                                                                       55640019
+CKLENGTH EQU   *                                                        56000019
+* HERE, A CHECK IS MADE TO VERIFY THAT THE SEGMENT READ WAS THE         56400019
+* CORRECT LENGTH.                                                       56800019
+*                                                                       56870020
+* CHECK FOR RPS AND UPDATE SECTOR IF USED                               56940020
+*                                                                       57010020
+         CLI   SECTCCW,SETSC            RPS USED                 20201  57080020
+         BNE   NORPS                    BRANCH NO                20201  57150020
+         L     BLKDESWD,SECTCCW         GET SECTOR ADDR          20201  57220020
+         MVC   0(ONES,BLKDESWD),ONES(BLKDESWD) UPDATE SECTOR     20201  57290020
+*                                                                       57360020
+NORPS    EQU   *                                                 20201  57430020
+*                                                                       57500020
+         L     BLKDESWD,RKDCC           ADDR OF BUFFER                  57600019
+         LA    BLKDESWD,CLRBYTE(BLKDESWD)  CLEAR HIGH ORDER BYTE        57610019
+         AR    BLKDESWD,KEYLEN          ADDR OF BLOCK DESCRIPTOR WORD   58000019
+CKLEN2   EQU   *                                                        58010019
+         LH    RESIDCTR,CSWBYTCT        GET  RESIDUAL COUNT FROM CSW    58400019
+         SR    WORKR2,WORKR2            CLEAR FOR LL INSERTION          58800019
+         IC    WORKR2,LLDIS(BLKDESWD)   FIRST BYTE OF LL FIELD          59200019
+         SLL   WORKR2,BYTELEN                                           59600019
+         IC    WORKR2,SCNDBYT(BLKDESWD) SECOND BYTE OF LL               60000019
+         AR    WORKR2,RESIDCTR          ADD RESIDUAL COUNT AND LL       60400019
+         CH    WORKR2,DCBBLKSI          SUM SHOULD EQUAL BLOCK SIZE     60800019
+         BNE   RETURN                   RETURN TO IOS WITH FLAGS ON     61200019
+*                                                                       61600019
+* LENGTH CHECK CONFIRMED, ERROR FLAGS CAN BE TURNED OFF.                62000019
+*                                                                       62400019
+         NI    CSWSTAT2,SLIBIT          TURN OFF SLI BIT IN CSW         62800019
+         NI    IOBFLAG1,FLG1ERBT        TURN OFF IOB EXCEPTION FLAG     63200019
+*                                                                       63600019
+* THE SEGMENT DESCRIPTOR WORD WILL BE CHECKED TO SEE IF THERE IS        64000019
+* ANOTHER SEGMENT TO THIS RECORD.  IF THERE IS, THE NEXT CHANNEL        64400019
+* PROGRAM WILL HAVE TO BE READIED BY CHANGING THE COMMAND TO READ DATA  64800019
+*                                                                       65200019
+         TM    SEGCODE(BLKDESWD),RCDCONTN ANOTHER SEGMENT TO FOLLOW     65600019
+         BC    LASTSEG,RETURN           NO--RETURN TO IOS               66000019
+         LR    WORKR,IOBRR               ADDR OF IOS IOB                66400002
+         SH    WORKR,PREFXLEN           ADDR OF IOB CHAIN               66800019
+         L     CPR,0(WORKR)             NEXT IOB                        67200019
+         AH    CPR,PREFXLEN             IOS IOB                         67201019
+         LA    CPR,IOBLNGTH(CPR)        ADDR OF CHANNEL PROGRAM         67210019
+         L     WORKR,RKDCC              BUFFER ADDR                     67220019
+         LA    WORKR,0(WORKR)           CLEAR HIGH ORDER BYTE           67230019
+         AR    WORKR,KEYLEN             OFFSET BY KEY LENGTH            67240019
+         ST    WORKR,RKDCC              OFFSET BUFFER ADDR              67250019
+         MVI   RKDCC,READDATA           READ DATE COMMAND               67260019
+         LH    WORKR,RKDBYTCT           BYTE COUNT                      67270019
+         SR    WORKR,KEYLEN             DECREMENT BY KEY LENGTH         67280019
+         STH   WORKR,RKDBYTCT                                           67290019
+*                                                                       68400019
+RETURN   EQU   *                                                        68410019
+*                                                                       68460002
+         MODESET   KEYADDR=IOSKEY,WORKREG=3    RETURN TO IOS KEY Y02072 68510002
+*                                                                       68520002
+         LM    R0,R15,0(SAVER)          RESTORE IOS REGS         Y02072 68560002
+         BR    RETRNR                   RETURN TO IOS                   69200019
+*                                                                       69600019
+ABNORML  EQU   *                                                        70000019
+         TM    IOBSENS1,CYLNEND         CYLINDER END                    70410019
+         BO    RETURN                   YES--RETURN TO IOS       Y02072 70420002
+         TM    IOBSENS1,FILEPRTK        FILE PROTECT (END OF TRACK)     70430019
+         BO    RETURN                   YES--RETURN TO IOS       Y02072 70432002
+         OI    RKDCC,RDKEYBIT           CHANGE COMMAND--READ KEY & DATA 70800019
+         B     RETURN                   RETURN TO IOS            Y02072 73600002
+*                                                                       73610002
+*                           CONSTANTS                                   73620002
+*                                                                       73650002
+ZERO     DC    H'0'                     TO ZERO OUT A TWO BYTE FIELD    73700002
+PREFXLEN DC    H'8'                     IOB PREFIX LENGTH               73750002
+IOSKEY   DC    X'00'                    IOS KEY IS ZERO          Y02072 73800002
+PATCH    DC    XL50'0'                  PATCH AREA               Y02072 73810002
+         EJECT                                                          73850002
+*********************************************************************** 73900002
+*                             DSECTS                                    73910002
+*********************************************************************** 73920002
+         IECDRQE                                                 Y02072 73970002
+         EJECT                                                          74020002
+         IEZIOB                                                  Y02072 74050002
+         ORG   IOBCSW+3                 BACK TO STATUS BYTES     Y02072 79200002
+CSWSTAT1 DS    XL1                      FIRST STATUS BYTE               79210019
+CSWSTAT2 DS    XL1                      SECOND STATUS BYTE              79600019
+CSWBYTCT DS    XL2                      BYTE COUNT                      80000019
+         EJECT                                                          85650002
+DEFCP    DSECT                          CHANNEL PROGRAM                 86000019
+CPNOP1   DS    0D                       NOP                             86400019
+SETSC    EQU   X'23'                    SET SECTOR CCW           20201  86500020
+SECTCCW  EQU   CPNOP1                   SET SECTOR CCW CMND      20201  86600020
+NOP1CC   DS    0X                       COMMAND CODE                    86800019
+NOP1DATA DS    A                        DATA ADDR                       87200019
+NOP1FLAG DS    BL1                      FLAGS                           87600019
+         DS    1X                       NOT USED                        88000019
+NOP1BYTC DS    2X                       BYTE COUNT                      88400019
+CPSCH    DS    D                        SEARCH ID EQUAL                 88800019
+CPTIC1   DS    D                        TIC BACK TO SEARCH              89200019
+CPTIC2   DS    D                        TIC TO READ COUNT               89600019
+CPRDCNT  DS    0D                       READ COUNT                      90000019
+RCTCC    DS    0X                       COMMAND CODE                    90400019
+RCTDATAD DS    A                        DATA ADDR                       90800019
+RCTFLAGS DS    BL1                      FLAGS                           91200019
+         DS    1X                       NOT USED                        91600019
+RCTBYTCT DS    2X                       BYTE COUNT                      92000019
+CPRDKD   DS    0D                       READ (KEY) DATA                 92400019
+RKDCC    DS    0X                       COMMAND CODE                    92800019
+RKDDATAD DS    A                        DATA ADDR                       93200019
+RKDFLAGS DS    BL1                      FLAGS                           93600019
+         DS    1X                       NOT USED                        94000019
+RKDBYTCT DS    2X                       BYTE COUNT                      94400019
+CPNOP2   DS    0D                       NOP                             94800019
+NOP2CC   DS    0X                       COMMAND CODE                    95200019
+NOP2DATA DS    A                        DATA ADDR                       95600019
+NOP2FLAG DS    BL1                      FLAGS                           96000019
+         DS    1X                       NOT USED                        96400019
+NOP2BYTC DS    2X                       BYTE COUNT                      96800019
+CPCOUNT  DS    D                        FIELD TO READ COUNT INTO        97200019
+         ORG   *-3                      BACK TO KEY LENGTH FIELD        97600019
+KEYLNGTH DS    1X                       KEY LENGTH IN COUNT             98000019
+*                                                                       98400019
+         EJECT                                                          98450002
+         DCBD  DSORG=BS,DEVD=DA         DCB DSECT                       98800019
+         END                                                            99200019

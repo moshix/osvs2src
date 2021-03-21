@@ -1,0 +1,662 @@
+         TITLE 'IGG0202A - BISAM CLOSE'                                 00300020
+IGG0202A CSECT                                                          00301002
+*                                                                       00302002
+*********************************************************************** 00303002
+*                                                                     * 00304002
+* MODULE-NAME = IGG0202A                                              * 00305002
+*                                                                     * 00306002
+* DESCRIPTIVE-NAME = ISAM CLOSE, BISAM MODE                           * 00307002
+*                                                                     * 00308002
+* COPYRIGHT = NONE                                                    * 00309002
+*                                                                     * 00310002
+* STATUS = RELEASE OS/VS2-02, LEVEL 01                                * 00311002
+*                                                                     * 00312002
+* FUNCTION = PREVENT ANY FURTHER SCHEDULING OF REQUESTS BY ZEROING    * 00313002
+*            COUNTS OF IOBS WAITING FOR CPS, POINTER TO UNSCHEDULED   * 00314002
+*            QUEUE, AND CHANNEL PROGRAM CORE.  IF ABEND NOT IN        * 00315002
+*            PROGRESS, ISSUE A DEB PURGE (QUIESCE).  FREE CORE USED   * 00316002
+*            FOR IOBS.  IF DYNAMIC BUFFERING, FREE SYSTEM-OBTAINED    * 00317002
+*            BUFFER AREA.  IF DCB WAS OPENED FOR SHR, OBTAIN LOCAL    * 00318002
+*            AND CMS LOCKS; REFRESH DCB FROM FIELD AREA; DECREMENT    * 00319002
+*            THE FIELD AREA AND ASID USE COUNTS AS REQUIRED; RELEASE  * 00320002
+*            LOCKS; AND FREE FIELD AREA OR FIELD AREA EXTENSION CORE  * 00321002
+*            IF REQUIRED.  IF OPEN OBTAINED BISAM WORK AREA USED      * 00321202
+*            FOR WRITE KN, FREES ITS CORE.  ALSO FREES BISAM WORK     * 00321402
+*            AREA (DCW).                                              * 00321602
+*                                                                     * 00322002
+* NOTES = SEE BELOW                                                   * 00323002
+*                                                                     * 00324002
+*    DEPENDENCIES = NONE                                              * 00325002
+*                                                                     * 00326002
+*    RESTRICTIONS = NONE                                              * 00327002
+*                                                                     * 00328002
+*    REGISTER-CONVENTIONS = SEE REGISTER EQUATES.                     * 00329002
+*                                                                     * 00330002
+*    PATCH-LABEL = PATCH, A DC STATEMENT.                             * 00331002
+*                                                                     * 00332002
+* MODULE-TYPE = CLOSE EXECUTOR                                        * 00333002
+*                                                                     * 00334002
+*    PROCESSOR = ASSEMXF-370R                                         * 00335002
+*                                                                     * 00336002
+*    MODULE-SIZE = 1191 DECIMAL BYTES                                 * 00337002
+*                                                                     * 00338002
+*    ATTRIBUTES = PRIVILEGED, REENTRANT                               * 00339002
+*                                                                     * 00340002
+* ENTRY-POINT = IGG0202A                                              * 00341002
+*                                                                     * 00342002
+*    PURPOSE = SEE FUNCTION                                           * 00343002
+*                                                                     * 00344002
+*    LINKAGE = RECEIVES CONTROL FROM IOS CLOSE FOR BISAM MODE ONLY.   * 00345002
+*              RECEIVES CONTROL IN STORAGE PROTECT KEY 5 AND          * 00346002
+*              PRIVILEGED STATE.                                      * 00347002
+*                                                                     * 00348002
+* INPUT = REGISTERS ESTABLISHED UPON ENTRY ARE                        * 00349002
+*         REG 5 (RPAR) POINTS TO THE DCB COPY PARAMETER LIST          * 00350002
+*         REG 6 (RWTG) POINTS TO THE O/C/EOV WHERE-TO-GO TABLE        * 00351002
+*         REG 7 (RPARC) POINTS TO THE CURRENT ENTRY IN THE DCB COPY   * 00352002
+*               PARAMETER LIST                                        * 00353002
+*         REG 8 (RWTGC) POINTS TO THE CURRENT ENTRY IN THE WTG TABLE  * 00354002
+*                                                                     * 00355002
+* OUTPUT = REGISTERS 5 THROUGH 8 WILL BE IN THE SAME CONDITION AS     * 00356002
+*          UPON ENTRY TO THIS MODULE                                  * 00357002
+*                                                                     * 00358002
+* EXIT-NORMAL = XCTL TO ISAM CLOSE EXECUTOR IGG0202D IN STORAGE       * 00359002
+*               PROTECT KEY 5.                                        * 00359202
+*                                                                     * 00360002
+* EXIT-ERROR = NONE                                                   * 00361002
+*                                                                     * 00366002
+* EXTERNAL-REFERENCES = SEE BELOW                                     * 00367002
+*                                                                     * 00368002
+*    ROUTINES = NONE                                                  * 00369002
+*                                                                     * 00371002
+*    DATA-AREAS = AREAS REFERENCED ARE:                               * 00372002
+*                 IECDSECT - CLOSE WORK AREA                          * 00373002
+*                 IGGBISAM - ISAM BISAM MODE WORK AREA                * 00374002
+*                 IHAPSA - LOW CORE ADDRESSABILITY                    * 00374202
+*                                                                     * 00375002
+*    CONTROL-BLOCKS = DCB, DCB COPY, DCBFA, DEB, TCB, CVT, AND ASCB   * 00376002
+*                                                                     * 00377002
+* TABLES = NONE                                                       * 00378002
+*                                                                     * 00379002
+* MACROS = MODESET, SETLOCK, PURGE, WAIT, FREEMAIN, AND XCTL          * 00380002
+*                                                                     * 00381002
+* CHANGE-ACTIVITY = AS FOLLOWS:                                       * 00382002
+*                                                                     * 00383002
+*          RELEASE OS/VS2-02 DELETIONS                                * 00433002
+*                                                               YM01420 00483002
+*                                                                     * 12601002
+*********************************************************************** 12602002
+         EJECT                                                          12603002
+R0       EQU   00                                                S20201 12604002
+RE       EQU   00                       WORK REG                        12900020
+RF       EQU   01                       WORK REG                        13200020
+RDCB     EQU   02                       USER'S DCB ADDRESS              13500020
+RBASE    EQU   03                       BASE REG                        13800020
+RG       EQU   04                       WORK REG                        14100020
+RPAR     EQU   05                  *    PARAMETER LIST ADDRESS          14400020
+RWTG     EQU   06                  *    BEGINNING OF WHERE TO GO TABLE  14700020
+RPARC    EQU   07                  *    CURRENT ENTRY IN PARAMETER LIST 15000020
+RWTGC    EQU   08                  *    CURRENT ENTRY IN WTG TABLE      15300020
+RWRK     EQU   09                       WORK REGISTER            Y02072 15600002
+RCOPY    EQU   10                       COPY DCB ADDRESS         Y02072 15650002
+RA       EQU   11                       WORK REG                        16200020
+RB       EQU   12                       WORK REG                        16500020
+RC       EQU   13                       WORK REG                        16800020
+RD       EQU   14                       WORK REG                        17100020
+R15      EQU   15                       WORK REG                        17400020
+DEBPRG   EQU   X'80'                    PURGE BY DEB             S20201 17700020
+POST     EQU   X'40'                    POST THE ECB             S20201 18000020
+ABEND    EQU   X'80'                    ABEND IN CONTROL TEST    A47386 18050000
+HALTIO   EQU   X'40'                    HALT OPTION              A47386 18060000
+QUIESCE  EQU   HALTIO-HALTIO            QUIESCE OPTION IS ZERO   A47386 18100000
+LCHPURGE EQU   X'04'                    PURGE IOS LCH AND A.E. Q A47386 18200000
+WRITEON  EQU   X'80'                    WRITE KN IN PROGRESS     S20201 18300020
+OPENWA   EQU   X'02'                    OPEN GOT VLR WA          S20201 18600020
+NINE     EQU   9                        START OF WKN APP CODES   S20201 18900020
+FIFTEEN  EQU   15                       CHANGING DATA OR INDEX   S20201 19200020
+FOUR     EQU   X'04'                    4                        S20201 19500020
+ZEROES   EQU   00                       0                               19550000
+THREE    EQU   3                        3                               19600000
+ONE      EQU   X'01'                    1                        S20201 19800020
+EIGHT    EQU   X'08'                    8                        S20201 20100020
+SUBPOOL  EQU   250                      SUBPOOL VALUE            S20201 20400020
+SP00     EQU   0                        SUBPOOL ZERO FOR BUFFRS YM04649 20410002
+SHR      EQU   X'80'                    SHR INDICATOR            A47331 20450021
+CSA241   EQU   241                      SUBPOOL FOR FIELD AREAS  Y02072 20500002
+*                   *  MEANS SET UP BEFORE ENTRY AND BEFORE EXIT        20700020
+         BALR  RBASE,0                  ESTABLISH ADDRESSABILITY        21000020
+         USING *,RBASE                  TELL ASSEMBLER           S20201 21300020
+         USING WTGTBL,RWTGC             WHERE TO GO TABLE        Y02072 21350002
+         L     RCOPY,0(RPARC)           ADDRESS OF COPY DCB      Y02072 21600002
+         USING IHADCB,RCOPY             COPY DCB ADDRESSABILITY  Y02072 21650002
+         L     RG,OPENWKA               ADDR OF CLOSE WORK AREA  Y02072 21700002
+         USING IECDSECT,RG              CLOSE WA ADDRESSABILITY  Y02072 21750002
+         STM   RPAR,RWTGC,DXCCW1        SAVE REGISTERS 5-8       Y02072 21800002
+         LR    RPAR,RG                  CLOSE WORK AREA ADDR     Y02072 21850002
+         USING IECDSECT,RPAR            CLOSE WA ADDRESSABILITY  Y02072 21900002
+         L     RDCB,DXUDCBAD            ADDR OF USERS DCB        Y02072 21950002
+         L     RC,DCBWKPT2              ESTABLISH WKAREA BASE    S20201 22200020
+         USING IHADCW,RC                USE BASE                 S20201 22500020
+         STM   RA,R15,DXCCW3            SAVE REGISTERS 11-15     Y02072 22550002
+*                                                                       22560002
+         MODESET KEYADDR=KEY0,WORKREG=11     CHANGE TO KEY ZERO  Y02072 22600002
+*                                                                       22650002
+**********************************************************************  22660002
+*    OBTAIN THE LOCAL LOCK.  TO BE FREED AT FLCL IN THIS MODULE.        22700002
+**********************************************************************  22702002
+*                                                                       22710002
+GLCL     SETLOCK OBTAIN,TYPE=LOCAL,MODE=UNCOND,  OBTAIN THE      Y02072*22720002
+               RELATED=(IOB,IGG0202A(FLCL))      LOCAL LOCK             22730002
+*                                                                       22740002
+         MODESET KEYADDR=DXUKEY,WORKREG=11  CHANGE TO USER KEY   Y02072 22742002
+*                                                                       22742402
+         LM    RA,R15,DXCCW3            RESTORE REGISTERS        Y02072 22744002
+         XC    DCWNUCPS(THREE),DCWNUCPS SET NO. CP1,4-5-6,7 TO 0 XM3393 22750000
+         MVI   DCWNUWKN,ZEROES          SET NO. CP'S FOR WKN TO 0XM3393 22760000
+         MVC   DCWLUPDI,DCWFIOBU        SAVE UNSCHED QUEUE PTR   S20201 22800020
+         XC    DCWFIOBU,DCWFIOBU        PREVENT MORE SCHEDULING  S20201 23100020
+*                                                                       23110002
+         MODESET  KEYADDR=KEY0,WORKREG=11  SET PROTECT KEY ZERO  Y02072 23120002
+*                                                                       23130002
+**********************************************************************  23140002
+*    RELEASE LOCAL LOCK, WAS OBTAINED AT GLCL                           23160002
+**********************************************************************  23162002
+*                                                                       23170002
+FLCL     SETLOCK RELEASE,TYPE=LOCAL,    RELEASE THE LOCAL LOCK   Y02072*23180002
+               RELATED=(IOB,IGG0202A(GLCL))                      Y02072 23190002
+*                                                                       23192002
+         MODESET KEYADDR=DXUKEY,WORKREG=11  CHANGE TO USER KEY   Y02072 23192402
+*                                                                       23192502
+         LM    RA,R15,DXCCW3            RESTORE REGISTERS        Y02072 23192802
+         L     RG,DCBDEBAD              PROTECTED DEB ADDR       Y02072 23194002
+         USING IHADEB,RG                                         A47386 23200000
+         L     RA,DEBTCBAD              GET TCB                  A47386 23250000
+         USING TCB,RA                                            A47386 23300000
+         TM    TCBFLGS,ABEND            NO PURGE IF ABENDING     A47386 23350000
+         BO    CLSC5D1                  BIF ABEND. FREE FA REQ'D A47386 23360000
+*                                                                       23370002
+         MODESET  EXTKEY=DATAMGT        CHANGE TO DATA MGT KEY   Y02072 23410002
+*                                                                       23460002
+         L     RA,DCBDEBAD              SET UP PURGE PARAM LIST         24300020
+         USING IHADEB,RA                USE RA FOR BASE          S20201 24600020
+         ST    RA,PRGDEBAD-ONE          SET UP PTR TO DEB        S20201 24900020
+         MVI   PRGFLAGS,DEBPRG+POST+LCHPURGE+QUIESCE PURGE OPTN  A47386 25200000
+         L     RC,DEBUCB0               SAVE FIELD               S20201 25500020
+         DROP RC                        RC IS NOT WKAREA NOW     S20201 25800020
+         MVC   DEBUCB0(FOUR),DEBUCB1    SET DEBUCBAD FOR PURGE   S20201 26100020
+         XC    PRGECB,PRGECB            ZERO ECB                 S20201 26400020
+         LA    RB,DEBUSRPG              PICK UP DEBUSRPG PTR     S20201 26700020
+         DROP  RA                       RA NOT NEEDED FOR DEB    S20201 27000020
+         ST    RB,PRGCHAIN              USE DEBUSRPG FOR IOB Q   S20201 27300020
+         LA    RF,PURGEWA               REG 1 POINTS TO LIST            27600020
+         SPACE 2                                                        27602002
+*                                                                       27610002
+* PURGE ASSUMPTIONS:                                             A47386 27650000
+*  1. IF ABEND IN CONTROL, EITHER A DEB OR TCB PURGE HAS OCCURED A47386 27700000
+*    AND NO RECOVERY SHOULD BE ATTEMPTED.                        A47386 27710000
+*    IF NOT ABENDING, A PURGE WILL BE ISSUED WITH THE FOLLOWING  A47386 27720000
+*    LOGIC-                                                      A47386 27730000
+*  2. PURGE QUIESCE ALLOWS ALL APPENDAGE ENTRIES AND ASYNC EXITS A47386 27750000
+*     THAT IS, THE CURRENTLY ACTIVE REQUEST WILL COMPLETE. ITS   A47386 27800000
+*     IOB WILL BE FREED BY NORMAL PATH.                          A47386 27850000
+*  3. THE PURGE CHAIN WILL CONTAIN INCOMPLETE OR UNSTARTED IOB'S A47386 27860000
+*     (NOT THE CURRENTLY ACTIVE IOB- IT COMPLETED)               A47386 27870000
+* 4. NONE OF THE INCOMPLETE IOB'S CAN BE A WKN SINCE ONLY ONE    A47386 27880000
+*    WKN AT A TIME IS PERMITTED. COMPLETION OF THE ACTIVE REQ-   A47386 27890000
+*    QUEST WILL ASSURE GOOD OVERFLO CHAINS.                      A47386 27892000
+*                                                                       27894000
+         SPACE 2                                                        27896002
+         PURGE (1)                      PURGE OUTSTANDING REQUESTS      27900020
+*                                                                       27950002
+         WAIT  ECB=PRGECB               AWAIT END OF PURGE              28200020
+*                                                                       28210002
+         MODESET  KEYADDR=DXUKEY,WORKREG=11  CHANGE TO USER KEY  Y02072 28250002
+*                                                                       28300002
+         L     RA,0(RB)                 PICK UP 1ST IOB          S20201 28500020
+*                                                                       28510002
+         MODESET  EXTKEY=DATAMGT        CHANGE TO DATA MGT KEY   Y02072 28550002
+*                                                                       28600002
+         L     RG,DCBDEBAD              SET UP BASE FOR DEB      S20201 29100020
+         USING IHADEB,RG                TELL ASSEMBLER           S20201 29400020
+         ST    RC,DEBUCB0               RESTORE FIELD            S20201 29700020
+         L     RC,DCBWKPT2              SET WKAREA BASE AGAIN    S20201 30000020
+*                                                                       30010002
+         MODESET  KEYADDR=DXUKEY,WORKREG=1  CHANGE TO USER KEY   Y02072 30050002
+*                                                                       30100002
+         USING DXIOB,RA                 ESTABLISH BASE FOR IT    S20201 30150002
+         USING IHADCW,RC                TELL ASSEMBLER           S20201 30300020
+CLSC5C1  EQU   *                                                 A47386 30350000
+         EX    RA,CLSC5C11               CHECK FOR END OF PURGE  A47386 30400000
+         BE    CLSC5D1                   BIF END OF PURGE CHAIN  A47386 30450000
+CLSC5C2  LR    RF,RA                    GET IOB INTO CORRECT REG S20201 34200020
+         L     RA,IOBRESTA              SAVE ADDR NEXT IOB       S20201 34500020
+         DROP  RA                       RA NOT USED NOW          S20201 34800020
+         L     RE,SP250IOB              GET 56 BYTES IN REG 0    S20201 35100020
+         TM    DEBRPSID,RPS             TEST FOR RPS DEVICE      S20201 35400020
+         BZ    CLSC5C21                 BRANCH IF IT'S NOT       S20201 35700020
+         AH    RE,RPSCCW                ELSE, ADD FOR ADDL CCWS  S20201 36000020
+CLSC5C21 EQU   *                        *                        S20201 36300020
+         FREEMAIN R,LV=(0),A=(1)        RELEASE IOB CORE         S20201 36600020
+         B     CLSC5C1                  BRANCH TO SEE IF ANOTHER A47386 36900000
+*                                                                       36950002
+         DROP  RCOPY                    END USING ON COPY DCB    Y02072 36960002
+         USING IHADCB,RDCB              USE USERS DCB            Y02072 37000002
+CLSC5D1  MVC   DCWFIOBU,DCWLUPDI        REST UNSCHED QUEUE PTR   S20201 37200020
+         LA    RB,FREEIOB1              NORMAL SIZE IOB RTN      S20201 37500020
+         TM    DEBRPSID,RPS             TEST IF RPS DEVICE USED  S20201 37800020
+         BZ    CLSC5D11                 BRANCH IF NOT            S20201 38100020
+         LA    RB,FREEIOB2              RPS IOB RTN ADDR         S20201 38400020
+CLSC5D11 EQU   *                        *                        S20201 38700020
+         DROP  RG                       RG NO LONGER DEB ADDR    S20201 39000020
+         L     RA,DCWFIOBU              FREE IOBS ON UNSCHED Q   S20201 39300020
+         USING SISWORK1,RF                                       A35340 39600020
+         BALR  RG,RB                    FREE ALL IOBS            S20201 39900020
+*                                       Q                        A35340 40200020
+         L     RA,DCWFUPDI              FREE IOBS ON UPDATE Q    S20201 40500020
+         BALR  RG,RB                    GO FREE IOBS             S20201 40800020
+         L     RA,DCWFIOBE              FREE IOBS ON ERROR Q     S20201 41400020
+         BALR  RG,RB                    GO FREE IOBS             S20201 41700020
+         TM    DCBMACRF,FOUR            IF DYN BUFFER,FREE       S20201 42000020
+         BZ    CLSC5D2                   BUFFER CONTROL BLOCK AND       42900020
+         L     RF,DCBBUFCB               BUFFERS                        43200020
+         L     RA,BCBFIOB(0,RF)         FREE IOB'S ON BUFFER Q, IF ANY. 43500020
+         BALR  RG,RB                    GO FREE IOBS             S20201 43800020
+         L     RF,DCBBUFCB              FREE DYNAMIC BUFFERS     S20201 44100020
+         LA    RF,0(0,RF)                                               44400020
+         MVI   BCBSIZE(RF),SP00         SP=0 FOR FREEMAIN       YM04649 44700002
+         L     RE,BCBSIZE(0,RF)                                         45000020
+         FREEMAIN R,LV=(0),A=(1) SP=250 FREE BUFCB AND BUFFERS    14093 45300020
+         OI    DCBBUFCB+3,X'01'         ADDR MAY NOT POINT TO FREE AREA 45600020
+CLSC5D2  EQU   *                                                 S20201 45900020
+*                                                                       45910002
+         MODESET  EXTKEY=DATAMGT        CHANGE TO DATA MGT KEY   Y02072 45950002
+*                                                                       45960002
+         DROP  RDCB                     END USING ON USER DCB    Y02072 45970002
+         USING IHADCB,RCOPY             ADDRESSABILITY ON COPY   Y02072 46000002
+         L     RG,DCBDEBAD              PROTECTED DEB ADDR       Y02072 46050002
+         DROP  RCOPY                    END USING ON COPY DCB    Y02072 46060002
+         USING IHADCB,RDCB              ADDR ON USER DCB         Y02072 46070002
+*                                                                       46080002
+         USING IHADEB,RG                DEB ADDRESSABILITY       Y02072 46100002
+         L     RG,DEBEXPTR              ADDR OF DEB EXTENSION    Y02072 46150002
+         USING DEBEXT,RG                EXTNSION ADDRSSABILITY   Y02072 46200002
+         TM    DEBDCBFA,SHR             TEST FOR DISP EQ SHR     Y02072 46250002
+         BNO   FREEWA                   BR IF NOT TO CONTINUE    A35340 46800020
+         L     RF,DEBDCBFA              DCB FIELD AREA ADDR      Y02072 47100002
+         SR    RE,RE                    SET FOLLOWING FIELDS TO  Y02072 47102002
+         ST    RE,DEBDCBFA              DEB AND BISAM WA         Y02072 47106002
+         LA    RG,0(RF)                 CLEAR HIGH BYTE          A47331 47110002
+         USING DCBFA,RG                                          A37175 47200020
+         SPACE 2                                                        47202002
+*********************************************************************** 47210002
+*        DATA SET OPENED TO SHR                                         47220002
+*********************************************************************** 47230002
+         SPACE 2                                                        47232002
+         STM   RA,R15,DXCCW3            SAVE  REGISTERS  11-15   Y02072 47240002
+         XC    DXCCW10,DXCCW10          INDICATE NO FIELD AREA   Y02072 47240402
+*                                       TO BE FREED              Y02072 47240802
+*                                                                       47242002
+         MODESET KEYADDR=KEY0,WORKREG=11     CHANGE TO USER KEY  Y02072 47250002
+*                                                                       47250402
+*********************************************************************** 47250802
+*        OBTAIN LOCAL LOCK.  FREED AT FLCL1 IN THIS MODULE.             47252002
+*********************************************************************** 47252102
+*                                                                       47252402
+GLCL1    SETLOCK  OBTAIN,TYPE=LOCAL,MODE=UNCOND,   OBTAIN THE    Y02072*47254002
+               RELATED=(DCBFA,IGG0202A(FLCL1))     LOCAL LOCK    Y02072 47256002
+*                                                                       47256402
+*********************************************************************** 47256802
+*        OBTAIN CMS LOCK.  FREED AT FCMS1 IN THIS MODULE.               47258002
+*********************************************************************** 47258202
+*                                                                       47258802
+GCMS1    SETLOCK  OBTAIN,TYPE=CMS,MODE=UNCOND,     OBTAIN CROSS  Y02072*47259002
+               RELATED=(DCBFA,IGG0202A(FCMS1))  MEMORY SERVICES  Y02072 47259202
+*                                               LOCK             Y02072 47259402
+*                                                                       47259602
+         LM    RA,R15,DXCCW3            RESTORE REGISTERS 11-15  Y02072 47259802
+*                                                                       47262202
+         MODESET  KEYADDR=DXUKEY,WORKREG=11 CHANGE TO USER KEY   Y02072 47265002
+*                                                                       47267002
+         SR    RE,RE                    CLEAR FILED AREA POINTER Y02072 47267402
+         ST    RE,DCWDCBFA              IN BISAM WORK AREA       Y02072 47270502
+*                                                                       47272502
+         CLC   DFAID,DCWOPCLS        ?  TEST IF CORRECT ID       A47331 47273802
+         BNE   NOREFRSH              ?  B IF NOT TO SKIP REFRESH A47331 47276902
+*                                                                       47280021
+*        REFRESH DCB FIELDS FROM FIELD AREA                             47330021
+*                                                                       47380021
+         MVC   DCBRORG3(9),DFARORG3     RORG3,NREC,ST            A37175 47500020
+         MVC   DCBLPDA,DFALPDA          LPDA                     A37175 47600020
+         MVC   DCBNBOV,DFANBOV          NBOV                     A37175 47700020
+         MVC   DCBRORG2,DFARORG2        RORG2                    A37175 47800020
+         MVC   DCBNOREC(12),DFANOREC    NOREC,LIOV,RORG1         A37175 47900020
+NOREFRSH EQU   *                                                 A47331 47950021
+*                                                                       47952002
+         MODESET  EXTKEY=DATAMGT        CHANGE TO DATA MGT KEY   Y02072 47960002
+*                                                                       47970002
+         LH    RA,DFAUSE                USE COUNT                Y02072 48000002
+         BCT   RA,NOFREE                DECREMENT,FREE AREA IF   A37175 48100020
+*                                       ZERO                     A37175 48200020
+         L     RF,CVTPTR                GET CVT ADDR             A47331 48250021
+         USING CVT,RF                                            A47331 48300021
+         L     RF,CVTEXT1               GET CVT EXTENSION ADDR   A47331 48310000
+         USING CVTXTNT1,RF                                       A47331 48320000
+         L     RA,CVTFACHN              GET ADDR OF FIRST FA     A47331 48330000
+*                                        IN CHAIN                A47331 48340000
+         LA    RA,0(RA)                 CLEAR HIGH BYTE          A47331 48342000
+         DROP  RG                                                       48344000
+         USING DCBFA,RA                                                 48346000
+         LTR   RA,RA                    IS THERE A FIELD AREA    A47331 48550100
+         BZ    ERR                      B IF NOT - ERROR         A47331 48560021
+         LA    RB,CVTFACHN              INTLZ FOR CHAINING RESET A47331 48570021
+         LR    RE,RB                    SAVE ADDR OF CVT FA PTR  Y02072 48572002
+         SPACE 2                                                        48574002
+*********************************************************************** 48580021
+*                SEARCH FIELD AREA CHAIN FOR ONE TO FREE                48590021
+*********************************************************************** 48592021
+         SPACE 2                                                        48592402
+CHNSRCH  CR    RA,RG                      IS IT THE SAME FA ADDR A47331 48594000
+         BNE   NEXTFA                   B IF NOT TO GET NEXT IN  A47331 48596021
+*                                       CHAIN                    A47331 48598021
+         SPACE 2                                                        48598402
+         MODESET  KEYADDR=DXUKEY,WORKREG=9  SET USERS KEY       YM01420 48598802
+         SPACE 2                                                        48598902
+         CLC   DFAID,DCWOPCLS           CHECK SAME ID            A47331 48599221
+         BE    FOUNDFA                  B IF SO TO FREE         YM01420 48599602
+         SPACE 2                                                        48612102
+         MODESET  EXTKEY=DATAMGT        SET DATA MGT KEY (5)    YM01420 48614102
+         SPACE 2                                                        48622102
+NEXTFA   LA    RB,DFACHAIN              NEXT CHAIN ADDR          A47331 48624902
+         CLC   DFACHAIN+1(EOCLN),EOC    END OF CHAIN             A47331 48637402
+         BE    ERR                      IF SO, NO FIND - ERROR   A47331 48649900
+         L     RA,DFACHAIN              GET NEXT FA IN CHAIN     A47331 48659900
+         B     CHNSRCH                  B TO CONTINUE SEARCH     A47331 48669921
+         SPACE 2                                                        48671902
+*********************************************************************** 48679902
+*         FOUND FIELD AREA, MUST UNCHAIN AND FREE AREA                  48689921
+*********************************************************************** 48691921
+         SPACE 2                                                        48692302
+FOUNDFA  EQU   *                        FIND FA IN FA CHAIN     YM01420 48692702
+         MODESET  EXTKEY=DATAMGT        SET DATA MGT KEY (5)    YM01420 48693102
+         SPACE 2                                                        48693502
+FNDFA    CLC   DFACHAIN+1(EOCLN),EOC    LAST IN CHAIN            A47331 48693900
+         BNE   UNCHAIN                  IF NOT, MOVE CHAINS      A47331 48695900
+         USING CHAIN,RB                                                 48697921
+         CLC   LSTCHAIN,CVTFACHN        FIRST AND LAST IN CHAIN  A47331 48698321
+         BNE   UNCHAIN                  IF NOT, MOVE CHAINS      A47331 48698721
+*                                                                       48698802
+         MODESET  KEYADDR=KEY0,WORKREG=12  SET PROTECT KEY ZERO  Y02072 48698902
+*                                                                       48699002
+         XC    CVTFACHN,CVTFACHN        CLEAR CVT PT - NO CHAIN  A47331 48699121
+*                                                                       48699202
+         MODESET  EXTKEY=DATAMGT        SET DATA MGT KEY (5)     Y02072 48699302
+*                                                                       48699402
+         B     FREEFA                   B TO FREE AREA           A47331 48699521
+*                                                                       48712102
+UNCHAIN  CR    RE,RB                    DELETING FIRST DCBFA     Y02072 48722102
+         BNE   UNCHNFA                  BR IF NOT FIRST IN CHAIN Y02072 48724102
+*                                                                       48724502
+         MODESET  KEYADDR=KEY0,WORKREG=1  SET PROTECT KEY ZERO   Y02072 48724602
+*                                                                       48728802
+UNCHNFA  MVC   LSTCHAIN,DFACHAIN        MOVE CHAIN PTR           A47331 48733102
+*                                                                       48735102
+         MODESET  EXTKEY=DATAMGT        SET DATA MGT KEY (5)     Y02072 48737102
+*                                                                       48737202
+FREEFA   XC    DCBFA(DFASIZE),DCBFA     CLEAR FA                 A47331 48737302
+         LA    RE,CSA241                SUBPOOL FOR FIELD AREA   Y02072 48759902
+         SLL   RE,24                                             A35340 48949900
+         LA    RB,DFASIZE               SIZE OF DCBFA AREA      SA57175 49200002
+         OR    RE,RB                    SIZE AND SUBPOOL IN RE   A35340 49500020
+         LR    RF,RG                    FIELD AREA ADDRESS       Y02072 49550002
+         STM   RE,RF,DXCCW10            SAVE SIZE-SUBPOOL AND    Y02072 49800002
+*                                       SAVE FIELD AREA ADDR     Y02072 49850002
+         B     FREELOCK                 RELEASE LOCAL,CMS LOCKS  Y02072 49900002
+         DROP  RA                                                       50150000
+         USING DCBFA,RG                                                 50200000
+         SPACE 2                                                        50210002
+*********************************************************************** 50250002
+*    TOTAL USE COUNT DID NOT GO TO ZERO, STORE NEW COUNT.  FIND         50300002
+*    ADDRESS SPACE USE COUNT AND DECREMENT BY ONE.  IF IT GOES TO       50350002
+*    ZERO, MOVE THE LAST ASID-USE COUNT ENTRY TO REPLACE THE ENTRY      50360002
+*    WHICH WENT TO ZERO.  ZERO LAST ASID ENTRY.                         50370002
+*********************************************************************** 50380002
+         SPACE 2                                                        50390002
+NOFREE   STH   RA,DFAUSE                RESTORE DECREMENTED USE  A35340 50400002
+         STM   RPARC,R15,DXCCW3         SAVE REGISTERS 7-15      Y02072 50700002
+*                                                                       50710002
+         USING PSA,RE                   LOW CORE ADDRESSABILITY  Y02072 50720002
+         L     RA,PSAAOLD               ADDRESS OF ASCB          Y02072 50730002
+         USING ASCB,RA                  ASCB ADDRESSABILITY      Y02072 50740002
+         LH    RA,ASCBASID              ADDRESS SPACE ID         Y02072 50746002
+         DROP  RA                       END USING ON ASCB               50748002
+*                                                                       50748402
+         LA    RB,DFAASID1              ADDR OF USER ASID FIELD  Y02072 50748802
+         USING DFAASID,RB               USER ASID FIELDS         Y02072 50749202
+         SR    RWRK,RWRK                IND SEARCH FIELD AREA    Y02072 50749602
+*                                                                       50749702
+NOASIDS  LA    RC,DFANOIDS              NO. ASIDS IN FIELD AREA  Y02072 50749802
+         B     ASIDSRCH                 SEARCH FA FOR THIS ASID  Y02072 50766502
+NEXTASID LA    RB,DFANXPTR(RB)          PT TO NEXT ASID          Y02072 50776502
+ASIDSRCH LH    RD,DFAASIDX              USER ASID                Y02072 50783202
+         CR    RA,RD                    ASID EQ THIS ADDR SPACE  Y02072 50799902
+         BE    FNDASID                  BR IF THIS ADDR SPACE    Y02072 50809902
+         LTR   RD,RD                    IS THERE AN ASID         Y02072 50819902
+         BZ    ENDSRCH                  BR IF NO ASID, ERROR     Y02072 50829902
+         BCT   RC,NEXTASID              BR IF MORE ASIDS         Y02072 50841902
+*                                                                       50843902
+         LA    RWTGC,DFAPTR             SAVE ADDR OF EXT PTR     Y02072 50844302
+         L     RB,DFAPTR                PTR TO EXTENSION         Y02072 50845902
+         LTR   RWRK,RB                  ANOTHER EXTENSION        Y02072 50847902
+         BZ    ENDSRCH                  ASID NOT FOUND, ERROR    Y02072 50848302
+         B     NOASIDS                  SEARCH EXTENSION         Y02072 50849102
+*                                                                       50849202
+*    DECREMENT ASID USE COUNT                                           50849502
+*                                                                       50859502
+FNDASID  LH    RPARC,DFAUSEX            ASID USE COUNT           Y02072 50869802
+         BCT   RPARC,STORECNT           SUBTRACT ONE, BR NOT 0   Y02072 50879802
+*                                                                       50881802
+*    FIND LAST ASID ENTRY IN FIELD AREA OR EXTENSION                    50889802
+*                                                                       50891802
+         LR    RPARC,RB                 ASID FIELD PTR           Y02072 50899802
+         LR    RA,RB                    ADDR LAST ASID ENTRY     Y02072 50909802
+*                                                                       50911802
+         DROP  RB                       END USER ASID ADDR       Y02072 50913802
+         USING DFAASID,RPARC            EST USER ASID ADDR       Y02072 50915802
+NXTFLD   BCT   RC,NXTASID               BR IF MORE ASIDS         Y02072 50919802
+         LA    RWTGC,DFAPTR             SAVE ADDR OF EXT PTR     Y02072 50921802
+         L     RPARC,DFAPTR             PTR TO EXTENSION         Y02072 50929802
+         LTR   RPARC,RPARC              ANOTHER EXTENSION        Y02072 50939802
+         BNZ   NUMIDS                   BR IF ANOTHER EXTENSION  Y02072 50941802
+         CR    RA,RB                    ASID LAST IN EXTENSION   Y02072 50943802
+         BE    CLEAR                    CLEAR LAST ASID          Y02072 50945802
+         B     RESET                    MOVE LAST ASID TO FILL   Y02072 50947802
+*                                       FIELD WITH ZERO COUNT    Y02072 50948202
+*                                                                       50948302
+         DROP  RPARC                    END USER ASID ADDR       Y02072 50949002
+         USING DFAASID,RB               EST USER ASID ADDR       Y02072 50949402
+STORECNT EQU   *                        STORE NEW ASID           Y02072 50950402
+         STH   RPARC,DFAUSEX            USE COUNT                Y02072 50951102
+         B     ENDSRCH                  FREE LOCKS               Y02072 50951802
+*                                                                       50952702
+         DROP  RB                       END USER ASID ADDR       Y02072 50953202
+         USING DFAASID,RPARC            EST USER ASID ADDR       Y02072 50955602
+NXTASID  LA    RPARC,DFANXPTR(RPARC)    PT TO NEXT ASID          Y02072 50958902
+         B     GETID                    TEST NEXT ASID           Y02072 50961402
+NUMIDS   LA    RC,DFANOIDS              NO. ASIDS IN EXTENSION   Y02072 50963902
+         LR    RA,RPARC                 ASID POINTER             Y02072 50966402
+         LR    RWRK,RPARC               ADDRESS OF EXTENSION     Y02072 50968902
+GETID    LH    RD,DFAASIDX              ASID                     Y02072 50971402
+         LTR   RD,RD                    IS THERE AN ASID         Y02072 50973902
+         BZ    RESET                    BR NO ASID               Y02072 50976402
+         LR    RA,RPARC                 ADDR LAST ASID FOUND     Y02072 50978402
+         B     NXTFLD                   TEST NEXT ASID           Y02072 50980402
+*                                                                       50980802
+         DROP  RPARC                    END USER ASID ADDR       Y02072 50981202
+RESET    L     RPARC,0(RA)              LAST ASID ENTRY TO FILL  Y02072 50982402
+         ST    RPARC,0(RB)              FIELD WITH ZERO COUNT    Y02072 50982802
+CLEAR    SR    RPARC,RPARC              ZERO                     Y02072 50983202
+         ST    RPARC,0(RA)              CLEAR LAST ASID          Y02072 50988802
+         CR    RA,RWRK                  LAST ASID ONLY ENTRY     Y02072 50990802
+         BNE   ENDSRCH                  FREE LOCKS               Y02072 50992802
+         SR    R15,R15                  ZERO REG                 Y02072 50992902
+         ST    R15,0(,RWTGC)            ZERO EXTENSION PTR       Y02072 50993002
+         LR    R15,RWRK                 SAVE ADDR FOR FREEMAIN   Y02072 50993202
+         LA    RD,CSA241                EXTENSION SUBPOOL        Y02072 50993602
+         SLL   RD,24                    SUBPOOL TO HIGH BYTE     Y02072 50994002
+         LA    RA,DFEXSIZE              SIZE OF EXTENSION        Y02072 50994102
+         LA    RA,0(RA)                 CLEAR HIGH BYTE          Y02072 50994202
+         OR    RD,RA                    SIZE AND SUBPOOL         Y02072 50994302
+         STM   RD,R15,DXCCW10           STORE SIZE, SUBPOOL      Y02072 50998202
+ENDSRCH  LM    RPARC,R15,DXCCW3         RESTORE REGISTERS 7-15   Y02072 51000202
+ERR      EQU   *                                                 A47331 51002202
+FREELOCK STM   RA,R15,DXCCW3            SAVE  REGISTERS 11-15    Y02072 51006102
+*                                                                       51016102
+         MODESET KEYADDR=KEY0,WORKREG=11  CHANGE TO KEY ZERO     Y02072 51056102
+*                                                                       51066102
+**********************************************************************  51068102
+*    FREE CMS LOCK OBTAINED AT GCMS1.                                   51076102
+**********************************************************************  51078102
+*                                                                       51086102
+FCMS1    SETLOCK  RELEASE,TYPE=CMS,     RELEASE CROSS MEMORY     Y02072*51106102
+               RELATED=(DCBFA,IGG0202A(GCMS1))  SERVICES LOCK    Y02072 51156102
+*                                                                       51206102
+**********************************************************************  51208102
+*    FREE LOCAL LOCK OBTAINED AT GLCL1.                                 51216102
+**********************************************************************  51218102
+*                                                                       51226102
+FLCL1    SETLOCK  RELEASE,TYPE=LOCAL,   FREE THE LOCAL LOCK      Y02072*51256102
+               RELATED=(DCBFA,IGG0202A(GLCL1))                          51266102
+*                                                                       51268102
+         MODESET  EXTKEY=DATAMGT        CHANGE TO DATA MGT KEY   Y02072 51276102
+*                                                                       51278102
+         LM    RA,R15,DXCCW3            RESTORE REGISTERS 11-15  Y02072 51286102
+*                                                                       51288102
+*    TEST FOR ANY CORE TO BE FREED                                      51296102
+*                                                                       51296502
+         LM    RE,RF,DXCCW10            SIZE, SUBPOOL OR ZERO    Y02072 51298102
+*                                       ADDR OF CORE TO FREE     Y02072 51298202
+         LTR   RE,RE                    TEST FOR SIZE, SUBPOOL   Y02072 51298502
+         BZ    FREEWA                   BR IF NO CORE TO FREE    Y02072 51298902
+*                                                                       51299302
+         LR    RG,RF                    ADDRESS OF FIELD AREA    Y02072 51299402
+         FREEMAIN  R,LV=(0),A=(RG)      FIELD AREA OR EXTENSION  Y02072 51299702
+FREEWA   EQU   *                        FREE WORK AREA           Y02072 51299802
+*                                                                       51349802
+         MODESET  KEYADDR=DXUKEY,WORKREG=4  CHANGE TO USER KEY   Y02072 51399802
+*                                                                       51409802
+         TM    DCWWKNI,X'02'            DID OPEN GET WKAREA      A35340 52200020
+*                                       M4570                    A35340 52500020
+         BZ    CLSC5D3                  NO, BRANCH               S20201 52800020
+*                                                                       53000002
+         XC    DCBSMSW,DCBSMSW          YES, CLEAR FIELD         M4570  53100020
+CLSC5D3  LH    RE,DCWSIZE               FREE WKAREA AND CHANNEL  S20201 53400020
+         SLL   RE,3                      PROGRAMS                       53700020
+         LA    RF,SUBPOOL               GET SUBPOOL VALUE        S20201 54000020
+         SLL   RF,24                    MOVE TO HIGH ORDER BYTE  S20201 54300020
+         OR    RE,RF                    GET SP250 INTO REG0      S20201 54600020
+         LR    RF,RC                    GET WKAREA PTR INTO REG1 S20201 54900020
+         MVC   DCBWKPT3(EIGHT),DCWOPCLS RESTORE DCBWKPT3 AND 4   S20201 55200020
+         XC    DCBWKPT2,DCBWKPT2                                 A42900 55300021
+*                                                                       55350002
+         FREEMAIN R,LV=(0),A=(1)        FREE WORK AREA           S20201 55500020
+*                                                                       55510002
+         MODESET  EXTKEY=DATAMGT        CHANGE TO DATA MGT KEY   Y02072 55550002
+*                                                                       55560002
+         LR    RG,RPAR                  CLOSE WORK AREA ADDRESS  Y02072 55570002
+         LM    RPAR,RWTGC,DXCCW1        RESTORE REGISTERS 5-8    Y02072 55600002
+         DROP  RPAR                     END USING ON CLOSE WA    Y02072 55650002
+         USING IECDSECT,RG              ESTABLISH ADDRESSIBILITY S20201 56100020
+         MVC   0(L'LOAD2D,RWTGC),LOAD2D COMMON ISAM CLOSE NEXT   Y02072 56400002
+RELOOP   LA    RWTGC,WGOFF(0,RWTGC)     GET NEXT NAME ON THE WTG TABLE  56700020
+         LA    RPARC,PLOFF(0,RPARC)          AND DCB ON THE PARAM TABLE 57000020
+         CLC   0(2,RWTGC),CLSEXNAM      IF NAME ON TABLE SAME ID AS     57300020
+         BCR   8,RBASE                   CURRENT LOAD, BRANCH TO REPEAT 57600020
+         CLC   0(1,RWTGC),CLIDCNST     IF NOT END OF WTG, BRANCH        57900020
+         BNE   RELOOP                    TO TRY NEXT NAME               58200020
+         LR    RPARC,RPAR               OTHERWISE, RETURN TO START OF   58500020
+         LA    RWTGC,WAOFF(0,RWTG)       BOTH TABLES AND SEARCH FOR     58800020
+ZCHECK   CLI   0(RWTGC),ZCNST            FIRST NON-ZERO ID              59100020
+         BNE   TCTLRTN                                                  59400020
+         LA    RWTGC,WGOFF(0,RWTGC)                                     59700020
+         LA    RPARC,PLOFF(0,RPARC)                                     60000020
+         B     ZCHECK                                                   60300020
+TCTLRTN  MVC   6(2,RWTG),0(RWTGC)       WHEN FOUND, SET UP PARAMETERS   60600020
+*                                       TO CALL THAT MODULE             60900002
+         LA    R15,DXCCW12                                              61200020
+TRCTL    XCTL  EPLOC=(RWTG),DCB=0,SF=(E,(15)) XCTL TO NEXT LOAD  Y02072 61500002
+         SPACE 2                                                 S20201 61800020
+FREEIOB1 SR    RE,RE                    CLEAR LENGTH REG         S20201 62100020
+         B     FREEIOB3                 ENTER MAIN ROUTINE       S20201 62400020
+FREEIOB2 LH    RE,RPSCCW                IF RPS, GET 16 IN REG    S20201 62700020
+FREEIOB3 A     RE,SP250IOB              ADD 56 BYTES IN SP250    S20201 63000020
+         LA    RF,0(R0,RA)              GET IOB ADDR INTO REG1   S20201 63300020
+         LTR   RF,RF                    IS THERE AN IOB TO FREE  S20201 63600020
+         BCR   8,RG                     NO, RETURN               S20201 63900020
+         USING DXIOB,RF                 ESTABLISH ADDRESSIBILITY S20201 64200020
+         L     RA,IOBFCHAD              SAVE ADDR OF NEXT        S20201 64500020
+         FREEMAIN R,LV=(0),A=(1)        FREE THIS ONE            S20201 64800020
+         BR    RB                       FREE NEXT IOB            S20201 65100020
+         EJECT                                                   S20201 65400002
+CLSC5C11 CLI   CLSC5C12,X'00'                                    S20201 65700020
+RPSCCW   DC    H'16'                    RPS IOB ADDL QTY(2 CCWS) S20201 66000020
+         DS    0F                                                S20201 66300020
+SP250IOB DC    AL1(250),AL3(56)         56 BYTES IN SP 250       S20201 66600020
+CLSC5C12 DC    X'FF'                    MASK IN EX INSTRUCTION   S20201 66900020
+EOC      DC    XL3'FFFFFF'              END OF CHAIN INDICATOR   A47331 67050021
+KEY0     DC    X'00'                    ZERO PROTECT KEY         Y02072 67060002
+EOCLN    EQU   3                        LENGTH OF EOC FIELD             67100000
+RPS      EQU   X'E0'                    RPS FLAGS                S20201 67200020
+WGOFF    EQU   8                        SIZE OF ONE ENTRY ON WTG TABLE  67500020
+PLOFF    EQU   4                        SIZE OF ONE ENTRY ON PARAM TAB  67800020
+WAOFF    EQU   32                       SIZE OF WA AT START OF WTG TAB  68100020
+CLSEXNAM DC    C'2A'                    ID OF THIS CLOSE EXECUTOR       68700020
+CLIDCNST DC    C'00'                    SIGNALS END OF WTG TABLE        69000020
+ZCNST    EQU   X'00'                    ZERO - SIGNALS INACTIVE ENTRY   69300020
+         SPACE 2                                                        69350002
+LOAD2D   DC    C'2D'                    ID OF MODULE IGG0202D    Y02072 69400002
+*                                                                       69450002
+PATCH    DC    XL((*-IGG0202A)/20)'00'  ZEROED PATCH AREA        Y02072 69500002
+         EJECT                                                          69650002
+IECDSECT DSECT                          OPEN WA                         71700020
+         IECDSECT                                                       72000020
+         ORG   DXCCW6                   PURGE WA (PARAM LIST)           72300020
+PURGEWA  DS    0F                       ALIGN ON WORD BOUNDARY   S20201 72600020
+PRGFLAGS DS    AL1                      DEB PURGE, QUIESCE       S20201 72900020
+PRGDEBAD DS    AL3                      ADDR DEB                 S20201 73200020
+PRGECB   DC    F'0'                      ECB                            73500020
+PRGCHAIN DS    A                         WILL POINT TO PTR TO PRGD IOB  73800020
+*                                                                       74100020
+*                   EQU STATEMENTS FOR FIELDS IN VARIOUS WORK AREAS     74400020
+*                                                                       74700020
+         ORG   DXIOB+24                 ORG PASS UNEEDED FIELDS  S20201 75000020
+IOBRESTA DS    A                        IOB - RESTART ADDRESS    S20201 75300020
+         ORG   DXIOB+46                 ORG PASS UNEEDED FIELDS  S20201 75600020
+IOBAPP   DS    CL1                      IOB APPENDAGE CODE       S20201 75900020
+IOBASYN  DS    CL1                      IOB ASYNCH CODE          S20201 76200020
+IOBFCHAD DS    A                        IOB FORWARD CHAIN ADDR   S20201 76500020
+BCBSIZE  EQU   12                       BCB - SIZE OF BCB AND BUFFERS   76800020
+BCBFIOB  EQU   0                              ADDR 1ST IOB ON BUFFER Q  77100020
+         EJECT                                                          77700020
+DCBFA    IGGDCBFA                                                       78000020
+         EJECT                                                          78050002
+TCB      IKJTCB                                                  Y02072 78100002
+         EJECT                                                          78150002
+         IHAPSA                                                  Y02072 78200002
+         EJECT                                                          78250002
+         IHAASCB                                                 Y02072 78260002
+         EJECT                                                          78300020
+         DCBD  DSORG=(IS)               DCB DSECT                       78600020
+         EJECT                                                          78900020
+IHADCW   IGGBISAM                       OPTCD=V                  S20201 79200020
+SISWORK1 EQU   IHADCW                   ADDRESSABILITY           S20201 79500020
+IHADEB   IGGDEBD                                                        79800020
+DEBUCB0  EQU   DEBUCBAD                 EXTENT 0 UCB ADDR        S20201 80100020
+DEBUCB1  EQU   DEBUCBAD+16              EXTENT 1 UCB ADDR        S20201 80400020
+WTGTBL   DSECT                                                          80410002
+IDTTR    DS    F                        MODULE ID AND TTR               80420002
+OPENWKA  DS    A                        CLOSE WORK AREA ADDR            80430002
+CHAIN    DSECT                                                          80440002
+LSTCHAIN DS    F                                                        80442002
+         EJECT                                                          80450021
+         CVT   DSECT=YES                                                80550002
+         END                                                            80700020

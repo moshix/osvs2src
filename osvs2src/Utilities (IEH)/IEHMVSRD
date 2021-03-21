@@ -1,0 +1,623 @@
+ TITLE 'IEHMVSRD - PERFORMS THE UNLOAD FUNCTION FOR IEHMOVE'            00010016
+*       IEHMVSRD                                                        00020000
+*THIS MODULE PERFORMS THE UNLOAD FUNCTION FOR THE MOVE/COPY PROGRAM.    00040000
+*IT WILL UNLOAD BOTH A PARTITIONED DATA SET (PDS) AS WELL AS A SEQUEN-  00060000
+*TIAL DATA SET. THE UNLOAD FORMAT IS UNIQUE IN THAT ONLY THE LOAD FUNC- 00080000
+*TION IS CAPABLE OF RECOGNIZING IT AND IN TURN PERFORM THE MOVE/COPY.   00100000
+*EACH RECORD THAT IS UNLOADED IS PRECEDED BY A THREE OR SIX BYTE CONS-  00120000
+*TANT DEPENDING ON THE TYPE OF RECORD PASSED. THERE WILL ALWAYS BE      00140000
+*THREE BYTES OF INFORMATION PRECEDING EVERY UNLOADED RECORD MADE UP OF  00160000
+*                                                                       00180000
+*        LL = 2 BYTES    LENGTH OF UNLOADED RECORD                      00200000
+*        I  = 1 BYTE     INDICATOR AS TO THE TYPE OF RECORD             00220000
+*                                                                       00240000
+*THE INDICATOR BYTE BREAKS DOWN INTO THE FOLLOWING                      00260000
+*                                                                       00280000
+*        BIT 0      INDICATES A 3 BYTE TTR FOLLOWS THE LLI BYTES        00300000
+*        BIT 1      INDICATES THE UNLOADED DATA SET IS A PDS            00320000
+*        BIT 2      INDICATES THE RECORD IS PART OF A MEMBER            00340000
+*        BIT 3      INDICATES THE RECORD IS A NOTE LIST                 00360000
+*        BIT 4      INDICATES THE RECORD IS A DIRECTORY RECORD          00380000
+*        BIT 5      INDICATES THE RECORD IS A DUMMY RECORD              00400000
+*        BIT 6      NOT USED                                            00420000
+*        BIT 7      NOT USED                                            00440000
+*                                                                       00460000
+*IF A SEQUENTIAL DATA SET IS UNLOADED THE PROGRAM WILL UNLOAD UP TO THE 00480000
+*FIRST END OF FILE INDICATOR AND AT THAT POINT, FREE THE CORE THAT IT   00500000
+*NEEDED AND TRANSFER CONTROL TO ANOTHER MOVE/COPY MODULE THAT WILL      00520000
+*CLOSE THE DATA SETS AND LOOK FOR ANOTHER REQUEST.                      00540000
+*                                                                       00560000
+*IN THE CASE OF A PDS, THE PROGRAM GOES TO ROUTINE THAT PASSES IT A     00580000
+*DIRECTORY ENTRY. IT THEN CHECKS FOR THE PRESENCE OF NOTELISTS. IF NOTE 00600000
+*LISTS ARE PRESENT,THEN THEIR TTR'S ARE SAVED AND THE DIRECTORY INFO IS 00620000
+*UNLOADED.THE NEXT THING THAT IS UNLOADED IS THE LOWEST SEQUENCED NOTE  00640000
+*LIST. FOLLOWING THIS WE UNLOAD ALL THE MEMBER RECORDS UP TO THE LAST   00660000
+*UNLOADED NOTELIST. WHEN THIS POINT IS REACHED THEN THE NEXT LOWEST SE- 00680000
+*QUENCED NOTELIST IS UNLOADED. IF NO MORE NOTELISTS EXIST A DUMMY REC-  00700000
+*ORD IS WRITTEN WHICH ENABLES THE LOAD TO PUT OUT THE LAST NOTELIST     00720000
+*AND LOOK FOR THE END OF DATA MARK. WHEN EOD IS REACHED THE PROCESS IS  00740000
+*THEN REPEATED UNTIL NO MORE ENTRIES ARE PASSED FROM THE GET MEMBER     00760000
+*ROUTINE. ON A PDS UNLOAD IF THERE ARE NO NOTELISTS THEN THE WHOLE MEM- 00780000
+*BER IS UNLOADED SEQUENTIALLY.                                          00800000
+*IF USER LABEL PROCESSING WAS REQUESTED, AT END-OF-DATA OR VOLUME     * 00804017
+*SWITCH TIME THIS MODULE WILL GETMAIN IF NECESSARY FOR A LABEL        * 00808017
+*SAVEAREA. THE SAVED LABELS WILL THEN BE PASSED TO IEHMVSSN TO BE     * 00812017
+*OUTPUT DURING DATA SET WRAP-UP.                                      * 00816017
+*                                                                       00820000
+*                                                                       00840000
+*                                                                       00860000
+*                                                                       00880000
+IEHMVSRD CSECT                                                          00900000
+*A032800,033000,037400,038800,041200,044400,05400,074200,076200  A44326 00901022
+*A083600                                                         A44326 00901422
+*A017600                                                         A44360 00902021
+*2050012600-012800,078800                                          UL0H 00903017
+*2050062600-063400,063800-065600,066600                            6810 00911017
+REG0     EQU   0                                                        00920000
+REG1     EQU   1                                                        00940000
+REG2     EQU   2                                                        00960000
+REG3     EQU   3                                                        00980000
+REG4     EQU   4                                                        01000000
+REG5     EQU   5                                                        01020000
+REG6     EQU   6                                                        01040000
+REG7     EQU   7                                                        01060000
+REG8     EQU   8                                                        01080000
+REG9     EQU   9                                                        01100000
+BASE10   EQU   10                                                       01120000
+REG11    EQU   11                                                       01140000
+REG12    EQU   12                                                       01160000
+REG13    EQU   13                                                       01180000
+REG14    EQU   14                                                       01200000
+REG15    EQU   15                                                       01220000
+IEHMVERD SAVE  (14,12),T,ERD-SEPT-10-65                                 01240000
+         LR    BASE10,REG15            LOAD BASE REG FOR PROGRAM   UL0H 01260017
+         USING IEHMVERD,BASE10                                     UL0H 01280017
+         ENTRY IEHMVERD                                                 01300000
+         USING IEHMVV,REG12                                             01320000
+*                                                                       01340000
+         USING MORECORE,REG11                                           01360000
+         USING GETCORE,REG9                                             01380000
+         USING MESSAGES,REG7      BASE FOR ERROR CSECT                  01400000
+         GETMAIN  R,LV=124                                              01420000
+         LR    REG11,REG1     BASE REG FOR MORECORE DSECT          5219 01440016
+         IEHPRE (0,1),TF                                                01460000
+         L     REG1,IEHMVV30      ADDRESS OF FROM DCB                   01480000
+*                                                                  UL0H 01480617
+* ACTIVATE USER INPUT TRAILER LABEL EXIT IF REQUIRED               UL0H 01481217
+*                                                                  UL0H 01481817
+         CLI   UDCBITLE,DEACTIVE        IS ITLE INACTIVE           UL0H 01482417
+         BE    NEXTCODE                 YES,CONTINUE               UL0H 01483017
+         MVC   UDCBITLE(4),XXITLE       NO, SET UP ITLE LIST ADDR  UL0H 01483617
+NEXTCODE DS    0H                                                  UL0H 01484217
+*                                                                  UL0H 01484817
+         L     REG2,16(REG1)  KEYLEN FROM DCB IN HIGH ORDER BYTE   5219 01486016
+         SRL   REG2,24        KEYLEN IN LOW, ZEROES IN HIGN        5219 01492016
+         AH    REG2,62(REG1)  KEY LENGTH + BLOCKSIZE               5219 01498016
+         LA    REG1,74        MAXIMUM DIRECTORY ENTRY              5219 01504016
+         CR    REG2,REG1      IS (KEYLEN + BLKSIZE) > OR = TO      5219 01510016
+         BC    10,HEREYES1              MAX. DIRECTORY ENTRY LEN   5219 01516016
+         LA    REG2,74        NO, USE MAX. DIRECTORY ENTRY LEN     5219 01522016
+HEREYES1 LA    REG2,238(REG2) SIZE OF GETCORE DSECT                5219 01528016
+         LR    REG0,REG2                                                01540000
+*                                                                       01560000
+*                                                                       01580000
+*                                                                       01600000
+*ISSUE A GETMAIN FOR GETCORE DSECT. PART OF DSECT WILL CONTAIN THE 5219 01620016
+*'FROM' PHYSCICAL RCD OR A DIRECTORY ENTRY IN 'INPUT'.             5219 01640016
+*                                                                       01660000
+         GETMAIN R,LV=(0)     GET HOWEVER MUCH IS IN REG0               01680000
+         LR    REG9,REG1      BASE FOR GETCORE DSECT               5219 01700016
+         ST    REG2,HOWMUCH                                             01720000
+         SR    REG2,REG2      CLEAR THIS REGISTER                       01740000
+         STC     REG2,SAMSW       INITIALIZE THIS SWITCH TO ZERO        01760000
+         XC    LLITTR+3(3),LLITTR+3     INIT THIS FIELD TO ZERO  A44360 01770021
+RETURN   L     REG8,IEHMVV30      GET ADDRESS OF FROM DCB               01780000
+         MVC   33(3,REG8),EODAD+1     ADDRESS OF MY EODAD               01800000
+         MVC   57(3,REG8),SYNAD+1                                       01820000
+         MVI   SWITCHES,X'10'          INIT THE SWITCH           A44326 01850022
+CHUCKRET NI    SWITCHES,X'D8'          RESET EXCEPT BITS 0,1,4,5 A44326 01860022
+         LA    REG7,AREALIST    ADDRESS OF WHERE NTELSTS ARE STORED     01880000
+         B     CHARLIE                                                  01900000
+*                                                                       01920000
+*THIS WILL SET A SWITCH TO INDICATE THAT AN ALIAS ENTRY HAS BEEN PASSED 01940000
+*AND THAT NO MEMBERS ARE TO BE PASSED.                                  01960000
+*                                                                       01980000
+SETSW1   OI    SWITCHES,X'20'                                           02000000
+         B     NONTELST                                                 02020000
+SETSW2   OI    SWITCHES,X'10'   NO NOTE LISTS                           02040000
+         B     NONTELST                                                 02060000
+CHARLIE  TM    SWITCHES,X'80'      SWITCH,NOP THE FIRST TIME AROUND     02080000
+         BC    1,JUMP              GO TO JUMP IF NOT FIRST TIME         02100000
+         OI    SWITCHES,X'80'      SET JUMP SWITCH TO BYPASS THIS CODE  02120000
+         SR    REG0,REG0           REG0 MUST BE ZERO FIRST TIME THRU    02140000
+         BAL   REG14,DSORG    GO TO TEST IF IT'S A BSAM DS              02160000
+         B     *+8                 JUMP OVER NEXT TWO INSTRUCTIONS      02180000
+JUMP     LR    REG1,REG9           ADDRESS OF INPUT ENTRY AREA IN REG1  02200000
+         LR    REG0,REG1          ANYTHING BUT ZERO IN REGO             02220000
+         LA    REG15,IEHCWMGN    ADDRESS OF GET MEMBER NAME ROUTINE     02240000
+         BALR  REG14,REG15         GO TO GET NAME RTN AND RETURN IN 14  02260000
+         B     *+4(REG15)          IF REG15 IS ZERO,RETURN IS NORMAL    02280000
+         B     PROCESS             AND WE GO TO PROCESS.                02300000
+         B     WRAPUP              NO MORE NAMES, WRAP UP JOB           02320000
+         B     MSGRTN              PERMANENT I/O ERROR,WRITE OUT MSG    02340000
+*                                                                       02360000
+*THIS ROUTINE WILL EXAMINE THE DIRECTORY ENTRY PASSED TO FOR NOTE       02380000
+*LISTS AND TAKE APPROPRIATE MEASURES TO PASS RECORDS TO BWRITE          02400000
+*                                                                       02420000
+*                                                                       02440000
+PROCESS  MVC   MEMBER(8),5(REG9)   SAVE MEMBER NAME TO PRINT IT LATER   02460000
+         SR    REG1,REG1      CLEAR THIS REGISTER                       02480000
+         SR    REG2,REG2      FOR THIS ROUTINE                          02500000
+         TM    16(REG9),X'80'    IS THIS DIR ENTRY AN ALIAS?            02520000
+         BC    1,SETSW1       YES IT IS AN ALIAS                        02540000
+         NI    SWITCHES,X'DF'   SET ALIAS SWITCH OFF IF IT'S ON         02560000
+PROCESS1 IC    REG1,16(REG9)   ENTER 'C' BYTE OF DIR ENRTY IN REG1      02580000
+         N     REG1,ANDNTLST  AND OUT EVERYTHING EXCEPT BITS 1 AND 2    02600000
+         BC    8,SETSW2  RESULT ZERO, NO NOTELISTS                      02620000
+         NI    SWITCHES,X'EF'          INDIC NOTELISTS PRESENT   A44326 02630022
+         SRL   REG1,5       MOVE NUMBER OF NTELSYS OVER                 02640000
+         STC   REG1,NOTELST   STORE NUMB OF TTRN'S IN DIRECT ENTRY      02660000
+         SLA   REG1,2         MULT BY 4,NUMB OF BYTS PER NTLST ENTRY    02680000
+         BCT   REG1,*+4       SUBTRACT 1 FROM REG1 AND GO TO NSI        02700000
+         EX    REG1,MVNTLIST   MOVE NOTELIST PTRS TO GOTTEN CORE        02720000
+NONTELST MVC   LLITTR+2(1),ZEROS  CLEAR OUT I BYTE                      02740000
+         OI    LLITTR+2,X'C8'   SET IND FOR DIR ENTRY WITH TTR          02760000
+         IC    REG1,16(REG9)   ENTER 'C' BYTE OF DIR ENTRY IN REG1      02780000
+         N     REG1,ANDUSDTA  AND OUT EVERYTHING EXECPT BITS 3 TO 7     02800000
+         SLA   REG1,1         MULTIPLY BY 2, USER DATA IN HALFWORDS     02820000
+         LA    REG1,12(REG0,REG1) ADD 12 MORE FOR NAME AND TTRC         02840000
+         STH   REG1,LLITTR    STORE LGTH IN LL BYTES OF LLITTR          02860000
+         BCT   REG1,*+4  DECREASE REG1 BY ONE                           02880000
+         EX    REG1,MVDIRTRY    MOVE DIRECTORY ENTRY TO INPUT           02900000
+         BAL   REG14,WRITE    SET UP TIME FOR BWRITE                    02920000
+         TM    SWITCHES,X'20'      WAS THIS AN ALIAS ENTRY              02940000
+         BC    1,PRTNAME           YES,PRINT ALIAS OF MEMBER UNLOADED   02960000
+SWTEST   TM    SWITCHES,X'10'  ANY MORE TTRN'S IN THIS DIR ENTRY        02980000
+         BC    1,NOTTRNS           NO,START UNLOADING MEMBERS           03000000
+NEXTTTRN CLC   3(1,REG7),ZEROS   IS THIS A NOTE LIST PTR                03020000
+         BC    8,CKNEXT    NO, SO CHECK NEXT ONE                        03040000
+WRTNEXT  MVC   LLITTR+3(3),0(REG7) LOAD TTR IN INDICATOR                03060000
+         L     REG0,0(REG7)   LOAD TTR IN REG0                          03080000
+         LR    REG1,REG8           LOAD ADDRESS OF DCB IN REG1 FOR POIN 03100000
+         IC    REG0,ZEROS          MAKE N OF TTRN=0 FOR 'POINT'         03120000
+         ST    REG0,LASTLIST   TTR OF LAST NOTE LIST WRITTEN            03140000
+         LA    REG0,LASTLIST                                            03160000
+         POINT (1),(0)             POINT TO NOTE LIST                   03180000
+         LA    REG5,INPUT   FOR READ MACRO                              03200000
+         MVC   LLITTR+2(1),ZEROS  CLEAR INDICATOE BEFORE NEXT READ      03220000
+         LH    REG3,62(REG8)   LOAD BLKSIZE FROM DCB FOR READ           03240000
+         READ  INDECB,SF,(8),(5),(3),MF=E                               03260000
+         BAL   REG14,CHLIOER      TEST FOR I/O ERROR ON LABEL      UL0H 03270017
+         CHECK INDECB                                                   03280000
+         SR    REG3,REG3                                         A44326 03281022
+         IC    REG3,3(REG7)            GET NBR OF PTRS IN NL     A44326 03282022
+         SLL   REG3,2                  MULTIPLY WITH 4           A44326 03283022
+         LA    REG3,4(REG3)            ADD 8 FOR LENGTH AND POINTER     03284022
+         GETMAIN R,LV=(REG3)                                     A44326 03285022
+         NI    SWITCHES,X'EF'          INDIC NOTELIST PRESENT    A44326 03285522
+         ST    REG1,NLAREA             SAVE THE ADDRESS          A44326 03286022
+         MVC   NLAREA(1),3(REG7)       SAVE THE NBR OF POINTERS  A44326 03287022
+         ST    REG3,0(REG1)            SAVE THE SIZE OF THE AREA A44326 03288022
+         BAL   REG14,RECLGTH       COMPUTE LGTH OF RECORD READ          03300000
+         LA    REG4,INPUT              FIND START OF DATA        A44326 03303022
+         SR    REG2,REG2                                         A44326 03306022
+         IC    REG2,16(REG8)           FIND  KEYLENGTH           A44326 03309022
+         AR    REG4,REG2               FIND START OF TTRX'S      A44326 03312022
+         BAL   REG6,MOVETTRX           SAVE THE TTRX'S           A44326 03315022
+         OI    SWITCHES,X'01'          INDIC NOTELIST PROCESSED  A44326 03317022
+         OI    LLITTR+2,X'D0'   NOTELIST POINTER                        03320000
+         BAL   REG14,WRITE         GIVE RECORD TO BWRITE                03340000
+NOTTRNS  L     REG0,12(REG9)    LOAD LAST BYTE OF NAME AND TTR          03360000
+         SLL   REG0,8         SHIFT IT OVER 8 BITS TO ZERO OUT C   5219 03380016
+         IC    REG0,ZEROS          ZERO OUT C OF TTRC                   03400000
+         ST    REG0,HOLDTTR                                             03420000
+         LR    REG1,REG8      PUT ADDRESS OF DCB IN REG1                03440000
+         LA    REG0,HOLDTTR                                             03460000
+         POINT (1),(0)        POINT TO START OF MEMBER                  03480000
+NEXTMEMB LA    REG5,INPUT  ADDRESS OF INPUY AREA FOR READ MACRO         03500000
+         MVC   LLITTR+2(1),ZEROS  CLEAR INDICATOR BYTE FOR NEXT RECORD  03520000
+         LH    REG3,62(REG8)   LOAD BLKSIZE FROM DCB FOR READ           03540000
+         READ  INDECB,SF,(8),(5),(3),MF=E                               03560000
+         BAL   REG14,CHLIOER      TEST FOR I/O ERROR ON LABEL      UL0H 03570017
+         CHECK INDECB                                                   03580000
+         TM    SAMSW,X'10'     TEST TO SEE IF UNLOAD IS A BSAM DS       03600000
+         BC    1,BSAMDS      YES IT IS                                  03620000
+         L     REG1,IEHMVV30      LOAD ADDR OF FROM DCB                 03640000
+         NOTE  (1)            NOTE WHERE(TTR) RECORD WAS READ FROM      03660000
+         ST    REG1,LASTNOTE  STORE NOTED TTR IN HOLD AREA              03680000
+         BAL   REG14,RECLGTH  COMPUTE LENGTH OF RECORD READ             03700000
+         TM    SWITCHES,X'10' DO WE HAVE TO CHECK FOR NOTELISTS         03720000
+         BC    1,SETIND       NO,SO GO AND SET INDICATOR BYTE           03740000
+*                                                                A44326 03741022
+* CHECK FOR TTRX POINTERS IN THE NOTELIST                        A44326 03742022
+NLTTR    DS    0H                                                A44326 03752022
+         SR    REG14,REG14                                       A44326 03754022
+         IC    REG14,NLAREA            GET NBR OF TTRX'S LEFT    A44326 03756022
+         LTR   REG14,REG14             ALL TTRX'S CHECKED        A44326 03756422
+         BZ    NLTTRF                  YES CONTINUE              A44326 03756822
+         LR    REG2,REG14              SAVE IT                   A44326 03758022
+         L     REG3,NLAREA             GET ADDR NL AREA          A44326 03758422
+         LA    REG3,4(REG3)            JUMP PAST LENGTH FIELD    A44326 03758822
+NLTTRA   DS    0H                                                A44326 03759222
+         TM    0(REG3),X'80'           TTRX CHECKED              A44326 03759622
+         BO    NLTTRD                  YES CHECK NEXT TTRX       A44326 03759722
+         CLI   2(REG3),X'00'           NO  IS TTRX ZERO          A44326 03759822
+         BE    NLTTRB                  YES FLAG THIS ONE         A44326 03759922
+         CLC   LASTNOTE(3),0(REG3)     TTRX FOUND                A44326 03766622
+         BNE   NLTTRC                  NO GO TO NEXT ONE         A44326 03768622
+NLTTRB   DS    0H                                                A44326 03770622
+         OI    0(REG3),X'80'           FLAG THIS TTRX            A44326 03772622
+         BCT   REG2,NLTTRC             GO TO NEXT ONE IF ANY     A44326 03773022
+NLTTRE   DS    0H                                                A44326 03773122
+         STC   REG2,NLAREA             SAVE NEW TTRX COUNT       A44326 03773222
+         B     NLTTRF                  CONTINUE                  A44326 03779922
+NLTTRC   DS    0H                                                A44326 03781922
+         BCT   REG14,NLTTRD            GO TO NEXT TTRX           A44326 03783922
+         B     NLTTRE                  IF ANY                    A44326 03785922
+NLTTRD   DS    0H                                                A44326 03786322
+         LA    REG3,4(REG3)            POINT TO NEXT TTRX        A44326 03786422
+         B     NLTTRA                  AND GO TO CHECK IT        A44326 03786522
+NLTTRF   DS    0H                                                A44326 03793222
+         CLC   LASTNOTE(4),LASTLIST IS THIS THE NOTELIST WE POINTED TO  03799922
+         BC    8,NXTLIST      YES,GO AND GET NEXT NOTELIST IF ANY       03806622
+SETIND   MVC   LLITTR+3(3),LASTNOTE   STORE LAST NOTED TTR IN INDICATOR 03813322
+         OI    LLITTR+2,X'E0'   SIGNIFIES A MEMBER BEING PASSED         03820000
+         BAL   REG14,WRITE    GO TO BWRITE                              03840000
+         B     NEXTMEMB       GO AND GET NEXT MEMBER                    03860000
+*                                                                  UL0H 03861017
+* THIS ROUTINE CHECKS THE I/O ERROR FLAG IEHMVV74+4  THAT MAY BE   UL0H 03862017
+* SET IN THE USER TRAILER LABEL EXIT ROUTINE                       UL0H 03863017
+*                                                                  UL0H 03864017
+CHLIOER  TM    IEHMVV74+4,X'FF'   TEST I/O ERROR FLAG              UL0H 03865017
+         BCR   12,REG14           NOT ON - RETURN                  UL0H 03866017
+         BAL   REG6,CLEAR         BLANK OUT PRINT BUFFER           UL0H 03867017
+         L     REG7,MSGCONST      SET UP BASE REG FOR MSG          UL0H 03868017
+         MVC PRINTOUT+1(89),M129  MOVE ERROR MSG TO PRINT BUFFER   UL0H 03869017
+         BAL   REG6,GOTOMSGW      GO TO MSG WRITER                 UL0H 03870017
+         BR    REG14              RETURN                           UL0H 03871017
+*                                                                A44326 03880022
+* THIS ROUTINE MOVES THE NOTELIST TO A SAVE AREA                 A44326 03880922
+* AND ZEROES THE FIRST BIT OF EACH TTRX                          A52050 03881422
+*                                                                A44326 03881822
+MOVETTRX DS    0H                                                A44326 03882722
+         IC    REG2,3(REG7)                                      A44326 03883622
+         SLL   REG2,2                  FIND LENGTH OF TTRX FIELD A44326 03884522
+         LA    REG3,256                                          A44326 03885422
+MOVEON   DS    0H                                                A44326 03886322
+         CR    REG2,REG3               ONE MOVE WILL DO          A44326 03887222
+         BNH   PREPMOVE                YES MOVE AND RETURN       A44326 03888122
+         BCTR  REG3,REG0               NO                        A44326 03889022
+         EX    REG3,MVTTRX             MOVE 256 BYTES            A44326 03889922
+         LA    REG3,1(REG3)                                      A44326 03890822
+         SR    REG2,REG3               SUBTRACKT COUNTER         A44326 03891722
+         AR    REG1,REG3               UPDATE OUTPUT             A44326 03892622
+         AR    REG4,REG3               AND INPUT ADDRESSES       A44326 03893522
+         B     MOVEON                  GO TO MOVE AGAIN          A44326 03894422
+PREPMOVE DS    0H                                                A44326 03895322
+         BCTR  REG2,REG0                                         A44326 03896222
+         EX    REG2,MVTTRX             MOVE LAST BYTES           A44326 03897122
+         IC    REG2,3(REG7)            NBR OF TTRX'S             A52050 03898022
+         L     REG3,NLAREA             START OF NL               A52050 03898522
+MAKEZERO DS    0H                                                A52050 03899022
+         NI    0(REG3),X'7F'           ZERO FIRST BIT            A52050 03899522
+         LA    REG3,4(REG3)            POINT TO NEXT ONE         A52050 03899622
+         BCT   REG2,MAKEZERO           IF ANY                    A52050 03899722
+         BR    REG6                    RETURN                    A52050 03899822
+*ROUTINE TO CHECK IF MORE NOTELIST ARE PRESENT IN THE DIRECTORY RECORD  03900000
+*AND IF SO POSITION THE POINTER TO ENABLE US TO GET BACK TO THE CORRECT 03920000
+*SPOT IN THE MEMBER AFTER GOING OUT TO GET THE NOTELIST.                03940000
+*                                                                       03960000
+CKNEXT   SR    REG2,REG2                                                03980000
+         IC    REG2,NOTELST   NUMBER OF NOTELISTS TO BE PROCESSED PLUS1 04000000
+         BCT   REG2,NEXT      DO WE HAVE ANY MORE, IF YES GO TO NEXT    04020000
+         TM    SWITCHES,X'01'          NOTELIST SAVED            A44326 04034022
+         BO    HOLE                    YES WRITE A HOLE RECORD   A44326 04038022
+         OI    SWITCHES,X'10'          NO MORE NOTELISTS         A44326 04048022
+NEXT     LA    REG7,4(REG0,REG7)  POINT TO NEXT TTRN                    04060000
+         STC   REG2,NOTELST  SET NOTELIST COUNT TO ONE MINUS ORIG.      04080000
+         B     SWTEST  LET'S SEE IF ANY MORE TTRN'S                     04100000
+NXTLIST  SR    REG2,REG2      CLEAR IT OUT                              04120000
+         IC    REG2,NLAREA                                       A44326 04121022
+         LTR   REG2,REG2               ALL TTRX'S CHECKED        A44326 04122022
+         BZ    CALLFRMN                YES FREE THE NOTELIST     A44326 04123022
+         BAL   REG6,CLEAR              NO PREPARE WARNING        A44326 04124022
+         LR    REG2,REG7               SAVE TTRN POINTER         A44326 04125022
+         L     REG7,MSGCONST           BASE THE MSG CSECT        A44326 04126022
+         MVC   PRINTOUT+1(MEND-M329),M329                        A44326 04127022
+         LR    REG7,REG2               RESTORE THE TTRN PTR      A44326 04128022
+         BAL   REG6,GOTOMSGW           PRINT THE MSG             A44326 04129022
+CALLFRMN BAL   REG6,FREENL             GO TO FREEMAIN  NL        A44326 04130022
+         SR    REG2,REG2                                         A44326 04131022
+         IC    REG2,NOTELST                                             04140000
+REDUCE   BCT   REG2,*+8       ANY MORE TTRW ENTRIES                     04160000
+         B     HOLE           NO MORE, WRITE HOLE RECORD                04180000
+         STC   REG2,NOTELST  SET NOTELIST COUNT TO ONE MINUS ORIG.      04200000
+         LA    REG7,4(REG0,REG7)  INCREMENT TO NEXT TTRN                04220000
+         B     SETUPTTR       YES,FIX TTR AND GO                        04240000
+*                                                                       04260000
+*A HOLE RECORD IS WRITTEN IN PLACE OF THE LAST NOTELIST FOUND IN THE    04280000
+*DIRECTORY ENTRY. IT WILL BE 20 BYTES LONG WITH THE APPROPRIATE INDICA- 04300000
+*TOR BYTES SET.                                                         04320000
+*                                                                       04340000
+HOLE     OI    LLITTR+2,X'C4' THIS SETS INDICATOR FOR HOLE RECORD       04360000
+         MVC   LLITTR(2),CONS20    NUMBER OF BYTES TRANSFERED           04380000
+         BAL   REG14,WRITE         WRITE THIS RECORD OUT                04400000
+         OI    SWITCHES,X'10'      NO MORE TTRN'S FOR THIS MEMBER       04420000
+         NI    SWITCHES,X'FE'          CLEAR NL SWITCH           A44326 04430022
+         B     NEXTMEMB            GET NEXT RECORD OF MEMBER            04440000
+*  THIS ROUTINE FREEMAINS THE SAVED NOTELIST                     A44326 04442022
+FREENL   DS    0H                                                A44326 04444022
+         L     REG1,NLAREA             GET ADDR OF AREA          A44326 04446022
+         LA    REG1,0(REG1)                                      A44326 04448022
+         L     REG0,0(REG1)            GET THE LENGTH            A44326 04450022
+         FREEMAIN R,LV=(REG0),A=(REG1)                           A44326 04452022
+         BR    REG6                    RETURN                    A44326 04454022
+*                                                                       04460000
+*THIS ROUTINE WILL SET UP THE TTR OF THE NEXT RECORD OF THE MEMBER TO   04480000
+*BE READ AFTER A POINT AND READ IS GIVEN TO GET A NEW NOTELIST RECORD.  04500000
+*THIS MECHANISM ENABLES US TO USE THE SAME ROUTINE FOR EVERY SITUATION  04520000
+*AND WE DON'T HAVE TO GIVE A POINT AND A DUMMY READ.                    04540000
+*                                                                       04560000
+SETUPTTR IC    REG2,LASTNOTE+2     THE R PART OF THE TTR OF THE LST NTE 04580000
+         LA    REG2,1(REG0,REG2)  UP THE R BY ONE                       04600000
+         STC   REG2,LASTNOTE+2     RETURN THE UPDATED R TO HOLD AREA    04620000
+         MVC   13(3,REG9),LASTNOTE  MOVE THIS TTR TO DIRECT TTR         04640000
+         B     NEXTTTRN                                                 04660000
+*                                                                       04680000
+*ROUTINE TO COMPUTE LENGTH OF RECORD JUS READ                           04700000
+*                                                                       04720000
+RECLGTH  SR    REG4,REG4           CLEAR REG4                           04740000
+         L     REG2,INDECB+16    ADDRESS OF IOB                         04760000
+         LH    REG3,14(REG2)       LOAD RESIDUAL COUNT FROM CSW IN REG3 04780000
+         IC    REG4,16(REG8)       LOAD KEYLENGTH,MIGHT BE 0, IN REG4   04800000
+         AH    REG4,62(REG8)       ADD BLOCKSIZE TO KEY LENGTH          04820000
+         SR    REG4,REG3           HOW MUCH KEY AND DATA TRANSMITTED    04840000
+         STH   REG4,LLITTR         STORE IN INDICATOR BYTES LL          04860000
+         LR    REG3,REG14                                               04880000
+         LR    REG14,REG3                                               04900000
+         BR    REG14               GO BACK TO MAIN LINE                 04920000
+*                                                                       04940000
+*THIS ROUTINE WILL SET UP THE APPROPRIATE REGISTERS FOR THE BWRITE RTN  04960000
+*                                                                       04980000
+*                                                                       05000000
+WRITE    TM    SWITCHES,X'40' IS THE FIRST TIME SWITCH ON               05020000
+         BC    1,OTHRTIMS     YES IT IS, BYPASS SOME INSTRUCTIONS       05040000
+         OI    SWITCHES,X'40' SET THE SWITCH FOR EVERY OTHER TIME THRU  05060000
+OTHRTIMS SR    REG0,REG0      OTHER CALL INDICATOR REG0=0               05080000
+         LA    REG1,LLITTR   ADDRESS OF INPUT AREA FOR BWRIET           05100000
+         L     REG15,BWRITE   BWRITE CONTAINS ADDRESS OF IEHMVERM       05120000
+         LR    REG5,REG14                                               05140000
+         BALR  REG14,REG15                                              05160000
+         LR    REG14,REG5                                               05180000
+         MVC   LLITTR+2(1),ZEROS  SET UP FOR NEXT RECORD                05200000
+         B     *+4(REG15)     INTERROGATING THE RETURN CODES IN REG15   05220000
+         B     0(REG14)       GOOD RETURN                               05240000
+         B     MSGRTN1        PERMANENT I/O ERROR                       05260000
+*                                                                       05280000
+* THIS ROUTINE WILL TAKE CARE OF RECLGTHS ON BSAM SET THE IBDICATOR     05300000
+*  AND WRITE OUT THE RECORD                                             05320000
+*                                                                       05340000
+DSORG    TM    26(REG8),X'02'    IS THIS DS A PDS                       05360000
+         BCR   1,REG14     IF ONES THEN IT IS A PDS                     05380000
+         OI    SAMSW,X'10'   THIS SAYS THAT THE UNLOAD IS A BSAM DS     05400000
+         OI    SWITCHES,X'10'     INDIC NO NOTELIST              A44326 05410022
+         B     NEXTMEMB                                                 05420000
+BSAMDS   BAL   REG14,RECLGTH     GO TO COMPUTE LENGTH OF RECORD READ    05440000
+         OI    LLITTR+2,X'82'      INDICATOR FOR A BSAM DS              05460000
+         BAL   REG14,WRITE    GO AND WRITE THIS RECORD                  05480000
+         MVI   LLITTR+2,X'00'    CLEAR INDICATOR BYTE FOR A BSAM DS     05500000
+         B     NEXTMEMB                                                 05520000
+*                                                                       05540000
+*THIS ROUTINE WILL LOAD THE MSG NUMBER IN A REGISTER AND GO TO MSGWRTER 05560000
+*                                                                       05580000
+MSGRTN   BAL   REG6,CLEAR    CLEAR OUT PRINT OUT AREA                   05600000
+         L     REG7,MSGCONST     SET UP BASE REG FOR MSG CSECT          05620000
+         MVC   PRINTOUT+1(47),M126   ERROR MSG TO PRINT BUFFER          05640000
+         BAL   REG6,GOTOMSGW             GO TO MESSAGE WRITER           05660000
+MSGWERR  OI    IEHMVV20+2,X'40'    SET MID-ABORT BIT                    05680000
+         B     SKIPJR                                                   05700000
+MSGRTN1  BAL   REG6,CLEAR    CLEAR OUT PRINT BUFFER                     05720000
+         L     REG7,MSGCONST     SET UP BASE REG FOR MSG CSECT          05740000
+         MVC   PRINTOUT+1(49),M127   ERROR MSG TO PRINT BUFFER          05760000
+         L     REG1,IEHMVV21+4   ADDRESS OF DSNAME                      05780000
+         MVC   PRINTOUT+50(44),0(REG1)   MOVE DSNAME TO ERROR MSG       05800000
+         BAL   REG6,GOTOMSGW    GO TO MSG WRITER                        05820000
+         B     MSGWERR                                                  05840000
+SINAD    BAL   REG6,CLEAR   CLEAR OUT PRINT BUFFER                      05860000
+         L     REG7,MSGCONST   SET UP BASE FOR MSG CSECT                05880000
+         MVC   PRINTOUT+1(48),M189    ERROR MSG TO PRINT BUFFER         05900000
+         L     REG1,IEHMVV21     ADDRESS OF DSNAME                      05920000
+         MVC   PRINTOUT+49(44),0(REG1)    MOVE DSNAME TO ERROR MSG      05940000
+         BAL   REG6,GOTOMSGW    GO TO MSG WRITER                        05960000
+         B     MSGWERR                                                  05980000
+IEHCWMGN TM    SWITCHES,X'08'     FIRST TIME THRU GET MEMBER            06000000
+         BC    1,SECOND       NO GO TO SECOND                           06020000
+         OI    SWITCHES,X'08'     SET FIRST TIME THRU SWITCH            06040000
+         SR    REG0,REG0      REQUIREMENT FIRST TIME THRU               06060000
+         B     SECOND+2                                                 06080000
+SECOND   LR    REG0,BASE10      LOAD IT POSITIVE                        06100000
+         STM   REG2,REG5,IEHMVV00    SAVE REGISTERS                     06120000
+         LR    REG5,REG14          SAVE RETURN                          06140000
+         IC    REG4,SWITCHES       SAVE SW                              06160000
+         SLL   REG4,8                                                   06180000
+         IC    REG4,SAMSW                                               06200000
+         LA    REG3,IEHMVV00+16                                         06220000
+         LR    REG2,REG0           LOAD FIRST TIME IND                  06240000
+         LINK   EP=IEHMVESR        GO TO GET MEMBER                     06360000
+         STC   REG4,SAMSW                                               06580000
+         SRL   REG4,8                                                   06600000
+         STC   REG4,SWITCHES       REINSTATE SW                         06620000
+         LR    REG14,REG5          RESTORE RETURN                       06640000
+         MVC   0(87,REG9),IEHMVV00+16                                   06680000
+         LM    REG2,REG5,IEHMVV00  RESET REG                            06700000
+         BR    REG14                                                    06720000
+*                                                                       06740000
+*ROUTINE THAT WILL PRINT THE NAME OF THE MEMBER THAT WAS UNLOADED       06760000
+*                                                                       06780000
+PRTNAME  TM    SAMSW,X'10'    IS THIS A BSAM DS                         06800000
+         BC    1,WRAPUP   IF YES GO TO WRAPUP                           06820000
+         BAL   REG6,CLEAR      CLEAR PRINT BUFFER                       06840000
+         L     REG7,MSGCONST     SET UP BASE REG FOR MSG CSECT          06860000
+         MVC   M128+6(8),MEMBER    MOVE MEMBER NAME TO LOG MSG          06880000
+         MVC   PRINTOUT+1(32),M128     MOVE ERROR MSG TO PRONT BUFFER   06900000
+         BAL   REG6,GOTOMSGW             GO TO MESSAGE WRITER           06920000
+         NI    44(REG8),X'00'   SO I CAN READ AGAIN                     06940000
+         B     CHUCKRET   RETURN TO SET SWITCHES FOR NEXT MEMBER        06960000
+*                                                                       06980000
+* ROUTINE TO GO TO MESSAGE WRITER AND INTEEROGATE ITS RETURN CODE       07000000
+*                                                                       07020000
+GOTOMSGW ST    REG3,IEHMVV00+128       SAVE REG 3                       07040000
+         LA    REG3,PRINTOUT           LOAD ADDR OF PRINT AREA          07060000
+         LINK EP=IEHMVESU              GO TO MSG WTR                    07080000
+         L     REG3,IEHMVV00+128        RESTORE REG 3                   07100000
+         B     *+4(REG15)     INTERROGATE RETURN CODE                   07120000
+         BR    REG6          RETURN CODE OF ZERO EVERYTHING OK          07140000
+         B     MSGWERR         PERM I/O ERROR ON SYSPRINT               07160000
+*                                                                       07180000
+*CLEAR RTN TO CLEAR PRINT BUFFER BEFORE MOVUNG MSG IN                   07200000
+*                                                                       07220000
+CLEAR    MVI   PRINTOUT,X'40' MOVE A BLANK IN FIRST POS OF PRNT BUF     07240000
+         MVC   PRINTOUT+1(120),PRINTOUT  CLEAR OUT THE WHOLE BUFFER     07260000
+         BR    REG6                                                     07280000
+*                                                                       07300000
+*THIS ROUTINE WILL WRAPUP THE PROGRAM. THIS WILL TELL BWRITE WE ARE ALL 07320000
+*DONE AND WILL RETURN CONTROL TO STEM.                                  07340000
+*                                                                       07360000
+WRAPUP   LPR   REG0,BASE10  LAST TIME INDICATOR TO BWRITE               07380000
+         BAL   REG14,OTHRTIMS+2 GO TO BWRITE FOR LAST TIME              07400000
+SKIPJR   TM    SWITCHES,X'10'          NOTELIST IN CORE          A44326 07420022
+         BO    SKIPFRM                 NO  SKIP FREEMAIN         A44326 07425022
+         BAL   REG6,FREENL             YES FREE THE NOTELIST     A44326 07430022
+SKIPFRM  LR    REG1,REG11              ADDR OF MORECORE          A44326 07435022
+         FREEMAIN  R,LV=124,A=(1)                                       07440000
+         LR    REG1,REG9     ADDRESS OF WHERE TO FREE CORE FROM         07460000
+         L     REG0,HOWMUCH     # OF BYTES TO FREE                      07480000
+         FREEMAIN R,LV=(0),A=(1)   FREE CORE MAN                        07500000
+         IEHPOST (0,1),T                                                07520000
+         LA    REG2,WRAPJR    SET UP XCTL                               07540000
+         L     REG14,12(REG0,REG13)                                     07560000
+         XCTL  (2,12),EPLOC=(2)                                         07580000
+MVNTLIST MVC   AREALIST(1),17(REG9)   MOVE NOTELISTS                    07600000
+MVDIRTRY MVC   INPUT(1),5(REG9)   MOVE DIRECTORY ENTRY                  07620000
+MVTTRX   MVC   4(1,REG1),0(REG4)       MOVE TTRX'S FROM NOTELIST A44326 07630022
+ZEROS    DC    F'0'                                                     07640000
+NUMB     DC    X'00'                                                    07660000
+CONS4    DC    F'4'                                                     07680000
+ANDNTLST DC    X'00000060'      USED TO GET NUMBER OF TTRN'S            07700000
+ANDUSDTA DC    X'0000001F'      USED TO GET AMOUNT OF USER DATA         07720000
+WRAPJR   DS    0D                                                       07740000
+         DC    C'IEHMVESN'     ENTRY POINT IN WRAPUP                    07760000
+CONS20   DC    H'20'      PLACED IN LL OF LLITTR FOR HOLE REC.          07780000
+BWRITE   DC    A(IEHMVERM)    ADDRESS OF BWRITE MODULE                  07800000
+EODAD    DC    A(PRTNAME)    FOR EOD IN DCB                             07820000
+SYNAD    DC    A(SINAD)     FOR SINAD IN DCB                            07840000
+MSGCONST DC    A(MESSAGES)     ADDRESS OF ERROR MSG CSECT               07860000
+         EXTRN IEHMVERM                                                 07860617
+XXITLE   DC    X'00'                   INPUT TRAILER LABEL         UL0H 07861217
+         DC    AL3(ITLR)                    ROUTINE EXIT           UL0H 07861817
+*                                                                  UL0H 07862417
+*     USER     INPUT     TRAILER     LABEL     EXIT     ROUTINE    UL0H 07863017
+*                                                                  UL0H 07863617
+ITLR     DS    0H                                                  UL0H 07864217
+OFFSET1  EQU   ITLR-IEHMVERD                                       UL0H 07864817
+         LA    REG4,OFFSET1            SET UP                      UL0H 07865417
+         SR    REG15,REG4              ADDRESSABILITY              UL0H 07866017
+         LR    BASE10,REG15            FOR EXIT ROUTINE            UL0H 07866617
+         L     REG4,0(0,REG1)           GET ADDR OF LABEL READ     UL0H 07867217
+*                            FOR LATER MOVE TO USER                UL0H 07867817
+         LTR   REG4,REG4                ARE USER LABELS PRESENT    UL0H 07868417
+         BNE   IOERR                    YES. CHECK IF OK           UL0H 07869017
+NOLABEL  DS    0H                                                  UL0H 07869617
+         SR    REG15,REG15              NO, RETURN CODE 0 TO EOV   UL0H 07870217
+*                                         TO IGNORE ADDITIONAL LAB UL0H 07870817
+         BR    REG14                    RETURN TO EOV              UL0H 07871417
+*                                                                  UL0H 07872017
+IOERR    DS    0H                                                  UL0H 07872617
+         CLI   8(REG1),X'80'            PERM ERROR FROM PARAM LIST UL0H 07873217
+         BNE   TRKAVAIL                 NO. CHECK FOR TRACK AVAIL  UL0H 07873817
+LABERR   DS    0H                                                  UL0H 07874417
+         OI    IEHMVV74+4,X'FF'   SET I/O ERROR FLAG               UL0H 07875017
+         BR    REG14                    RETURN TO EOV OPERATION    UL0H 07875617
+TRKAVAIL DS    0H                                                  UL0H 07876217
+         CLI   IEHMVV72+10,X'FF'        DA+NLT FLAG ON             UL0H 07876817
+*                            INDICATES NO U.L. TRK ALLOCATED       UL0H 07877417
+         BNE   CORAVAIL                 NO PROCESS LABELS          UL0H 07878017
+*  OUTPUT MESSAGE - NO USER LABELS MOVE/COPIED.  NO LABEL TRACK.   UL0H 07878617
+*                                                                  UL0H 07879217
+         MVI   IEHMVV72+14,X'FF'        TELL CLOSE TO OUTPUT MSG   UL0H 07879817
+         MVI   UDCBITLE,X'00'           DEACTIVATE LABEL EXIT      UL0H 07880417
+         MVI   UDCBOTLE,X'00'           DEACTIVATE LABEL EXIT      UL0H 07881017
+         B     NOLABEL                 GO RETURN CODE=ZERO TO EOV  UL0H 07881617
+*                                                                  UL0H 07882217
+CORAVAIL DS    0H                                                  UL0H 07882817
+         CLC   IEHMVV72(4),ALLZEROS     CORE OBTAINED FOR LABELS   UL0H 07883417
+         BNE   INITIAL                  YES, INITIALIZE POINTERS   UL0H 07884017
+         GETMAIN R,LV=640              GET CORE FOR LABELS         UL0H 07884617
+         ST    REG1,IEHMVV72           SAVE POINTER TO GOTTEN CORE UL0H 07885217
+INITIAL  DS    0H                                                  UL0H 07885817
+         CLC   0(4,REG4),UTL1DEF        IS THIS 1ST LABEL IN SET   UL0H 07886417
+         BNE   SAVLABEL                NO, GO AROUND 1ST LBL SETUP UL0H 07887017
+         MVC   IEHMVV72+4(4),IEHMVV72   SET POINTER TO LABEL SAVLOCUL0H 07887617
+         MVI   IEHMVV72+12,X'00'        CLEAR LABEL COUNTER        UL0H 07888217
+*                                                                  UL0H 07888817
+SAVLABEL DS    0H                                                  UL0H 07889417
+         L     REG6,IEHMVV72+4          GET ADDRESS OF CURRENT     UL0H 07890017
+*                                         LABEL SAVEAREA           UL0H 07890617
+         MVC   0(80,REG6),0(REG4)       SAVE LABEL IN GOTTEN CORE  UL0H 07891217
+         LA    REG6,80(REG0,REG6)       UPDATE POINTER TO NEXT LO- UL0H 07891817
+         ST    REG6,IEHMVV72+4            CATION IN LABEL SAVEAREA UL0H 07892417
+         SR    REG4,REG4                 UPDATE                    UL0H 07893017
+         IC    REG4,IEHMVV72+12           LABEL                    UL0H 07893617
+         LA    REG4,1(REG4)                COUNTER                 UL0H 07894217
+         STC   REG4,IEHMVV72+12             BY ONE                 UL0H 07894817
+         LA    REG15,4                  RETURN CODE OF 4 TO EOV    UL0H 07895417
+*                                         TO GET ADDITIONAL LABELS UL0H 07896017
+         BR    REG14                    RETURN TO EOV              UL0H 07896617
+*                                                                  UL0H 07897217
+ALLZEROS DC    1F'0'                                               UL0H 07897817
+UTL1DEF  DC    CL4'UTL1'                                           UL0H 07898417
+DEACTIVE EQU   X'00'                                               UL0H 07899017
+MESSAGES CSECT                                                          07900000
+M126     DC    CL8'IEH372I '                                            07920000
+         DC    CL32'I/O ERROR ENCOUNTERED IN WORK DA'                   07940000
+         DC    CL7'TA SET.'                                             07960000
+M127     DC    CL8'IEH326I '                                            07980000
+         DC    CL32'I/O ERROR ENCOUNTERED IN OUTPUT '                   08000000
+         DC    CL9'DATA SET '                                           08020000
+M128     DC    CL32'MEMBR          HAS BEEN UNLOADED'                   08040000
+M129     DC    CL29'PERM I/O ERROR WHILE READING '                 UL0H 08045017
+         DC    CL30'USER INPUT TRAILER LABELS. NO '                UL0H 08050017
+         DC    CL30'MORE LABELS WILL BE PROCESSED.'                UL0H 08055017
+M189     DC    CL8'IEH389I '                                            08060000
+         DC    CL32'I/O ERROR ENCOUNTERED IN INPUT D'                   08080000
+         DC    CL8'ATA SET '                                            08100000
+M329     DC    CL8'IEH329I'                                      A44326 08105022
+         DC    C'A TTR IN A NOTELIST CANNOT BE UPDATED'          A44326 08110022
+MEND     DS    0C                                                A44326 08115022
+*                                                                       08120000
+*THIS IS THE WAY THE MOVE/COPY COMMUNICATION TABLE WILL LOOK AS FAR AS  08140000
+*THE UNLOAD PDS IS CONCERNED.                                           08160000
+*                                                                       08180000
+*                                                                       08200000
+MORECORE DSECT                                                          08220000
+SWITCHES DS    CL1                 USED FOR SWITCHES IN THE PROGRAM     08240000
+INDECB   DS    6F     WHERE INPUT DECB IS TO BE LODGED                  08260000
+NOTELST  DS    FL1     NUMBER OF NOTELISTS OR TTRN'S                    08280000
+LASTNOTE DS    F       TTR OF LAST RECORD READ                          08300000
+LASTLIST DS    F     TTR OF LAST NOTE LIST                              08320000
+AREALIST DS    3F      WHERE TTRN'S ARE TO BE LODGED                    08340000
+HOLDTTR  DS    F                                                        08360000
+NLAREA   DS    F                       ADDR OF TTRX PTR IN NL    A44326 08370022
+GETCORE  DSECT                                                          08380000
+         DS    CL88     WHERE GET MEMBER PUTS DIR ENTRY                 08400000
+TTRNPTR  DS    F    CONTENTS OF REG13 POINTING TO NOTELISTS             08420000
+HOWMUCH  DS    1F                                                       08440000
+SAMSW    DS    FL1    BSAM SWITCH                                       08460000
+PRINTOUT DS    31F         MSG WRITER BUFFER                            08480000
+MEMBER   DS    2F                                                       08500000
+LLITTR   DS    CL6                 USED AS AN INDICATOR TO BWRITE       08520000
+INPUT    DS    1H                                                       08540000
+         IEHMVV                                                         08560000
+         ORG   IEHMVV70                                            UL0H 08566017
+         IEHDCBXL                                                  UL0H 08572017
+         END                                                            08580000

@@ -1,0 +1,2296 @@
+SMGR     TITLE 'IECVSMGR - IOS STORAGE MANAGER'                         00050040
+IECVSMGR CSECT                                                          00200040
+         ENTRY IECVCPRM                                                 00205040
+         ENTRY IECVSMFR                                                 00210040
+         ENTRY IECVSHDR                                                 00215040
+         ENTRY IECVSEVR                                                 00220040
+         ENTRY IECVSCOM                                                 00225040
+         ENTRY IECVBCOM                                                 00230040
+         ENTRY HEAD160                                                  00235040
+         ENTRY IECVSCNT                                                 00242040
+*                                                                       00250021
+***********************************************************             00300021
+*                                                                       00350021
+* MODULE NAME = IECVSMGR                                                00370040
+*                                                                       00400040
+* DESCRIPTIVE-NAME - IOS STORAGE MANAGER                                00407040
+*                                                                       00414040
+* COPYRIGHT - NONE                                                      00421040
+*                                                                       00428040
+* STATUS - CHANGE LEVEL  *** REWRITE VS2PJ/3.7- SU5 ***        @Z40FPLG 00435040
+*        ** THIS MODULE IS REWRITTEN FOR PERFORMANCE &         @Z40FPLG 00438040
+*           RELIABILITY **                                     @Z40FPLG 00441040
+*                                                                       00450021
+* FUNCTION - THE FUNCTION OF THIS MODULE IS TWOFOLD.                    00500040
+*            FIRST THE MODULE MANAGES AND SUPPLIES STORAGE              00700040
+*            WHICH IOS COMPONENTS USE IN PROCESSING.                    00750040
+*            SECOND THE MODULE INITIALIZES ITS OWN                      00800040
+*            STORAGE POOLS AT SYSTEM IPL TIME BY MEANS                  00850040
+*            OF A NIP0 INTERFACE.                                       00900040
+*                                                                       01000021
+*      1) STORAGE MANAGEMENT IS SUPPLIED TO IOS TO                      01020040
+*         MANAGE POOLS OF THREE DIFFERENT BLOCK SIZES                   01050040
+*         (12, 40, AND 160 BYTES). THESE BLOCKS ARE                     01100040
+*         USED BY VARIOUS IOS COMPONENTS IN PERFORMING                  01150040
+*         THE I/O FUNCTION. INTERFACES ARE SUPPLIED TO                  01200040
+*         BOTH ACQUIRE AND FREE BLOCKS.                                 01250040
+*                                                                       01350021
+*      2) STORAGE PRIMING IS SUPPLIED TO ALLOW THE                      01370040
+*         PRIMING OF THE STORAGE MANAGEMENT BUFFERS.                    01400040
+*         THIS FUNCTION IS SUPPLIED TO INSURE STORAGE                   01450040
+*         POOLS ARE PRIMED BEFORE IOS ATTEMPTS TO USE                   01500040
+*         THE STORAGE MANAGER.                                          01550040
+*                                                                       01650021
+* NOTES = NONE                                                          01670040
+*                                                                       01700040
+*    DEPENDENCIES = IECIOSCN/IECIOSAM MUST TURN ON IOQALOC BIT @Z40FPLG 01750040
+*                   AFTER GETTING 12 BYTE BLOCK & LEAVE IT ON  @Z40FPLG 01760040
+*                   BEFORE FREEING IT                          @Z40FPLG 01770040
+*                                                                       01800040
+*    RESTRICTIONS = NONE                                                01850040
+*                                                                       01900040
+*    REGISTER CONVENTIONS = SEE EQUATES                                 01950040
+*                                                                       01958040
+*    PATCH LABEL = IOSPATCH - SMGR USES IOS PATCH AREA                  01966040
+*                                                                       01974040
+* MODULE TYPE = I/O CONTROL                                             01982040
+*                                                                       02000040
+*    PROCESSER = ASSEMBLER XF                                           02008040
+*                                                                       02016040
+*    MODULE SIZE = 4888 DECIMAL BYTES                                   02024040
+*                                                                       02032040
+*    ATTRIBUTES = SUPERVISOR STATE, KEY 0, RESIDENT, DAT ON             02050040
+*                                                                       02060040
+* ENTRY POINTS = IECVSMGR - NORMAL PROCESSING                           02100040
+*              FROM IOS COMPONENTS REQUESTING OR FREEING STORAGE        02250021
+*              WHERE REGISTER 15 CONTAINS THE ADDRESS OF                02300021
+*              IECVSMGR AND ENTRY IS TO:                                02350021
+*                                                                       02400021
+*              IECVSMGR+0  - GETBLOCK FOR 160 BYTE BLOCK                02420040
+*              IECVSMGR+4  - FREEBLOCK FOR 160 BYTE BLOCK               02450040
+*              IECVSMGR+8  - PURGE/FREE (RECOVER IOS RESOURCES)         02550021
+*              IECVSMGR+12 - GETBLOCK 12 BYTE BLOCK                     02600021
+*              IECVSMGR+16 - FREEBLOCK 12 BYTE BLOCK                    02650021
+*              IECVSMGR+20 - GETBLOCK 40 BYTE BLOCK                     02660040
+*              IECVSMGR+24 -FREEBLOCK 40 BYTE BLOCK                     02670040
+*                                                                       02700021
+*          IECVCPRM - FOR STORAGE INITIALIZATION                        02750021
+*              FROM NIP0 TO INITIALIZE STORAGE POOLS AT ENTRY           02800021
+*              POINT IECVCPRM.                                          02850021
+*                                                                       02860040
+*           IECVSMFR - FUNCTIONAL RECOVERY ROUTINE                      02870040
+*                                                                       02880040
+*           IECVSEVR - ELEMENT VERIFICATION CALLED BY QUEUE VERIFY      02890040
+*                                                                       02891040
+*           IECVBCOM - BRANCH ENTRY TO COMPRESS 160 BYTE BLOCKS         02892040
+*                                                                       02893040
+*           IECVSCOM - IOS SRB ENTR TO COMPRESS                         02894040
+*                                                                       02895040
+*                                                                       02900021
+*    PURPOSE = SEE FUNCTION                                             02908040
+*                                                                       02916040
+*    LINKAGE = NORMAL 14,15                                             02924040
+*                                                                       02932040
+*    INPUT = GETBLOCK - 12 BYTE                                         02940040
+*                 REG 13 - EITHER A 14 WORD SAVE AREA OR ZERO           03050021
+*                          (IF ZERO THE LCCA SAVE AREA FOR IOS IS       03100021
+*                           USED)                                       03150021
+*                 REGISTERS 0,1,10,11,12 ARE DESTROYED                  03200021
+*              *NOTE* THIS ENTRY ONLY CALLED BY IECIOSCN                03202040
+*            * IOQALOC IN IOQFLB MUST BE TURNED ON BY CALLER **         03204040
+*            GETBLOCK -40                                               03207040
+*                 REG 13 - A 15 WORD SAVE AREA                          03214040
+*                 REG 11                                                03221040
+*                   BITS 16-31 CONTAINS ASID OF REQUESTOR               03228040
+*                 REGISTERS DESTROYED NONE                              03235040
+*            GETBLOCK - 160                                             03242040
+*                 REG 11                                                03300021
+*                   BITS 0-3 COUNT OF NO. OF BLKS REQUESTED             03350021
+*                   BITS 4-7 ZERO                                       03400021
+*                   BITS 8-23 ASID OF REQUESTOR                         03450021
+*                   BITS 24-31  00100000 - 160 BYTE BLK                 03470040
+*            ***WARNING*** COUNT OF BLOCKS REQUESTED IS NOT             03490040
+*                   CHECKED FOR ZERO FOR PERFORMANCE REASONS            03510040
+*                ***ZERO WOULD CAUSE SQA TO BE EXHAUSTED***             03530040
+*                 REG 13 - 14 WORD SAVE AREA                            03600021
+*                 REGISTERS DESTROYED - NONE                            03650021
+*              FREEBLOCK - 12 BYTES                                     03700021
+*                 REG 1 - ADDRESS OF BLK TO BE FREED                    03750021
+*                 REGISTERS DESTROYED - 0,1,10,11,12                    03800021
+*            * IOQALOC MUST BE LEFT ON OR BLK WILL BE REJECTED *        03805040
+*              FREEBLOCK -40 BYTE                                       03810040
+*                  REG 1 - ADDRESS OF BLOCK TO BE FREED                 03820040
+*                  REGISTERS DESTROYED NONE                             03830040
+*              FREEBLOCK - 160 BYTE                                     03840040
+*                   REG 1 - ADDRESS OF BLK TO BE FREED                  03850040
+*                     IF MULTIPLE BLK FREED, LINK PTR OF LAST           03860040
+*                     BLOCK MUST BE ZERO                                03870040
+*                 REG 11                                                03900021
+*                   BITS 0-23 ZERO                                      03950021
+*                   BITS 24-31  00100000 - 160 BYTE BLK                 03970040
+*                 REG 13 - 14 WORD SAVE AREA                            04100021
+*                 REGISTERS DESTROYED - NONE                            04150021
+*              PURGE/FREE                                               04200021
+*                 REG 11 - ASID OF BLOCKS TO BE FREED IN LOW            04250021
+*                          ORDER 2 BYTES                                04300021
+*                 REG 13 - 16 (THE FIRST WORD OF THIS WORD SAVE AREA    04350021
+*                              POINTS TO A 14 WORD SAVE AREA)           04400021
+*             COMPRESS -                                                04408040
+*               IECVBCOM  (BRANCH ENTRY)                                04416040
+*                  REG 13 - 16 WORD SAVE AREA                           04424040
+*               IECVSCOM  (SRB ENTRY SCHEDULED BY IOS)                  04432040
+*                   STD SRB ENTRY SCHEDULED WITH AN IOS 160 BYTE BLK    04440040
+*                                                                       04450021
+*    OUTPUT = GETBLOCK - 12 BYTE                                        04470040
+*                 REG 11 - ADDRESS OF THE 12 BYTE BLOCK                 04600021
+*                          *NOTE* OFFSET 5 (IOQFLB), IOQALLOC           04610040
+*                           MUST BE LEFT ON                             04620040
+*             GETBLOCK - 40/160 BYTE                                    04630040
+*                 REG 11 - ADDRESS OF BLOCK OR FIRST BLOCK IN           04700021
+*                          CHAIN IF MORE THAN ONE REQUESTED             04750021
+*                          (CHAINED BY FIRST WORD; DELIMITER 0)         04800021
+*               IECVBCOM -                                              04810040
+*                 REG 15 RTN CODE 0 IF PAGE(S) FREED                    04820040
+*                        RTN CODE 4 IF NO PAGES FREED                   04830040
+*                                                                       04850021
+*    EXIT NORMAL = RETURN TO CALLER                                     04858040
+*                                                                       04866040
+*    EXIT ERROR = NONE                                                  04874040
+*                                                                       04882040
+* EXTERNAL REFERENCES = GETMAIN/FREEMAIN (BRANCH ENTRY)                 04890040
+*                       SETLOCK FOR IOSYNCH AND SALLOC LOCKS            04900040
+*                                                                       05050021
+*    ROUTINES = GETMAIN/FREEMAIN                                        05100040
+*                                                                       05400040
+*    DATA SETS = NONE                                                   05800040
+*                                                                       05900040
+*    DATA AREAS = NONE                                                  05910040
+*                                                                       05920040
+* TABLES = BLOCK TYPE HEADER                                            05930040
+*           PAGE TYPE HEADER                                            05940040
+*                                                                       05950040
+* MACROS = SETFRR, SETLOCK, GETMAIN, FREEMAIN                           05960040
+*                                                                       05970040
+* CHANGE ACTIVITY = NONE                                                05980040
+*                                                                       05990040
+***********************************************************             06100040
+*                                                                       06150021
+         EJECT                                                          06200021
+*                                                                       06250021
+***********************************************************             06300021
+*        REGISTER EQUATES                                               06350021
+***********************************************************             06400021
+*                                                                       06450021
+REG0     EQU   0                       COMP AND SWAP AND WORK REG       06500021
+BLKREGLK EQU   1                                                        06520040
+REG2     EQU   2                       REGISTER 2                       06600021
+IRTREG   EQU   3                       IRT PTR FOR TRK 12 BYTE REQ      06650021
+FRRAREA  EQU   4                       FRR TRACK AREA REG               06700021
+CHAINREG EQU   5                       CHAIN REG FOR MULT REQ           06750021
+CNTREG1  EQU   6                       COMP AND SWAP REG                06800021
+BLKREG1  EQU   7                       COMP AND SWAP REG                06850021
+HDRREG   EQU   8                       HEADER POINTER                   06900021
+INTREG1  EQU   9                       INTERNAL LINK REG                06950021
+CNTREG   EQU   10                                                       06970040
+BLKREG   EQU   11                                                       07000040
+PGREG    EQU   12                      POINTER TO PAGE                  07050040
+SAVEREG  EQU   13                      SAVE AREA POINTER                07150021
+RETREG   EQU   14                      RETURN REG                       07200021
+BASEREG  EQU   15                      BASE REGISTER                    07220040
+         EJECT                                                          07300021
+*                                                                       07350021
+***********************************************************             07400021
+*        DATA EQUATES                                                   07450021
+***********************************************************             07500021
+*                                                                       07550021
+SAV      EQU   12                      SAVE DISP                        07600021
+REG4     EQU   4                       REG 4                            07650021
+REG5     EQU   5                       REG 5                            07700021
+HDRLEN   EQU   16                      LEN OF HDR ENT                   07750021
+NOHDRTYP EQU   3                       NO OF HEADERS                    07800021
+LO24     EQU   24                      EQUATE FOR REG SHIFT             07850021
+LO20     EQU   20                      EQUATE FOR REG SHIFT             07900021
+LO8      EQU   8                       EQUATE FOR REG SHIFT             07950021
+LO30     EQU   30                      EQUATE FOR REG SHIFT             08000021
+FOUR     EQU   4                       FOUR                             08050021
+PREFIXLN EQU   8                       LEN OF ASID PREFIX               08100021
+ASIDDISP EQU   10                      DISP TO ASID IN FRR AREA         08150021
+FORTYIND EQU   16                      FORTY BYTE IND                   08200021
+ONE60IND EQU   32                      160 BYTE IND                     08250021
+LKBYTE   EQU   8                       LOCK BYTE IN FRR AREA            08350021
+SYNCH    EQU   X'80'                   IOSYNCH INDICATOR                08400021
+SALLOC   EQU   X'40'                   SALLOC INDICATOR                 08450021
+IRTNALCK EQU   X'F7'                   AND MASK FOR SALLOC OFF          08500021
+LOW28    EQU   28                      SHIFT LEFT DISP                  08550021
+HI4      EQU   4                       SHIFT RIGHT DISP                 08600021
+ZERO     EQU   0                       DISP AND DATA                    08650021
+ONE      EQU   1                       DISP AND DATA                    08700021
+TWO      EQU   2                       DISP AND DATA                    08750021
+SAVDSP   EQU   0                       DISP INTO SAVE AREA TO STORE     08800021
+BLK12LEN EQU   12                      LENGTH OF 12 BYTE BLOCK          08850021
+EQUAL    EQU   8                       EQUAL AND ZERO BRANCH MASK       08900021
+R12DISP  EQU   48                      DISP TO R 12 IN SAVE             08950021
+THREE    EQU   3                       CONSTANT 3                       08954040
+MDLBT    EQU   X'10'                   MIDDLE BLOCK INDICATOR PASSED    08958040
+*                                      IN REGISTER 11                   08962040
+TWTY8    EQU   28                      CONSTANT 28                      08966040
+SIXTEEN  EQU   16                      CONSTANT 16                      08970040
+THRTY2   EQU   32                      CONSTANT 32                      08974040
+FF       EQU   255                     MASK VALUE FOR 'NI'              08978040
+BITS3    EQU   B'0011'             MASK FOR CLM INSTRUCTIONS   @ZM30148 08982040
+L16      EQU   16                                                       08986040
+COMPFAIL EQU   13           INTERNAL FLG TO INDICATE COMPRESS FAILED    08990040
+RECRD    EQU   X'C0D'              ABEND CODE TO RECORD & RETRY         08994040
+         EJECT                                                          09000021
+*                                                                       09050021
+***********************************************************             09100021
+*        PAGE HEADER DISPLACEMENTS                                      09150021
+*        THE PAGE HEADER HAS THE FOLLOWING FORMAT:                      09200021
+*                                                                       09250021
+*        BLK CNT     BLK CHAIN   FLAGS BLK/PG  PAGE CHAIN               09270040
+*        0..........4...........8.....A......C...........               09350021
+*        I          I           I     I      I          I               09400021
+*        ................................................               09450021
+***********************************************************             09500021
+*                                                                       09550021
+PGCNT    EQU   0                       DISP OF BLK CNT IN PG HDR        09600021
+PGBLK    EQU   4                       BLK PTR IN PG HDR                09650021
+PGFLGS   EQU   8                       PAGE DESCRIPTOR FLAGS            09660040
+PGINIT   EQU   X'80'                   INITIAL PAGE INDICATOR           09670040
+LASTINIT EQU   X'40'                   LAST INITIAL PAGE                09680040
+MAXCNT   EQU   10                      MAX CNT BLK/PG DISP IN PG HDR    09700021
+PGCHN    EQU   12                      PAGE CHAIN DISP WITHIN HEADER    09750021
+PGHD     EQU   X'20'                   LEN OF PAGE HEADER               09770040
+PGHD12   EQU   X'10'                   LEN OF PAGE HEAD, 12 BYTE BLKS   09800040
+PGSIZE   EQU   2048                SIZE OF 2K PAGE FOR 12BYTE BLKS      09807040
+PGSZ4K   EQU   4095                4K-1 FOR STORAGE CHECK VALIDATION    09810040
+PGID     EQU   X'10'                   OFFSET TO EBCDIC ID              09814040
+LASTBLK  EQU   PGID+12             OFFSET TO WORD USED BY COMPRESS      09821040
+*        TO KEEP TRACK OF LAST BLOCK IN TEMPORARY CHAIN IN PAGE         09828040
+*        NOTE  WILL OVERLAY LAST WORD OF EYE CATCHER                    09835040
+         EJECT                                                          09850021
+*                                                                       09900021
+************************************************************            09950021
+*        POOL HEADER DISPLACEMENTS                                      10000021
+*        THE FOLLOWING IS THE POOL HEADER LAYOUT:                       10050021
+*        IE. THESE ARE THE HEADERS FOR THE PAGE CHAINS                  10070040
+*                                                                       10100021
+*        BLKS/  BLK  FLAGS & RES PAGE  PAGE   PAGE CHAIN                10150021
+*        PAGE   LEN              TOL   CNT                              10200021
+*        0....2.....4...........8.....A......C...........               10250021
+*    12  I    I     I           I     I      I          I               10300021
+*        ................................................               10350021
+*    40  I    I     I           I     I      I          I               10400021
+*        ................................................               10450021
+*   160  I    I     I           I     I      I          I               10500021
+*        ................................................               10550021
+************************************************************            10600021
+BLKCNT   EQU   0                       BLKS/PAGE                        10650021
+BLKLEN   EQU   2                       BLK LEN                          10700021
+HDRRES   EQU   4                       DISP OF RES BYTES IN HDR YM01932 10720040
+PTOLE    EQU   8                       MIN NO PGS FOR POOL DISP PG HDR  10800021
+PTOLE4   EQU   24                      MIN NO PGS FOR POOL MIDDLE       10820040
+NOPGS    EQU   10                      PG CNT DISP IN POOL HDR          10850021
+*  PGCHN MAY ALSO BE USED TO REFRENCE THE PAGE PTR FROM POOL HDR        10900021
+*         BLOCK DISPLACEMENTS                                           10950021
+BLKLINK  EQU   0                       BLOCK LINK AREA                  11000021
+         SPACE 2                                                        11003040
+*   EQUATES DESCRIBING POOL SIZES,TOLERANCES,ETC.                       11006040
+         SPACE 2                                                        11009040
+SMLBP    EQU   169                      BLKS/PAGE - SMALL BLOCKS        11012040
+SMLBL    EQU   12                       BLK/LEN - SMALL BLOCKS          11015040
+SMLPTOL  EQU   1                        PAGE TOLERANCE - SMALL          11018040
+MDLBP    EQU   84                       BLKS/PAGE - MIDDLE BLOCKS       11021040
+MDLBL    EQU   48                       BLK/LEN - MIDDLE BLOCKS         11024040
+MDLPTOL  EQU   1                        PAGE TOLERANCE - MIDDLE         11027040
+LRGBP    EQU   24                       BLKS/PAGE - LARGE BLOCKS        11030040
+LRGBL    EQU   168                      BLK/LEN - LARGE BLOCKS          11033040
+LRGPTOL  EQU   2                        PAGE TOLERANCE - LARGE          11036040
+         EJECT                                                          11050021
+         USING IECVSMGR,BASEREG                                         11100021
+         USING PSA,REG0                                                 11150021
+         USING FRRSMGR,FRRAREA                                 @ZA12704 11160040
+*                                                                       11200021
+********************                                                    11250021
+*        BRANCH TABLE                                                   11300021
+********************                                                    11350021
+*                                                                       11400021
+         B     GETBLK                  GET NORMAL BLOCK                 11450021
+         B     FREEBLK                 FREE NORMAL BLOCK                11500021
+         B     PRGFREE                 PURGE-FREE (OUT OF MEM)          11550021
+         B     GETBLK0                 GET 12 BYTE BLK                  11600021
+         B     FRBLK0                  FREE 12 BYTE BLK                 11650021
+         B     GETBLK4                 GET 40 BYTE BLOCK                11660040
+         B     FRBLK4                  FREE 40 BYTE BLOCK               11670040
+SMGRHDRS DC    A(IECVSHDR)         POINTER TO STORAGE HEADERS  @ZA12704 11671040
+         SPACE 4                                                        11672040
+         DC    CL8'IECVSMGR'           STORAGE DUMP ID         @ZA08447 11674040
+         DC    C'&SYSDATE'                                     @ZA08447 11676040
+         TITLE 'IECVSMGR - GETBLOCK 12 BYTE BLOCKS'                     11680040
+*                                                                       11750021
+************************************************************            11800021
+*        THIS ROUTINE PASSES A 12 BYTE BLOCK OF STORAGE TO              11850021
+*        THE CALLER OF STORAGE MANAGER. THE 12 BYTE FREE QUEUE          11900040
+*        IS CHECKED FOR A FREE BLOCK. IF THERE ARE NONE A NEW 2K        11905040
+*        PAGE OF BLOCKS IS GOTTEN AND FORMATTED, AND THE BLOCKS         11910040
+*        PUT ON THE FREE QUEUE. THE CALLER MUST TURN ON THE IOQALOC     11915040
+*        FLAG IMMEDIATELY AFTER RECEIVING THE BLOCK AND THE FLAG        11920040
+*        MUST BE LEFT ON FOR VALIDITY CHECKING WHEN BLOCK IS            11925040
+*        FREED. TO JUST TURN THE FLAG ON BEFORE FREEING DEFEATS         11930040
+*        THE PURPOSE OF THIS CHECK.                                     11935040
+***********************************************************             12300021
+*                                                                       12350021
+         SPACE 5                                                        12400021
+*                                                                       12450021
+********************                                                    12500021
+*        ATTEMPT TO GET A BLOCK OFF FREE QUEUE (ANCHOR12)               12550040
+********************                                                    12600021
+*                                                                       12650021
+*  THE NEXT 2 INSTR REPLACE LM FOR PERFORMANCE,MUST REMAIN IN ORDER.    12670040
+GETBLK0  L     CNTREG,CNT12        GET FREE CNT + SYNCH CNT 12BYTE      12700040
+         L     BLKREG,ANCHOR12     TOP FREE 12 BYTE BLOCK               12703040
+GETBLK0B LTR   BLKREG,BLKREG       ANY FREE 12 BYTE BLOCKS ?            12706040
+         BZ    GETCORE0            GO GET ANOTHER 2K PAGE               12709040
+         LR    REG0,CNTREG         TO UPDATE COUNT                      12712040
+         AL    REG0,DECCNT         DECREMENT FREE COUNT, INCREMENT      12715040
+*                                  SYNCH COUNT                          12718040
+         L     BLKREGLK,BLKLINK(BLKREG) LOAD NEXT BLK IN CHAIN          12721040
+         CDS   CNTREG,REG0,HEAD12  ATTEMPT TO TAKE OFF QUEUE            12724040
+         BNE   GETBLK0B            SWAP FAILED, TRY AGAIN               12727040
+         SPACE                                                          12730040
+         BR    RETREG              RETURN TO CALLER                     12733040
+         SPACE 5                                                        13150021
+GETCORE0 LTR   SAVEREG,SAVEREG         DID CALLER SUPPLY SAVE AREA      13900021
+         BNZ   SAVE130                 YES - GO TO SAVE REGS            13950021
+*                                                                       14000021
+********************                                                    14050021
+*        NO - FIND LCCA SAVE AREA                                       14100021
+********************                                                    14150021
+*                                                                       14200021
+         L     SAVEREG,PSALCCAV(REG0)  LOAD PCCA ADDR FROM PSA          14220040
+         USING LCCA,SAVEREG                                             14300021
+         L     SAVEREG,LCCACPUS        GET PTR TO SAVE AREA VECT TAB    14350021
+         DROP  SAVEREG                                                  14400021
+         USING WSAC,SAVEREG                                             14450021
+         L     SAVEREG,WSACIOS         LOAD IOS SAVE AREA ADDR          14500021
+         DROP  SAVEREG                                                  14550021
+SAVE130  STM   REG2,RETREG,ZERO(SAVEREG) SAVE REGS                      14600021
+         LR    CNTREG,IRTREG           LOAD IRT PTR TO TRACK            14620040
+         USING LCCA,CNTREG                                              14650040
+         LR    BLKREG1,SAVEREG         SAVE SAVE AREA PTR               14750021
+SETLOCK0 SETLOCK OBTAIN,TYPE=SALLOC,MODE=UNCOND,RELATED=(GETMAIN,IECVSM*14800021
+               GR(R1))                                                  14850021
+*                                                                       14900021
+********************                                                    14950021
+*        SET PRINT IN IRT                                               15000021
+********************                                                    15050021
+*                                                                       15100021
+         OI    IRTFLA,IRTALCK          SET SALLOC HELD                  15120040
+         LR    HDRREG,BASEREG          SAVE BASE ACCROSS GETMAIN        15200021
+         GETMAIN RU,LV=2048,SP=245,BRANCH=(YES,GLOBAL),KEY=0            15250021
+         LR    BASEREG,HDRREG          RESTORE BASE REG                 15300021
+R1       SETLOCK RELEASE,TYPE=SALLOC,DISABLED,RELATED=(GETMAIN,IECVSMGR*15350021
+               (SETLOCK0))                                              15400021
+*                                                                       15450021
+********************                                                    15500021
+*        RESET IRT PRINT AND FORMAT THE PAGE                            15550021
+********************                                                    15600021
+*                                                                       15650021
+         NI    IRTFLA,IRTNALCK         SET SALLOC SURRENDERED           15700021
+         DROP  CNTREG                                                   15720040
+         LM    REG2,RETREG,ZERO(BLKREG1) RESTORE REGS                   15800021
+         LR    PGREG,BLKREGLK          LOAD NEW PAGE PTR                15820040
+STORFMT0 LH    CNTREG,BLKCNT0          LOAD COUNT INFO                  15850040
+         ST    CNTREG,PGCNT(,PGREG)    STORE BLK CNT IN PG HDR          15900040
+         ST    CNTREG,LO8(,PGREG)      STORE MAX CNT IN PG HDR          15950040
+         LA    BLKREG,PGHD12(,PGREG)   ADDR OF FIRST BLK                16000040
+         ST    BLKREG,PGBLK(,PGREG)    STORE FIRST BLK PTR              16050040
+         BCTR  CNTREG,0                DECREMENT COUNT FOR LOOP         16060040
+BLKCHNR0 LA    BLKREGLK,BLK12LEN(,BLKREG) PTR TO NEXT BLK               16100040
+         ST    BLKREGLK,BLKLINK(,BLKREG)  CHAIN THIS TO NEXT            16150040
+         LR    BLKREG,BLKREGLK         UP TO NEXT BLK                   16200040
+         BCT   CNTREG,BLKCHNR0         CONTINUE TO CHAIN                16250040
+         ST    CNTREG,BLKLINK(,BLKREG)  ZERO LAST BLK CHAIN FIELD       16260040
+UPHDR0   LM    CNTREG,BLKREG,HEADER0+PTOLE    PREPARE TO PUSH DOWN      16300040
+UPHDR01  LA    REG0,ONE(,CNTREG)       UP PAGE COUNT                    16350040
+         ST    BLKREG,PGCHN(,PGREG)    CHAIN OLD PAGES TO NEW           16400040
+         LR    BLKREGLK,PGREG          SAVE PTR TO FIRST PAGE           16450040
+         CDS   CNTREG,REG0,HEADER0+PTOLE  ATTEMPT TO SWAP               16460040
+         BE    CHAIN12        PUT NEW CHAIN OF FREE BLOCK ON QUE        16500040
+         B     UPHDR01                 TRY SWAP AGAIN                   16700040
+         EJECT                                                          16750040
+*                                                                       16752040
+********                                                                16754040
+*        CHAIN FREE BLOCKS ON FREE QUEUE                                16756040
+********                                                                16758040
+CHAIN12  L     BLKREGLK,PGBLK(,PGREG)   GET TO OF CHAIN TO ADD          16760040
+         LR    PGREG,BLKREG   SAVE POINTER TO LAST BLOCK ON PAGE        16762040
+         LM    CNTREG,BLKREG,HEAD12     GET CNT + QUE PTR FOR CDS       16764040
+CHAIN12A ST    BLKREG,BLKLINK(,PGREG)      PUT OLD HEAD IN NEW TAIL     16766040
+         LR    REG0,CNTREG             GET CURRENT COUNT                16768040
+         AL    REG0,ADD12CHN           UPDATE SYNCH + FREE COUNT        16770040
+         CDS   CNTREG,REG0,HEAD12      ATTEMPT TO SWAP                  16772040
+         BNE   CHAIN12A                SWAP FAILED TRY AGAIN            16774040
+         SPACE                                                          16776040
+         B     GETBLK0                 GO TRY TO TAKE OFF BLOCK         16778040
+         TITLE 'IECVSMGR - FREEBLOCK 12 BYTE BLOCKS'                    16780040
+*                                                                       16850021
+************************************************************            16900021
+*        THIS ROUTINE FREES 12 BYTE BLOCKS OF STORAGE ACQUIRED          16950021
+*        BY GETBLOCK. IF THE BLOCK DOES NOT HAVE THE IOQALOC FLAG       17000040
+*        ON, A 'C0D' ABEND IS ISSUED FROM WHICH THE FRR WILL RETURN     17030040
+*        TO THE CALLER. THIS IS DONE TO PREVENT BLOCKS FROM BEING       17060040
+*        FREED TWICE AND TO PREVENT INVALID BLOCKS FROM BEING PUT       17090040
+*        ON THE 12 BYTE FREE QUEUE. IF THE BLOCK IS VALID, IT IS        17120040
+*        PLACED ON THE FREE QUEUE BY CDS + SYNCH COUNT TO SERIALIZE     17150040
+*        *NOTE IGC0001F CALLS ENABLED*                                  17180040
+************************************************************            17300021
+*                                                                       17350021
+         SPACE 5                                                        17400021
+FRBLK0   TM    IOQFLB-IOQ(BLKREGLK),IOQALOC   TEST FOR ALLOCATED BLK    17450040
+         BNO   ERR12               NOT ALLOCATED,SCHEDULE DUMP          17550040
+         NI    IOQFLB-IOQ(BLKREGLK),FF-IOQALOC    TURN OFF FLAG         17560040
+         L     CNTREG,CNT12        GET SYNCH CNT + FREE CNT             17600040
+         L     BLKREG,ANCHOR12     GET FREE QUEUE ANCHOR                17650040
+FRBLK0A  LR    REG0,CNTREG         GET CURRENT COUNT                    17660040
+         AL    REG0,UNIQUEC1       ADD 1 TO BOTH SYNCH + FREE CNT       17700040
+         ST    BLKREG,BLKLINK(,BLKREGLK)  STORE OLD QUE IN NEW FREE BLK 17750040
+         CDS   CNTREG,REG0,HEAD12  TRY TO PUT BLK BACK ON               17760040
+         BER   RETREG              OK, RETURN TO CALLED                 17800040
+         B     FRBLK0A             FAILED, TRY AGAIN                    17810040
+         EJECT                                                          17850040
+ERR12    EQU   *                   INVALID IOQ DETECTED                 17900040
+         STM   REG0,BLKREGLK,FRRDUMMY   REGS DESTROYED BY ABEND         17910040
+*                                       JUST USED FOR DEBUGGING         17920040
+         ABEND RECRD,,,SYSTEM      CAUSE FRR TO GET CONTROL             17930040
+         TITLE 'IECVSMGR - GETBLOCK 40 BYTE BLOCK'                      17950040
+*                                                                       17960040
+****************************************************                    17970040
+*                                                                       17980040
+*        THIS ROUTINE PASSES A 40 BYTE BLOCK OF STORAGE TO              17990040
+*        THE CALLER OF STORAGE MANAGER.THE ASID OF THE                  18000040
+*        MEMORY REQUESTING THE STORAGE IS INPUT TO STORAGE              18010040
+*        MANAGER IN A PARAMETER REGISTER. IF THE FREE QUEUE IS          18020040
+*        EMPTY, A 4K PAGE OF SP 245 IS GOTTEN, FORMATTED AND THE        18027040
+*        BLOCKS PUT ON THE 40 BYTE FREE QUEUE (ANCHOR40). AS A BLK      18034040
+*        IS ALLOCATED THE ASID IS STORED IN THE 8 BYTE PREFIX           18060040
+*        WHICH PRECEDES EACH 40 BYTE BLOCK                              18070040
+*        INPUT IS: ASID IN LOW ORDER 2 BYTES OF REG11 (BLKREG)          18200040
+*        OUTPUT IS: ADDR OF BLOCK IN REG11                              18201040
+*        THE 8 BYTE PREFIX CONTAINS ASID IN BYTES 0-1, ALLOC FLG X'75'  18202040
+*            IN BYTE 3, BYTES 4-7 HAVE A PTR TO PAGE THAT THE BLOCK     18203040
+*            CAME FROM USED TO VALIDITY CHECK THE BLOCK                 18204040
+*****************************************************                   18205040
+*                                                                       18206040
+         SPACE 5                                                        18207040
+GETBLK4  STM  REG0,RETREG,ZERO(SAVEREG)     SAVE REGS 0-14              18208040
+*        REGS 8-14 SAVE FOR FRR OTHERWISE NOT USED MAIN PATH            18208340
+         LR    CHAINREG,BLKREG         SAVE ASID                        18209040
+         SLL   CHAINREG,SIXTEEN    MOVE TO BYTES 0&1                    18210040
+GETBLK4A L     CNTREG1,CNT40       GET SYNCH + FREE COUNT               18211040
+         L     BLKREG1,ANCHOR40    GET 40 BYTE BLOCK QUE HEAD           18212040
+GETBLK4B EQU   *                                               @ZA04542 18213040
+         LTR   BLKREG1,BLKREG1     ANY BLOCKS ON FREE QUEUE    @ZA04542 18214040
+         BZ    GETPG40             OUT OF BLOCKS, GET ANOTHER PAGE      18215040
+         LR    REG0,CNTREG1        GET OLD COUNT                        18216040
+         AL    REG0,DECCNT         DECREMENT FREE CNT, INCREMNT SYNCH   18217040
+         L     BLKREGLK,BLKLINK(,BLKREG1)  GET NEXT BLK IN CHAIN        18218040
+         CDS   CNTREG1,REG0,HEAD40                                      18219040
+         BNE   GETBLK4B            COMPARE FAILED, RETRY                18220040
+         LR    BLKREG,BLKREG1      SET RETURN PARM                      18222040
+         S     BLKREG1,FEIGHT      GET FRONT OF PREFIX                  18222340
+         CLI   ALLOCFLG(BLKREG1),FREE40    CHECK FOR VALID FREE         18223040
+         BNE   ERR40G              GO SCHEDULE SDUMP                    18224040
+         O     CHAINREG,ALLOCW     TURN ON ALLOCATED FLAGS              18225040
+         ST    CHAINREG,ASIDPRE(,BLKREG1)   STORE ASID AND ALLOC FLAG   18226040
+         LM    REG0,BLKREG1,ZERO(SAVEREG)   RESTORE 0-7                 18228040
+         BR    RETREG                                                   18230040
+*                                                                       18250040
+*                                                                       18251040
+         EJECT                                                          18252040
+GETPG40  EQU   *                   OUT OF PAGES OF 40 BYTE BLOCKS       18253040
+         STM   HDRREG,RETREG,THRTY2(SAVEREG) SAVE 8-14 (REST OF REGS)   18253540
+         L     CNTREG,PSALCCAV         POINT AT LCCA                    18254040
+         USING LCCA,CNTREG             INDICATE LCCA ADDRESSIBILITY     18255040
+         OI   IRTFLA,IRTALCK           SET SALLOC HELD                  18256040
+         LR   HDRREG,SAVEREG           SAVE SAVE AREA REG               18257040
+SETLOCK4 SETLOCK OBTAIN,TYPE=SALLOC,MODE=UNCOND,RELATED=(GETMAIN,IECVSM*18258040
+               GR(SETLOCK5))                                            18259040
+         LR   CNTREG1,BASEREG          SAVE BASE ACROSS GETMAIN         18260040
+         GETMAIN RU,LV=4096,SP=245,BRANCH=(YES,GLOBAL),KEY=0            18261040
+         LR   BASEREG,CNTREG1          RESTORE BASE REG                 18262040
+SETLOCK5 SETLOCK RELEASE,TYPE=SALLOC,RELATED=(GETMAIN,IECVSMGR(SETLOCK4*18263040
+               ))                                                       18264040
+         LR   SAVEREG,HDRREG           RESTORE SAVE AREA POINTER        18265040
+         NI   IRTFLA,IRTNALCK          SALLOC NOT HELD                  18266040
+         DROP CNTREG                                                    18267040
+         LR    PGREG,BLKREGLK          NEW PAGE POINTER                 18268040
+         LH    CNTREG,BLKCNT4          LOAD COUNT INFO                  18269040
+         LH   BLKREG1,BLK4LEN          LOAD LENGTH OF BLOCK             18270040
+         ST    CNTREG,PGCNT(,PGREG)     STORE BLK CNT IN PAGE HEADER    18271040
+         ST    CNTREG,LO8(,PGREG)       STORE MAX CNT IN PAGE HEADER    18272040
+         MVC   PGID(L16,PGREG),PGID40   INIT TO VALIDITY CHECK BLKS     18273040
+         LA    BLKREG,PGHDPRE(,PGREG)   ADR BEYOND HEADER + PREFIX      18274040
+         ST    BLKREG,PGBLK(,PGREG)     SET FIRST BLOCK POINTER         18275040
+         LR    CNTREG1,BLKREG           GET BLOCK TO BACK UP FROM       18276040
+         S     CNTREG1,FEIGHT           BACK UP EIGHT TO BLOCK PREFIX   18277040
+         L     REG0,FREE40FW            GET FREE BLOCK FLAG             18278040
+         BCTR  CNTREG,0                 INSURE OF STOPPING AT LAST      18279040
+BLKCHNR4 LA    BLKREGLK,ZERO(BLKREG1,BLKREG) FIND ADDR OF NEXT BLOCK    18280040
+         ST    PGREG,PREFXPGE(,CNTREG1)   PT  PREFX TO PAGE BLK FROM    18300040
+         ST    REG0,ASIDPRE(,CNTREG1)        SET NEXT FREE FLAG         18302040
+         ST    BLKREGLK,BLKLINK(,BLKREG)  STORE CHAIN                   18304040
+         LA    CNTREG1,ZERO(BLKREG1,CNTREG1)   GET NEXT PREFIX          18306040
+         LR    BLKREG,BLKREGLK          GET NEXT                        18308040
+         BCT   CNTREG,BLKCHNR4          CONTINUE IF MORE                18310040
+         ST    CNTREG,BLKLINK(,BLKREG)  SET LAST IN CHAIN TO ZERO       18312040
+         ST    REG0,ASIDPRE(,CNTREG1)   SET LAST FREE FLAG              18314040
+         ST    PGREG,PREFXPGE(,CNTREG1)  PT TO PAGE BLK IS FROM         18316040
+         LR    BLKREG1,BLKREG           SAVE PTR TO LAST ON NEW CHAIN   18318040
+UPHDR4   LM    CNTREG,BLKREG,HEADER0+PTOLE4  PREPARE TO PUSH DOWN       18320040
+UPHDR4A  LA    REG0,ONE(,CNTREG)        UP PAGE COUNT                   18322040
+         ST    BLKREG,PGCHN(,PGREG)     CHAIN OLD PAGES TO NEW          18324040
+         LR    BLKREGLK,PGREG           SAVE POINTER TO NEW PAGES       18326040
+         CDS   CNTREG,REG0,HEADER0+PTOLE4  ATTEMPT TO COMPARE + SWAP    18328040
+         BE    CHAIN40                  WORKED, GO CHAIN NEW BLOCKS     18330040
+         B     UPHDR4A                  FAILED, TRY AGAIN               18332040
+*                                                                       18334040
+CHAIN40  L     BLKREGLK,PGBLK(,PGREG)   GET TOP OF NEW CHAIN            18336040
+         LM    CNTREG,BLKREG,HEAD40     GET OLD CNT AND QUEUE TOP       18350040
+CHAIN40A LR    REG0,CNTREG              GET CNT TO INCREMENT            18351040
+         AL    REG0,PGCNT(,PGREG)  ADD NUMBER OF BLOCKS ON PAGE         18352040
+         AL    REG0,SYNCHCNT       ADD SYNCH COUNT                      18353040
+         ST    BLKREG,BLKLINK(,BLKREG1) STORE OLD TOP INTO NEW TAIL     18354040
+         CDS   CNTREG,REG0,HEAD40       TRY TO ADD NEW CHAIN            18355040
+         BNE   CHAIN40A                 SWAP FAILED, TRY AGAIN          18356040
+         LM    HDRREG,RETREG,THRTY2(SAVEREG) RESTORE 8-14               18356540
+         B     GETBLK4A                 GO TAKE OFF A BLOCK             18357040
+         TITLE 'IECVSMGR FREEBLOCK 40 BYTE BLOCK'                       18358040
+*                                                                       18359040
+************************************************************            18360040
+*        THIS ROUTINE FREES 40 BYTE BLOCK OF STORAGE ACQUIRED           18361040
+*        BY GETBLOCK(40). THE BLOCK IS PUT ON THE FREE QUEUE IF         18362040
+*        THE PROPER ALLOCATED FLAG IS ON. IF THE BLOCK DOES NOT PASS    18362840
+*        THE VALIDITY TEST A 'C0D' ABEND IS ISSUED FROM WHICH THE       18363640
+*        FRR SHOULD RECOVER. A SDUMP IS ISSUED IF A DUMP DATA SET       18364440
+*        EXISTS.                                                        18365240
+************************************************************            18367040
+*                                                                       18368040
+         SPACE 5                                                        18369040
+FRBLK4   STM   REG0,RETREG,ZERO(SAVEREG) SAVE REGS 0,14                 18370040
+         L     CHAINREG,FREE40FW                                        18371040
+FRBLK4C  LR    INTREG1,BLKREGLK        BLOCK TO BE FREED                18372040
+         S     INTREG1,FEIGHT          POSITION TO PREFIX               18373040
+         CLI   ASIDPRE+ALLOCFLG(INTREG1),ALLOC40  TEST ALLOCATED        18374040
+         BNE   ERR40F                                                   18375040
+         ST    CHAINREG,ASIDPRE(,INTREG1)                               18376040
+         L     CNTREG,CNT40        GET SYNCH + FREE COUNT               18377040
+         L     BLKREG,ANCHOR40     GET 40 BYTE BLOCK QUE HEAD           18378040
+* NOTE THE LM INSTR WAS REPLACED BY 2 LOADS FOR PERFMNCE, KEEP IN ORDER 18379040
+FRBLK4D  LR    REG0,CNTREG         GET OLD COUNT                        18380040
+         ST    BLKREG,BLKLINK(BLKREGLK) PUSH DOWN BLOCK                 18381040
+         AL    REG0,UNIQUEC1       INCREMENT UNIQUE COUNT      @ZA03644 18382040
+         CDS   CNTREG,REG0,HEAD40  PUT NEW BLOCK ON QUEUE               18383040
+         BNE   FRBLK4D                 TRY AGAIN                        18384040
+EXIT40   LM    REG0,PGREG,ZERO(SAVEREG) RESTORE REGS 0-12               18400040
+         BR    RETREG                  RETURN                           18403040
+*                                                                       18406040
+*                                                                       18409040
+*                                                                       18412040
+         EJECT                                                          18415040
+ERR40G   EQU   *                   ERROR IN GET 40                      18415440
+         SLR   BLKREGLK,BLKREGLK   INDICATE GET 40                      18416240
+         B     ERR40                                                    18416640
+ERR40F   EQU   *                   ERROR DETECTED IN FREE 40            18417040
+         LA    BLKREGLK,TWO        NON ZERO MEANS FREE 40               18417440
+ERR40    EQU   *                   ERROR IN THE FREE OF 40 BYTE BLK     18418040
+         L     REG2,SMGRFRRA       GET FRR ADDR                         18421040
+         SETFRR A,PARMAD=(FRRAREA),FRRAD=(2),WRKREGS=(3,6) ING          18423040
+         OI    FRRFLA,FRRMED+FRRDEL     SET MED REQ + DEL IN FRR        18423540
+         LTR   BLKREGLK,BLKREGLK   SEE IF GET OR FREE                   18424040
+         BNZ   ERR40A              NO, LEAVE AS FREE                    18424540
+         OI    FRRFLA,FRRGET       INDICATE GET REQUEST                 18425040
+ERR40A   EQU   *                                                        18425540
+         STM   SAVEREG,RETREG,FRRSVA    SAVE FOR RETRY                  18426040
+         ABEND RECRD,,,SYSTEM      CAUSE FRR TO GET CONTROL             18427040
+         TITLE 'IECVSMGR - GETBLOCK 160 BYTE BLOCKS'                    18430040
+*                                                                       18433040
+************************************************************            18436040
+*        THIS ROUTINE ALLOCATES 160 BYTE BLOCKS OF STORAGE              18439040
+*        THE NUMBER OF BLOCKS REQUESTED, THE ASID OF THE MEMORY         18442040
+*        REQUESTING THE STORAGE AND THE SIZE BLOCK REQUESTED            18450021
+*        (160) IS INPUT TO STORAGE MANAGER IN A PARAMETER               18470040
+*        REGISTER. IF MORE THEN ONE BLOCK IS REQUESTED THE BLOCKS       18550021
+*        ARE CHAINED IN THE FIRST WORD. IF THE 160 BYTE BLOCK           18600040
+*        FREE QUEUE IS EMPTY, A NEW 4K PAGE IS GOTTEN, FORMATTED        18610040
+*        AND ADDED TO THE FREE QUEUE.                                   18620040
+*        AS EACH BLOCK IS ALLOCATED THE ASID OF THE REQUESTOR           18800021
+*        IS STORED IN THE 8 BYTE PREFIX WHICH PRECEEDS EACH             18850021
+*        160 BYTE BLOCK.                                                18870040
+*        BEFORE A BLOCK IS GIVEN OUT, IT IS CHECKED TO SEE IF IT        18880040
+*        IS MARKED FREE. IF NOT AN 'C0D' ABEND IS ISSUED, AN SDUMP      18890040
+*        AND RECORD ISSUED, AND THE FREE QUE ZEROED. THE FRR WILL       18900040
+*        RETRY BY GETTING A NEW QUEUE. AS EACH BLOCK IS ALLOCATED       18910040
+*        A X'76' IS PUT IN 4TH BYTE OF THE PREFIX FOR CHECKING ON       18920040
+*        FREE. WHEN GETTING ANOTHER 4K PAGE                             18930040
+*        THE ROUTINE OPERATES UNDER THE IOSYNCH LOCK TO AVOID           18950021
+*        POSSIBLE DESTRUCTIVE INTERSECTION WITH OTHER CPU(S).           19000021
+************************************************************            19050021
+*                                                                       19100021
+         SPACE 5                                                        19150021
+*                                                                       19200021
+********************                                                    19250021
+*        SET UP FOR INITIAL PASS                                        19300021
+********************                                                    19350021
+*                                                                       19400021
+GETBLK   STM   REG0,PGREG,ZERO(SAVEREG) SAVE REGS                       19450021
+         L     REG2,SMGRFRRA           LOAD STORAGE MGR FRR ADDR        19550021
+         SETFRR A,PARMAD=(FRRAREA),FRRAD=(2),WRKREGS=(3,6)              19600021
+         OI    FRRFLA,FRRGET           SET GET BLOCK REQUEST            19700040
+         ST    SAVEREG,FRRSVA      SAVE REG13 FOR FRR                   19702040
+         ST    RETREG,FRRSVB       SAVE REG14 FOR FRR                   19704040
+* NOTE  2 ST INSTR FASTER THAN STM, R13 R14 ONLY RELOADED BY FRR        19706040
+* AND  GETPG, OTHERWISE NOT USED                                        19708040
+GETBLKA  SLR   CHAINREG,CHAINREG       CLEAR BLK CHAIN REG              19710040
+         LR    CNTREG,BLKREG           COPY OPTION INFO                 19720040
+         SRDL  CNTREG,LO8              SHIFT BLK TYPE INTO REG          19750040
+         STH   CNTREG,FRRASID          SAVE ASID                        19800040
+         SRL   CNTREG,LO20             SHIFT OUT ASID GET CNT           19850040
+         SRL   BLKREG,LO24             SHIFT OUT RESIDUAL               19900040
+         SPACE 5                                                        21650021
+GBHDCHN  L     CNTREG1,CNT160      GET SYNCH + FREE CNT OF 160BYTE BLKS 21660040
+         L     BLKREG1,ANCHR160    GET TOP BLOCK ON THE FREE QUEUE      21670040
+GB160B   LTR   BLKREG1,BLKREG1     ANY FREE BLOCKS?                     21680040
+         BZ    GETPG               GO SET UP TO GET A PAGE              21690040
+*                                                                       21700021
+********************                                                    21750021
+*        THIS SECTION DOES THE ACTUAL REMOVAL OF BLOCKS FROM            21800021
+*        THE FREE BLOCK CHAIN. THIS IS DONE WITH COMPARE AND            21850040
+*        AND SWAP LOGIC .                                               21900021
+********************                                                    21950021
+*                                                                       22000021
+BLKGET   LR    REG0,CNTREG1        TRANSFER BLOCK COUNT        @ZM30148 22020040
+         AL    REG0,DECCNT         DECREMENT FREE CNT, INC. SYNCH CNT   22050040
+         L     BLKREGLK,BLKLINK(,BLKREG1) GET NEXT BLK IN CHAIN         22100040
+         CDS   CNTREG1,REG0,HEAD160     TRY TO TAKE BLK OFF QUEUE       22150040
+         BNE   GB160B              FAILED, TRY AGAIN                    22250040
+         ST    CHAINREG,BLKLINK(BLKREG1) CHAIN BLOCKS IF NEEDED         22350021
+         LR    CHAINREG,BLKREG1        UPDATE CHAIN POINTER             22400021
+         S     BLKREG1,FEIGHT          POSITION IN FRONT OF PREFIX      22450021
+         CLI   ALLOCFLG(BLKREG1),FREE160     TEST THAT NOT ALLOCATED    22458040
+         BNE   ERR160                        GO TAKE A PICTURE          22466040
+         L     PGREG,FRRASID       PUT 1/2 WRD ASID IN HIGH 2 BYTES     22474040
+         IC    PGREG,ALLC160B      TURN ON ALLOCATE FLAG                22482040
+         ST    PGREG,ASIDPRE(,BLKREG1)  SET ASID AND ALLOC FLAG         22490040
+         BCT   CNTREG,GBHDCHN          GET ANOTHER BLK IF NEEDED        22500040
+         LR    BLKREG,CHAINREG         LOAD FOR RETURN                  22550040
+         SETFRR D,WRKREGS=(2,1)                                         22900021
+         LM    REG0,CNTREG,SAVDSP(SAVEREG)  RESTORE 0-10                22920040
+         L     PGREG,R12DISP(SAVEREG)  RELOAD 12                        23000021
+         BR    RETREG                  RETURN                           23050021
+         EJECT                                                          23070040
+GETPG    EQU   *                                                        23100040
+         STM   SAVEREG,RETREG,FRRSVA    SAVE R13-R14                    23105040
+         LA    HDRREG,PAG160HD     GET HEAD OF PAGE CHAIN               23110040
+         L     BLKREG,IOSADDR      GET IOSYNCH LOCK ADDR                23150040
+PG160LKG SETLOCK  OBTAIN,TYPE=IOSYNCH,MODE=COND,ADDR=(11),RELATED=(SMGR*23160040
+               POOL,IECVSMGR(PG160LKF,FRLK,GCBSY))                      23200040
+         LTR   SAVEREG,SAVEREG     CHECK IF I GOT THE LOCK              23208040
+         BNZ   RGBHDCHN            LOCK HELD, SEE IF BLOCKS RETURNED    23216040
+         SPACE                                                          23224040
+GOTLOCKU OI    FRRFLA,FRRSYNCH     INDICATE SYNCH LOCK HELD             23228040
+         L     BLKREG1,ANCHR160    IS FREE QUE STILL ZERO               23250040
+         N     BLKREG1,TESTZERO    IF SO SKIP TESTS                     23258040
+         BZ    PG160GM             YES, GET ANOTHER PAGE                23266040
+         L     CNTREG1,CNT160      GET THE COUNT AGAIN                  23274040
+         N     CNTREG1,HIGH2OFF    TURN OFF 2 HIGH ORDER BYTES          23282040
+         C     CNTREG1,MIN160      IF NO. STILL LOW, GO GET PAGE        23300040
+         BH    PG160LKF            BLOCKS RETURNED, GO FREE LOCK        23310040
+PG160GM  BAL   INTREG1,GETCORE     GET ANOTHER PAGE                     23350040
+*  ON RETURN  PGREG CONTAINS PAGE ADDR & BLKREG LAST BLOCK ON PAGE      23353040
+*                                                                       23356040
+         MVC   PGID(L16,PGREG),PGID160  INIT TO VALIDITY CHECK BLKS     23359040
+*        NOW PUT THIS CHAIN OF BLOCKS FROM NEW PAGE ONTO FREE QUEUE     23362040
+         LM    CNTREG1,BLKREG1,HEAD160  GET CNTS & FREE QUE HEAD        23365040
+         L     BLKREGLK,PGBLK(,PGREG)   GET TOP BLOCK NEW PAGE          23368040
+PG160CDS LR    REG0,CNTREG1        COPY CNT REG                         23371040
+         AL    REG0,ADCHN160       ADD NO. BLKS/PAGE + SYNCH COUNT      23374040
+         ST    BLKREG1,BLKLINK(,BLKREG)  PUT OLD TOP IN LAST OF CHAIN   23377040
+         CDS   CNTREG1,REG0,HEAD160     TRY TO PUT NEW CHAIN ON QUE     23380040
+         BNE   PG160CDS                 FAILED, TRY AGAIN               23383040
+         SPACE                                                          23400040
+         L     BLKREG,IOSADDR      SYNCH LOCK ADDR                      23410040
+PG160LKF SETLOCK RELEASE,TYPE=IOSYNCH,ADDR=(11),RELATED=(SMGRPOOL,IECVS*23420040
+               MGR(PG160LKG))                                           23450040
+         NI    FRRFLA,FF-FRRSYNCH  TURN OFF FLAG                        23460040
+RTNGBLK  LM    SAVEREG,RETREG,FRRSVA    RESTORE R13-R14                 23462040
+         SPACE                                                          23470040
+         B     GBHDCHN             GO TRY TO GET BLOCK AGAIN            23480040
+         SPACE                                                          23481040
+RGBHDCHN L     RETREG,FRRWRK       GET COUNT OF ATEMPTS AT LCK @ZM41373 23482040
+* NOTE FRRWRK ALSO USED BY FRR - ON A RETRY MAY BE INVALID CNT @ZM41373 23482240
+* BUT THIS IS OK - ONLY WILL CAUSE UNCONDITIONAL SETLOCK       @ZM41373 23482440
+         LA    RETREG,ONE(,RETREG) ADD ONE TO COUNT            @ZM41373 23483040
+         ST    RETREG,FRRWRK       SAVE (TEMP) FOR NXT PASS    @ZM41373 23483840
+         C     RETREG,MAXSLL       COMPARE WITH MAX FOR LOOP   @ZM41373 23484640
+*                                  ON IOSYNCH LOCK, IF TOO MANY@ZM41373 23485440
+*                                  GET LOCK UNCOND TO OPEN     @ZM41373 23486240
+*                                  WINDOW (EG MAY BE ACR)      @ZM41373 23487040
+         BL    RTNGBLK             RETRY GETBLK, NOT 2 MANY    @ZM41373 23487840
+         SPACE                                                          23490040
+*  HAVE LOOPED TOO MANY TIMES REQUEST LOCK UNCOND              @ZM41373 23491040
+PG160LKU SETLOCK  OBTAIN,TYPE=IOSYNCH,MODE=UNCOND,ADDR=(11),RELATED=(SM*23492040
+               GRPOOL,IECVSMGR(PG160LKF))                      @ZM41373 23493040
+         SPACE                                                          23494040
+         B     GOTLOCKU            GOT THE LOCK, GET THE PAGE  @ZM41373 23495040
+         SPACE 6                                                        23495540
+ERR160   EQU   *                   THIS ROUTINE HANDLES INVALID REQUEST 23500040
+         ABEND RECRD,,,SYSTEM      CAUSE FRR TO GET CONTROL             23550040
+         TITLE 'IECVSMGR - FREEBLOCK 160 BYTE BLOCKS'                   23560040
+*                                                                       23650021
+************************************************************            23700021
+*        THIS ROUTINE FREES 160 BYTE BLOCKS ACQUIRED BY GETBLOCK.       23750040
+*        SINGLE OR MULTIPLE BLOCKS MAY BE FREED BUT THE LINK PTR        23790040
+*        OF THE LAST BLOCK MUST BE ZERO. REG1 POINTS TO THE 1ST         23830040
+*        BLOCK OF THE INPUT CHAIN. THE PREFIX OF EACH BLOCK IS          23870040
+*        VALIDITY CHECKED. IF ANY BLOCK ON THE CHAIN TO BE FREED        23910040
+*        IS INVALID, ALL BLOCKS ARE THROWN AWAY, A 'C0D' ABEND IS       23950040
+*        ISSUED TO RECORD AND ISSUE AN S DUMP IF DUMP DATA SET EXISTS.  23990040
+*        RETRY SHOULD RETURN TO THE CALLER WITHOUT RETURNING THE        24030040
+*        BLOCKS TO THE FREE QUEUE.                                      24070040
+************************************************************            24500021
+*                                                                       24550021
+FREEBLK  STM   REG0,PGREG,ZERO(SAVEREG) SAVE REGS                       24600021
+         L     REG2,SMGRFRRA           GET FRR ADDR                     24650021
+         SETFRR A,PARMAD=(FRRAREA),FRRAD=(2),WRKREGS=(3,5)              24700021
+         ST    SAVEREG,FRRSVA      SAVE REG13 FOR FRR                   24750040
+         ST    RETREG,FRRSVB       SAVE REG14 FOR FRR                   24760040
+* NOTE  2 ST INSTRS FASTER THAN STM & REG13-REG14 ONLY RELOADED         24770040
+*  BY FRR                                                               24780040
+PURGBLK  SR    CNTREG,CNTREG       ZERO REG TO COUNT BLOCKS             24800040
+         L     INTREG1,PGID160     INITIALIZE REG TO TEST BLOCK         24802040
+         EJECT                                                          24804040
+***************************************************************         24806040
+*        SCAN THE LIST OF BLOCKS TO BE FREED, VALIDITY CHECK            24808040
+*        THEM, IF VALID, CHAIN ALL TO FREE QUEUE IN ONE CDS             24810040
+*        OPERATION                                                      24812040
+***************************************************************         24814040
+         L     HDRREG,FREE160W          LOAD WORD TO ZERO ASID & SET    24816040
+FREE160A LR    BLKREG,BLKREGLK     GET 1ST BLOCK, BUT KEEP BLKREGLK     24818040
+FREE160B L     CHAINREG,BLKLINK(,BLKREG)     GET NXT BLK IF ONE         24820040
+         S     BLKREG,FEIGHT            BACK UP TO PREFIX               24822040
+         CLI   ALLOCFLG(BLKREG),ALLOC160  IS THIS BLOCK ALLOCATED       24824040
+         BNE   ERR160                     NO, DONT FREE AGAIN           24826040
+         L     PGREG,PREFXPGE(,BLKREG)    GET PAGE BLOCK CAME FROM      24828040
+         CL    INTREG1,PGID(,PGREG)       DOES PAGE HAVE VALID ID       24830040
+         BNE   ERR160                     NO, GO TAKE PICTURE,BAD BLCK  24832040
+         ST    HDRREG,ASIDPRE(,BLKREG)    SET FREE FLG + ZERO ASID      24834040
+         AL    CNTREG,UNIQUEC1            ADD 1 FOR SYN CNT + FREE CNT  24836040
+         LTR   CHAINREG,CHAINREG          ANY MORE BLOCKS ?             24850040
+         BZ    ENQ160                     END OF NEW CHAIN, GO ENQ      24950040
+         LR    BLKREG,CHAINREG     CHECK NEXT BLK IN CHAIN              25050040
+         B     FREE160B            LOOP BACK + REPEAT CHECKS            25150040
+         EJECT                                                          25200040
+*********                                                               25400040
+*   PUT CHAIN OF BLOCKS TO BE FREED, AT HEAD OF FREE QUEUE              25500040
+*********                                                               25550040
+*        BLKREG SHOULD POINT TO LAST BLOCK PREFIX THAT IS BEING ADDED   25650040
+ENQ160   L     CNTREG1,CNT160      GET SYNCH + FREE CNT                 25660040
+ENQ160A  L     BLKREG1,ANCHR160    GET FREE QUE ANCHOR                  25700040
+*  NOTE  2 LOADS DONE FOR PERFORMANCE, KEEP IN ABOVE ORDER              25710040
+ENQ160B  LR    REG0,CNTREG1        GET CURRENT COUNT                    25750040
+         AR    REG0,CNTREG         ADD CHANGE IN SYNCH CNT + FREE CNT   25758040
+         ST    BLKREG1,PREFIXLN+BLKLINK(,BLKREG)  STORE OLD HEAD        25766040
+*                                                IN TAIL OF NEW CHAIN   25774040
+         CDS   CNTREG1,REG0,HEAD160     TRY TO PUT CHAIN ON             25782040
+         BNE   ENQ160B             LOOP AGAIN                           25800040
+         SPACE 5                                                        25850021
+         SPACE 5                                                        27700021
+*                                                                       27750021
+********************                                                    27800021
+*        SET UP FOR RETURN (RESTORE REGISTERS).                         27850021
+********************                                                    27900021
+*                                                                       27950021
+FBRET0   EQU   *                                                        27970040
+         SETFRR D,WRKREGS=(1,2)                                         28050021
+         LM    REG0,PGREG,SAVDSP(SAVEREG) RESTORE 0-12                  28100021
+         BR    RETREG                  RETURN                           28150021
+         TITLE 'IECVSMGR - GET AND FORMAT PAGE FOR 40/160 BYTE BLOCKS'  28170040
+*                                                                       28250021
+************************************************************            28300021
+*        THIS ROUTINE GETS AND FORMATS 4K PAGES OF SQA STORAGE          28303040
+*        AS THEY ARE NEEDED BY STORAGE MANAGER. EACH PAGE IS            28306040
+*        FORMATTED INTO 24 160BYTE BLOCKS WITH 8 BYTE HEADERS.          28309040
+*        THE BLOCKS ARE MARKED AS BEING FREE, THE PAGE IS               28312040
+*        CHAINED TO THE CHAIN OF 160 BYTE BLOCK PAGES AND THE           28315040
+*        CHAIN OF BLOCKS IS CHAINED TO THE FREE QUEUE                   28318040
+*                                                                       28321040
+*        THIS ROUTINE IS CALLED BY IECVPRM (STORAGE PRIMER) AT          28324040
+*        IPL TIME AND BY GET 160 BYTE BLOCK ROUTINE AS ADDITIONAL       28327040
+*        STORAGE IS NEEDED. GET 160 ENTERS THIS ROUTINE WITH            28330040
+*        IOSYNCH LOCK TO SERIALIZE AGAINST COMPRESS & PURGE &           28333040
+*        GET 160 ITSELF                                                 28336040
+***********************************************************             28800021
+*                                                                       28850021
+GET160PG EQU   *              COME HERE TO GET PAGES OF 160BYT BLOCKS   28860040
+GET40PG  EQU   *              ALSO TO GET PAGES OF 40 BYTE AT NIP TIME  28870040
+GETCORE  SETLOCK OBTAIN,TYPE=SALLOC,MODE=UNCOND,RELATED=(GETMAIN,IECVSM*28900021
+               GR(R5))                                                  28950021
+         OI    FRRFLA,FRRALLOC         SET SALLOC INDICATOR             28970040
+         LR    BLKREG1,BASEREG         SAVE 15 ACROSS GM                29050021
+         LR    REG2,FRRAREA            SAVE FRR SAVE AREA               29100021
+         GETMAIN RU,LV=4096,SP=245,BRANCH=(YES,GLOBAL),KEY=0            29120040
+         LR    BASEREG,BLKREG1         RESTORE REG 15                   29200021
+         LR    FRRAREA,REG2            RESET FRR SAVE AREA PTR          29250021
+         SETLOCK RELEASE,TYPE=SALLOC,RELATED=(GETMAIN,IECVSMGR(GETCORE)*29300021
+               )                                                        29350021
+         NI    FRRFLA,FF-FRRALLOC      RESET LOCK INDICATOR             29370040
+         LR    PGREG,BLKREGLK          GET PAGE ADDRESS                 29400040
+         SPACE 5                                                        29500021
+*                                                                       29550021
+********************                                                    29600021
+*        THIS SECTION FORMATS THE GOTTEN STORAGE.                       29650021
+********************                                                    29700021
+*                                                                       29750021
+COREFMT  LH    CNTREG1,BLKCNT(HDRREG)  LOAD CNT AND NO. OF              29800021
+*                                      BLKS/PAGE FROM HEADER            29850021
+         LH    BLKREG1,BLKLEN(HDRREG)  LOAD BLOCK LENGTH                29900021
+         ST    CNTREG1,PGCNT(PGREG)    STORE BLKS/PG IN NOW CNT         29950021
+         ST    CNTREG1,PGFLGS(PGREG)   STORE BLKS/PG IN MAX CNT         29970040
+         LA    BLKREG,PGHD(PGREG)      UP BEYOND PG HEADER              30000040
+         LR    REG2,BLKREG         GET CURRENT BLOCK PREFIX             30050040
+         L     REG0,FREE160W       INITIALIZE PREFIX (40 & 160 BLK)     30060040
+         LA    BLKREG,PREFIXLN(BLKREG) PAST PREFIX                      30100040
+         ST    BLKREG,PGBLK(PGREG)     SET FIRST BLK PTR                30500040
+         BCTR  CNTREG1,0               SET TO STOP AT LAST              30600021
+BLKCHNR  LA    BLKREGLK,ZERO(BLKREG1,BLKREG) FIND ADDR OF NEXT BLK      30620040
+         ST    REG0,ASIDPRE(,REG2) SET FREE FLG, ZERO ID                30650040
+         ST    PGREG,PREFXPGE(,REG2)    PT PREFIX TO PAGE BLK IS FROM   30660040
+         LA    REG2,ZERO(BLKREG1,REG2)     GET NEXT PREFIX              30670040
+         ST    BLKREGLK,BLKLINK(,BLKREG)  STORE TO CHAIN                30680040
+         LR    BLKREG,BLKREGLK         UP BLK PTR                       30700040
+         BCT   CNTREG1,BLKCHNR         CONT CHAINING BLKS               30800021
+         ST    CNTREG1,BLKLINK(BLKREG)  SET LAST BLK PTR 0              30820040
+*    BLKREG HAS PTR TO LAST BLOCK THIS PAGE, NEEDED LATER               30850040
+         ST    REG0,ASIDPRE(,REG2)      SET FREE FLG IN LAST BLOCK      30860040
+         ST    PGREG,PREFXPGE(,REG2)    PREFX PTS TO PAGE BLK IS FROM   30870040
+         SPACE 5                                                        30900021
+*                                                                       30950021
+********************                                                    31000021
+*        THIS SECTION UPDATES THE BLOCK TYPE HEADER TO REFLECT          31050021
+*        THE NEW PAGE AND UPDATES THE PAGE QUEUE.                       31100021
+********************                                                    31150021
+*                                                                       31200021
+UPHDR    L     BLKREG1,PGCHN(HDRREG)   LOAD FIRST PAGE ADDR             31250040
+         SLR   CNTREG1,CNTREG1         CLEAR REG FOR COMP               31252040
+         LTR   BLKREG1,BLKREG1         ANY PAGES IN POOL                31254040
+         BP    UPHDR1                  YES - START DOWN CHAIN           31256040
+*                                       ZERO = 1ST TIME INIT.           31258040
+*                                       MINUS= FRR RESTRUCTURE          31260040
+         LR    BLKREG1,HDRREG          SET TO PUT IN HEADER             31262040
+         B     UPHDR2                  CHAIN IT IN                      31264040
+UPHDR1   C     CNTREG1,PGCHN(BLKREG1)  IS THIS LAST PAGE                31266040
+         BE    UPHDR2                  YES - ATTACH HERE                31268040
+         L     BLKREG1,PGCHN(BLKREG1)  UP TO NEXT PAGE                  31270040
+         B     UPHDR1                  CHECK THIS AS LAST               31272040
+UPHDR2   ST    PGREG,PGCHN(BLKREG1)    CHAIN AS LAST                    31274040
+         ST    CNTREG1,PGCHN(PGREG)    STORE DELIMITER                  31276040
+         LH    CNTREG1,NOPGS(HDRREG)   LOAD PAGE COUNT                  31278040
+         LA    CNTREG1,ONE(CNTREG1)    ADD ONE TO PAGE CNT              31280040
+         STH   CNTREG1,NOPGS(HDRREG)   UPDATE HEADER                    31300040
+         LR    BLKREGLK,PGREG          GET PAGE PTR FOR INIT MARK       31450040
+         BR    INTREG1                  RETURN AFTER  FREELOCK          31459040
+         EJECT                                                          31468040
+GET12PG  EQU   *                   GET INITIAL PAGE OF 12BYTE BLKS      31477040
+INIT12   SETLOCK OBTAIN,TYPE=SALLOC,MODE=UNCOND,RELATED=(GETMAIN,IECVSM*31486040
+               GR(RELE12))                                              31495040
+         OI    FRRFLA,FRRALLOC     SET SALLOC INDICATOR FOR FRR         31504040
+         LR    BLKREG1,BASEREG                                          31513040
+         LR    REG2,FRRAREA                                             31522040
+         GETMAIN RU,LV=2048,SP=245,BRANCH=(YES,GLOBAL),KEY=0            31531040
+         LR    BASEREG,BLKREG1                                          31540040
+         LR    FRRAREA,REG2                                             31549040
+RELE12   SETLOCK RELEASE,TYPE=SALLOC,RELATED=(GETMAIN,IECVSMGR(INIT12)) 31558040
+         NI FRRFLA,FF-FRRALLOC     TURN OFF LOCK INDICATOR              31567040
+         LR    PGREG,BLKREGLK                                           31576040
+*                                                                       31600040
+**********                                                              31601040
+*   FORMAT 2K PAGE INTO 12 BYTE BLOCKS                                  31602040
+**********                                                              31603040
+*                                                                       31604040
+         LH    CNTREG1,BLKCNT(,HDRREG)  LOAD CNT AND NO. OF             31605040
+*                                       BLKS/PAGE FROM HEADER           31606040
+         LH    BLKREG1,BLKLEN(,HDRREG)  LOAD BLOCK LENGTH               31607040
+         ST    CNTREG1,PGCNT(,PGREG)    STORE BLKS/PG IN CURRNT CNT     31608040
+         ST    CNTREG1,PGFLGS(,PGREG)   STORE BLKS/PG IN MAX CNT        31609040
+         LA    BLKREG,PGHD12(,PGREG)    UP TO START OF BLOCKS           31610040
+         ST    BLKREG,PGBLK(,PGREG)     SET FIRST BLK PTR IN PAGE HD    31611040
+         NI    IOQFLB-IOQ(BLKREG),ZERO   INITIALIZE TO UNALLOCATED      31612040
+         BCTR  CNTREG1,0                ADJUST CNTR TO STOP AT LAST     31613040
+BLKCHN12 LA    BLKREGLK,ZERO(BLKREG1,BLKREG) GET NEXT BLOCK             31614040
+         NI    IOQFLB-IOQ(BLKREGLK),ZERO SET UNALLOCATED                31615040
+         ST    BLKREGLK,BLKLINK(,BLKREG)  STORE IN CHAIN                31616040
+         LR    BLKREG,BLKREGLK          UP BLOCK PTR                    31617040
+         BCT   CNTREG1,BLKCHN12         DEC COUNT, TILL END             31618040
+         ST    CNTREG1,BLKLINK(,BLKREG)   SET LAST BLK PTR ZERO         31619040
+         SPACE                                                          31620040
+*                                                                       31621040
+***********                                                             31622040
+*    PUT THIS PAGE ON THE CHAIN OF PAGES                                31623040
+***********                                                             31624040
+*                                                                       31625040
+* NOTE THIS CODE ASSUMES ONLY ONE PAGE OF 12 BYTE BLOCKS                31626040
+         SLR   CNTREG1,CNTREG1     ZERO REG TO INDICATE LAST PAGE       31627040
+         ST    PGREG,PGCHN(,HDRREG)     PUT PAGE ON PAGE CHAIN          31628040
+         ST    CNTREG1,PGCHN(,PGREG)    INDICATE LAST                   31629040
+         LA    CNTREG1,ONE(,CNTREG1)    INDICATE ONE PAGE               31630040
+         STH   CNTREG1,NOPGS(,HDRREG)   STORE PAGE COUNT                31631040
+*                                                                       31632040
+*  PUT SAME 12 BYTE BLOCKS ON FREE QUEUE                                31633040
+*                                                                       31634040
+         LH    CNTREG1,BLKCNT(,HDRREG)  THIS IS NO. OFF FREE BLKS       31635040
+         ST    CNTREG1,CNT12                                            31636040
+         L     BLKREG,PGBLK(,PGREG)     1ST BLOCK ON PAGE IS 1ST ON Q   31637040
+         ST    BLKREG,ANCHOR12          INIT 12BYTE FREE QUEUE          31638040
+         L     BLKREG,IOSADDR      GET IOSYNCH LOCK ADDRESS             31639040
+         LR    BLKREGLK,PGREG      GET PAGE PTR FOR INIT MARK           31640040
+         BR    INTREG1                  RETURN                          31641040
+         SPACE 2                                                        31650040
+         SPACE 3                                                        33750021
+         TITLE 'IECVSMGR - PURGE/FREE 40/160 BYTE BLOCKS'               33800040
+*                                                                       34400021
+************************************************************            34450021
+*        THIS ROUTINE PERFORMS A PURGE FUNCTION ON 40 AND 160           34500021
+*        BYTE STORAGE MANAGER POOLS BY FREEING BLOCKS WITH A            34550021
+*        SPECIFIED ASID IN THE BLOCK PREFIX. THE FUNCTION IS CALLED     34600021
+*        BY PURGE (SVC16) IN THE EVENT OF AN OUT OF CORE ABEND          34650021
+*        OR MEMORY TERMINATION FOR OTHER REASONS. THIS ROUTINE          34700021
+*        ALLOWS THE RECOVERY OF IOS STORAGE RESOURCES HELD BY           34750021
+*        THE FAILING MEMORY. THE IOSYNCH LOCK IS HELD THROUGHOUT        34800021
+*        THE SEARCH EXCEPT WHEN A BLOCK IS FOUND. THIS IS TO            34850021
+*        REMOVE THE POSSIBILITY OF FREEBLOCK CAUSING A PAGE TO          34900021
+*        BE FREED WHILE PURGE/FREE IS CHECKING THE BLOCKS ON THAT       34950021
+*        PAGE. THE SEARCH IS ALWAYS RESUMED AT THE TOP OF THE           35000021
+*        PAGE CHAIN AFTER A BLOCK IS FREED IN CASE THAT FREEBLOCK       35050021
+*        CAUSED THE PAGE UNDER INSPECTION TO BE FREED.                  35100021
+*        A SEQUENTIAL SEARCH OF ALL 40 AND 160 BYTE POOL PAGES          35150021
+*        IS CARRIED OUT.                                                35200021
+************************************************************            35250021
+*                                                                       35300021
+PRGFREE  STM   RETREG,PGREG,FOUR(SAVEREG)    SAVE REGS 14-12            35350021
+         LR    CHAINREG,SAVEREG        SAVE SAVE REG                    35370040
+         LR    REG2,BLKREG             SAVE ASID FOR PURGE              35400040
+         LA    BLKREG,FORTYIND     SET 40 BYTE BLOCK SCAN               35650040
+POOL40   LA    HDRREG,PAGE40HD     START SCAN OF 40 BYTE BLK PAGES      35652040
+         LH    INTREG1,BLKLEN(,HDRREG)  GET BLOCK LNTH                  35654040
+         SPACE                                                          35656040
+FRSTRT40 L     PGREG,PGCHN(,HDRREG)   LOAD 1ST PAGE OF 40'S             35658040
+         LA    PGREG,0(PGREG)         ZERO HIGH ORDER BYTE              35658540
+         LTR   PGREG,PGREG            TEST FOR ZERO                     35659040
+         BZ    PRG160                 ZERO, MAYBE FRR RESTRUCTURE       35659540
+         SPACE                                                          35660040
+PGSTRT40 LA    BLKREG1,PGHD(PGREG)    LOAD 1ST BLK ON PAGE              35662040
+         LH    CNTREG1,BLKCNT(HDRREG)  NO. OF BLKS PER PAGE             35664040
+COMP40   CH    REG2,ZERO(,BLKREG1)      CHECK ASID OF BLOCK             35666040
+         BE    FRECAL40                 YES FREE BLOCK                  35668040
+BACKFFRE LA    BLKREG1,ZERO(INTREG1,BLKREG1)    UP TO NEXT BLK          35670040
+         BCT   CNTREG1,COMP40           TRY NEXT BLK IF ANY             35672040
+         SPACE                                                          35674040
+         L     PGREG,PGCHN(PGREG)       UP TO NEXT PAGE                 35676040
+         LA    PGREG,0(PGREG)           ZERO HIGH ORDER BYTE            35677040
+         LTR   PGREG,PGREG              ANY MORE PAGES ?                35678040
+         BNZ   PGSTRT40                 YES- TRY NEXT PAGE              35680040
+         SPACE                                                          35682040
+*  OUT OF 40 BYTE BLK PAGES, NOW TRY 160 BYTE BLK                       35684040
+PRG160   L     BLKREG,IOSADDR                                           35686040
+O4       SETLOCK OBTAIN,TYPE=IOSYNCH,ADDR=(11),MODE=UNCOND,RELATED=(SMG*35750021
+               RPOOL,IECVSMGR(PRGFIN,FREECALL))                         35800021
+FRSTRT   L     BLKREG,SMGRFRRA                                          35808040
+         SETFRR A,PARMAD=(FRRAREA),FRRAD=(11),WRKREGS=(6,7)             35816040
+         OI    FRRFLA,FRRSYNCH                                          35824040
+         OI    FRRFLB,FRRPURG                                           35832040
+         ST    CHAINREG,FRRSVA          SAVE SA PTR IN FRR              35840040
+         LA    BLKREG,ONE60IND     SET FLG FOR 160 BYTE BLOCKS          35850040
+POOLSTRT LA    HDRREG,PAG160HD     START SCAN OF PAGES FOR 160 BYT BLKS 35900040
+         LH    INTREG1,BLKLEN(HDRREG)   GET BLOCK LENGTH                36050021
+         L     PGREG,PGCHN(HDRREG)     LOAD FIRST PAGE FOR THIS TYPE    36100040
+         LA    PGREG,0(PGREG)          ZERO HIGH ORDER BYTE             36110040
+         LTR   PGREG,PGREG             TEST FOR ZERO                    36120040
+         BZ    PRGFIN                  NO PAGES MAYBE FRR IN CONTROL    36130040
+PGSTART  LA    BLKREG1,PGHD(PGREG)     LOAD FIRST BLK ON PAGE           36150021
+         LH    CNTREG1,BLKCNT(HDRREG)  NO. OF BLKS PER PAGE             36200021
+COMPASID CH    REG2,ZERO(BLKREG1)      ASID EQUAL               @YM2911 36220040
+         BE    FREECALL                YES - FREE BLK                   36300021
+COMP1    LA    BLKREG1,ZERO(INTREG1,BLKREG1) UP TO NEXT BLK             36350021
+         BCT   CNTREG1,COMPASID        TRY NEXT BLK IF ANY              36400021
+         L     PGREG,PGCHN(PGREG)      UP TO NEXT PAGE                  36450021
+         LA    PGREG,0(PGREG)          ZERO HIGH ORDER BYTE    @ZA04542 36470040
+         LTR   PGREG,PGREG             MORE PAGES                       36500021
+         BNZ   PGSTART                 YES - TRY NEXT PAGE              36550021
+         SPACE 5                                                        36800021
+*                                                                       36850021
+********************                                                    36900021
+*        TERMINATION ROUTINE FOR PURGE/FREE                             36950021
+********************                                                    37000021
+*                                                                       37050021
+PRGFIN   L     BLKREG,IOSADDR          LOAD SYNCH LOCK ADDRESS          37070040
+         SETLOCK RELEASE,TYPE=IOSYNCH,ADDR=(11),RELATED=(SMGRPOOL,IECVS*37150021
+               MGR(O4,O5))                                              37200021
+         LR    SAVEREG,CHAINREG        RESTORE SAVE REG                 37250040
+PRGDEL   SETFRR D,WRKREGS=(6,7)                                         37280040
+         LM    RETREG,PGREG,FOUR(SAVEREG) RESTORE REGS 14-12            37400021
+         BR    RETREG                  RETURN TO CALLER                 37450021
+         EJECT                                                          37452040
+*                                                                       37454040
+************************************************************            37456040
+*        THIS SECTION ISSUES A CALL TO FREE 40 BYTE BLK                 37458040
+*        WHOSE ASID MATCHES THAT PASSED BY PURGE                        37460040
+************************************************************            37462040
+*                                                                       37464040
+FRECAL40 LA    BLKREGLK,PREFIXLN(BLKREG1)    PAST PREFIX TO BLK         37466040
+         L     SAVEREG,ZERO(,CHAINREG)  LOAD SECDY SAVE ADDR            37468040
+         SR    RETREG,RETREG       CLEAR REG                            37470040
+         ST    RETREG,BLKLINK(,BLKREGLK)  ZERO CHAIN POINTER            37472040
+         SPACE                                                          37474040
+         BAL   RETREG,FRBLK4       CALL FREE 40 BYTE BLK                37476040
+         SPACE                                                          37478040
+         B     BACKFFRE            GO BACK & CONTINUE SCAN              37480040
+         SPACE                                                          37482040
+         SPACE 5                                                        37500021
+*                                                                       37550021
+*******************                                                     37600021
+*        THIS SECTION ISSUES A CALL TO FREEBLOCK TO FREE A BLOCK        37650021
+*        WHOSE ASID MATCHES THAT PASSED BY PURGE. UPON RETURN           37700021
+*        THE SEARCH IS STARTED AT THE FIRST PAGE OF THIS BLOCK TYPE.    37750021
+********************                                                    37800021
+*                                                                       37850021
+FREECALL LA    BLKREGLK,PREFIXLN(,BLKREG1)  PAST PREFIX WITH PTR        37870040
+         L     SAVEREG,ZERO(CHAINREG)  LOAD SECDY SAVE ADDR     YM01872 37900040
+         SR    RETREG,RETREG           CLEAR REGISTER           @YM7224 37950040
+         ST    RETREG,BLKLINK(,BLKREGLK) ZERO CHAIN POINTER     @YM7224 38000040
+FR160    STM   REG0,PGREG,ZERO(SAVEREG)  BYPASS SAVE IN FREEBLK         38050040
+         BAL   RETREG,PURGBLK      FREE THIS BLOCK                      38080040
+         SPACE                                                          38250040
+         LR    REG0,BLKREG         SAVE TYPE INDICATOR                  38258040
+         L     BLKREG,IOSADDR      LOAD IOSYNCH LOCK ADDR               38266040
+         SETLOCK  RELEASE,TYPE=IOSYNCH,ADDR=(11),RELATED=(SMGRPOOL,IECV*38274040
+               SMGR(04,05))                                             38282040
+         SETLOCK OBTAIN,TYPE=IOSYNCH,MODE=UNCOND,ADDR=(11),RELATED=(SMG*38350021
+               RPOOL,IECVSMGR(PRGFIN,FREECALL))                         38400021
+         LR    BLKREG,REG0         RESET TYPE INDICATOR                 38450040
+         B     FRSTRT                  RESTART SEARCH AT FIRST PAGE     38550021
+         TITLE 'IECVSMGR - STORAGE INITIALIZATION MODULE'               38570040
+*                                                                       38650021
+************************************************************            38700021
+*        THIS ROUTINE IS CALLED BY NIP0 AND IS RESPONSIBLE FOR          38750021
+*        INITIALIZING THE STORAGE MANAGER POOLS TO THEIR TOLERANCE      38800021
+*        LEVEL. THE  GETCORE FUNCTION IS INVOKED TO ALLOCATE AND        38850021
+*        FORMAT THE SPECIFIED NUMBER OF PAGES ON A ONCE PER             38900021
+*        PAGE BASIS. THE PAGE TOLERANCE SPECIFIED IN THE HEADER         38950021
+*        FOR EACH BLOCK TYPE INDICATES HOW MANY PAGES ARE TO BE         39000021
+*        ALLOCATED FOR EACH BLOCK TYPE.                                 39050021
+*        WHEN THE POOLS HAVE BEEN INITIALIZED CONTROL IS RETURNED       39100021
+*        TO NIP0.                                                       39150021
+************************************************************            39200021
+*                                                                       39250021
+         USING *,15                                                     39270040
+IECVCPRM STM   RETREG,PGREG,SAV(SAVEREG)  SAVE REGISTERS                39300040
+         L     BASEREG,CMAD            LOAD IECVSMGR ADDR               39450021
+         USING IECVSMGR,BASEREG                                         39550021
+         ST    SAVEREG,SAVEWORD        SAVE SAVEREG                     39600021
+*                                                                       39606040
+*        GET NIP PAGE OF 12 BYTE BLOCKS                                 39612040
+*                                                                       39618040
+         OI    PSASUP3,PSAIOSUP        SET IOS SUPER BIT ON TO @ZA03849 39624040
+*                                       ENSURE LOCK-MGR DOESN'T@ZA03849 39630040
+*                                       ENABLE FOR INTERRUPTS  @ZA03849 39636040
+         LA    HDRREG,PAGE12HD         GET PAGE CHAIN HEAD FOR 12 BYTE  39642040
+         LA    FRRAREA,FRRDUMMY        LOAD DUMMY TRACK AREA            39750021
+COREP0   LH    CNTREG,PTOLE(,HDRREG)   LOAD PAGE TOLERANCE              39770040
+COREP1   BAL   INTREG1,GET12PG         GO TO GET 12 BYTE BLOCK PAGE     39800040
+         MVI   PGFLGS(PGREG),PGINIT                                     39850040
+         BCT   CNTREG,COREP1           COREP1 LOOP TO FILL HDR          39870040
+         OI    PGFLGS(PGREG),LASTINIT  SET AS LAST INIT PAGE            39890040
+*                                                                       39950040
+*        GET NIP PAGE OF 40 BYTE BLOCKS                                 40000040
+*                                                                       40001040
+         LA    HDRREG,PAGE40HD     GET PAGE CHAIN HEAD FOR 40B TE       40002040
+         LH    CNTREG,PTOLE(,HDRREG)    GET COUNT OF PAGES              40003040
+COREP2   BAL   INTREG1,GET40PG          GET PAGE OF 40BYTE BLOCKS       40004040
+         MVI   PGFLGS(BLKREGLK),PGINIT  SET AS INITIAL PAGE             40005040
+*  BLKREG  SHOULD STILL POINT TO LAST NEW BLOCK ON FREE CHAIN           40006040
+         MVC   PGID(L16,BLKREGLK),PGID40 MOVE ID INTO PAGE HEAD         40007040
+         L     CNTREG1,CNT40       GET 40 BYTE BLOCK CNT                40008040
+         LA    CNTREG1,MDLBP(,CNTREG1) INCREMENT FREE CNT NO.BLKS/PAGE  40009040
+         ST    CNTREG1,CNT40           UPDATE CNT                       40010040
+         L     CNTREG1,ANCHOR40         GET CURRENT 40 BYTE ANCHOR      40011040
+         ST    CNTREG1,BLKLINK(,BLKREG)    PUT CURRENT CHAIN AT TAIL    40012040
+         L     CNTREG1,PGBLK(,BLKREGLK) PUT QUE TOP OF NEW PAGE ON TOP  40013040
+         ST    CNTREG1,ANCHOR40         PUT BLOCKS ON FREE QUE          40014040
+         BCT   CNTREG,COREP2            LOOP TO GET ALL PAGES           40015040
+         OI    PGFLGS(BLKREGLK),LASTINIT SET AS LAST INITIAL PAGE       40016040
+*                                                                       40017040
+*        GET NIP PAGES FOR 160 BYTE BLOCKS                              40018040
+*                                                                       40019040
+         LA    HDRREG,PAG160HD     GET PAGE CHAIN HEAD 160 BLOCKS       40020040
+         LH    CNTREG,PTOLE(,HDRREG)    GET COUNT OF PAGES              40021040
+COREP3   BAL   INTREG1,GET160PG         GO GET PAGE OF 160 BYT BLKS     40022040
+*********                                                               40023040
+*   CHAIN BLOCKS FROM NEW PAGE TO FREE QUEUE                            40024040
+*********                                                               40025040
+*                                                                       40026040
+*  NOTE  BLKREG SHOULD STILL POINT TO LAST BLOCK ON ADDED CHAIN         40027040
+         MVC   PGID(L16,BLKREGLK),PGID160  MOVE EBCDIC                  40028040
+         L     CNTREG1,CNT160      GET CURREN FREE COUNT                40029040
+         LA    CNTREG1,LRGBP(,CNTREG1)  INCREMENT NO. BLKS/PAGE         40030040
+         ST    CNTREG1,CNT160      UPDATE COUNT                         40031040
+         L     CNTREG1,ANCHR160    GET CURRENT QUEUE ANCHOR             40032040
+         ST    CNTREG1,BLKLINK(,BLKREG)   PUT IN TAIL OF CHAIN ADDED    40033040
+         L     CNTREG1,PGBLK(,BLKREGLK)  GET TOP OF NEW CHAIN           40034040
+         ST    CNTREG1,ANCHR160         PUT IT IN QUEUE ANCHOR          40035040
+         MVI   PGFLGS(BLKREGLK),PGINIT   SET AS A NIP PAGE              40036040
+         BCT   CNTREG,COREP3            LOOP TO GET ALL PAGES           40037040
+         OI    PGFLGS(BLKREGLK),LASTINIT SET AS LAST INITIAL PAGE       40038040
+         NI    PSASUP3,X'FF'-PSAIOSUP  SET IOS SUPER BIT OFF   @ZA03849 40050040
+         L     SAVEREG,SAVEWORD        RELOAD SAVEREG                   40100021
+         LM    RETREG,PGREG,SAV(SAVEREG) RESTORE REGS                   40150021
+         BR  RETREG                    RETURN TO NIP 0                  40170040
+         SPACE                                                          40200040
+         TITLE 'IECVSMGR - FRR   '                                      40202040
+****************************************************************        40204040
+*                                                              *        40206040
+*   IOS STORAGE  MANAGEMENT RECOVERY ROUTINE                   *        40208040
+*                                                              *        40210040
+*        THIS FRR PROTECTS AND TRIES TO RECOVER STORAGE POOLS  *        40212040
+*        USED BY COMPONENTS OF THE I/O SUPERVISOR. FUNCTIONS   *        40214040
+*        INCLUDE QUEUE VERIFICATION (ALLOCATED STORAGE PAGES   *        40216040
+*        & PAGE CHAIN), REPLACE THE FREE QUEUES IF IN DOUBT    *        40216640
+*        FRAMES AND FREE BLOCK CHAINS WITHIN THE 2K FRAMES)    *        40218040
+*        AND QUEUE RESTRUCTURING.                              *        40220040
+*                                                              *        40222040
+*   ENTRY - IECVSMFR FROM -                                    *        40224040
+*              1.) RTM FOR INITIAL ERROR DETECTION OR          *        40226040
+*                  PERCOLATION.                                *        40228040
+*              2.) IECIOSCN (IECIOSAM) WHEN AN ERROR HAS       *        40230040
+*                  OCCURRED DURING A REQUEST TO GET OR FREE    *        40232040
+*                  A SMALL BLOCK (IECVSMGR RUNS WITH PROTECTION*        40234040
+*                  OF IOS'S FRR FOR SMALL BLOCK REQUESTS)      *        40236040
+*                                                              *        40238040
+*   INPUT - REG 0  200 BYTE WORK AREA ADDRESS                  *        40240040
+*         - REG 1   SDWA ADDRESS                               *        40242040
+*         - REG14  RTM RETURN ADDRESS                          *        40244040
+*                                                              *        40246040
+*           NOTE - WHEN ENTERED FROM THE IECIOSCN FRR, THE FRR *        40248040
+*                  WORKAREA PASSED VIA SDWAPARM IS CONSTRAINED *        40250040
+*                  TO MEET THE USAGE OF THIS FRR - SEE FRR     *        40252040
+*                  WORKAREA DSECT FOR CRITICAL FIELDS          *        40254040
+*                                                              *        40256040
+*   EXITS - TO RTM VIA REGISTER 14                             *        40258040
+*                                                              *        40260040
+*   CALLS - SYSTEM QUEUE VERIFICATION ROUTINE - QVA            *        40262040
+*                                                              *        40264040
+****************************************************************        40266040
+         USING SDWA,IRTREG                                              40268040
+IECVSMFR BALR  BASEREG,0               TEMPORARY BASE ADDRESS           40270040
+         USING *,BASEREG                                                40272040
+         L     BASEREG,CMAD            IECVSMGR ENTRY ADDRESSABILITY    40274040
+         USING IECVSMGR,BASEREG                                         40276040
+         LR    IRTREG,BLKREGLK         SDWA ADDRESS                     40278040
+         L     FRRAREA,SDWAPARM        LOAD FRR WORKAREA ADDRESS        40280040
+         LR    CHAINREG,REG0           LOAD FRR EXTENDED WORK AREA      40282040
+         ST    CHAINREG,FRRWRK         SAVE IN PRIMARY WORK AREA        40284040
+         USING QVPL,CHAINREG                                            40286040
+         ST    IRTREG,QFRRSDWA         BACK CHAIN SDWA                  40288040
+         ST    RETREG,FRRRTM           SAVE RTM RETURN ADDRESS          40290040
+         MVI   SDWAURAL,ZERO           LENGTH OF VARIABLE DATA          40292040
+         TM    SDWAMCHD,SDWAACR        ACR ENTRY                        40294040
+         BO    SMGFR020                BRANCH YES, SKIP DUMP            40300040
+         EJECT                                                          40302040
+***                                                          ***        40304040
+*   ISSUE ASYNCHRONOUS SVC DUMP IS 4K BUFFER IS AVAILABLE      *        40306040
+***                                                          ***        40308040
+         SPACE 1                                                        40310040
+         L     PGREG,CVTPTR            CVT ADDRESS                      40312040
+         USING CVT,PGREG                                                40314040
+         L     BLKREG,CVTSDBF          SDUMP 4K BUFFER ADDR AND LOCK    40316040
+         LTR   REG0,BLKREG             IS IT ALREADY HELD               40318040
+         BNP   SMGFR020                BRANCH YES,SKIP DUMP             40320040
+         O     REG0,BUFLOCK            SET CS REG                       40322040
+         CS    BLKREG,REG0,CVTSDBF     COMPARE AND SWAP FOR BUFFER      40324040
+         BNE   SMGFR020                * AVAILABILITY. BRANCH NO        40326040
+         DROP  PGREG                                                    40328040
+         USING SDBUF,BLKREG                                             40330040
+         LA    PGREG,SDBDATA           BUFFER DATA ADDRESS              40350040
+         ST    PGREG,SDBDATAD          STORE IN DATA AREA               40351040
+         MVC   SDBPHDR,HEADER0         MOVE SMGR POOL HEADERS           40352040
+         MVC   SDBFHDR,HEAD12          MOVE FREE QUEUE HEADER           40353040
+         LA    PGREG,SDBDL             DATA LENGTH                      40354040
+         STH   PGREG,SDBDLN            STORE IN DATA HEADER             40356040
+         XC    SDBLAST,SDBLAST         ZERO NEXT DATA HEADER            40357040
+         LA    SAVEREG,QVSAVE          SAVE AREA FOR SDUMP              40358040
+         DROP  CHAINREG                                                 40359040
+         LR    PGREG,BASEREG           SAVE BASE ACROSS SDUMP           40360040
+         TM    FRRFLA,FRRFAIL          RETRY RECURSION                  40361040
+         BZ    SMGFR045                NO                               40362040
+         L     RETREG,PSALCCAV                                          40363040
+         USING LCCA,RETREG                                              40364040
+         TM    IRTFLA,IRTALCK          ALLOCATION - SQA EXHAUSTED       40365040
+         BNZ   SMGFR048                YES                              40366040
+         TM    FRRFLA,FRRALLOC         ALLOCATION - SQA EXHAUSTED       40367040
+         BNZ   SMGFR048                YES                              40368040
+         DROP  RETREG                                                   40369040
+SMGFR045 EQU   *                                                        40370040
+         SPACE 1                                                        40371040
+         SDUMP HDR='IOS-IECVSMGR ERROR',SDATA=(SQA,TRT),QUIESCE=NO,    *40372040
+               BRANCH=YES,ASID=MSASID,BUFFER=YES,LIST=CMAD              40373040
+         SPACE 1                                                        40374040
+         LR    BASEREG,PGREG           RESTORE BASE REGISTER            40375040
+         B     SMGFR020                                                 40376040
+SMGFR048 EQU   *                                                        40377040
+         SDUMP HDR='IOS-SMGR SQA EXHAUSTED',SDATA=(SQA,TRT),QUIESCE=NO,*40378040
+               BRANCH=YES,ASID=MSASID,BUFFER=YES,LIST=CMAD              40400040
+         LR    BASEREG,PGREG           RESTORE BASE REGISTER            40401040
+         EJECT                                                          40402040
+SMGFR020 EQU   *                       CHECK ENTRY TYPE                 40403040
+         SPACE 1                                                        40404040
+***                                                          ***        40405040
+*   DETERMINE IF SMGR ENTERED BY IOS FOR SMALL BLK GET/FREE. IF*        40406040
+*   SO,INDICATE IN FRRWRK AREA AND INSURE IOS RETRY REGISTERS *         40407040
+***                                                          ***        40408040
+         SPACE 1                                                        40409040
+         L     SAVEREG,FRRSVA          LOAD CALLER'S SAVEAREA           40410040
+         L     PGREG,PSALCCAV          GET LCCA                         40411040
+         USING LCCA,PGREG                                               40412040
+         TM    IRTFLB,IRTSMGR+IRT12GT  IOS IN CONTROL(IECIOSCN)         40413040
+         BZ    SMGFR080                BRANCH NO - NOT SMALL BLK CALL   40414040
+         BM    SMGFR050                BRANCH YES - SMALL BLK FREE      40415040
+         OI    FRRFLA,FRRGET           INDICATE SMALL BLK GET           40416040
+*                                                                       40417040
+********                                                                40418040
+*        PROBLEM WITH 12 BYTE GET                                       40419040
+*        ASSUME 12 BYTE FREE QUEUE IS BAD & ZERO IT                     40420040
+********                                                                40421040
+*                                                                       40422040
+         SR    REG0,REG0           ZERO REG                             40423040
+         SR    BLKREGLK,BLKREGLK   ZERO REG                             40424040
+         LM    CNTREG1,BLKREG1,HEAD12   GET CURRENT QUE HEAD            40425040
+SMGFR052 CDS   CNTREG1,REG0,HEAD12      SWAP TO ZERO                    40426040
+         BNE   SMGFR052                                                 40427040
+         SPACE                                                          40428040
+SMGFR050 OI    FRRFLA,FRRSML           INDICATE SMALL BLK               40429040
+         TM    IRTFLA,IRTALCK          IS SALLOC LOCK HELD              40430040
+         BZ    SMGFR055                BRANCH NO                        40431040
+         OI    FRRFLA,FRRALLOC         YES, TRANSFER INDICATOR TO FRR   40432040
+         NI    IRTFLA,IRTNALCK         * WORK AREA                      40433040
+SMGFR055 TM    SDWAERRC,SDWAPERC       THIS FRR PERCOLATED TO           40434040
+         BZ    SMGFR090                BRANCH NO, USE INTERRUPT REGS    40435040
+         L     PGREG,LCCACPUS          LOCATE IOS DISABLED SAVEAREA     40436040
+         USING WSAC,PGREG                                               40437040
+         L     SAVEREG,WSACIOS         * AND RESTORE REGS FOR RETRY     40438040
+         MVC   SDWASR02(SDWASR15-SDWASR02),ZERO(SAVEREG) *              40439040
+         B     SMGFR090                GO INSURE RETRY BASE             40440040
+         SPACE 1                                                        40450040
+***                                                          ***        40450740
+*   SET UP REGISTERS IN SDWA FOR POSSIBLE RETRY                *        40451440
+***                                                          ***        40452140
+         SPACE 1                                                        40452840
+SMGFR080 EQU   *                       SET UP REGS                      40453540
+*                                                                       40454240
+********                                                                40454940
+         MVC   SDWAMODN,SMGRNAME   MODULE NAME TO SDWA                  40455240
+*        IF GET REQUEST 40, OR 160, ZERO QUEUE HEAD                     40455640
+         SR    REG0,REG0           ZERO REG                             40456340
+         SR    BLKREGLK,BLKREGLK   ZERO REG                             40457040
+         TM    FRRFLA,FRRGET       GET REQUEST?                         40457740
+         BNO   SMGFR084            NO, GO ON                            40458440
+         TM    FRRFLA,FRRMED       IS IT A 40 BYTE GET?                 40459140
+         BNO   SMGFR082            MUST BE 160                          40459840
+         SPACE                                                          40460540
+         LM    CNTREG1,BLKREG1,HEAD40        GET CURRENT HEAD 40 QUE    40461240
+SMGFR081 CDS   CNTREG1,REG0,HEAD40           SWAP IN ZERO               40461940
+         BNE   SMGFR081                      TRY AGAIN                  40462640
+         B     SMGFR084                 GO ON                           40463340
+         SPACE                                                          40464040
+SMGFR082 LM    CNTREG1,BLKREG1,HEAD160  GET CURRENT HEAD 160 QUEUE      40464740
+SMGFR083 CDS   CNTREG1,REG0,HEAD160     SWAP IN ZERO                    40465440
+         BNE   SMGFR083                 TRY AGAIN                       40466140
+         SPACE                                                          40466840
+SMGFR084 EQU   *                                                        40467540
+         L     PGREG,PSALCCAV          GET LCCA                         40468240
+         USING LCCA,PGREG                                               40468940
+         TM    IRTFLA,IRTALCK          IS SALLOC LOCK HELD              40469640
+         BZ    SMGFR085                NO                               40470340
+         OI    FRRFLA,FRRALLOC         TRANSFER INDICATOR TO FRR        40471040
+         NI    IRTFLA,IRTNALCK                                          40471740
+         DROP  PGREG                                                    40472440
+SMGFR085 EQU   *                                                        40473140
+         MVC   SDWASR00(SDWASR14-SDWASR00),ZERO(SAVEREG)                40473840
+         ST    FRRAREA,SDWASR04                                         40474540
+SMGFR090 ST    BASEREG,SDWASR15        SET RETRY BASE ADDRESS           40475240
+         SETRP RECORD=YES,RC=0,WKAREA=(IRTREG)                          40475540
+         LA    REG0,IECVSMFR           RETRY ADDRESS IF IN 2ND FRR      40475940
+         SPACE                                                          40476240
+         TM    FRRFLA,FRRFAIL          AS THERE IS A 1ST LEVEL FAILURE  40476640
+         BO    SMGFR100                BRANCH YES, TO PERCOLATE         40477340
+         TM    FRRFLA,FRRCURS          RETRY RECURSION                  40478040
+         BZ    SMGFR200                BRANCH NO                        40478740
+         BAL   BLKREG,SMGFR800        GO HANDLE LOCK DISPOSITION        40479440
+         B     SMGFR120                +0 RETURN IMPLIES NOT FORCED     40480140
+*                                      * PERCOLATION                    40480840
+SMGFR100 EQU   *                                + 4 RTN IMPLIES         40481540
+*                                      * MUST PERCOLATE                 40482240
+         TM    FRRFLA,FRRSML           SMALL BLOCK REQUEST              40482940
+*                                      IMPLIES IOS IN CONTROL           40483640
+         BZ   SMGFR105                 BRANCH NO                        40484340
+         SPACE 1                                                        40485040
+*   INSURE IRT FLAGS WHICH MAY HAVE BEEN SET BY IOS ARE OFF             40485740
+         SPACE 1                                                        40486440
+         L     PGREG,PSALCCAV          LCCA ADDRESS FOR IRT ADDRESSING  40487140
+         USING LCCA,PGREG                                               40487840
+         NI    IRTFLA,FF-IRTULCK-IRTLLCK-IRTSLCK-IRTCLCK-IRTALCK-IRTIOQ*40488540
+               A-IRTSLISN                                               40489240
+         NI    IRTFLB,FF-IRTSMGR-IRT12GT                                40489940
+         NI    PSASUP3,FF-PSAIOSUP     TURN OFF SUPER           @YM8326 40490640
+         DROP  PGREG                                                    40491340
+SMGFR105 L     RETREG,FRRRTM           RESTORE RTM RETURN ADDRESS       40492040
+SMGFR110 EQU   *                                               @ZA08447 40492340
+         LR    REG0,CHAINREG           RESTORE 200B WA ADDR    @ZA08447 40492740
+         BR    RETREG                  RETURN TO CALLER        @ZA08447 40492940
+         SPACE 1                                                        40493440
+*   RETRY RECURSION FAILURE - NOT FORCED PERCOLATION - RETRY TO         40494140
+*   SIMPLE EXIT UNLESS GET REQUEST WHICH MUST PERCOLATE                 40494840
+         SPACE 1                                                        40495540
+SMGFR120 TM    FRRFLA,FRRGET           GET REQUEST                      40496240
+         BO    SMGFR100                BRANCH YES - PERCOLATE           40500040
+SMGFR122 LA    REG0,SMGFR700           RETRY ADDRESS FOR FREE NORMAL    40500840
+         TM    FRRFLA,FRRSML           SMALL BLOCK FREE                 40501640
+         BZ    SMGFR130                BRANCH NO                        40502440
+         LA    REG0,SMGFR110           RETRY ADDRESS - SMALL BLK FREE   40503240
+         SPACE 1                                                        40504040
+SMGFR130 SETRP RETADDR=(0),RETREGS=YES,RECORD=YES,RC=4,WKAREA=(IRTREG)  40504840
+         SPACE 1                                                        40505640
+         B     SMGFR105                GO TO COMMON RTM RETURN          40506440
+         EJECT                                                          40507240
+SMGFR200 OI    FRRFLA,FRRCURS          SET RECURSION INDICATOR          40508040
+         SPACE 1                                                        40508840
+*   SET SECONDARY FRR                                                   40509640
+         SPACE 1                                                        40510440
+         L     REG0,SMGRFRRA           FRR ADDRESS                      40511240
+         SETFRR A,PARMAD=(PGREG),FRRAD=(REG0),WRKREGS=(PGREG,BLKREG)    40512040
+         SPACE 1                                                        40512840
+         MVC   ZERO(FRRSLEN,PGREG),FRRSMGR  COPY FRR WORK AREA @ZA12704 40513240
+         OI    FRRFLA-FRRSMGR(PGREG),FRRFAIL  SET 1ST LVL FAIL @ZA12704 40513640
+*                                      FLAG IN 2ND LEVEL FRR WRKAREA    40515240
+         TM    FRRFLA,FRRALLOC         SALLOC LOCK HELD                 40516040
+         BZ    SMGFR220                BRANCH NO                        40516840
+         SPACE 1                                                        40517640
+*   FREE SALLOC LOCK                                                    40518440
+         SPACE 1                                                        40519240
+         SETLOCK RELEASE,TYPE=SALLOC,DISABLED,RELATED=(GETMAIN,IECVSMGR*40520040
+               (FRR))                                                   40520840
+         NI    FRRFLA,FF-FRRALLOC      INDICATE SALLOC NOT HELD         40521640
+SMGFR220 EQU   *                       CHECK LOCK GET                   40522440
+         TM    FRRFLA,FRRSML           IF SMALL BLOCK, DO NOT GET       40523240
+         BO    SMGFR230                * IOSYNCH LOCK                   40524040
+         TM    FRRFLA,FRRMED           MIDDLE BLK REQ                   40524840
+         BO    SMGFR230                DO NOT SET IOSYNCH               40525640
+*   160 BYTE PROBLEM, SERIALIZE FOR GET 160 OR COMPRESS             NEW 40526440
+         TM    FRRFLA,FRRSYNCH     SUNCH LOCK HELD?                 NEW 40527240
+         BO    SMGFR230            YES, DONT BOTHER                 NEW 40528040
+         SPACE                                                          40528840
+         L     BLKREG,IOSADDR         GET SYNCH LOCK ADDRESS            40529640
+         SETLOCK OBTAIN,TYPE=IOSYNCH,MODE=UNCOND,ADDR=(11),RELATED=(SMG*40530440
+               RPOOL,IECVSMGR(FRR))                                     40531240
+         OI    FRRFLA,FRRSYNCH         INDICATE IOSYNCH LOCK HELD       40532040
+SMGFR230 L     BLKREG,SMLVAL          HDR VERIFICATION VALUES -SMALL    40532840
+         LA    HDRREG,HEADER0          POOL HEADER - SMALL BLOCKS       40533640
+         TM    FRRFLA,FRRSML           SMALL BLOCK REQUEST              40534440
+         BO    SMGFR240                BRANCH YES                       40535240
+         L     BLKREG,MDLVAL          VERIFICATION VALUES - MIDDLE      40536040
+         LA    HDRREG,FORTYIND(HDRREG) POOL HEADER - MIDDLE             40536840
+         TM    FRRFLA,FRRMED           MIDDLE BLK REQ                   40537640
+         BO    SMGFR240                BRANCH YES                       40538440
+         L     BLKREG,LRGVAL          VALUES FOR LARGE BLOCKS           40539240
+         LA    HDRREG,FORTYIND(HDRREG) POOL HEADER - LARGE              40540040
+SMGFR240 ST    HDRREG,FRRHDR       SAVE POOL HEADER                     40540840
+         EJECT                                                          40541640
+***                                                          ***        40542440
+*   VERIFY THE POOL HEADER - IF BAD, START OVER WITH NEW       *        40543240
+*   PAGES. IF GOOD, VERIFY THE PAGE CHAINS VIA SYSTEM QVA      *        40544040
+***                                                          ***        40544840
+         SPACE 1                                                        40545640
+         LR    PGREG,BLKREG           SAVE VERIFICATION VALUES          40546440
+         EX    BLKREG,SMGFREX1        CHECK THE PAGE TOLERANCE          40547240
+         BNE   SMGFR300                BRANCH NOT EQUAL                 40550040
+         SRL   BLKREG,LO8                                               40551040
+         EX    BLKREG,SMGFREX2        CHECK THE BLOCK LENGTH            40552040
+         BNE   SMGFR300                BRANCH NOT EQUAL                 40553040
+         SRL   BLKREG,LO8                                               40554040
+         CH    BLKREG,BLKCNT(HDRREG)  CHECK MAXIMUM BLK COUNT           40555040
+         BNE   SMGFR300                BRANCH NOT EQUAL                 40556040
+         XC    HDRRES(FOUR,HDRREG),HDRRES(HDRREG) CLEAR HDR FLAGS       40557040
+*                                                               YM01932 40558040
+***                                                         ***         40559040
+*   INITIALIZE PARAMETERS FOR INTERFACE TO SYSTEM QUEUE VERIF.*         40560040
+***                                                         ***         40561040
+         L     BLKREGLK,FRRWRK         QVA PARAMETER LIST               40562040
+         USING QVPL,BLKREGLK                                            40562640
+         XC    QVPL(QVPLSIZE),QVPL     ZERO QVA PARAMETER LIST          40564040
+         LA    PGREG,QVWORKS           QVA WORK AREA                    40565040
+         ST    PGREG,QVPLWKA           STORE ADDR IN QVPL               40566040
+         LA    PGREG,SMGFREVR          ELEMENT VERIFICATION RTN ADDR    40567040
+         ST    PGREG,QVPLEVR           STORE IN QVPL                    40568040
+         LA    PGREG,SDWAVRAL          OUTPUT DATA RECORDING AREA       40569040
+         ST    PGREG,QVPLODA           STORE IN QVPL                    40570040
+         LA    PGREG,PGCHN(HDRREG)     ADDR OF PAGE CHAIN TO BE VERIF.  40571040
+         ST    PGREG,QVPLHDR                                            40572040
+         MVI   QVPLFPTR+ONE,PGCHN      OFFSET IN PAGE OF CHAIN PTR      40573040
+         LA    SAVEREG,QVSAVE          SAVE AREA FOR QVA                40574040
+         LR    REG0,IRTREG             PASS RTCA TO ELEMENT VERIFIER    40575040
+         LR    PGREG,BASEREG           SAVE 15 ACROSS INTERFACE         40576040
+         L     BASEREG,CVTPTR                                           40577040
+         L     BASEREG,CVTQV1-CVT(BASEREG) GET QVA ENTRY                40578040
+         BALR  RETREG,BASEREG          GO TO QVA                        40579040
+         LR    RETREG,BASEREG          SAVE RETURN CODE                 40580040
+         LR    BASEREG,PGREG           RESTORE BASE                     40581040
+         CLM   RETREG,ONE,F0           RETURN CODE = 0                  40582040
+         BE    SMGFR330                YES, GET OUT                     40583040
+         B     SMGFR330            ASSUME QVA FIXED CHAIN, DONT ADD ON  40584040
+         DROP  BLKREGLK                                                 40585040
+***                                                                     40600040
+*   POOL HEADER IS INVALID - CLEAR THE HEADER,                          40600740
+*   RETRY A GET REQUEST, A COMPRESS AT THE NEXT APPROPRIATE POINT       40601140
+*   EXIT A PURGE/FREE OR FREE REQUEST.                                  40602140
+***                                                                     40602840
+SMGFR300 MVC   SDWAVRA(HEADEND),HEADER0 MOVE POOL HDR'S TO SDWA         40603540
+         MVI   SDWAURAL,HEADEND        LENGTH OF POOL HEADERS           40604240
+         XC    ZERO(PGID,HDRREG),ZERO(HDRREG) ZERO THE HEADER           40604940
+         MVI   PGCHN(HDRREG),FF        MAKE PAGE CHAIN PTR NEGATIVE     40605640
+*  TO INDICATE FRR RESTRUCTURE                                          40605940
+         STC   PGREG,PTOLE+ONE(HDRREG) RESET PAGE TOLERANCE             40606340
+         SRL   PGREG,LO8                                                40607040
+         STC   PGREG,BLKLEN+ONE(HDRREG) RESET BLOCK LENGTH              40607740
+         SRL   PGREG,LO8                                                40608440
+         STH   PGREG,BLKCNT(HDRREG)     RESET BLOCK COUNT               40609140
+SMGFR330 BAL   BLKREG,SMGFR800        GO DETERMINE LOCK DISPOSITION     40609840
+         B     SMGFR340                +0 RETURN - OK TO RETRY          40610540
+         B     SMGFR100                FORCED PERCOLATION               40611240
+SMGFR340 SETFRR D,WRKREGS=(2,1)                                @YM05136 40611940
+         TM    FRRFLA,FRRGET           GET BLOCK REQUEST                40612640
+         BZ    SMGFR122                BRANCH NO - RETRY TO EXIT        40613340
+         LA    REG0,SMGFR770           RETRY FOR SMALL BLK      YM03007 40614040
+         TM    FRRFLA,FRRSML           SMALL BLOCK REQUEST              40614740
+         BO    SMGFR130                BRANCH YES                       40615440
+         LA    REG0,SMGFR700           RETRY FOR MIDDLE/LARGE           40616140
+         B     SMGFR130            RETURN TO RTM VIA SETRP RETRY        40616840
+         EJECT                                                          40617540
+***                                                          ***        40618240
+*   ERROR RETRY SUBROUTINE. ENTERED BY RTM VIA RETRY REQUEST   *        40618940
+*   FROM IECVSMGR FUNCTIONAL RECOVERY ROUTINE.                 *        40619640
+*                                                              *        40620340
+*   FUNCTION  -  ESTABLISH ADDRESSABILITY                      *        40621040
+*                FREE IOSYNCH LOCK IF HELD                     *        40621740
+*                BRANCH TO APPROPRIATE ROUTINE -               *        40622440
+*                 SMALL BLOCK GET - GETBLK0                    *        40623140
+*                 SMALL BLOCK FREE - RETURN TO CALLER          *        40623840
+*                  ( RETRY ENTRY IS SMGFR110)                  *        40624540
+*                 MIDLLE/LARGE BLOCK GET - GETBLKA             *        40625240
+*                 MIDDLE/LARGE BLOCK FREE - FBRET0             *        40625940
+*                 COMPRESS          -COMPNOGO,COMPSTP2,COMPFLD      NEW 40626640
+*                             & COMPFINI                                40626940
+*                                                              *        40627340
+*   INPUT  -  ESTABLISHED BY FRR                               *        40628040
+*         - REG15 = SMGFR700 ADDRESS - MIDDLE/LARGE, COMPRESS  *    NEW 40628740
+*                   = SMGFR770 - SMALL                         *        40629440
+*                                                              *        40630140
+****************************************************************        40630840
+***                                                          ***        40631540
+SMGFR700 EQU   *                       RETRY INTERFACE                  40632240
+         USING *,BASEREG                                        YM03007 40632940
+         L     BASEREG,CMAD            LOAD MODULE BASE ADDRESS YM03007 40633640
+         USING IECVSMGR,BASEREG                                 YM03007 40634340
+         TM    FRRFLB,FRRSCOM+FRRBCOM   IS COMPRESS IN PROGRESS     NEW 40635040
+         BM    SMGFR790                 YES, GO HANDLE              NEW 40635740
+         TM    FRRFLA,FRRMED       IS THIS A MED REQUEST?               40635840
+         BZ    SMGFR740            TEST FOR LARGE                       40635940
+         TM    FRRFLA,FRRGET       IS IT A GET MIDDLE REQ      @ZA12704 40636040
+         BNO   SMGFR745            NO GO HANDLE FREE 40                 40636240
+* RETRY GET 40, FREE QUE ZEROED, REGS LOADED, GO BACK AND TRY AGAIN     40636340
+         TM    FRRFLA,FRRDEL       DID GET 40 SET THIS FRR              40636640
+         BZ    GETBLK4             NO, GO RETRY GET 40, REGS SET        40636740
+         SETFRR D,WRKREGS=(1,2)    YES, DELETE BEFORE RETRY             40636840
+         LM    REG0,FRRAREA,ZERO(SAVEREG)  REST REGS SET                40636940
+         B     GETBLK4             RETRY GET 40   (REGS SET)            40637640
+* RETRY FREE 40, JUST RELOAD REGS AND GO BACK TO CALLER                 40637840
+SMGFR745 TM    FRRFLA,FRRDEL       DID FREE 40 SET FRR                  40638140
+         BZ    EXIT40              RETRY BY RETURNING TO CALLER         40638340
+         SETFRR D,WRKREGS=(1,2)                                         40638540
+*        LM    REG0,FRRAREA,ZERO(SAVEREG)  REST OF REGS OK              40638640
+         B     EXIT40              RETRY FREE BY RETURNING              40638840
+* RETRY GET & FREE 160                                                  40639040
+SMGFR740 TM    FRRFLA,FRRSYNCH         IS SYNCH LOCK HELD               40639440
+         BZ    SMGFR750                BRANCH NO                        40640140
+         LR    REG2,BLKREG            SAVE INPUT REGISTER               40640240
+         L     BLKREG,IOSADDR         LOAD SYNCH LOCK ADDRESS           40640340
+         SETLOCK RELEASE,TYPE=IOSYNCH,ADDR=(11),                       *40640440
+               RELATED=(SMGRPOOL,IECVSMGR(FRR))                         40640540
+         NI    FRRFLA,FF-FRRSYNCH      RESET LOCK HELD INDICATOR        40640640
+         LR    BLKREG,REG2            RESTORE INPUT REGISTER            40641340
+SMGFR750 LM    SAVEREG,RETREG,FRRSVA     RELOAD R13-R14                 40642040
+         TM    FRRFLA,FRRGET       IS IT A GET 160                      40647040
+         BO    GETBLKA             YES, RETRY GET                       40648040
+         TM    FRRFLB,FRRPURG      IS IT A PURGE/FREE ENTRY?            40648340
+         BO    PRGDEL              EXIT PURGE FREE                      40648640
+*  ONLY  REG  4, 13, & 15 ARE NOW VALID FOR PURGE FREE                  40648840
+         B     FBRET0              NO, RETRY FREE 160                   40649040
+         SPACE 2                                                        40650040
+SMGFR770 EQU   *                       CHECK LOCKS              YM03007 40650540
+         USING *,BASEREG                                        YM03007 40651040
+         L     BASEREG,CMAD            LOAD MODULE BASE ADDRESS YM03007 40651540
+         USING IECVSMGR,BASEREG                                 YM03007 40652040
+         B     GETBLK0                 RETRY SMALL BLOCK GET    YM03007 40652540
+*                                                                       40653040
+*        HANDLE RETRY FOR COMPRESS                                  NEW 40653540
+*                                                                       40654040
+SMGFR790 TM    FRRFLB,FRRCFLK      DID WE GET TO COMPFLK                40654540
+         BZ    SMGFR791            YES, DELET FRR & EXIT                40655040
+         L     BLKREGLK,CFINIAD    GET ADDR OF COMPFINI FOR RETRY       40655540
+         LA    BASEREG,CONSTANT    GET BASE FOR COMPRESS                40656040
+         BR    BLKREGLK            RETRY AT COMPFINI                    40656540
+         SPACE                                                          40656640
+SMGFR791 TM    FRRFLB,FRRCSTP2     NO, AS FAR AS COMPSTP2 ?             40657040
+         BZ    SMGFR792            YES, FREE SYNCH LOCK & FREE PAGES    40657540
+         L     BLKREGLK,CFLKA      GET ADDR OF COMPFLK                  40658040
+         LA    BASEREG,CONSTANT    GET COMPRESS BASE                    40658540
+         BR    BLKREGLK            GO TO COMPFLK                        40659040
+SMGFR792 TM    FRRFLB,FRRDFREE     NO, AS FAR AS COMPLOOP               40659540
+         BZ    SMGF0793            YES, SEE IF CAN RECHAIN BLKS         40660040
+         L     BLKREGLK,CSTP2A     GET ADDR OF COMPSTP2                 40660540
+         LA    BASEREG,CONSTANT    GET COMPRESS BASE                    40661040
+         BR    BLKREGLK            RETRY AT COMPSTP2                    40661540
+SMGF0793 LM    CNTREG,BLKREG,HEAD160    PREPARE TO ZERO FREE QUE        40662040
+         SR    BLKREGLK,BLKREGLK        ZERO REG                        40662540
+SMGFR793 LR    REG0,CNTREG              GET COUNT                       40663040
+         AL    REG0,SYNCHCNT            ADD 1 TO SYNCH CNT              40663540
+         N     REG0,LOWZOFF             ZERO FREE CNT                   40664040
+         CDS   CNTREG,REG0,HEAD160      SWAP IN ZERO                    40664540
+         BNE   SMGFR793                 SWAP FAILED TRY AGAIN           40665040
+         L     BLKREGLK,NOTRYA     GET ADDR OF COMNOTRY                 40665540
+         LA    BASEREG,CONSTANT    GET COMPRESS BASE                    40666040
+         BR    BLKREGLK            RETRY AT COMNOTRY                    40666540
+         EJECT                                                          40667040
+***                                                          ***        40667540
+*   SUBROUTINE TO DETERMINE IF SALLOC AND/OR IOSYNCH LOCK HELD,*        40668040
+*   REQUEST RTM TO FREE THE LOCKS IF HELD, AND DETERMINE IF    *        40668540
+*   PERCOLATION IS NECESSARY - FORCES REASONS ARE ACR, WRONG   *        40669040
+*   MEMORY, OR PSW RESTART.                                    *        40669540
+***                                                          ***        40670040
+         SPACE 2                                                        40670540
+SMGFR800 TM    FRRFLA,FRRALLOC         SALLOC LOCK HELD                 40671040
+         BZ    SMGFR850                BRANCH NO                        40671540
+         OI    SDWAACF3,SDWASALL       INDICATE FREE SALLOC IN SDWA     40672040
+SMGFR850 TM    FRRFLA,FRRSYNCH         IOSYNCH LOCK HELD                40672540
+         BZ    SMGFR870                BRANCH NO                        40673040
+         OI    SDWAACF3,SDWAIPRG       INDICATE FREE SYNCH IN SDWA      40673540
+         MVC   SDWAIPLW,IOSADDR        MOVE SYNCH LOCK ADDR TO SDWA     40674040
+SMGFR870 MVC   SDWAMODN,SMGRNAME       MODULE NAME TO SDWA              40674540
+         LH    PGREG,SDWAFMID          GET MEMORY ID                    40675040
+         LTR   PGREG,PGREG             IS IT ZERO                       40675540
+         BNZ   FOUR(BLKREG)           BRANCH NO - MUST PERCOLATE        40676040
+         TM    SDWAMCHD,SDWAACR        ACR ENTRY                        40676540
+         BO    FOUR(BLKREG)           BRANCH YES - MUST PERCOLATE       40677040
+         TM    SDWAERRA,SDWARKEY       PSW RESTART                      40677540
+         BO    FOUR(BLKREG)           BRANCH YES, MUST PERCOLATE        40678040
+         BR    BLKREG                 RETURN TO CALLER, RETRY OK        40678540
+         DROP  IRTREG                                         @YM04210  40679040
+         EJECT                                                          40679540
+****************************************************************        40680040
+*                                                                       40680540
+*   ELEMENT VERIFICATION ROUTINE - THIS ROUTINE RECEIVES CONTRL*        40681040
+*   FROM THE SYSTEM QUEUE VERIFICATION ROUTINE TO VERIFY THE   *        40681540
+*   QUEUE ELEMENT NEXT TO BE PROCESSED BY QVA. VERIFICATION    *        40682040
+*   CONSISTS OF DETERMINING IF THE ELEMENT IS ADDRESSABLE,FALLS*        40682540
+*   WITHIN THE RANGE OF STORAGE FAILURES,                      *        40683040
+*   AND IF THE PAGE HEADER INFORMATION IS CONSISTENT.          *        40683540
+*   THE ROUTINE IS ALSO USED AS AN IOQ VERIFIER BY THE IOS FRR *        40684540
+*   WHEN VERIFYING A LOGICAL CHANNEL QUEUE. IN THIS CASE, THE  *        40685040
+*   VERIFICATION CONSISTS OF STORAGE FAILURE CHECKS, ADDRESS-  *        40685540
+*   ABILITY, IF THE IOQ RESIDES WITHIN THE SMALL BLOCK STORAGE *        40686040
+*   POOL, AND IF THE IOQ DATA IS CONSISTENT.                   *        40686540
+*                                                              *        40687040
+*                                                              *        40687540
+*   INPUT  -  R0  =  ADDRESS OF ELEMENT                        *        40688040
+*             R1  =  ADDRESS OF SDWA                           *        40688540
+*             R14 =  RETURN ADDRESS OF QVA                     *        40689040
+*             R15 =  ENTRY ADDRESS                             *        40689540
+*             R2-R7 = USED AS WORK REGS AND NOT RESTORED       *        40690040
+*                                                              *        40690540
+*   OUTPUT -  RETURN CODE IN REG15                             *        40691040
+*               0  =  ELEMENT VALID                            *        40691540
+*               4  =  ADDRESSABLE BUT INVALID                  *        40692040
+*               8  =  NOT ADDRESSABLE                          *        40692540
+*                                                              *        40693040
+****************************************************************        40693540
+         SPACE 2                                                        40694040
+IECVSEVR EQU   *                       COMMON EVR RTN                   40694540
+* NOTE PGSIZE=2K BUT IS USED HERE TO CHECK BOTH 2K & 4K PAGES           40694640
+         SPACE                                                          40694740
+         USING *,BASEREG                                                40695040
+SMGFREVR L     BASEREG,CMAD            COMMON BASE ADDRESS              40695540
+         USING IECVSMGR,BASEREG                                         40696040
+         USING SDWA,BLKREGLK                                   @YM04210 40696540
+         LR    REG2,REG0               TRANSFER ELEMENT TO REG2         40697040
+         LRA   FRRAREA,ZERO(REG2)      CHECK IF VALID ADDRESS  @YM02497 40700040
+         BNZ   SMGFR980                BRANCH NO - NOT ADDRESSABLE      40701040
+         L     FRRAREA,SDWAPARM        GET FRR AREA                     40702040
+         L     IRTREG,FRRHDR           GET HEADER OR LCH INDICATOR      40703040
+         TM    SDWAERRA,SDWAMCHK       MACHINE CHECK OCCUR              40704040
+         BZ    SMGFR920                BRANCH NO                        40705040
+         TM    SDWAMCHS,SDWASRVL       STORAGE CHECK INDICATED          40706040
+         BZ    SMGFR920                BRANCH NO                        40707040
+         LA    CHAINREG,PGSZ4K(REG2)   CHECK FOR 2K OR 4K PAGE          40708040
+         TM    FRRFLB,FRRIOS           IS ENTRY DUE TO IOS LCH VERIFY   40709040
+         BZ    SMGFR900                BRANCH NO - GOOD GUESS           40710040
+         LA    CHAINREG,SMLBL(REG2)    NO,CHANGE UPPER BNDRY FOR IOQ    40711040
+         EJECT                                                          40712040
+***                                                           ***       40713040
+*   CHECK IF ELEMENT FALLS WITHIN STORAGE CHECK RANGE           *       40714040
+***                                                           ***       40715040
+SMGFR900 C     REG2,SDWASCKB           LOWER BNDRY BELOW RANGE          40716040
+         BH    SMGFR910                BRANCH NO                        40717040
+         C     CHAINREG,SDWASCKB       UPPER BNDRY BELOW RANGE          40718040
+         BL    SMGFR920                BRANCH YES, ELEMENT OK           40719040
+         B     SMGFR980                NO - BAD STORAGE                 40720040
+SMGFR910 C     REG2,SDWASCKE           LOWER BNDRY ABOVE RANGE          40721040
+         BNH   SMGFR980                BRANCH NO - BAD ELEMENT          40722040
+***                                                           ***       40723040
+*   VERIFY ELEMENT LOCATION, CONTENTS, AND CHAINS               *       40724040
+***                                                           ***       40725040
+SMGFR920 TM    FRRFLB,FRRIOS           LCH OR SMGR VERIFICATION         40726040
+         BO    SMGFR960                BRANCH IF LCH                    40750040
+         LRA   BLKREG1,PGSIZE-1(REG2)  UPPER BOUNDARY OK                40751040
+         BNZ   SMGFR980                BRANCH NO - NOT ADDRESSABLE      40752040
+         LH    CHAINREG,BLKCNT(IRTREG) GET BLKS/PAGE FROM HDR           40753040
+         CH    CHAINREG,MAXCNT(REG2)   CHECK MAXCNT FIELD IN PAGE       40754040
+         BNE   SMGFR990                * HEADER - BRANCH NOT EQUAL      40755040
+         SLR   BLKREG1,BLKREG1     PREP BEFORE ICM INSTRS      @ZM30148 40756040
+         ICM   BLKREG1,BITS3,PGCNT+2(REG2) GET CURRENT FREE    @ZM30148 40757040
+*                                  BLOCK COUNT                 @ZM30148 40758040
+         CR    CHAINREG,BLKREG1        * MUST BE LESS OR EQ TO MAX      40759040
+         BL    SMGFR990                * BRANCH - BAD DATA              40760040
+SMGFR940 SLR   BASEREG,BASEREG         RETURN CODE = ZERO               40787040
+         BR    RETREG                  RETURN TO QVA                    40788040
+         EJECT                                                          40800040
+***                                                           ***       40801040
+*   VERIFY THE IOQ - MUST BE WITHIN SMALL BLK POOL              *       40802040
+***                                                           ***       40803040
+SMGFR960 LA    IRTREG,HEADER0          GET SMALL BLOCK HEADER           40804040
+SMGFR965 L     IRTREG,PGCHN(IRTREG)    GET NEXT PAGE IF ANY             40805040
+         LTR   IRTREG,IRTREG           DOES PAGE EXIST                  40806040
+         BZ    SMGFR990                BRANCH NO - IOQ NOT VALID        40807040
+         LA    BLKREG1,PGSIZE(IRTREG)  UPPER BOUNDARY OF PAGE           40808040
+         CR    REG2,IRTREG             *                                40809040
+         BL    SMGFR965                * CHECK IF IOQ WITHIN THIS       40810040
+         CR    REG2,BLKREG1            * PAGE                           40811040
+         BH    SMGFR965                *                                40812040
+         B     SMGFR940                IOQ VALID                        40813040
+         SPACE 2                                                        40814040
+***                                                           ***       40815040
+*   RETURN TO QVA - ERROR DETECTED                              *       40816040
+***                                                           ***       40817040
+SMGFR980 LA    BASEREG,LO8             RETURN CODE 8 = NOT ADDRESS-     40818040
+         BR    RETREG                  * ABLE                           40819040
+SMGFR990 LA    BASEREG,FOUR            RETURN CODE 4 = ADDRESSABLE      40820040
+         BR    RETREG                  * BUT BAD ELEMENT                40821040
+         TITLE 'IECVSMGR - CONSTANTS AND MISCELLANEOUS DATA'            40822040
+************************************************************            40824040
+*        THE FOLLOWING ARE CONSTANTS USED BY STORAGE MANAGER            40825040
+*        IN ITS OPERATION.                                              40826040
+************************************************************            40827040
+CONSTANT DS    0F           USED BY COMPRESS TO ADDRESS CONSTANTS       40829040
+F0       DC    F'0'                    FULLWORD ZERO                    40830040
+FEIGHT   DC    F'8'                    EIGHT FOR SUBTRACT               40831040
+HZERO    DC    H'0'                    ZERO FOR CLEARING                40832040
+FORTYI   DC    H'16'                   FORTY BYTE INDICATOR             40850021
+         DS    0F                                                       40853040
+SYNCHCNT DC    X'00010000'                                              40856040
+UNIQUECT DC    X'00010000'         UNIQUE COUNT FOR CS INSTRS  @ZM30148 40859040
+UNIQUEC1 DC    X'00010001'         UNIQUE CT FOR FREE BLKS ONLY@ZA03644 40862040
+ADD12CHN DS    0F                                                       40865040
+         DC    X'0001'             TO INCREMENT SYNCH CNT               40868040
+         DC    Y(SMLBP)            BLKS/PAGE FOR 2K PAGE OF 12 BYTE     40871040
+ADCHN160 DS    0F                                                       40874040
+         DC    X'0001'             TO INCREMENT SYNCH CNT               40877040
+         DC    Y(LRGBP)            BLKS/PAGE FOR 4K PAGE 160 BYTE       40880040
+DECCNT   DC    X'0000FFFF'         CNT TO DECREMEN FREE CNT, AND        40883040
+*                                  INCREMENT SYNCH COUNT                40886040
+HIGH2OFF DC    X'0000FFFF'                                              40889040
+LOWZOFF  DC    X'FFFF0000'              USED TO N OFF LOW 2 ORDER BYTS  40892040
+MAXSLL   DC    F'255'         AN ARBITRARY NO. TO LOOP ON A    @ZM41373 40893040
+MIN160   DC    F'6'                MIN NO. BLKS AT TEST FOR MORE PAGES  40895040
+TESTZERO DC    X'00FFFFFF'         TO TEST FOR ZERO BLK PTR             40897040
+*                             COND. SETLOCK BEFORE UNCOND REQ  @ZM41373 40899040
+         SPACE 2                                                        40899540
+*******************                                                     41000021
+*        ADCONS FOR ADDRESSES AND LOCKS                                 41050021
+*******************                                                     41100021
+CMAD     DC    A(IECVSMGR)             ADDRESS OF CORE MGT START        41200021
+         DC    X'80'                   LAST LIST ENTRY                  41210040
+         DC    AL3(IECVSMND)           END OF IECVSMGR                  41220040
+IOSADDR  DC    V(IOCSYNCH)             ADDR OF IOSYNCH LOCK             41300021
+SMGRFRRA DC    V(IECVSMFR)             SMGR FRR ADDR                    41350021
+CFINIAD  DC    A(COMPFINI)         FOR FRR TO RETRY AT COMPFINI         41360040
+CFLKA    DC    A(COMPFLK)          FOR FRR                              41370040
+CSTP2A   DC    A(COMPSTP2)         FOR FRR                              41380040
+NOTRYA   DC    A(COMNOTRY)         FOR FRR                              41390040
+         SPACE 2                                                        41395040
+*******************                                                     41500021
+*        SAVE AREA AND DUMMY FRR TRACK AREA                             41550021
+*******************                                                     41600021
+SAVEWORD DC    F'0'                    SAVE FOR SAVEREG                 41700021
+FRRDUMMY DC    6F'0'                   DUMMY FRR AREA                   41750021
+         EJECT                                                          41770040
+         DS    0F                                                       41800040
+PGID160  DC    CL16'160BYTE IOS SMGR'  ID FOR 160BYTE PAGE HEAD         41810040
+PGID40   DC    CL16'40 BYTE IOS SMGR'  ID FOR 40 BYTE BLK PAGE          41820040
+*                                                                       41850021
+************************************************************            41900021
+*        THIS CONSTANT AREA IS THE BLOCK HEADERS.                       41950021
+************************************************************            42000021
+*                                                                       42050021
+HEADER0  DS    0D                      FIRST HDR                        42100021
+IECVSHDR EQU   *                       BLOCK HEADER                     42110040
+PAGE12HD EQU   *                   HEAD OF PAGE CHAIN FOR 12BYTE BLOCKS 42120040
+         DC    Y(SMLBP)                BLKS/PAGE                        42130040
+         DC    Y(SMLBL)                BLK LENGTH                       42150040
+         DC    X'00000000'             FLAGS AND RES                    42250021
+         DC    Y(SMLPTOL)              PAGE TOLERANCE                   42270040
+         DC    X'0000'                 CURRENT PAGES                    42350021
+         DC    F'0'                    PAGE CHAIN ANCHOR                42400021
+PAGE40HD EQU   *                   HEAD OF PAGE CHAIN FOR 40BYTE BLOCKS 42410040
+         DC    Y(MDLBP)                BLKS/PAGE                        42420040
+         DC    Y(MDLBL)                BLK LENGTH                       42450040
+         DC    X'00000000'             FLAGS AND RES                    42550021
+         DC    Y(MDLPTOL)              PAGE TOLERANCE                   42570040
+         DC    X'0000'                 CURRENT PAGES                    42650021
+         DC    F'0'                    PAGE CHAIN ANCHOR                42700021
+PAG160HD EQU   *                   HEAD OF PAGE CHAIN FOR 160BYT BLKS   42710040
+         DC    Y(LRGBP)                BLKS/PAGE                        42720040
+         DC    Y(LRGBL)                BLK LENGTH                       42750040
+         DC    X'00000000'             FLAGS AND RES                    42850021
+         DC    Y(LRGPTOL)              PAGE TOLERANCE                   42870040
+         DC    X'0000'                 CURRENT PAGES                    42950021
+         DC    F'0'                    PAGE CHAIN ANCHOR                43000021
+         SPACE 2                                                        43005040
+HEADEND  EQU   *-HEADER0               LENGTH OF HEADERS                43040040
+HEADPG0  EQU   HEADER0+12              PAGE PTR IN FIRST HDR            43050021
+BLKCNT0  EQU   HEADER0                 ADDR OF BKL/PG CNT FOR           43100021
+*                                      FIRST BLOCK TYPE                 43150021
+BLK0LEN  EQU   HEADER0+2               ADDR OF LENGTH FOR THE           43200021
+*                                      FIRST BLOCK TYPE                 43250021
+PTOLE0   EQU   HEADER0+8               ADDRESS OF MIN NO OF             43270040
+*                                      PAGES FOR THIS BLOCK TYPE        43350021
+HEADPG40 EQU   HEADER0+28              PAGE POINTER TO 40 BLK HEAD      43370040
+BLKCNT4  EQU   HEADER0+16              ADR OF BLK/PG CNT FOR 40 BLK     43400040
+BLK4LEN  EQU   HEADER0+18              ADR OF LEN FOR THIS BLK TYPE     43400740
+*                                                                       43401440
+PGHDPRE  EQU   PGHD+PREFIXLN           LENGTH OF PAGE HEADER PLUS PF    43402140
+         EJECT                                                          43402240
+*                                                                       43402340
+*********                                                               43402440
+*  FREE QUEUE OF 12 BYTE BLOCKS                                         43402540
+*********                                                               43402640
+*                                                                       43402740
+         SPACE                                                          43402840
+ALLOC12  EQU   X'08'               THIS 12 BYTE BLOCK IS ALLOCATED      43403440
+HEAD12   DS    0D                  HEAD OF 12BYTE BLOCK FREE QUEUE      43403540
+CNT12    DC    F'0'                SYNC COUNT & FREE COUNT              43403640
+ANCHOR12 DC    F'0'                FREE QUEUE ANCHOR OF 12BYTE BLOCKS   43403740
+********                                                                43403840
+*  FREE QUEUE OF 40 BYTE BLOCKS                                         43403940
+********                                                                43404040
+HEAD40   DS    0D             HEAD OF 40 BYTE FREE QUEUE                43404740
+CNT40    DC    F'0'           SYNCH CNT + FREE COUNT 2 BYTES EACH       43404840
+ANCHOR40 DC    F'0'           FREE QUEUE ANCHOR                         43404940
+********                                                                43405040
+*  FREE QUEUE OF 160 BYTE BLOCKS                                        43405140
+********                                                                43405240
+*                                                                       43405340
+HEAD160  DS    0D             HEAD OF 160 BYTE BLOCK FREE QUEUE         43406040
+CNT160   DC    F'0'           2BYTE SYNCH CNT + 2BYTE FREE COUNT        43406140
+ANCHR160 DC    F'0'           160BYTE FREE QUEUE ANCHOR                 43406240
+FHDLNTH  EQU   *-HEAD12       LNTH OF FREE QUEUE                        43406340
+FCNT160  EQU   CNT160+2       FREE CNT HALF OF CNT160                   43406440
+         EJECT                                                          43406540
+*                                                                       43406740
+* THE FOLLOWING EQUATES DESCRIBE THE 8 BYTE PREFIX FOR 40 & 160 BLOCKS  43406840
+*                                                                       43406940
+ASIDPRE  EQU   0           OFFSET, ASID THAT BLOCK BELONGS TO (2 BYTES) 43407040
+ALLOCFLG EQU   3           OFFSET, BLOCK IS MARKED ALLOCATE OR FREE     43407440
+ALLOC40  EQU   X'75'               ALLOCATED 40 BYTE FLAG               43407540
+ALLOC160 EQU   X'76'               ALLOCATED 160 BYTE FLAG              43407640
+FREE40   EQU   X'17'               FLAG MARKED FREE 40 BYTE             43407740
+FREE160  EQU   X'17'               FLAG MARKED FREE 160 BYTE            43408440
+PREFXPGE EQU   4           OFFSET, PAGE FROM WHICH THIS BLOCK CAME      43409140
+*                                                                       43409840
+         DS    0F                                                       43410540
+*                                                                       43410640
+INITCOMP DC    X'FFFFFFFF'        INDICATE COMPRESS IN PROGRESS         43410740
+*MOVED INTO PGFREEHD TILL REPLACED BY A PAGE TO FREEMAIN                43410840
+*                                                                       43410940
+PGFREEHD DC    F'0'             ON COMPRESS, PAGES CHAINED TO BE FREED  43411040
+*                               NOTE, IF NONZERO INDICATES COMPRESS     43411140
+*                               IN PROGRESS                             43411240
+ALLOCW   DC    X'00000075'         USED TO TURN ON ALLOC40              43411840
+FREE40FW DC    X'00000017'         USED TO TURN ON FREE40               43412440
+FREE160W DC    X'00000017'         USED TO ZERO ASID & MARK FREE        43412640
+BRNCHENT DC    F'17'               IND BRANCH ENTRY TO COMPRESS         43413340
+CMIN160  DC    A(LRGBP+12)         MIN OF BLOCKS BEFOR COMPRESS         43414040
+N160BP   DC    A(LRGBP)            FULL WORD NO. OF BLOCKS/PAGE         43414740
+MINPGES  DC    A(LRGPTOL+1)             MIN # OF PAGES BEFOR COMPRESS   43415440
+ALLC160B DC    X'76'               ANOTHER WAY TO SET 160 ALLOCATED     43416140
+IECVSCNT EQU   CNT160         TO BE USED AS AN ENTRY POINT              43436640
+*                             KNOWN TO PURGE (TO CHECK COUNT)           43436740
+         EJECT                                                          43437140
+***                                                           ***       43437840
+*   CONSTANTS FOR RECOVERY PROCESSING                           *       43438540
+***                                                           ***       43439240
+         SPACE 1                                                        43439940
+         DS    0F                                                       43440640
+SMLVAL   DC    Y(SMLBP),AL1(SMLBL),AL1(SMLPTOL)   * TABLE               43441340
+MDLVAL   DC    Y(MDLBP),AL1(MDLBL),AL1(MDLPTOL)   * VERIFICATION        43442040
+LRGVAL   DC    Y(LRGBP),AL1(LRGBL),AL1(LRGPTOL)   * VALUES              43442740
+         SPACE 1                                                        43443440
+BUFLOCK  DC    X'80000000'             SDUMP BUFFER LOCK MASK           43444140
+SMGRNAME DC    CL8'IECVSMGR'           MODULE NAME                      43444840
+         DC    CL8' UZ07319'           PTF NUMBER FOR 805      @ZA12704 43446840
+         SPACE 1                                                        43450040
+*   EXECUTED INSTRUCTIONS FOR PAGE VERIFICTION                          43450940
+         SPACE 1                                                        43451840
+SMGFREX1 CLI   PTOLE+ONE(HDRREG),ZERO  VERIFY PAGE TOLERANCE            43452740
+SMGFREX2 CLI   BLKLEN+ONE(HDRREG),ZERO VERIFY BLOCK LENGTH              43453640
+MSASID   DC    X'0001'                 MASTER SCHEDULER ASID            43454540
+         DC    2C'IECVSMGR PATCH  '    PATCH AREA              @ZA08447 43455440
+         SPACE 4                                                        43455740
+SMGREND  EQU   *                       END OF IECVSMGR CSECT            43456340
+IECVSMND EQU   *                       SMGR END                         43457240
+         TITLE 'SMGR COMPRESS ROUTINE'                                  43459040
+*****************************************************************       43459940
+*                                                               *       43460840
+*        COMPRESS ROUTINE:                                      *       43461740
+*        THIS ROUTINE ATTEMPTS TO FREE UP PAGES WHICH ARE       *       43462640
+*        NOT BEING USED                                         *       43463540
+*                                                               *       43464440
+*****************************************************************       43465340
+*                                                                       43466240
+         SPACE                                                          43467140
+IECVSCOM BALR  BASEREG,0           TEMP BASE ADDR, SRB ENTRY            43468040
+         USING *,BASEREG                                                43468940
+         L     BASEREG,COMPBASE    CONSTANT AREA ADDRESSABLE            43469840
+         USING CONSTANT,BASEREG                                         43470740
+* PUT SRB WE ARE RUNNING UNDER BACK ON FREE QUE                         43471640
+         LR    HDRREG,REG0         PUT SRB ADDR IN HDRREG               43472540
+         S     HDRREG,FEIGHT       POINT TO PREFIX                      43473440
+         CLI   ALLOCFLG(HDRREG),ALLOC160     IS IT ALLOCATED            43474340
+         BNE   ERRCOMP             INDICATE ERROR                       43475240
+         L     BLKREG,FREE160W     GET ZERO ASID & FREE FLG             43476140
+         ST    BLKREG,ASIDPRE(,HDRREG)  SET ZERO ASID & FREE FLG        43477040
+         LM    CNTREG,BLKREG,HEAD160    GET CURRENT                     43477940
+         LR    BLKREG1,REG0             GET ADDR OF BLK TO FREE         43478840
+INITFREE LR    CNTREG1,CNTREG           SET OLD COUNT                   43479740
+         AL    CNTREG1,UNIQUEC1         ADD 1 TO FREE & SYNC CNTS       43480640
+         ST    BLKREG,BLKLINK(,BLKREG1) PUT OLD HEAD IN THIS LINK       43481040
+         CDS   CNTREG,CNTREG1,HEAD160   PUT BLOCK BACK ON FREE QUE      43481540
+         BNE   INITFREE                 SWAP FAILED                     43482440
+         SR    REG2,REG2           INDICATE SRB ENTRY                   43483340
+         B     COMTEST1            GO TO COMMON CODE                    43484240
+IECVBCOM BALR  BASEREG,0               TEMP BASE ADDR, BRANCH ENTRY     43485140
+         USING *,BASEREG                                                43486040
+         L     BASEREG,COMPBASE        CONSTANT AREA  ADDRESSABLE       43486940
+         USING CONSTANT,BASEREG                                         43487840
+         SPACE                                                          43488740
+         STM   REG0,RETREG,ZERO(SAVEREG)      SAVE 0-14                 43489640
+         L     REG2,BRNCHENT            INDICATE BRANCH ENTERED         43490540
+         LA    REG0,FOUR               SET INIT RTN CODE TO NO PAGES    43491440
+*                                      FREED                            43492340
+COMTEST1 SR    HDRREG,HDRREG      CHECK IF COMPRESS IN PROGRESS         43493240
+         L     CNTREG1,INITCOMP    TO INDICATE COMPRESS IN PROGRESS     43494140
+         CS    HDRREG,CNTREG1,PGFREEHD  SWAP IN FF'S TO SERIALIZE       43495040
+         BNE   COMPEX2            COMPRESS ALREADY IN PROGRESS          43500040
+         LA    HDRREG,PAG160HD          GET HEAD OF 160 BYTE BLOCKS     43500340
+         LH    CNTREG1,NOPGS(,HDRREG)   GET NO. OF PAGES                43500440
+         C     CNTREG1,MINPGES          IF NOT A MINIMUM NO. OF PAGES   43500540
+         BL    COMPEXIT                 DONT BOTHER                     43500640
+         LH   CNTREG,FCNT160    :GET 160 BYTE BLOCK FREE COUNT          43500740
+         C     CNTREG,CMIN160     CHECK FOR MIN. NO. OF BLOCKS          43500840
+         BH    COMPTRY            MORE THAN MIN, TRY COMPRESS           43500940
+         B     COMPEXIT           RETURN FROM BRANCH ENTRY              43501040
+         EJECT                                                          43501140
+COMPTRY  EQU   *                  GET SYNCH LOCK & TRY COMPRESS         43501240
+         L     IRTREG,SMGRFRRA    LOAD STORAGE MGR FRR ADDR             43501340
+         SETFRR A,PARMAD=(FRRAREA),FRRAD=(IRTREG),WRKREGS=(5,6)         43501440
+         SPACE                                                          43501540
+         STM   SAVEREG,RETREG,FRRSVA   SAVE REGS 13-14                  43501640
+         L     BLKREG,IOSADDR     GET IOSYNCH LOCK ADDR                 43501740
+         SETLOCK OBTAIN,TYPE=IOSYNCH,MODE=UNCOND,ADDR=(11),RELATED=(SMG*43501840
+               RPOOL,IECVSMGR(COMPLKF))                                 43501940
+         SPACE                                                          43502040
+         OI    FRRFLA,FRRSYNCH    INDICATE IOSYNCH LOCK HELD            43502140
+         SPACE                                                          43502240
+         C     REG2,BRNCHENT      WAS THIS A BRANCH ENTRY?              43502340
+         BE    COMPT01            YES, SET BIT IN FRRFLB                43502440
+         OI    FRRFLB,FRRSCOM     NO,INDICATE SRB ENTERED               43502540
+         B     COMPT05            BRANCH AROUND                         43502640
+COMPT01  OI    FRRFLB,FRRBCOM     INDICATE BRANCH ENTERED               43502740
+COMPT05  EQU   *                  CHECK IF SHOULD STILL COMPRESS        43502840
+         LH    CNTREG,FCNT160     GET 160 BYTE BLOCK FREE COUNT         43502940
+         C     CNTREG,CMIN160     CHECK IF STILL WORTH TRYING           43503040
+         BH    COMPRESS           ENOUGH BLOCKS, TRY COMPRESS           43503140
+         LA    BLKREGLK,COMPFAIL  SET NO PAGES FREED                    43503240
+         B     COMNOTRY           GO FREE THE SYNCH LOCK                43503340
+         SPACE                                                          43503440
+*****************************************************************       43503540
+*        TRY TO COMPRESS OUR USE OF STORAGE BY SORTING BACK             43503640
+*        THE 160 BYTE BLOCKS TO THE PAGE THEY CAME FROM                 43503740
+*****************************************************************       43503840
+*                                                                       43503940
+COMPRESS EQU   *                                                        43504040
+*        INTIALIZE FREE COUNTS IN PAGES OF CORRESPONDING BLOCKS         43504140
+         LA    HDRREG,PAG160HD    GET HEAD OF 160 CHAIN                 43504240
+         SR    REG0,REG0          ZERO REG TO INITIALIZE CNT IN PAGES   43504340
+         L     PGREG,PGCHN(,HDRREG)    GET 1ST PAGE                     43504440
+COMPINIT LA    PGREG,0(PGREG)     ZERO HIGH ORDER BYTE                  43504540
+         LTR   PGREG,PGREG        END OF CHAIN ?                        43504640
+         BZ    COMPSORT           GO SORT BLOCKS TO PAGES               43504740
+         L     HDRREG,PGID160           GET CHECK VALUE                 43504840
+         CL    HDRREG,PGID(,PGREG)      CHECK IF VALID PAGE             43504940
+         BNE   ERRCOMP                  ISSUE C0D ABEND SHLD NOT OCR    43505040
+         ST    REG0,PGCNT(,PGREG)       ZERO CNT OF BLOCKS IN PAGE      43505240
+         ST    REG0,PGBLK(,PGREG)       ZERO PTR TO FREE BLKS IN PAGE   43505340
+         ST    REG0,LASTBLK(,PGREG)     ZERO PTR USED TO SAV LAST BLK   43505440
+         L     PGREG,PGCHN(,PGREG)     GET NEXT PAGE IN CHAIN           43505540
+         B     COMPINIT           INIT NEXT PAGE                        43505640
+         SPACE                                                          43505740
+COMPSORT EQU   *                  SORT BLOCKS TO PAGES THEY CAME FROM   43505840
+         SR    BLKREGLK,BLKREGLK  ZERO FOR 160 ANCHOR                   43505940
+         LM    CNTREG,BLKREG,HEAD160   GET CURRENT CNT & ANCHOR         43506040
+COMP001  LR    REG0,CNTREG         GET CURRENT FREE COUNT               43506140
+         AL    REG0,SYNCHCNT       ADD 1 TO SYNCH COUNT                 43506240
+         N     REG0,LOWZOFF        ZERO FREE COUNT PART                 43506340
+         CDS   CNTREG,REG0,HEAD160     TRY TO TAKE OFF WHOLE QUEUE      43509740
+         BNE   COMP001            FAILED, TRY AGAIN                     43510240
+*                                                                       43510340
+********                                                                43510440
+         SPACE                                                          43510540
+*        NOW HAVE REMOVED WHOLE FREE QUEUE & ZEROED FREE & SYNCH CNTS   43510640
+*        BLKREG POINTS TO TOP OF QUEUE                                  43510740
+*        NOW PROCEED TO PUT NIP BLOCKS ON FREE QUEUE,                   43510840
+*        QUEUE NON-NIP BLOCKS OFF RESPECTIVE PAGE HEADERS               43510940
+*********                                                               43511040
+*                                                                       43511140
+         OI    FRRFLB,FRRDFREE     INDICATE TO FRR WE GOT THIS FAR      43511240
+         LA    BLKREG,0(BLKREG)    ZERO HIGH BYTE                       43511340
+         LTR   BLKREG,BLKREG       IS IT ZERO?                          43511440
+         BZ    COMNOTRY            NO BLOCKS ON FREE QUE                43511540
+COMPLOOP L     CHAINREG,BLKLINK(,BLKREG)  GET NEXT BLOCK IN CHAIN       43511640
+         ST    REG0,BLKLINK(,BLKREG)   ZERO LINK PTR OF BLK             43511740
+         LR    HDRREG,BLKREG           GET BLOCK PREFIX                 43511840
+         S     HDRREG,FEIGHT      MINUS 8 PTS TO PREFIX                 43511940
+         CLI   ALLOCFLG(HDRREG),FREE160  MAKE SURE MARKED FREE          43512040
+         BNE   ERRCOMP            INDICATE ERROR IN COMPRESS            43512140
+         L     PGREG,PREFXPGE(,HDRREG)  GET PAGE BLOCK CAME FROM        43512240
+         L     REG2,PGID160            MAKE SURE PAGE OF 160S           43512340
+         C     REG2,PGID(,PGREG)       DOES PAGE SEEM VALID             43512440
+         BNE   ERRCOMP            GO INDICATE ERROR                     43512540
+         TM    PGFLGS(PGREG),PGINIT   IS THIS A NIP PAGE?               43512640
+         BNO   COMSORT1                SORT BLOCK TO PAGE IT CAME FROM  43512740
+*                                                                       43512840
+********                                                                43512940
+* FOR BLOCKS FROM NIP PAGES, CDS THE BLOCK BACK TO THE FREE QUEUE       43513040
+********                                                                43513140
+*                                                                       43513240
+         LM    CNTREG1,BLKREG1,HEAD160  GET CURRENT CNT & ANCHOR        43513340
+COMP005  LR    CNTREG,CNTREG1          COPY CNTS TO UPDATE              43513440
+         AL    CNTREG,UNIQUEC1         ADD 1 TO SYNCH & FREE CNTS       43513540
+         ST    BLKREG1,BLKLINK(,BLKREG)                                 43513640
+         CDS   CNTREG1,CNTREG,HEAD160   TRY TO PUT NIP BLOCK BACK ON Q  43513740
+         BNE   COMP005                 CDS FAILED, TRY AGAIN            43513840
+         SPACE                                                          43513940
+         LA    CHAINREG,0(,CHAINREG)   ZERO HIGH ORDER BYTE             43514040
+         LTR   CHAINREG,CHAINREG       TEST FOR END OF CHAIN            43514140
+         BZ    COMPSTP2       END OF CHAIN, GO REQUE NON-NIP BLOCKS     43514240
+         LR    BLKREG,CHAINREG         GET NEXT BLOCK                   43514340
+         B     COMPLOOP                GO SORT IT                       43514440
+         EJECT                                                          43514540
+*****************************************************************       43514640
+*        PUT THE BLOCK ON A CHAIN OF THE PAGE IT CAME FROM              43514740
+*        CDS NOT NEEDED BECAUSE BLOCKS ARE NOT ON FREE Q AND            43514840
+*        IOSYNCH LOCK HELD                                              43514940
+*************************************************************           43515040
+*                                                                       43515140
+COMSORT1 EQU   *                                                        43515240
+         L     BLKREG1,PGBLK(,PGREG)   GET TOP OF CHAIN IN PAGE         43515340
+         LTR   BLKREG1,BLKREG1     IS THIS 1ST TIME THIS PAGE?          43515440
+         BNZ   COMSORT2                 NO GO ON                        43515540
+         ST    BLKREG,LASTBLK(,PGREG)   YES, THIS WILL BE LAST ON QUE   43515640
+COMSORT2 ST    BLKREG1,BLKLINK(,BLKREG)   PUCH DOWN STACK               43515740
+         ST    BLKREG,PGBLK(,PGREG)    PUT NEW BLOCK ADDR IN PAGE HEAD  43515840
+         L     CNTREG1,PGCNT(,PGREG)   GET CNT OF FREE BLOCKS IN PAGE   43515940
+         LA    CNTREG1,ONE(,CNTREG1)   ADD ONE TO CNT OF BLOCKS         43516040
+         ST CNTREG1,PGCNT(,PGREG)      UPDATE CNT IN PAGE HEADER        43516140
+         LA    CHAINREG,0(,CHAINREG)   ZERO HIGH ORDER BYTE             43516240
+         LTR   CHAINREG,CHAINREG       TEST FOR END OF CHAIN            43516340
+         BZ    COMPSTP2       END OF CHAIN, GO REQUE NON-NIP BLOCKS     43516440
+         LR    BLKREG,CHAINREG     NOT END, GET NEXT BLOCK              43516540
+         B     COMPLOOP                 GO SORT IT                      43516640
+*                                                                       43516740
+****************************************************************        43516840
+*        NOW ALL NIP BLOCKS HAVE BEEN RETURNED TO THE FREE QUEUE        43516940
+*        AND ALL NON-NIP BLOCKS HAVE BEEN QUEUED TO THE PAGE THEY       43517040
+*        CAME FORM                                                      43517140
+*        THE PAGES THAT CANNOT BE FREEMAINED WILL BE RETURNED TO        43517240
+*        THE FREE QUEUE                                                 43517340
+*        PAGES THAT CAN BE FREEMAINED WILL BE RECHAINED FOR LATER       43517440
+******************************************************************      43517540
+*                                                                       43517640
+COMPSTP2 EQU   *                  STEP 2 OF COMPRESS, RETURN PAGES      43517740
+         OI    FRRFLB,FRRCSTP2     INDICATE TO FRR WE GOT THIS FAR      43517840
+         LA    CHAINREG,PAG160HD       GET HEAD OF PAGE CHAIN           43517940
+         LR    REG2,CHAINREG            INIT REG2 INCASE NO PAGES       43518040
+         L     CHAINREG,PGCHN(,CHAINREG)  GET 1ST PAGE ON CHAIN         43518140
+STP2001  LTR   CHAINREG,CHAINREG  ANY PAGES?                            43518240
+         BZ    COMPFLK            THERE ARE NO PAGES TO COMPRESS        43518340
+         TM    PGFLGS(CHAINREG),PGINIT   IF NOT A NIP PAGE GO ON        43518440
+         BZ    STP2005            NON NIP PAGE, SEE IF CAN FREE         43518540
+         LR    REG2,CHAINREG      SAVE LAST NIP PAGE                    43518640
+         L     CHAINREG,PGCHN(,CHAINREG)  CHECK NEXT PAGE               43518740
+         B     STP2001                 FOR AN NON NIP PAGE              43518840
+         EJECT                                                          43518940
+*        CHAINREG NOW HAS 1ST NON NIP PAGE                              43519040
+*                                                                       43519140
+STP2005  LR    PGREG,REG2         SAVE PREVIOUS PAGE 1ST PASS           43519240
+STP2010  L     CNTREG1,PGCNT(,CHAINREG)   GET COUNT OF FREE BLOCKS      43519340
+         C     CNTREG1,N160BP          ARE ALL BLOCKS IN PAGE FREE?     43519440
+         BE    FREEPG01           YES PUT PAGE ON CHAIN TO FREEMAIN     43519540
+         BH    ERRCOMP            SHOULD NOT HAPPEN                     43519640
+         LR    PGREG,CHAINREG           UPDATE PREV PAGE PTR            43519740
+         L     CHAINREG,PGCHN(,CHAINREG)   GET NEXT PAGE IF ANY         43519840
+         LA    CHAINREG,0(CHAINREG)    ZERO HIGH ORDER BYTE             43519940
+         LTR CHAINREG,CHAINREG         ANY MORE PAGES?                  43520040
+         BZ    RELINK                  NO GO RELINK FREE BLOCKS         43520140
+         B     STP2010                 CHECK NEXT PAGE                  43520240
+*                                                                       43520340
+***************************************************************         43520440
+*        COME HERE TO CHAIN PAGES FOR FREEMAIN                          43520540
+***************************************************************         43520640
+*                                                                       43520740
+FREEPG01 EQU   *                  QUEUE SERIALIZED BY SYSCH LOCK        43520840
+         LR    INTREG1,CHAINREG    SAVE PAGE PTR                        43520940
+         L     CHAINREG,PGCHN(,CHAINREG)   SAVE NEXT PAGE PTR           43521040
+         L     HDRREG,PGFREEHD    GET HEAD OF QUE OF PAGES TO FREE      43521140
+         ST    HDRREG,PGCHN(,INTREG1)   PUT HEAD IN LINK OF NEW         43521240
+         ST    INTREG1,PGFREEHD         PUT NEW PTR IN HEAD PTR         43521340
+         LA    HDRREG,PAG160HD     GET HEAD OF PAGE CHAIN               43521440
+         LH    CNTREG1,NOPGS(HDRREG)    GET CNT OF PAGES                43521540
+         BCTR  CNTREG1,0                DECREMENT COUNT                 43521640
+         STH   CNTREG1,NOPGS(HDRREG)    UPDATE CURRENT COUNT            43521740
+         LA    CHAINREG,0(CHAINREG)    ZERO HIGH ORDER BYTE             43521840
+         ST    CHAINREG,PGCHN(,PGREG)  PUT NEXT IN LINK OF LAST PAGE    43521940
+         LTR   CHAINREG,CHAINREG  ANY MORE PAGES?                       43522040
+         BZ    RELINK             NO, GO RELINK NON FREEABLE BLOCKS     43522140
+         B     STP2010            YES, GO CHECK NEXT PAGE               43522240
+         EJECT                                                          43522340
+*                                                                       43522440
+*******************************************************************     43522540
+*        RECHAIN ALL BLOCKS THAT CAN'T BE FREEMAINED                    43522640
+*        AND PUT THEM BACK ON THE FREE QUEUE                            43522840
+*******************************************************************     43522940
+*                                                                       43523040
+RELINK   EQU   *                  REG2 HAS LAST NIP PAGE                43523140
+         LR    PGREG,REG2         START WITH LAST NIP PAGE              43523240
+RELINK01 L     PGREG,PGCHN(,PGREG) GET 1ST NON NIP PAGE WITH FREE BLKS  43523340
+         LA    PGREG,0(PGREG)     ZERO HIGH ORDER BYTE                  43523440
+         LTR   PGREG,PGREG        SEE IF ANY NON NIP PAGES LEFT         43523540
+         BZ    COMPFLK            MUST BE DONE, FREE SYNCH LOCK         43523640
+         L     BLKREG,PGBLK(,PGREG)    GET 1ST BLOCK ON PAGE IF ANY     43523740
+         LTR   BLKREG,BLKREG      ANY FREE BLOCKS?                      43523840
+         BZ    RELINK01           NO TRY NEXT PAGE                      43523940
+         LR    REG2,BLKREG  SAVE 1ST BLK FROM 1ST PAGE WITH BLKS        43524040
+         SPACE                                                          43524140
+         SR    CNTREG1,CNTREG1    INITIALIZE CNTREG1                    43524240
+RELINK03 L     CNTREG,PGCNT(,PGREG)    GET CNT TO ADD FOR THIS PAGE     43524340
+         AR    CNTREG1,CNTREG      ADD NO. OF FREE BLKS ON PAGE         43524440
+         L     BLKREG1,LASTBLK(,PGREG)  GET LAST ON CHAIN, THIS PAGE    43524540
+         SPACE                                                          43524640
+*    BLKREG1 PTS TO LAST BLK, PREVIOUS PAGE                             43524740
+*    NOW FIND 1ST BLOCK NEXT PAGE TO STORE IN LINK PTR                  43524840
+*                                                                       43524940
+RELINK10 L     PGREG,PGCHN(,PGREG)     GET NEXT PAGE                    43525040
+         LA    PGREG,0(PGREG)          ZERO HIGH ORDER BYTE             43525140
+         LTR   PGREG,PGREG             ANY MORE PAGES?                  43525240
+         BZ    RECHAIN1                NO, GO RECHAIN TO FREE QUEUE     43525340
+         L     BLKREG,PGBLK(,PGREG)    GET 1ST BLOCK ON THIS PAGE       43525440
+         LA    BLKREG,0(BLKREG)        ZERO HIGH ORDER BYTE             43525540
+         LTR   BLKREG,BLKREG           ANY BLOCKS THIS PAGE?            43525640
+         BZ    RELINK10                NO TRY NEXT PAGE                 43525740
+         SPACE                                                          43525840
+         ST    BLKREG,BLKLINK(,BLKREG1) STORE THIS PTR IN LAST OF       43525940
+*                                      PREVIOUS PAGE                    43526040
+         B     RELINK03                GO UPDATE CNT & REPEAT LOOP      43526140
+         SPACE                                                          43526240
+*                                                                       43526340
+*******************************************************************     43526440
+*        NOW RECHAIN THE FREE BLOCKS TO THE FREE QUEUE                  43526540
+*        REG2 SHOULD NOW POINT TO THE                                   43526640
+*        1ST BLOCK OF THIS CHAIN, BLKREG1 SHOULD POINT TO THE           43526740
+*        LAST BLOCK OF THIS CHAIN, CNTREG1 HAS NUM. OF BLOCKS           43526840
+*        TO RETURN                                                      43526940
+*******************************************************************     43527040
+*                                                                       43527140
+RECHAIN1 EQU   *                  TRY TO RECHAIN TO THE FREE QUEUE      43527240
+         LR    BLKREGLK,REG2    :GET 1ST BLOCK OF CHAIN TO ADD          43527340
+         LM    CNTREG,BLKREG,HEAD160   GET CURRENT CNT & ANCHOR         43527440
+RECHAIN5 LR    REG0,CNTREG             SAVE NUMBER OF BLOCKS            43527540
+         AR    REG0,CNTREG1            ADD NUM. OF BLOCKS BEING CHAINED 43527640
+         AL    REG0,UNIQUECT           ADD 1 TO SYNCH COUNT             43527740
+         ST    BLKREG,BLKLINK(,BLKREG1)  STORE OLD HEAD IN LAST BLOCK   43527840
+         CDS   CNTREG,REG0,HEAD160     TRY TO PUT CHAIN ON QUEUE        43527940
+         BNE   RECHAIN5                CDS FAILED, TRY AGAIN            43528040
+         SPACE                                                          43528140
+*  NOW FREE IOSYNCH LOCK TO OPEN WINDOW FOR GET BLOCK ROUTINE           43528240
+COMPFLK  EQU   *                  FREE LOCK CHECK IF COMPRESS WORKED    43528340
+         L     BLKREG,IOSADDR     GET IOSYNCH LOCK ADDR                 43528440
+         SETLOCK RELEASE,TYPE=IOSYNCH,ADDR=(11),RELATED=(SMGRPOOL,IECVS*43528540
+               MGR(COMPTRY))                                            43528640
+         NI    FRRFLA,FF-FRRSYNCH      INDICATE SYNCH LOCK NOT HELD     43528740
+         OI    FRRFLB,FRRCFLK      INDICATE TO FRR WE GOT THIS FAR      43528840
+         SPACE                                                          43528940
+*        NOW TEST IF ANY PAGES TO FREEMAIN                              43529340
+         L     BLKREGLK,PGFREEHD  GET HEAD OF CHAIN FOR FREEMAIN        43529440
+         C     BLKREGLK,INITCOMP  HAS ANY PAGES BEEN PUT ON QUEUE?      43529540
+         BE    COMNOTRY           INDICATE COMPRESS DID NOT HELP        43529640
+         LTR   BLKREGLK,BLKREGLK  TEST FOR ZERO, SHOULD NOT OCCUR       43529740
+         BZ    ERRCOMP            NOTHING TO FREE                       43529840
+         SPACE                                                          43530140
+COMPFREE L     HDRREG,PGCHN(,BLKREGLK)  GET NEXT PAGE IF ANY            43530240
+         ST    HDRREG,PGFREEHD    UPDATE FREEPAGE HEAD                  43530340
+         SPACE                                                          43530440
+         SETLOCK OBTAIN,TYPE=SALLOC,MODE=UNCOND,RELATED=(GETMAIN,IECVSM*43530540
+               GR(COMFREE))                                             43530640
+         SPACE                                                          43530740
+         OI    FRRFLA,FRRALLOC    INDICATE SALLOC HELD                  43530840
+*  NOW FREEMAIN THIS PAGE POINTED TO BY BLKREGLK                        43530940
+         LR    CNTREG,BASEREG     SAVE REG 15 ACROSS GM                 43531040
+         LR    REG2,FRRAREA       SAVE FRR AREA PTR                     43531140
+         FREEMAIN  RU,LV=4096,SP=245,BRANCH=(YES,GLOBAL),A=(1)          43531240
+         SPACE                                                          43531340
+         LR    BASEREG,CNTREG     RESTORE REG15                         43531440
+         LR    FRRAREA,REG2       RESTORE FRR AREA PTR                  43531540
+         SPACE                                                          43531640
+         SETLOCK RELEASE,TYPE=SALLOC,RELATED=(GETMAIN,IECVSMGR(COMPFREE*43531740
+               ))                                                       43531840
+         SPACE                                                          43531940
+         NI    FRRFLA,FF-FRRALLOC      INDICATE SALLOC LOCK NOT HELD    43532040
+         C     HDRREG,INITCOMP         ANY MORE PAGES?                  43532140
+         BE    COMPGOOD           NO, RETURN TO CALLER                  43532240
+         LTR   HDRREG,HDRREG      CHECK FOR ZERO, SHOULD NOT HAPPEN     43532840
+         BZ    ERRCOMP            NOTHING TO FREE                       43533040
+         LR    BLKREGLK,HDRREG    YES, GO FREEMAIN THIS PAGE            43533240
+         B     COMPFREE           LOOP FOR NEXT PAGE                    43533340
+COMPGOOD SLR   REG0,REG0           INDICATE PAGE(S) FREED               43533440
+         B     COMPFINI            AND EXIT                             43533540
+         SPACE                                                          43534040
+COMNOTRY EQU   *                   COMPRESS NOT TRIED, FREE LOCK        43534140
+         LA    REG0,FOUR           SET RETURN CODE NO PAGES FREED       43534240
+         SPACE                                                          43534340
+COMPFINI EQU   *              INDICATE PAGE FREED, DELETE FRR, RTN      43534440
+         TM    FRRFLA,FRRSYNCH     IS SYNCH LOCK HELD                   43534540
+         BZ    COMPDFRR            NO, SKIP FREE                        43534640
+         L     BLKREG,IOSADDR  GET THE IOSYNCH LOCK ADDR                43534840
+         SETLOCK RELEASE,TYPE=IOSYNCH,ADDR=(11),RELATED=(SMGRPOOL,IECVS*43534940
+               MGR(COMPTRY))                                            43535040
+         NI    FRRFLA,FF-FRRSYNCH    INDICATE SYNCH LOCK NOT HELD       43535140
+         SPACE                                                          43535240
+COMPDFRR EQU   *          DELETE FRR CHECK FOR BRANCH ENTRY             43535340
+         LM    SAVEREG,RETREG,FRRSVA    RELOAD 13 & 14                  43535440
+         SR    REG2,REG2        INIT REG2                               43535540
+         TM    FRRFLB,FRRBCOM     WAS COMPRESS BRANCH ENTERED?          43536040
+         BZ    COMPFRRD           NO,SRB ENTERED                        43536540
+         L     REG2,BRNCHENT      YES, INDICATE BRANCH ENTERED          43537040
+         SPACE                                                          43537540
+COMPFRRD SETFRR D,WRKREGS=(3,4)                                         43538040
+COMPEXIT SR    CNTREG,CNTREG       ZERO TO ALLOW FUTURE COMPRESS        43538540
+         L     PGREG,PGFREEHD      GET TO INDICATE COMPRESS DONE        43539040
+         CS    PGREG,CNTREG,PGFREEHD   SWAP BACK ZERO TO IND FREE       43539140
+         SPACE                                                          43539540
+COMPEX2  C     REG2,BRNCHENT      WERE WE BRANCH ENTERED                43540040
+         BE    COMPBRTN           YES GO RESTORE REGS & SET RC          43540540
+         SPACE                                                          43541040
+         BR    RETREG             NO, RETURN TO DISPATCHER              43541540
+         SPACE                                                          43542040
+COMPBRTN EQU   *                  RETURN FORM BRANCH ENTRY              43542540
+         LR    BASEREG,REG0      PUT RETURN CODE IN REG 15              43543040
+         LM    REG0,RETREG,ZERO(SAVEREG)   RELOAD CALLERS REGS          43543540
+         BR    RETREG                                                   43544040
+         SPACE                                                          43544540
+ERRCOMP  EQU   *                                                        43545040
+         LR    REG2,BLKREGLK       SAVE REG1 ACROSS ABEND               43545540
+         ABEND RECRD,,,SYSTEM     CAUSE FRR TO GET CONTROL              43546040
+         SPACE 2                                                        43546540
+COMPBASE DC    A(CONSTANT)        TO BECOME ADDRESSABLE TO CONSTANTS    43547040
+         TITLE 'IECVSMGR - INVOKED DSECTS'                              43549040
+         EJECT                                                 @ZA12704 43549140
+         IHAFRRS                                               @ZA12704 43549240
+         EJECT                                                 @ZA12704 43549340
+         IECDSFRR                                              @ZA12704 43551340
+         SPACE 1                                               @ZA12704 43553340
+* NOTE FRRWRK IS USED IN BOTH GET160 & FRR AS A TEMP WA        @ZM41373 43634540
+* THERE IS NO PROBLEM WITH THIS - ON A RETRY GET160 MAY GET    @ZM41373 43635040
+* IOSYNCH LOCK UNC WITH SLIGHT & TEMP PERFORMANCE DEGREDATION  @ZM41373 43635540
+         EJECT                                                          43752040
+****************************************************************        43754040
+*                                                              *        43756040
+*    DSECT OF 200 BYTE WORK AREA EXTENSION USED BY THE FRR.    *        43758040
+*    THIS WORKAREA IS PASSED IN REGISTER 0 UPON ENTRANCE       *        43760040
+*    TO THE FRR.                                               *        43762040
+*                                                              *        43764040
+****************************************************************        43766040
+         IHAQVPL                                                        43768040
+         SPACE 4                                                        43770040
+QVWORKS  DS    XL(QVPLWASZ)            WORK AREA FOR QVA                43772040
+QVSAVE   DS    18F                     SAVE AREA FOR CALLED ROUTINES    43774040
+QFRRSDWA DS    F                       SDWA BACK POINTER                43776040
+***                                                          ***        43778040
+***   REMAINDER OF 200 BYTE WORKAREA NOT USED                ***        43780040
+***                                                          ***        43782040
+         EJECT                                                          43784040
+         CVT   LIST=NO,DSECT=YES                               @ZA12704 43785040
+         EJECT                                                 @ZA12704 43786040
+         IECDIOQ                                               @ZA12704 43787040
+         EJECT                                                 @ZA12704 43788040
+         IHAPSA                                                @ZA12704 43789040
+         EJECT                                                 @ZA12704 43790040
+         IHALCCA                                               @ZA12704 43791040
+         EJECT                                                 @ZA12704 43792040
+         IECDIRT                                               @ZA12704 43793040
+         EJECT                                                 @ZA12704 43794040
+         IHAWSAVT CLASS=CPU,DSECT=YES                                   43800021
+         EJECT                                                          43820040
+         IHAWSAVT CLASS=GLOBAL,DSECT=YES                                43850021
+         EJECT                                                          43860040
+         IHASDWA                                                        43870040
+         EJECT                                                          43880040
+***                                                           ***       43900040
+*   DSECT DESCRIBES USAGE OF SVC DUMP 4K BUFFER                 *       43950040
+***                                                           ***       44000040
+         SPACE 2                                                        44050040
+SDBUF    DSECT                                                          44100040
+SDBDATAD DS    A                       DATA ADDRESS                     44150040
+SDBDLN   DS    H                       DATA LENGTH                      44200040
+SDBDATA  EQU   *                       DATA BEGIN                       44250040
+         DS    0D                                                       44270040
+SDBPHDR  DS    XL(HEADEND)             STORAGE POOL HEADERS             44300040
+SDBFHDR  DS    XL(FHDLNTH)             FREE QUEUE HEADERS               44350040
+SDBDL    EQU   *-SDBDATA               LENGTH OF DATA                   44400040
+SDBLAST  DS    XL6                     END OF DATA INDICATOR(ZEROS)     44450040
+         END                                                            44500040

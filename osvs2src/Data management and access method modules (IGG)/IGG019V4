@@ -1,0 +1,320 @@
+ TITLE   'IGG019V4 - 1419 AND 1275 CONTROL ROUTINE'                     00300000
+IGG019V4 CSECT                                                          00600000
+*                                                                       00900000
+*                                                                       01200000
+*STATUS  CHANGE LVL 000,  VERSION LVL 000,  MODIFICATION LVL 000        01500000
+*                                                                       01800000
+*        RELEASE 04.0 CHANGES                                  @ZA07621 01870003
+*C933000                                                       @ZA07621 01940003
+*                                                              @ZA07621 02010003
+*FUNCTION - DISENGAGE AND POCKET LITE ROUTINES FOR 1419 AND 1275.       02100000
+*        1- IF DISENGAGE IS REQUESTED THE ROUTINE SETS FLAGS IN THE     02400000
+*           DCB SO THE PCI APPENDAGE CAN DISENGAGE THE DEVICE.          02700000
+*        2- IF LITE IS REQUESTED THE ROUTINE:                           03000000
+*           A- DETERMINES IF THE DEVICE IS DISENGAGED                   03300000
+*           B- CHECKS THE TWO BYTE POCKET LITE BUCKET AREA TO           03600000
+*              DETERMINE WHICH LIGHTS TO TURN ON                        03900000
+*           C- STARTS THE CHANNEL PROGAM TO TURN THE LIGHTS ON.         04200000
+*           D- CHECKS TO SEE THE CCW STRING EXECUTED SUCCESSFULLY.      04500000
+*           E- IF AN ERROR OCCURRED BRANCH TO THE USER'S SYNAD          04800000
+*              ROUTINE.  (IF NO SYNAD IS AVAILABLE AN ABEND IS ISSUED)  05100000
+*ENTRY POINT - IGG019V4 FROM THE MACRO EXPANSION.                       05400000
+*              AN EXAMPLE OF THE EXPANSION IS:                          05700000
+*                BAL 1,*+12          LOAD ADDRESS OF PARAMETER LIST     06000000
+*                DC  A(DCB)          DCB ADDRESS                        06300000
+*                DC  A(LITE-BUCKET)  LITE-BUCKET ADDRESS                06600000
+*                L  14,0(1,0)        LOAD DCB ADDRESS                   06900000
+*                L  15,84(14,0)      LOAD ROUTINE ADDRESS               07200000
+*                BALR 14,15 FOR LITE (BAL 14,4(15) FOR DESENGAGE)       07500000
+*                                                                       07800000
+*INPUT - DCB                                                            08100000
+*         DCBMRIND - X'08' CONTROL ROUTINE ENTERED BIT SET ON           08400000
+*         DCBIOBAD - PCU IOB ADDRESS                                    08700000
+*         DCBSYNAD - SYNAD ROUTINE ADDRESS                              09000000
+*        SCU IOB                                                        09300000
+*         16(SCUIOBR) - SCU CCW STRING ADDRESS                          09600000
+*         4(SCUIOBR) - SCU ECB ADDRESS                                  09900000
+*        POCKET LITE BUCKET-                                            10200000
+*         TWO BYTES SUPPLIED BY USER.  (CONTAINS BITS INDICATING        10500000
+*         WHICH LITES ARE TO BE TURNED ON)                              10800000
+*                                                                       11100000
+*OUTPUT -DCB                                                            11400000
+*         DCBMRFLG-X'30' - DISENGAGE REQUESTED BY USER                  11700000
+*        POCKET LITE BUCKET-                                            12000000
+*         BYTE 2, BIT 7 IS SET ON IF THE DEVICE IS NOT DISENGAGED       12300000
+*         WHEN THE USER REQUESTS POCKET LIGHTS TO BE TURNED OR          12600000
+*         IF AN ERROR OCCURRED IN THE CCW STRING TO TURN ON THE         12900000
+*         LIGHTS.                                                       13200000
+*        RETURN CODES                                                   13500000
+*         X'00' - NORMAL COMPLETION-NO I/O ERRORS                       13800000
+*         X'04' - I/O ERROR-SYNAD RETURNED TO CHECK                     14100000
+*                                                                       14400000
+*        LITE CCW STRING                                                14700000
+*         THE COMMAND CODE CORRESPONDING TO THE POCKET LITE TO          15000000
+*         BE TURNED ON IS OUTPUT FROM THE ROUTINE                       15300000
+*                                                                       15600000
+*EXTERNAL ROUTINES - EXCP (SVC 00)                                      15900000
+*                    WAIT (SVC 01)                                      16200000
+*                    EOV (SVC 55)                                       16500000
+*                    USER'S SYNAD ROUTINE                               16800000
+*                                                                       17100000
+*EXITS NORMAL - RETURN TO USER VIA REGISTER 14                          17400000
+*                                                                       17700000
+*EXITS ERROR -  ABEND DUMP IF NO SYNAD ROUTINE IS SPECIFIED             18000000
+*                                                                       18300000
+*TABLES/WORK AREAS-- CALLERS SAVE AREA                                  18600000
+*                  - POCKET LITE BUCKET (TWO BYTES)                     18900000
+*                                                                       19200000
+*ATTRIBUTES - REENTERABLE                                               19500000
+*                                                                       19800000
+*NOTES -  NONE                                                          20100000
+*                                                                       20400000
+*                                                                       20700000
+*                                                                       21000000
+*                                                                       21300000
+*              SYMBOLIC DEFINITIONS OF REGISTERS                        21600000
+*                                                                       21900000
+ZEROR    EQU   0                                                        22200000
+REG1     EQU   1                       WORK REGISTER                    22500000
+PARMR    EQU   1                                                        22800000
+DCBR     EQU   2                       DCB ADDRESS                      23100000
+BCKETR   EQU   3                       POCKET LITE BUCKET ADDRESS       23400000
+BASER    EQU   4                       BASE REGISTER                    23700000
+PCKTR    EQU   5                       CONTAINS POCKET COMMAND CODE     24000000
+EVENR    EQU   6                       REGS 6 & 7 ARE USED IN DETER-    24300000
+ODDR     EQU   7                       MINING WHICH POCKET LITE         24600000
+SAVER    EQU   13                      ADDRESS OF SAVE AREA             24900000
+RETURNR  EQU   14                      RETURN ADDRESS                   25200000
+SCUIOBR  EQU   14                      SCU IOB ADDRESS                  25500000
+REG15    EQU   15                      WORK REGISTER                    25800000
+ENTRYR   EQU   15                      ENTRY POINT ADDR AND RETRUN CODE 26100000
+*                                                                       26400000
+*              SYMBOLIC DEFINITIONS FOR DISPLACEMENTS                   26700000
+*                                                                       27000000
+BCKTADDR EQU   4                       DISP TO PCKT LITE BCKT ADDR      27300000
+BCKTBYT1 EQU   1                       DISP TO PCKT LITE BYTE 1         27600000
+CCWADDR  EQU   24                      DISP TO CCW ADDR IN IOB          27900000
+DISP12   EQU   12                      DISP TO REG 14 SAVE AREA         28200000
+DISP20   EQU   20                                                       28500000
+DISP28   EQU   28                                                       28800000
+DISP56   EQU   56                                                       29100000
+IOBDISP  EQU   8                       DISP TO IOB FROM IOB PREFIX      29400000
+IOBECB   EQU   4                       DISP TO ECB IN IOB               29700000
+IOBECBAD EQU   12                      DISP TO ECB ADDR IN IOB          30000000
+LITECC   EQU   8                       DISP TO CCW FOR LITE COMMAND CDE 30300000
+LITECCW  EQU   136                     DISP FROM PCU CCW TO LITE CCW    30600000
+RTNCDSP  EQU   16                      DISP TO STORE RETURN CODE        30900000
+SCUIOB   EQU   48                      DISP FROM PCU IOB TO SCU IOB     31200000
+UNITEXCP EQU   20                      DISP TO CSW IN IOB               31500000
+ZEROD    EQU   0                       ZERO DISPLACEMENT                31800000
+*                                                                       32100000
+*              MISC DEFINITIONS                                         32400000
+*                                                                       32700000
+BITSAB   EQU   2                       SHIFT TO PROC BITS A & B LAST    33000000
+DCBALTER EQU   X'10'                   DCB ALTERED--SET ON FOR CLOSE    33300000
+ERBITOFF EQU   X'FE'                   SET ERROR BIT OFF                33600000
+ERBITON  EQU   X'01'                   SET ERROR BIT ON                 33900000
+EXCPISUD EQU   X'20'                                                    34200000
+FOUR     EQU   4                                                        34500000
+FRST6BTS EQU   X'04'                   FIRST 6 LITES PROCESSED          34800000
+INITEXCP EQU   X'CF'                                                    35100000
+LASTEXCP EQU   X'10'                   LAST EXCP INDICATOR              35400000
+LFTJSTFY EQU   24                      SHIFT TO LEFT JUSTIFY            35700000
+LST6BTS  EQU   6                       SHIFT FOR LAST SIX BITS          36000000
+NOSYNAD  EQU   X'01'                   SYNAD ROUTINE PRESENT            36300000
+SETLITE  EQU   X'F7'                   SET CC TO LITE COMMAND CODE      36600000
+SETOFF   EQU   X'FE'                                                    36900000
+SETON    EQU   X'0C'                   CONTROL RTN-LITES PRCSD BITS     37200000
+SHFTOFF  EQU   4                       SHIFT OFF LOW-ORDER BITS         37500000
+SHIFT12  EQU   12                      SHIFT ABEND COMPLETION CODE      37800000
+TESTBIT  EQU   1                       TEST THIS BIT                    38100000
+THREE    EQU   3                                                        38400000
+USERDISN EQU   X'20'                   USER DISENGAGE BIT               38700000
+X7FPSTD  EQU   X'7F'                   EVENT POSTED-SUCCESSFUL COMPLETE 39000000
+*                                                                       39300000
+*                                                                       39600000
+* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * 39900000
+*                                                                     * 40200000
+* THIS BRANCH IS TAKEN WHEN LITE IS SPECIFIED IN THE MACRO EXPANSION  * 40500000
+*                                                                     * 40800000
+* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * 41100000
+         USING *,ENTRYR                ESTABLISH BASE REGISTER          41400000
+         B     CNTL010                 BRANCH TO LITE ROUTINE           41700000
+* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * 42000000
+*                                                                     * 42300000
+* THE DISENGAGE ROUTINE SETS BITS IN THE DCBMRFLG SO THE PCI APPENDAGE* 42600000
+* CAN ENGAGE THE DEVICE                                               * 42900000
+*                                                                     * 43200000
+* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * 43500000
+         USING IHADCB,PARMR            ESTABLISH BASE REGISTER FOR DCB  43800000
+         OI    DCBMRFLG,USERDISN       SET ON DISENGAGE BIT (USER)      44100000
+         BR    RETURNR                 RETURN CONTROL TO USER           44400000
+*                                                                       44700000
+CNTL010  EQU   *                                                        45000000
+*                                                                       45300000
+         DROP  ENTRYR                                                   45600000
+         DROP  PARMR                                                    45900000
+         USING IHADCB,DCBR                                              46200000
+         USING IGG019V4,BASER                                           46500000
+         ST    RETURNR,DISP12(SAVER)   SAVE RETURN ADDR                 46800000
+         STM   DCBR,ODDR,DISP28(SAVER)   SAVE USER REGS                 47100000
+         LR    BASER,ENTRYR            ESTABLISH BASE REGISTER          47400000
+         L     DCBR,ZEROD(PARMR)       ESTABLISH BASE REGISTER FOR DCB  47700000
+         L     BCKETR,BCKTADDR(PARMR)  PICK UP POCKET LITE BUCKET ADDR  48000000
+         NI    BCKTBYT1(BCKETR),ERBITOFF   SET POCKET ERROR BIT TO ZERO 48300000
+         NI    DCBMRFG,INITEXCP        INITIALIZE EXCP INDICATOR BITS   48600000
+* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * 48900000
+*                                                                     * 49200000
+* IF THE DEVICE HAS BEEN DISENGAGED EACH BIT CORRESPONDING TO A POCKET* 49500000
+* IS TESTED TO DETERMINE IF THE POCKET LIGHT IS TO BE TURNED ON       * 49800000
+*                                                                     * 50100000
+* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * 50400000
+         OI    DCBMRIND,SETON          SET CNTRL RTN-LITE PRCSD BTS ON  50700000
+         LH    PCKTR,PCKTCC            LOAD REG WITH PCKT COMMAND CODE  51000000
+         SR    EVENR,EVENR             ZERO REGISTER                    51300000
+         SR    ODDR,ODDR               ZERO REGISTER                    51600000
+         IC    ODDR,ZEROD(BCKETR)      PICK UP 1ST BYTE OF LITE BUCKET  51900000
+         IC    EVENR,BCKTBYT1(BCKETR)  PICK UP 2ND BYTE OF LITE BUCKET  52200000
+         SRL   EVENR,SHFTOFF           SHIFT OFF LOW ORDER BITS-BYTE 2  52500000
+         SLL   ODDR,LFTJSTFY           LEFT-JUSTIFY BYTE 1              52800000
+         SLDL  EVENR,BITSAB            PUT POCKET LITE BITS A&B IN EVEN 53100000
+*                                                                       53400000
+CNTL020  EQU   *                                                        53700000
+*                                                                       54000000
+         LTR   ODDR,ODDR               IS THIS BIT ONE (ON)             54300000
+         BM    CNTL060                 YES, BRANCH TO TURN ON LIGHT     54600000
+*                                                                       54900000
+CNTL030  EQU   *                                                        55200000
+*                                                                       55500000
+         TM    DCBMRIND,FRST6BTS       FIRST 6 LITE BITS PROCESSED      55800000
+         BO    CNTL040                 NO, BRANCH                       56100000
+         L     REG1,SCNDTST            LOAD TEST REG FOR LAST 6 BITS    56400000
+         B     CNTL050                 BRANCH TO SHIFT FOR NEXT BIT     56700000
+*                                                                       57000000
+CNTL040  EQU   *                                                        57300000
+*                                                                       57600000
+         LH    REG1,FIRSTST            LOAD TEST REG FOR FIRST 6 BITS   57900000
+*                                                                       58200000
+CNTL050  EQU   *                                                        58500000
+*                                                                       58800000
+         TM    DCBMRFG,EXCPISUD        EXCP BEEN ISSUED                 59100000
+         BZ    CNTL051                 NO, BRANCH TO SHIFT NEXT BIT     59400000
+         XI    DCBMRFG,EXCPISUD        YES, SET OFF INDICATOR           59700000
+         B     CNTL052                 SKIP THE SHIFT                   60000000
+*                                                                       60300000
+CNTL051  EQU   *                                                        60600000
+*                                                                       60900000
+         SLL   ODDR,TESTBIT            SHIFT TO TEST THE NEXT BIT       61200000
+*                                                                       61500000
+CNTL052  EQU   *                                                        61800000
+*                                                                       62100000
+         AH    PCKTR,NXTPCKT           UPDATE COMMAND CODE REGISTER     62400000
+         CR    PCKTR,REG1              FIRST 6 BITS TESTED              62700000
+         BNE   CNTL020                 NO, BRANCH TO TEST ANOTHER ONE   63000000
+         CL    REG1,SCNDTST            HAVE ALL LIGHT BITS BEEN PROCD   63300000
+         BE    CNTL080                 YES, BRANCH TO EXIT THIS ROUTINE 63600000
+         XI    DCBMRIND,FRST6BTS       SET OFF FIRST 6 BITS INDICATOR   63900000
+         SRDL  EVENR,LST6BTS           LAST 6 BITS IN ODD REG TO PROC   64200000
+         B     CNTL020                 BRANCH TO TEST LAST 6 BITS       64500000
+*                                                                       64800000
+CNTL060  EQU   *                                                        65100000
+*                                                                       65400000
+* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * 65700000
+*                                                                     * 66000000
+* THE FOLLOWING INSTRUCTIONS CAUSE THE LIGHTS TO BE TURNED ON         * 66300000
+*                                                                     * 66600000
+* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * 66900000
+         XI    DCBMRFG,EXCPISUD        SET ON EXCP ISSUED BIT           67200000
+         SLL   ODDR,TESTBIT            SHIFT TO TEST THE NEXT BIT       67500000
+         LTR   ODDR,ODDR               ANY MORE POCKET LITES TO LITE    67800000
+         BC    7,CNTL061               YES, BRANCH                      68100000
+         LTR   EVENR,EVENR             ANY MORE POCKET LITES TO LITE    68400000
+         BC    7,CNTL061               YES, BRANCH                      68700000
+         XI    DCBMRFG,LASTEXCP        NO, SET LAST EXCP INDICATOR      69000000
+*                                                                       69300000
+CNTL061  EQU   *                                                        69600000
+*                                                                       69900000
+         L     SCUIOBR,DCBIOBAD        PICK UP PCU IOB PREFIX ADDRESS   70200000
+         L     REG15,CCWADDR(SCUIOBR)  PICK UP PCU CCW STRING ADDR      70500000
+         LA    REG15,LITECCW(REG15)    COMPUTE LITE CCW STRING ADDR     70800000
+         LA    SCUIOBR,SCUIOB(SCUIOBR) COMPUTE SCU IOB PREFIX ADDRESS   71100000
+         ST    REG15,CCWADDR(SCUIOBR)  PUT CCW ADDR IN SCU IOB          71400000
+         STC   PCKTR,LITECC(REG15)     PUT COMMAND CODE IN CCW STRING   71700000
+         NI    LITECC(REG15),SETLITE   SET OFF BATCH NUMBER UPDATE BIT  72000000
+         XC    IOBECB(FOUR,SCUIOBR),IOBECB(SCUIOBR)  ZERO SCU IOB ECB   72300000
+         LA    PARMR,IOBDISP(SCUIOBR)  COMPUTE SCU IOB ADDRESS          72600000
+         EXCP  (1)                                                      72900000
+         L     SCUIOBR,DCBIOBAD        PICK UP PCU IOB ADDRESS          73200000
+         LA    SCUIOBR,SCUIOB(SCUIOBR) COMPUTE SCU IOB ADDRESS          73500000
+         L     PARMR,IOBECBAD(SCUIOBR) LOAD ECB ADDR                    73800000
+         WAIT  1,ECB=(1)                                                74100000
+         L     SCUIOBR,DCBIOBAD        LOAD SCUIOB PREFIX ADDR          74400000
+         LA    SCUIOBR,SCUIOB(SCUIOBR)   COMPUTE SCU IOB ADDR           74700000
+         CLI   IOBECB(SCUIOBR),X7FPSTD EVENT SUCCESSFULLY COMPLETED     75000000
+         BE    CNTL030                 YES, TEST THE NEXT BIT           75300000
+* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * 75600000
+*                                                                     * 75900000
+* IF AN ERROR OCCURS IN THE I/O OPERATION TO CAUSE THE LIGHT TO BE    * 76200000
+* TURNED ON THE USER'S SYNAD ROUTINE IS BRANCHED TO.  IF THERE IS     * 76500000
+* NO SYNAD ROUTINE THE JOB IS TERMINATED VIA EOV (SVC 55).            * 76800000
+*                                                                     * 77100000
+* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * 77400000
+         OI    BCKTBYT1(BCKETR),ERBITON    NO, SET ERROR BIT ON         77700000
+         TM    DCBSYNAD+THREE,NOSYNAD  SYNAD ROUTINE PRESENT            78000000
+         BZ    CNTL070                 YES, BRANCH                      78300000
+         LA    ZEROR,NOSYNAD           SET UP REG FOR ABEND - NO SYNAD  78500000
+         SLL   ZEROR,SHIFT12           SHIFT ABEND CODE 12 BITS FOR EOV 78700000
+         NI    UNITEXCP(SCUIOBR),SETOFF   SET OFF UNIT EXCEPTION BIT    78900000
+         EOV   (2)                                                      79200000
+*                                                                       79500000
+CNTL070  EQU   *                                                        79800000
+*                                                                       80100000
+         OI    DCBMRIND,DCBALTER       SET BIT ON TO SHOW DCB ALTERED   80400000
+         ST    SCUIOBR,DCBIOBAD        STORE SCUIOB PREFIX ADDR IN DCB  80700000
+         LR    PARMR,DCBR              SET UP PARAMETERS                81000000
+         SR    ZEROR,ZEROR             FOR SYNAD                        81300000
+         L     REG15,CNTRLBIT          LOAD CONTROL BIT FOR REG 1       81600000
+         LA    PARMR,ZEROD(PARMR)      CLEAR HIGH-ORDER BYTE            81900000
+         AR    PARMR,REG15             SET ON CONTROL BIT FOR SYNAD     82200000
+         L     ENTRYR,DCBSYNAD         PICK UP SYNAD ADDRESS            82500000
+         STM   DCBR,BCKETR,DISP20(SAVER)   SAVE REGS 2-3                82800000
+         STM   BASER,ODDR,DISP56(SAVER)    SAVE REGS 4-7                83100000
+         LM    DCBR,ODDR,DISP28(SAVER)     LOAD USER REGS               83400000
+         BALR  RETURNR,ENTRYR          BRANC TO SYNAD ROUTINE           83700000
+         STM   DCBR,ODDR,DISP28(SAVER)     SAVE USER REGS               84000000
+         LM    DCBR,BCKETR,DISP20(SAVER)   LOAD REGS 2-3                84300000
+         LM    BASER,ODDR,DISP56(SAVER)    LOAD REGS 4-7                84600000
+         NI    BCKTBYT1(BCKETR),ERBITOFF   SET POCKET ERROR BIT TO ZERO 84900000
+         LA    REG1,SCUIOB             LOAD DISP FROM PCU TO SCU IOB    85200000
+         L     SCUIOBR,DCBIOBAD        LOAD SCU IOB PREFIX ADDR         85500000
+         SR    SCUIOBR,REG1            COMPUTE PCU IOB PREFIX ADDR      85800000
+         ST    SCUIOBR,DCBIOBAD        RESTORE DCB PCU IOB PREFIX ADDR  86100000
+         XI    DCBMRIND,DCBALTER       SET BIT OFF TO SHOW DCB RESTORED 86400000
+         LA    REG15,FOUR              LOAD RETURN CODE                 86700000
+         ST    REG15,RTNCDSP(SAVER)    SET RETURN CODE                  87000000
+         B     CNTL030                 BRANCH TO TEST THE NEXT BIT      87300000
+*                                                                       87600000
+CNTL080  EQU   *                                                        87900000
+*                                                                       88200000
+         LA    ENTRYR,FOUR             LOAD I/O ERROR RETURN CODE       88500000
+         CL    ENTRYR,RTNCDSP(SAVER)   RETURN CODE POSTED               88800000
+         BE    CNTL090                 YES, BRANCH                      89100000
+         SR    ENTRYR,ENTRYR                                            89400000
+         ST    ENTRYR,RTNCDSP(SAVER)   SET RETURN CODE                  89700000
+*                                                                       90000000
+CNTL090  EQU   *                                                        90300000
+*                                                                       90600000
+         LM    RETURNR,ODDR,DISP12(SAVER)   LOAD USER REGS              90900000
+         BR    RETURNR                 RETURN TO USER                   91200000
+         DS    0F                                                       91500000
+CNTRLBIT DC    X'20000000'             SET THIS BIT IN REG 1 FOR SYNAD  91800000
+SCNDTST  DC    XL4'000000CF'           USED TO FIND LAST BIT TO PROC    92100000
+FIRSTST  DC    XL2'006F'               FIRST 6 BITS PROCESSED           92400000
+PCKTCC   DC    XL2'000F'               INITIAL POCKET COMMAND CODE      92700000
+NXTPCKT  DC    XL2'0010'               NEXT POCKET LITE COMMAND CODE    93000000
+         DC    C'IGG019V4 ZA07621 02/20/76/'  SIGHT INDICATOR  @ZA07621 93300003
+         DC    CL8'&SYSDATE'                  SIGHT INDICATOR  @ZA07621 94300003
+         DC    C'Z07621'                      SIGHT INDICATOR  @ZA07621 95300003
+PATCH    DC    XL30'00',D'0'                  PATCH AREA       @ZA07621 96300003
+         DCBD  DSORG=BS,DEVD=MR                                         97300003
+         END                                                            98300003

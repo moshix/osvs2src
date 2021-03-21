@@ -1,0 +1,1848 @@
+         TITLE 'IGC0005C -- BDAM EXCLUSIVE CONTROL SVC.'                00003002
+*********************************************************************** 00013002
+*                                                                     * 00015002
+* MODULE NAME = IGC0005C                                              * 00017002
+*                                                                     * 00019002
+* DESCRIPTIVE NAME = BDAM EXCLUSIVE CONTROL SVC                       * 00019402
+*                                                                     * 00019802
+* COPYRIGHT = NONE                                                    * 00019902
+*                                                                     * 00023202
+* STATUS = VS2 RELEASE 2, LEVEL 0                                     * 00025202
+*                                                                     * 00027202
+* FUNCTION = THIS MODULE IS INVOKED TO HANDLE THE SUPERVISORY         * 00029202
+*            FUNCTIONS NECESSARY FOR EXCLUSIVE CONTROL IN BDAM.       * 00029602
+*            EXCLUSIVE CONTROL IS NECESSARY FOR HANDLING OF THE       * 00029702
+*            FOLLOWING MACROS:                                        * 00029802
+*                 READ       TYPES DIX AND DKX                        * 00029902
+*                 WRITE      TYPES DIX AND DKX                        * 00030602
+*                 RELEX                                               * 00031002
+*                 WRITE      TYPES DA AND DAF WHEN THE RECORD FORMAT  * 00031402
+*                            IS VARIABLE OR UNDEFINED, OR THE RECORD  * 00031802
+*                            FORMAT IS FIXED AND THE DEVICE IS A 2305 * 00031902
+*            THIS MODULE REQUIRES SUPERVISORY STATE TO PERFORM THE    * 00033202
+*            FOLLOWING FUNCTIONS:                                     * 00035202
+*              +  MODIFY THE PROTECTED EXCLUSIVE CONTROL LIST (DATA   * 00035602
+*                 MANAGEMENT KEY), AND IF NECESSARY GET ADDITIONAL    * 00035702
+*                 STORAGE FOR THIS LIST.                              * 00035802
+*              +  ACQUIRE THE LOCAL LOCK TO PROTECT THE INTEGRITY OF  * 00035902
+*                 THE EXCLUSIVE CONTROL LIST, A SERIALLY REUSABLE     * 00037202
+*                 RESOURCE, DURING SEARCH AND UPDATE OPERATIONS.      * 00039202
+*              +  ISSUE ENQ/DEQ MACROS DIRECTED TO THE TCB WHICH      * 00039602
+*                 OPENED THE DCB.                                     * 00039702
+*              +  ISSUE AN AUTHORIZED SYSTEM ENQ (QNAME = SYSZ...)    * 00039802
+*                 SO AS TO AVOID A SITUATION WHERE A NON-SYSTEM USER  * 00039902
+*                 COULD ENQUEUE ON RECORDS OF A BDAM DATASET WHICH HE * 00046602
+*                 COULD NOT ACCESS, AND THEREBY PREVENT AN AUTHORIZED * 00056602
+*                 USER FROM GAINING ACCESS TO THESE RECORDS.          * 00058602
+*                                                                     * 00059002
+* OPERATION = EACH EXECUTION REQUIRES THE FOLLOWING STEPS:            * 00059102
+*             + GENERAL INITIALIZATION - ESTABLISH RECOVERY ROUTINE   * 00059202
+*             + RELEX INITIALIZATION (FOR RELEX REQUESTS ONLY) -      * 00059302
+*               GETMAIN CORE FOR IOB/DECB AND CONVERT BLOCK REFERENCE * 00059402
+*               TO ACTUAL DASD ADDRESS FORMAT.                        * 00059502
+*             + EXCLUSIVE CONTROL LIST SEARCH ARGUMENT GENERATION AND * 00059602
+*               ARGUMENT VALIDATION.                                  * 00059702
+*             + SEARCH OF EXCLUSIVE CONTROL LIST.                     * 00061702
+*             FOR REQUESTS TO GAIN EXCLUSIVE CONTROL, ON THE BASIS OF * 00063702
+*             THE SEARCH OF THE EXCLUSIVE CONTROL LIST, ONE OF THE    * 00064102
+*             FOLLOWING ACTIONS IS TAKEN:                             * 00064502
+*               + IF NO MATCH IS FOUND, REQUEST IS GIVEN IMMEDIATE    * 00064902
+*                 CONTROL OF THE RECORD.                              * 00065302
+*               + IF A MATCH IS FOUND, IOB IS PLACED ON UNPOSTED      * 00066102
+*                 QUEUE.                                              * 00066502
+*             FOR REQUESTS TO RELEASE EXCLUSIVE CONTROL, ONE OF THE   * 00067602
+*             FOLLOWING ACTIONS IS TAKEN:                             * 00069602
+*               + IF NO MATCH IS FOUND, THE REQUEST IS MARKED IN      * 00070002
+*                 ERROR.                                              * 00070302
+*               + IF A MATCH IS FOUND, AND NO IOB IS WAITING FOR THIS * 00070702
+*                 RECORD ON THE UNPOSTED QUEUE, CONTROL OF THE RECORD * 00070802
+*                 IS RELINQUISHED.                                    * 00070902
+*               + IF A MATCH IS FOUND, AND AN IOB IS WAITING ON THE   * 00071702
+*                 UNPOSTED QUEUE FOR THIS RECORD, CONTROL OF THE      * 00072102
+*                 RECORD IS GIVEN TO THE FIRST WAITING IOB.           * 00072502
+*               + FOR ALL REQUESTS, EXIT LOGIC                        * 00072902
+*             FOR ALL REQUESTS AUDIT TRAIL BITS WILL BE SET BY THIS   * 00073002
+*             MODULE IN THE SVRB EXTENDED WORKAREA. THESE BITS WILL   * 00073102
+*             BE INTERROGATED BY THE BACKUP ESTAE, IGCT005C,SHOULD AN * 00073202
+*             ABEND OCCUR AT THIS RB LEVEL. THESE BITS WILL TRACK     * 00074802
+*             THE WORK DONE BY THIS SVC, PARTICULARLY ANY CONTROL     * 00076802
+*             BLOCKS WHICH ARE ALTERED DURING PROCESSING. IN ADDITION * 00077202
+*             TO AUDIT TRAIL BITS, ADDRESSES TO THE FOLLOWING ARE     * 00077302
+*             SAVED FOR THE ESTAE:  CORE OBTAINED FOR RELEX CNTRL BLKS* 00077702
+*                                   NEXT(DEQ)/LAST(ENQ) IOB PROCESSED * 00078102
+*             THE ESTAE WILL USE THIS INFORMATION TO CLEANUP THE      * 00078702
+*             CONTROL BLOCKS EITHER COMPLETING OR UNDOING THE WORK    * 00079102
+*             ACCOMPLISHED BY THIS SVC BEFORE ABENDING.               * 00079302
+*                                                                     * 00079702
+* NOTES = SEE BELOW                                                   * 00079902
+*                                                                     * 00080602
+*     DEPENDENCIES = NONE                                             * 00082202
+*                                                                     * 00083802
+*     RESTRICTIONS = NONE                                             * 00085402
+*                                                                     * 00087002
+*     REGISTER CONVENTIONS = R3 MODULE BASE REGISTER                  * 00088602
+*                            R4 POINTS TO THE DCB                     * 00090202
+*                            R5 POINTS TO THE SVRB                    * 00091802
+*                            R6 POINTS TO THE DECB                    * 00093402
+*                            R7 POINTS TO THE IOB                     * 00095002
+*                            OTHERS USED AS REQUIRED BY EXTERNAL      * 00096602
+*                            ROUTINES, OR AS WORK REGISTERS.          * 00098602
+*                                                                     * 00099002
+*     PATCH LABEL = PATCH, A DC STATEMENT DEFINED AS 5% OF THE        * 00099402
+*                   MODULE'S STORAGE EXCLUSIVE OF THE PATCH SPACE.    * 00099802
+*                                                                     * 00099902
+*     HISTORICAL NOTE = THIS MODULE INCORPORATES LOGIC THAT WAS       * 00101902
+*                       FORMERLY CONTAINED IN MODULES IGC0005C AND    * 00105902
+*                       IGG019LG.                                     * 00106002
+*                                                                     * 00106302
+* MODULE TYPE = SUPERVISOR CALL ROUTINE                               * 00106602
+*                                                                     * 00116602
+*     PROCESSOR = ASSEMBLER XF                                        * 00118602
+*                                                                     * 00119002
+*     MODULE SIZE = 8D0 HEXADECIMAL BYTES                             * 00119402
+*                                                                     * 00119802
+*     ATTRIBUTES = REENTRANT, REFRESHABLE, SUPERVISOR STATE, ENABLED  * 00119902
+*                                                                     * 00126602
+* ENTRY POINT = IGC0005C                                              * 00136602
+*                                                                     * 00138602
+*     PURPOSE = RELEX MACRO                                           * 00139002
+*                                                                     * 00139102
+*     LINKAGE = THROUGH THE SVC INTERRUPT HANDLER VIA SVC 53 DECIMAL  * 00139402
+*                                                                     * 00139502
+*     INPUT REGISTERS = R0 POINTS TO BLOCK REFERENCE FIELD            * 00139802
+*                       R1 POINTS TO DCB                              * 00139902
+*                       R5 POINTS TO SVRB                             * 00146602
+*                       R14 LOADED WITH RETURN ADDRESS                * 00156602
+*                                                                     * 00157002
+*     OUTPUT REGISTERS = R15 CONTAINS RETURN CODE (SEE EXITS)         * 00157402
+*                                                                     * 00158602
+*     PURPOSE = ALL OTHER BDAM EXCLUSIVE CONTROL FUNCTIONS            * 00159002
+*                                                                     * 00159102
+*     LINKAGE = AS DESCRIBED FOR RELEX MACRO                          * 00159402
+*                                                                     * 00159502
+*     INPUT REGISTERS = R1 POINTS TO IOB,COMPLEMENTED                 * 00159802
+*                       R5, R14 AS DESCRIBED FOR RELEX MACRO          * 00159902
+*                                                                     * 00161902
+*     OUTPUT REGISTERS =R0 POINTS TO IOB REMOVED FROM UNPOSTED        * 00163902
+*                             QUEUE                                   * 00165902
+*                       R1 POINTS TO INPUT IOB                        * 00167902
+*                                                                     * 00169902
+* ENTRY POINT = ESTAERTN                                              * 00179902
+*                                                                     * 00186602
+*     PURPOSE = TASK RECOVERY ROUTINE                                 * 00196602
+*                                                                     * 00198602
+*     LINKAGE = THROUGH RECOVERY/TERMINATION MANAGER                  * 00199002
+*                                                                     * 00199402
+*     INPUT REGISTERS = R0 CONTAINS A CODE VALUE                      * 00199802
+*                       R1 POINTS TO SDWA IF CODE VALUE NE 12,        * 00199902
+*                        OTHERWISE, R1 CONTAINS CODE VALUES           * 00206602
+*                       R13 POINTS TO REGISTER SAVEAREA               * 00216602
+*                                                                     * 00217002
+*   NOTE:  THE FOLLOWING INPUT, OUTPUT, & WORK AREA DESCRIPTIONS      * 00217402
+*          COVER ONLY THOSE FIELDS REFERRED TO OR SET BY CODE CON-    * 00217802
+*          TAINED IN THIS MODULE.  IT DOES NOT INCLUDE CODE GENERATED * 00218202
+*          BY MACRO EXPANSIONS.                                       * 00218302
+*                                                                     * 00218602
+* INPUT =IOB FIELDS REFERENCED FOR NON-RELEX REQUESTS:                * 00219002
+*           IOBDCBPT, IOBECBPT FOR DCB & DECB ADDRESSES RESPECTIVELY  * 00219402
+*           IOBDTYP2, BIT IOBADDTY  TO IDENTIFY WRITE-ADD REQUESTS    * 00219802
+*           IOBDTYP2, BIT IOBRQUST  TO DISTINGUISH READ FROM WRITE    * 00221802
+*             RELEASE OR RELEX REQUESTS                               * 00223802
+*           IOBDSTAT, BIT IOBENQUE  TO DISTINGUISH ENQ FROM DEQ       * 00226602
+*             WRITE-ADD REQUESTS                                      * 00236602
+*           IOBM -- EXTENT NUMBER                                     * 00237002
+*           IOBSEEK+3 -- BLOCK ID(CCHHR) FOR WRITE-ADD REQUESTS       * 00238602
+*           IOBDNCRF+2 -- BLOCK ID FOR EXCLUSIVE CONTROL REQUESTS     * 00239002
+*         DCB FIELDS REFERENCED ARE:                                  * 00239402
+*           DCBOPTCD TO DETERMINE FORM OF BLOCK REFERENCE FOR RELEX   * 00239802
+*           DCBRECFM & DCBOPTCD TO DISTINGUISH 2305 WRITE-ADD REQS    * 00239902
+*           DCBREAD -- ADDRESS OF FOUNDATION MODULE                   * 00246602
+*           DCBDEBAD -- DEB ADDRESS                                   * 00256602
+*         DEB FIELDS REFERENCED ARE:                                  * 00258602
+*           EXTENT DESCRIPTION FOR CURRENT EXTENT OR FOR FIRST EXTENT * 00259002
+*             (FOR 2305 WRITE-ADD, FIXED FORMAT, EXTENDED SEARCH)     * 00259402
+*           DEBXXARG (LOCATED IN DEB EXTENSION) ADDRESS OF EXCLUSIVE  * 00259802
+*             CONTROL LIST                                            * 00259902
+*           DEBTCBAD -- ADDRESS OF TCB WHICH OPENED DCB               * 00266602
+*         EXCLUSIVE CONTROL LIST                                      * 00276602
+*         SVRB FIELDS REFERENCED ARE:                                 * 00278602
+*           RBLINK -- ADDRESS OF CALLER'S RB                          * 00279002
+*           RBGRS0, RBGRS1 -- INPUT REGISTERS 0 & 1                   * 00279402
+*         CALLER'S RB FIELDS REFERENCED ARE:                          * 00279802
+*           RBOPSW+1 -- CALLER'S PROTECTION KEY                       * 00279902
+*         TCB FIELDS REFERENCED ARE:                                  * 00329902
+*           TCBRBP -- ADDRESS OF SVRB                                 * 00339902
+*         CVT FIELDS REFERENCED ARE:                                  * 00349902
+*           CVTPCNVT -- ADDRESS OF IECPCNVT                           * 00359902
+*           CVTPRLTV -- ADDRESS OF IECPRLTV                           * 00369902
+*           CVTEXT2  -- CVT EXTENSION POINTER                         * 00371902
+*           CVTDEBVR -- DEBCHK BRANCH ENTRY POINT ADDRESS             * 00373902
+*         PSA FIELDS REFERENCED ARE:                                  * 00375902
+*           PSAAOLD -- ADDRESS OF CURRENT (CALLER'S) ASCB             * 00377902
+*           PSATOLD -- ADDRESS OF CURRENT (CALLER'S) TCB              * 00378302
+*                                                                     * 00379702
+* OUTPUT = IOB FIELDS SET ARE:                                        * 00379802
+*           IOBDSTAT, BIT IOBENQUE SET WHEN THE IOB IS GIVEN CONTROL  * 00429802
+*             OF THE RESOURCE                                         * 00439802
+*           IOBDNCRF -- SET TO THE CURRENT TRACK CAPACITY RECORD, IN  * 00449802
+*             ALL IOBS ON THE UNPOSTED QUEUE FOR THAT TRACK, FOR A    * 00459802
+*             WRITE DA DEQ REQUEST.                                   * 00469802
+*           IOBDAYLI -- POSTED IOB MADE AVAILABLE IF CHECK NOT USED.  * 00471802
+*         EXCLUSIVE CONTROL LIST -- UPDATED TO REFLECT CHANGES IN     * 00475802
+*             EXCLUSIVE CONTROL; ENTRY ADDED WHEN CONTROL OF A        * 00477802
+*             RESOURCE IS GOTTEN, ZEROED WHEN CONTROL OF A RESOURCE   * 00478202
+*             IS FREED.  AN ADDITIONAL SEGMENT MAY BE CHAINED TO THE  * 00478602
+*             LIST.                                                   * 00479002
+*         THE BUFFERS OF ANY REQUESTS FOR THE RELEASED RECORD (WRITE  * 00479402
+*             DX) ON THE UNPOSTED QUEUE ARE UPDATED WITH THE LATEST   * 00479502
+*             COPY OF THE RECORD.                                     * 00479602
+*                                                                     * 00529602
+* WORK AREAS = SVRB EXTENDED SAVEAREA, 48 BYTES. SEE DETAILED         * 00539602
+*             DESCRIPTION AT LABEL WKAREAX.                           * 00549602
+*           IOB/DECB -- 132 BYTES IN SUBPOOL 0 GOTTEN WHEN PROCESSING * 00559602
+*             A RELEX REQUEST.                                        * 00569602
+*                                                                     * 00571602
+* EXITS - NORMAL = RETURN TO CALLER VIA SVC INTERRUPT HANDLER, SEE    * 00573602
+*             OUTPUT REGISTER DESCRIPTION UNDER LINKAGE.  RETURN      * 00575602
+*             CODES IN REGISTER 15 ARE:                               * 00577602
+*               00 - OPERATION PERFORMED AS REQUESTED                 * 00578002
+*               04 - BLOCK NOT UNDER EXCLUSIVE CONTROL                * 00578402
+*               08 - BLOCK NOT IN DATA SET (REQUEST TO RELEASE        * 00578802
+*                    CONTROL ONLY)                                    * 00579202
+*                                                                     * 00579302
+* EXITS - ERROR = ABENDS ARE ISSUED WITH THE FOLLOWING SYSTEM         * 00579402
+*             COMPLETION CODES:                                       * 00579502
+*               335 - REQUEST TO OBTAIN CONTROL OF A BLOCK OUTSIDE    * 00610202
+*                     THE DATA SET                                    * 00612202
+*               435 - INVALID DEB                                     * 00616002
+*               535 - INSUFFICIENT CORE TO PERFORM THE REQUESTED      * 00620702
+*                     OPERATION                                       * 00624502
+*                                                                     * 00628302
+* EXTERNAL REFERENCES = SEE BELOW                                     * 00632102
+*                                                                     * 00635902
+*    ROUTINES = IECPCNVT TO CONVERT TTR TO MBBCCHHR                   * 00639702
+*               IECPRLTV TO CONVERT MBBCCHHR TO TTR                   * 00643502
+*               DEBCHK ROUTINE (VIA BRANCH ENTRY POINT)               * 00647302
+*               IGG019KE (NO TRACK OVERFLOW), OR                      * 00651102
+*               IGG019KF (TRACK OVERFLOW) TO CONVERT RELATIVE         * 00654902
+*                 BLOCK ADDRESS TO MBBCCHHR                           * 00658702
+*               IGG019KG (NO TRACK OVERFLOW), OR                      * 00662502
+*               IGG019KH (TRACK OVERFLOW) TO CALCULATE FEEDBACK       * 00666302
+*                                                                     * 00670102
+*    DATA AREAS = NONE                                                * 00673902
+*                                                                     * 00723902
+*    CONTROL BLOCKS = IOB, DECB, DEB, EXCLUSIVE CONTROL LIST, PSA,    * 00733902
+*                     CVT, TCB, SVRB, CALLER'S RB, RTCA               * 00743902
+*                                                                     * 00753902
+* TABLES = NONE                                                       * 00763902
+*                                                                     * 00765902
+* MACROS = SEE BELOW                                                  * 00767902
+*                                                                     * 00769902
+*    EXECUTABLE MACROS = ABEND, DEQ, ENQ, ESTAE, EXCP, FREEMAIN,      * 00771902
+*                        GETMAIN, IGGSTAE, MODESET, POST, SETLOCK,    * 00772302
+*                        SYNCH                                        * 00772702
+*                                                                     * 00773102
+*    MAPPING MACROS = DCBD, IEZDEB, IEZIOB, IGGRDX, IHADECB, IHAPSA,  * 00773502
+*                     IHASDWA, IKJRB, IKJTCB                          * 00773602
+*                                                                     * 00773702
+* CHANGE ACTIVITY = AS FOLLOWS:                                       * 00773802
+*                                                                     * 00823802
+*              VS2-2 CHANGES/DELETIONS                                  00825802
+*                                                                YM1152 00826602
+*                                                                YM1371 00827002
+*                                                                YM1474 00827402
+*                                                                YM3019 00827502
+*                                                                YM5762 00827602
+*                                                                YM6585 00827737
+*              CHANGES SINCE VS2-3.7                                    00828437
+*A274393-274396,313331                                         @ZA24816 00829137
+*A10138100-10148100                                            @ZA28583 00829937
+*C015985,A015945-015981                                        @ZA29870 00830737
+*A015350,A015390                                               @ZA31947 00831737
+*********************************************************************** 00833802
+         EJECT                                                          00843802
+IGC0005C CSECT                                                          00873802
+*                                                                       00923802
+*          RETURN CODES ON 'NORMAL' EXIT FROM RELEX REQUEST             00973802
+*                                                                       00983802
+NOTFOUND EQU   4                        RETURN CODE IF RELEX     Y02072 00997202
+*                                       FOR NON-EXCLUSIVE REC    Y02072 00997902
+INVALBLK EQU   8                        BLOCK NOT IN DATA SET    Y02072 00998002
+*                                                                       00998102
+*                       ABEND COMPLETION CODES                          00998202
+*                                                                       00998302
+CANTENQ  EQU   X'335'                   REQUEST TO OBTAIN CON-   Y02072 00998602
+*                                       TROL OF A BLOCK OUTSIDE THE     00998702
+*                                       DATA SET.                       00999102
+INVALCB  EQU   X'435'                   ABEND CODE FOR INVALID   Y02072 01003802
+*                                       DEB                      Y02072 01004702
+INSUFCOR EQU   X'535'                   INSUFFICIENT CORE TO     Y02072 01006502
+*                                       PERFORM REQUESTED OPERATION     01007402
+*********************************************************************** 01008302
+*                      REGISTER EQUATES                               * 01009202
+*********************************************************************** 01010102
+R0       EQU   0              REG 0 FOR SYSTEM INTERFACES        Y02072 01011002
+PARREG0  EQU   0              ADDRESS OF THE BLOCK REFERENCE            01011902
+WKREG0   EQU   0              WORK REGISTER                             01013702
+R1       EQU   1              REG 1 FOR SYSTEM INTERFACES        Y02072 01014602
+PARREG1  EQU   1              ADDRESS OF THE DCB                        01015502
+RIOBFBK  EQU   1              IOB ADDR FOR FEEDBACK MODULES      Y02072 01017302
+BUFREG1  EQU   1              BUFFER PTR OF RELEASOR OF BLK             01018602
+R2       EQU   2              INTERFACE REG FOR SYSTEM CONVERT   Y02072 01022402
+*                             ROUTINES                           Y02072 01024402
+BUFREG2  EQU   2              BUFFER PTR OF NEXT TO GET BLK             01029202
+TCBREG   EQU   2              TCB ADDRESS                        Y02072 01029302
+WKREG2   EQU   2              WORK REGISTER                      Y02072 01029402
+BASEREG  EQU   3              BASE REGISTER FOR THIS MODULE             01029502
+RRLBDEB  EQU   3              DEB ADDR FOR IGG019KE AND IGG019KF Y02072 01030002
+DCBREG   EQU   4              ADDRESS OF THE DCB FOR CONVERT ROUTINES   01040000
+DEBTCBRG EQU   4              ADDR OF TCB WHICH OPENED DCB       Y02072 01060002
+SVRBREG  EQU   5              SVRB ADDRESS                       Y02072 01060402
+RRLBDECB EQU   5              DECB ADDR - REL BLK CONVERT RTNES  Y02072 01062002
+DECBREG  EQU   6              DECB ADDRESS FOR THIS MODULE       Y02072 01090002
+R7       EQU   7              ASCB INPUT REG FOR BRANCH ENTRY    Y02072 01092002
+*                             TO GETMAIN                         Y02072 01094002
+IOBREG   EQU   7              ADDRESS OF THE IOB FOR CONVERT ROUTINES   01100000
+RTCODRG2 EQU   8              REG USED TO SAVE RETURN CODE       Y02072 01102002
+*                             AROUND FREEMAIN                    Y02072 01104002
+RIOB2    EQU   8              ADDR OF DEQUEUED IOB               Y02072 01104402
+WKREG1   EQU   8              WORK REGISTER                             01104802
+RDXENTRG EQU   8              BASE FOR READX LIST ENTRY                 01105202
+DEBEXTRG EQU   8              BASE REG FOR DASD PART OF DEB             01105602
+RDXSEGRG EQU   9              ADDR OF CURRENT SEGMENT OF READ    Y02072 01106002
+*                             EXCLUSIVE LIST                     Y02072 01108002
+WKREG9   EQU   9              WORK REGISTER                             01158002
+LENREG1  EQU   9              REG WITH DECB LENGTH VALUE                01168002
+*                             OF IOB RELEASING THE BLOCK                01178002
+BLKREFRG EQU   9              BLKREF ADDRESS PASSED IN R0 BY USER       01180002
+DEBREG   EQU   9              DEB ADDRESS DURING ARGUMENT CREATE Y02072 01180402
+RLINK2   EQU   9              LINKAGE REGISTER                   Y02072 01182002
+R10      EQU   10             TCB ADDR INPUT REG FOR BRANCH      Y02072 01184002
+*                             ENTRY TO DEBCHK                    Y02072 01186002
+RDXCTREG EQU   10             REG FOR COUNTING ENTRIES IN               01188002
+*                             THE READX LIST                            01198002
+IOBQREG1 EQU   10             IOB RELEASING CONTROL OF BLK              01200002
+LENREG2  EQU   10             DECB LENGTH VALUE OF NEXT                 01200402
+*                             IOB TO GET CONTROL OF BLK                 01200802
+WKREG4   EQU   10             WORK REGISTER                      Y02072 01201002
+RDXREG   EQU   11             BASE FOR READX LIST                       01201202
+IOBQREG2 EQU   11             NEXT IOB TO GET CONTROL OF BLK            01201602
+ENQREG   EQU   12             ADDR OF COMPARE ARG FOR RDX LST    Y02072 01201702
+RRLBRC   EQU   12             RETURN CODE REG FROM REL BLK RTNES Y02072 01202002
+WKREG3   EQU   12             WORKING REGISTER                          01204002
+DECBREG2 EQU   12             DECB POINTED TO BY NEXT IOB TO            01208002
+*                             GET CONTROL OF THE BLOCK                  01208402
+RDCBFBK  EQU   13             ADDR OF DCB FOR FEEDBACK ROUTINE   Y02072 01210002
+R14      EQU   14             REG 14 FOR SYSTEM INTERFACES       Y02072 01210402
+RLINK    EQU   14             INTERNAL LINKAGE REGISTER          Y02072 01212002
+RSYNCHRT EQU   14             BASE USED AFTER RETURN FROM SYNCH  Y02072 01220002
+RRETURN  EQU   14             RETURN ADDRESS                     Y02072 01238002
+R15      EQU   15             REG 15 FOR SYSTEM INTERFACES       Y02072 01238402
+RETCODRG EQU   15             RETURN CODE REGISTER                      01252002
+         EJECT                                                          01360000
+*********************************************************************** 01360402
+*                                                                     * 01360802
+*        GENERAL INITIALIZATION:                                      * 01361202
+*              CLEAR SVRB EXTENDED SAVEAREA, SAVE RETURN REGISTER     * 01361602
+*                (WKASAV14), SAVE CALLER'S PROTECT KEY (WKASVKEY)     * 01361702
+*              ISSUE ESTAE.                                           * 01361802
+*              INITIALIZE IOB POINTER (GR7), DCB POINTER (GR4),       * 01361902
+*                DECB POINTER (GR6), FOR NON-RELEX REQUEST.           * 01365502
+*              SET BIT WTAD2305 FOR 2305 FORMAT F WRITE-ADD           * 01367502
+*              EXIT TO RELEX INITIALIZATION (LABEL RELEX) FOR         * 01367902
+*                RELEX; OTHERWISE EXIT TO CREATE ENQUEUE ARGUMENT     * 01368302
+*                (LABEL NQARG01).                                     * 01368702
+*              THIS CODE IS EXECUTED IN KEY 0.                        * 01369102
+*                                                                     * 01369402
+*********************************************************************** 01369802
+*                                                                       01369902
+         USING PSA,0                    PREFIXED SAVE AREA IS    Y02072 01370002
+*                                       ALWAYS ADDRESSABLE       Y02072 01372802
+         USING RBSECT,SVRBREG           SVRB ADDRESSABILITY      Y02072 01376402
+         BALR  BASEREG,0                 SET BASE REGISTER              01380002
+         USING *,BASEREG                                                01390002
+BASEVAL  EQU   *                        VALUE IN BASE REGISTER   Y02072 01400002
+         XC    RBEXSAVE,RBEXSAVE        CLEAR EXTENDED SAVEAREA  Y02072 01440002
+*                                       FOR WORKAREA             Y02072 01490002
+         ST    RRETURN,WKASAV14         SAVE RETURN ADDRESS      Y02072 01500002
+*                                       MOVE LIST FORM OF ESTAE  Y02072 01502002
+         MVC   WKALST(ESTAELN),ESTAELST      TO WORKAREA         Y02072 01510002
+*                                       ESTABLISH RECOVERY RTNE  Y02072 01512002
+         ESTAE PARAM=(SVRBREG),MF=(E,WKALST)                     Y02072 01520002
+*                                                                       01530002
+         L     WKREG2,RBLINK            GET CALLER'S RB ADDR     Y02072 01530102
+         USING RBSECT,WKREG2            ADDRESS THIS RB          Y02072 01530202
+         DROP  SVRBREG                                           Y02072 01530302
+         IC    WKREG2,RBOPSW+1          GET CALLER'S KEY         Y02072 01530502
+         USING RBSECT,SVRBREG           RESTORE ADDRESSABILITY   Y02072 01530902
+         DROP  WKREG2                    TO SVRB                 Y02072 01531202
+         STC   WKREG2,WKASVKEY          SAVE CALLER'S KEY IN     Y02072 01531602
+*                                       SVRB                     Y02072 01532002
+*                                                                       01532702
+         LM    PARREG0,PARREG1,RBGRS0   GET ENTRY REGS 0 AND 1   Y02072 01534002
+         LCR   IOBREG,PARREG1           RELEX MACRO CALL?        Y02072 01534402
+         BNP   RELEX                    BRANCH IF YES            Y02072 01534802
+         MODESET  KEYADDR=WKASVKEY,WORKREG=2 CHG TO USER KEY   @ZA31947 01535037
+         USING IOBSTDRD,IOBREG          IOB ADDRESSABILITY       Y02072 01535302
+         L     DCBREG,IOBDCBPT          GET DCB ADDRESS          Y02072 01536802
+         USING IHADCB,DCBREG                                     Y02072 01537202
+         L     DECBREG,IOBECBPT         GET DECB ADDRESS         Y02072 01538802
+         MODESET  EXTKEY=ZERO           CHG BACK TO ZERO KEY   @ZA31947 01539037
+*                                                                       01539302
+*              DETERMINE IF THIS IS A WRITE-ADD REQUEST WITH FIXED      01539702
+*              RECORD FORMAT.  IF SO, DEVICE MUST BE A 2305.            01540102
+*                                                                       01540202
+         TM    IOBDTYP2,IOBADDTY        IS THIS A WRITE-ADD?     Y02072 01540302
+         BZ    NQARG01                  BRANCH IF NOT            Y02072 01540602
+         TM    DCBRECFM,DCBRECF         IS RECORD FORMAT FIXED?  Y02072 01541002
+         BZ    NQARG01                  BRANCH IF NOT            Y02072 01541102
+         TM    DCBRECFM,DCBRECU         CHECK UNDEFINED FORMAT   Y02072 01541202
+         BO    NQARG01                  BRANCH IF UNDEFINED      Y02072 01541302
+         OI    WKASW1,WKAD2305          SET 2305 INDICATOR       Y02072 01544202
+         B     NQARG01                                           Y02072 01544402
+         DROP  DCBREG                                            Y02072 01544602
+*                                                                       01544802
+         EJECT                                                          01544902
+*********************************************************************** 01545002
+*                                                                     * 01547002
+*        ADDITIONAL RELEX INITIALIZATION:                             * 01547402
+*              ISSUE GETMAIN FOR 132 BYTES SUBPOOL ZERO CORE TO BE    * 01547802
+*                USED AS IOB & DECB.  IF CORE IS NOT AVAILABLE,       * 01548202
+*                BRANCH TO ABEND WITH COMPLETION CODE 535.            * 01548602
+*              SAVE ADDRESS OF CORE OBTAINED (WKARLCOR).              * 01548702
+*              INITIALIZE IOB AND DECB FIELDS -- IOBDCBPT, IOBDIOBS,  * 01548802
+*                IOBDTYP2, DECRECPT.  ALL OTHER FIELDS ARE ZEROES.    * 01551702
+*              CONVERT BLOCK REFERENCE FIELD PASSED BY USER FROM      * 01553702
+*                RELATIVE TRACK ADDRESS (TTR) OR RELATIVE BLOCK       * 01554102
+*                ADDRESS FORMAT TO ACTUAL ADDRESS FORMAT (MBBCCHHR).  * 01554502
+*                IF BLOCK ADDRESS IS NOT CONVERTIBLE BECAUSE IT IS    * 01557602
+*                INVALID, BRANCH TO EXIT WITH RETURN CODE 08.  ONE OF * 01559602
+*                THE EXTERNAL ROUTINES, IECPCNVT, IGG019KE, IGG019KF, * 01560002
+*                WILL BE USED FOR THE CONVERSION.  FOR SYSTEM INTEG-  * 01560402
+*                RITY REASONS, IGG019KE AND IGG019KF ARE GIVEN CON-   * 01560802
+*                TROL VIA A SYNCH MACRO INSTRUCTION AND MODULE REGI-  * 01560902
+*                STERS WHICH POINT TO SYSTEM INFORMATION (I.E. THE    * 01561002
+*                BASE REGISTER AND SVRB POINTER) ARE REINITIALIZED    * 01566502
+*                UPON RETURN OF CONTROL BY THE INTERNAL ROUTINE,      * 01568502
+*                SYNRETRN.                                            * 01570502
+*              ACTUAL BLOCK ADDRESS IS PLACED IN IOBSEEK.             * 01570902
+*              EXIT TO CREATE ENQUEUE ARGUMENT (LABEL NQARG00), OR TO * 01571302
+*                ABEND FOR INSUFFICIENT MAIN STORAGE (LABEL           * 01571702
+*                ABEND535), OR TO RETURN TO USER WITH RETURN CODE 08  * 01572102
+*                FOR AN INVALID BLOCK ADDRESS (LABEL RELEXIT2).       * 01572202
+*              THIS CODE EXECUTES IN THE CALLER'S KEY EXCEPT WHEN     * 01572302
+*                INITIALIZING WKARLCOR.                               * 01572402
+*                                                                     * 01574302
+*********************************************************************** 01578102
+*                                                                       01580002
+RELEX    MODESET KEYADDR=WKASVKEY,WORKREG=2                      Y02072 01583502
+*                                                                       01589002
+         L     DCBREG,44(PARREG1)       DEB ADDRESS            @ZA29870 01594537
+         LA    DEBREG,X'10'                                    @ZA29870 01594937
+         SR    DCBREG,DEBREG            DEB PREFIX ADDRESS     @ZA29870 01595337
+         L     DCBREG,8(DCBREG)         DEB EXTENSION ADDRESS  @ZA29870 01595737
+         L     DEBREG,20(DCBREG)        EXCL CTRL LIST ADDRESS @ZA29870 01596137
+         LA    DEBREG,0(DEBREG)         CLEAR HIGH BYTE        @ZA29870 01596537
+         LTR   DEBREG,DEBREG            IS THERE A LIST?       @ZA29870 01596937
+         BNZ   OKLIST                   YES - BYPASS ERROR     @ZA29870 01597337
+         LA    RTCODRG2,INVALBLK        NO - LOAD ERROR CODE   @ZA29870 01597737
+         B     EXIT1                    AND GO TO EXIT RTN     @ZA29870 01598137
+OKLIST   LR    BLKREFRG,PARREG0         SAVE BLKREF ADDRESS    @ZA29870 01598537
+         LR    DCBREG,PARREG1           MOVE DCB ADDRESS TO DCBREG      01600002
+         USING IHADCB,DCBREG            ESTABLISH BASE FOR DCB          01602002
+*                                                                       01652002
+*                                       GET CORE FOR DUMMY IOB   Y02072 01662002
+         GETMAIN RC,SP=SPIOB,LV=IOBLG                            Y02072 01672002
+*                                                                       01674002
+         LTR   R15,R15                  TEST RETURN CODE         Y02072 01676002
+         BNZ   ABEND535                 GO ABEND IF NO CORE      Y02072 01678002
+         SPACE                                                          01680002
+*  CHANGE KEY AND SAVE THE ADDRESS OF THE CORE OBTAINED FOR THIS REQ. * 01688002
+*  THE ESTAE WILL FREE THIS CORE, SHOULD AN ABEND OCCUR DURING SVC    * 01688402
+*  PROCESSING.                                                        * 01688802
+*                                                                       01689202
+         MODESET  EXTKEY=ZERO           CHANGE TO SUPER KEY      Y02072 01689602
+*                                                                       01689702
+         ST    R1,WKARLCOR              SAVE CORE ADDRESS        Y02072 01689802
+*                                                                       01689902
+         MODESET  KEYADDR=WKASVKEY,WORKREG=2  RETURN TO USER KEY Y02072 01692402
+*                                                                       01694402
+*                                                                       01695002
+*              INITIALIZE GOTTEN CORE AS IOB AND DECB                   01697502
+*                                                                       01700002
+         LR    IOBREG,R1                PUT ADDRESS OF GOTTEN CORE      01702502
+         USING IOBSTDRD,IOBREG          ESTABLISH BASE FOR IOB          01705002
+         XC    IOBSTDRD(IOBLG),IOBSTDRD CLEAR DUMMY IOB AREA            01707502
+         ST    DCBREG,IOBDCBPT          STORE DCB ADDR IN IOB    Y02072 01710002
+         LA    WKREG1,IOBLG             LOAD LENGTH OF IOB              01720002
+         STH   WKREG1,IOBDIOBS          STORE LENGTH IN IOB             01740002
+         MVI   IOBDTYP2,IOBRELEX        SET TYPE FIELDS TO INDI- Y02072 01752002
+*                                       CATE RELEX ONLY          Y02072 01754002
+         LR    DECBREG,IOBREG           DECB OVERLAYS IOB        Y02072 01760002
+         USING DECB,DECBREG             ESTABLISH BASE FOR DECB         01770002
+         ST    BLKREFRG,DECRECPT        STORE BLKREF ADDRESS IN DECB    01800002
+*********************************************************************** 01890002
+*   THIS ROUTINE WILL CONVERT THE TTR OR REL BLK ID TO MBBCCHHR IF    * 01892002
+*   NECESSARY.                                                        * 01894002
+*********************************************************************** 01896002
+         TM    DCBOPTCD,DCBOPTF         IS FEEDBACK SPECIFIED IN DCB    01920002
+         BZ    ACTUAL                   NO, FDBACK ACTUAL FOR READX     01940002
+         TM    DCBOPTCD,DCBOPTRB        IS ADDRESSING SCHEME            01960002
+         BO    RELBLK                   BY RELATIVE BLOCK BRANCH        01980000
+         TM    DCBOPTCD,DCBOPTA         IS ADDRESSING (HENCE ALSO FEED- 02000002
+         BO    ACTUAL                   BACK) BY ACTUAL ADDRESS BRANCH  02020002
+**********************************************************************  02030002
+*                                                                       02032002
+TTR      EQU   *                        ADDRESSING IS REL TRK           02040002
+*                                                                       02090002
+*        THE FOLLOWING LOGIC USES THE SYSTEM CONVERT ROUTINE,           02100002
+*        IECPCNVT, TO CONVERT A RELATIVE TRACK ADDRESS (TTR) TO         02110002
+*        A DASD ADDRESS OF THE FORM MBBCCHHR.                           02112002
+*                                                                       02112402
+*              INPUT TO THE CONVERT ROUTINE IS:                         02112802
+*                  R0    CONTAINS TTR0                                  02113202
+*                  R1    DEB ADDRESS                                    02113302
+*                  R2    ADDRESS OF IOBSEEK                             02113402
+*                  R14   RETURN ADDRESS                                 02113502
+*                  R15   IECPCNVT ENTRY POINT ADDRESS                   02113902
+*              OUTPUT IS:                                               02114002
+*                  R9 - R13 CONTENTS DESTROYED                          02114102
+*                  R15   RETURN CODE                                    02114202
+*                        THE RETURN CODE IS ZERO IF THE INPUT TTR       02114302
+*                        CORRESPONDS TO SOME MBBCCHHR IN THE DATASET    02114402
+*                        EXTENTS DESCRIBED BY THE DEB, OTHERWISE        02114502
+*                        THE RETURN CODE IS FOUR.                       02114602
+*                  IOBSEEK -- OUTPUT MBBCCHHR ( IF RETCODE = 0 )        02114702
+*                                                                       02114802
+**********************************************************************  02114902
+*                                                                       02115002
+*              IOBDCPND IS USED AS A WORK FIELD TO LOAD R0.             02115102
+*                                                                       02115202
+         MVC   IOBDCPND(LTTR),0(BLKREFRG)  ALIGN TTR FOR LOAD    Y02072 02115302
+         MVI   IOBDCPND+LTTR,0          0 FOR TTR0               Y02072 02115402
+         L     R0,IOBDCPND              TTR0 TO R0               Y02072 02115502
+*                                                                       02115602
+         L     R1,DCBDEBAD              LOAD INPUT DEB ADDR      Y02072 02115702
+         LA    R2,IOBSEEK               INPUT PTR TO IOBSEEK     Y02072 02115802
+         L     R15,CVTPTR               ADDRESS OF CVT           Y02072 02115902
+         USING CVT,R15                                           Y02072 02116002
+         L     R15,CVTPCNVT             ADDRESS OF IECPCNVT      Y02072 02116102
+         DROP  R15                                               Y02072 02116202
+         BALR  R14,R15                  GO TO CONVERT ROUTINE    Y02072 02116302
+         LTR   R15,R15                  WAS ADDRESS VALID        Y02072 02116402
+         BZ    NQARG00                  YES, CONTINUE PROCESSING Y02072 02116502
+         LA    RTCODRG2,INVALBLK        NO, LOAD ERROR CODE      Y02072 02116602
+         B     RELEXIT2                 PREPARE TO EXIT          Y02072 02116702
+*                                                                       02116802
+ACTUAL   MVC   IOBSEEK,0(BLKREFRG)      MOVE ADDRESS TO SEEK FIELD      02116902
+         B     NQARG00                  GO TO READ EXCLUSIVE RTN        02117002
+*                                                                       02117102
+*********************************************************************** 02117502
+*                                                                       02117902
+RELBLK   EQU   *                                                 Y02072 02118002
+*                                                                       02118102
+*        THE FOLLOWING LOGIC USES ONE OF THE BDAM RELATIVE BLOCK        02118502
+*        ADDRESS CONVERSION ROUTINES, IGG019KE OR IGG019KF, TO          02120502
+*        CONVERT A RELATIVE BLOCK ADDRESS TO A DASD ADDRESS OF THE      02120902
+*        FORM MBBCCHHR.                                                 02121302
+*                                                                       02121702
+*        THE ENTRY POINT OF THE CONVERSION ROUTINE IS GOTTEN FROM       02121802
+*        THE FOUNDATION MODULE, AND THE ADDRESS OF THE FOUNDATION       02121902
+*        MODULE IS GOTTEN FROM THE DCB; THEREFORE THE CONVERSION        02122202
+*        MODULE MUST BE GIVEN CONTROL IN PROBLEM PROGRAM STATE AND      02122602
+*        KEY, VIA SYNCH.  UPON RETURN FROM THE MODULE, NO REGISTER      02123002
+*        CONTENTS CAN BE RELIED ON.                                     02123402
+*                                                                       02123802
+*              INPUT TO THE RELATIVE BLOCK CONVERSION MODULE IS:        02123902
+*                  R3    DEB ADDRESS                                    02124002
+*                  R4    DCB ADDRESS (SAME USAGE AS THIS MODULE)        02124102
+*                  R5    DECB ADDRESS                                   02124202
+*                  R7    IOB ADDRESS (SAME USAGE AS THIS MODULE)        02124302
+*                  R15   ENTRY POINT OF IGG019KE OR IGG019KF            02124402
+*                  DECRECPT -- POINTER TO RELATIVE BLOCK ADDRESS        02124502
+*                              TO CONVERT                               02124602
+*                  IOBSTAT1, BIT IOBSYNCH -- SET TO ONE TO INDICATE     02125002
+*                              ENTRY WAS VIA SYNCH                      02125102
+*                  IOBCSW-1 (LENGTH 4) -- SET TO ZERO FOR USE AS A      02125202
+*                              WORKAREA BY CONVERSION MODULES           02125302
+*              OUTPUT IS:                                               02125402
+*                  R12   RETURN CODE; = 0 IF RELATIVE BLOCK ADDRESS     02125802
+*                              IS WITHIN DATA SET, OTHERWISE = 16       02125902
+*                  IOBSEEK -- SET TO MBBCCHHR CORRESPONDING TO          02126002
+*                              RELATIVE BLOCK ADDRESS                   02126102
+*                                                                       02126202
+*********************************************************************** 02126602
+*                                                                       02126702
+         L     R15,DCBREAD              GET FOUNDATION ADDRESS          02127002
+         USING FOUNDENT,R15             ESTABLISH BASE FOR VECTOR TABLE 02127102
+*                                       THIS VECTOR TABLE IS REAL ONE   02127202
+         SR    WKREG1,WKREG1            SET REG TO ZERO          Y02072 02127602
+         ST    WKREG1,IOBCSW-1          ZERO OUT CSW FIELD OF IOB       02130002
+         TM    DCBRECFM,DCBRECTO        IS RECFM OVERFLOW       SA53131 02130402
+         BZ    NOTOVFLO                 IF NOT, LOAD 19KE FROM  SA53131 02130802
+*                                       FRONT OF FOUNDATION MODULE      02131202
+         L     R15,RROVAD               OR ,LOAD 19KF FROM 19KA SA53131 02131602
+         B     RELBLK1                  BRANCH TO SETUP         SA53131 02132002
+NOTOVFLO EQU   *                        REL BLK,NOT OVFLO       SA53131 02132402
+         L     R15,RRAD                 GET RELATIVE BLOCK ADDRESS AND  02132802
+         DROP  R15                                                      02133202
+RELBLK1  EQU   *                                                        02133602
+         L     RRLBDEB,DCBDEBAD         DEB ADDRESS              Y02072 02134002
+         LR    RRLBDECB,DECBREG         DECB ADDRESS             Y02072 02134402
+         OI    IOBSTAT1,IOBSYNCH        INDICATE ENTRY VIA SYNCH Y02072 02134802
+         SYNCH (15)                     BR TO REL BLK ADRS IN PP A35339 02135202
+         DROP  BASEREG                  CANNOT RELY ON RETURNED  Y02072 02135602
+*                                       REGISTERS                Y02072 02136002
+         BALR  RSYNCHRT,0               ESTABLISH TEMP BASE      Y02072 02136402
+         USING *,RSYNCHRT               TEMP ADDRESSABILITY      Y02072 02136802
+         BAL   RLINK,SYNRETRN           GO RESTORE REGISTERS     Y02072 02137202
+         DROP  RSYNCHRT                                          Y02072 02137602
+         USING BASEVAL,BASEREG          MODULE ADDRESSABILITY    Y02072 02138002
+         LA    RTCODRG2,INVALBLK        LOAD ERROR CODE          Y02072 02138102
+         LTR   RRLBRC,RRLBRC            WAS ADDRESS VALID        Y02072 02138402
+         BNZ   RELEXIT2                 NO, PREPARE TO EXIT      Y02072 02139602
+*                                                                       02382002
+         EJECT                                                          02432002
+*********************************************************************** 09228102
+*                                                                     * 09238102
+*  BUILD ENQ/DEQ ARGUMENT AND VALIDATE IT                             * 09248102
+*        THE 8 BYTE ARGUMENTS CONSISTS OF:                            * 09250102
+*              3 BYTES - UCB ADDRESS                                  * 09252102
+*              5 BYTES - CCHHR OF BLOCK                               * 09254102
+*        THE FOLLOWING ROUTINE BUILDS THE ENQ/DEQ ARGUMENT            * 09256102
+*        IN THE SVRB EXTENDED SAVEAREA (AT LABEL WKANQARG) IF         * 09256502
+*        THE DEBCHK ROUTINE DETERMINED THAT THE DCB CONTAINED         * 09256602
+*        A VALID DEB ADDRESS. ONCE THE ARGUMENT IS BUILT IT IS        * 09256702
+*        MATCHED WITH THE DEB EXTENTS TO ENSURE THAT THE BLOCK        * 09256802
+*        ADDRESS IS WITHIN THE BOUNDARIES OF THE DATA SET. IF         * 09262102
+*        IT IS FOUND NOT TO BE, AN ABEND 335 IS ISSUED.               * 09264102
+*                                                                     * 09272802
+*        THE BLOCK FOR WHICH EXCLUSIVE CONTROL IS OBTAINED OR         * 09274802
+*        RELEASED DEPENDS ON THE TYPE OF REQUEST:                     * 09276802
+*              RELEX - THE BLOCK ID SPECIFIED IN THE MACRO            * 09277202
+*              READ/WRITE UPDATE - THE BLOCK SPECIFIED IN             * 09277602
+*                   THE DECB, WHICH IS ALSO THE VALUE IN IOBSEEK+3    * 09278002
+*              WRITE-ADD - REC 0 OF THE TRACK UPON WHICH SPACE        * 09294702
+*                   IS TO BE FOUND, ALSO THE VALUE IN IOBDNCRF+2      * 09304702
+*              WRITE-ADD,FIXED,2305,NO EXTENDED SEARCH - REC 0        * 09306702
+*                   OF THE TRACK UPON WHICH SPACE IS TO BE FOUND      * 09308702
+*              WRITE-ADD,FIXED,2305,EXTENDED SEARCH - REC 0 OF        * 09310702
+*                   THE FIRST TRACK IN THE DATA SET                   * 09311102
+*                                                                     * 09361102
+*********************************************************************** 09378102
+NQARG00  EQU   *                        SET UP ENQ LIST                 09628102
+*                                                                       09638102
+         MODESET EXTKEY=ZERO            CHANGE TO KEY ZERO       Y02072 09648102
+*                                                                       09650102
+NQARG01  EQU   *                        E.P. IF ALREADY KEY 0    Y02072 09650502
+*                                                                       09650902
+*                                       GET THE LOCAL LOCK       Y02072 09652102
+LOCKSCAN SETLOCK OBTAIN,TYPE=LOCAL,MODE=UNCOND,                  Y02072X09654102
+               RELATED=(EXCLCTLQ,IGC0005C(FRELCK1,FRELCK2,FRELCK3,FRELCX09656102
+               K4,FRELCK7))                                      Y02072 09656502
+*                                                                       09658102
+         BAL   RLINK2,DEBCHKRT          VALIDATE DEB             Y02072 09708102
+         L     DEBREG,WKASVDEB          SAVE DEB ADDR IN REG     Y02072 09718102
+         USING DEBBASIC,DEBREG          ADDRESS DEB              Y02072 09728102
+*                                                                       09740402
+         TM    IOBDTYP2,IOBRQUST+IOBADDTY READ OR WRITE ADD REQ? Y02072 09750402
+         BZ    DEQREQ                   NO, MUST BE WRT REL      Y02072 09760402
+WAREAD   EQU   *                        IF WRT ADD OR READ       Y02072 09770402
+         TM    IOBDSTAT,IOBENQUE        IS THIS DEQ REQUEST      Y02072 09790402
+         BNO   ENQREQ                   NO BR AROUND NEXT INST   Y02072 09800402
+DEQREQ   EQU   *                        SET BIT FOR DEQ REQ      Y02072 09802402
+         OI    WKASW1,WKADEQRQ          SET DEQ BIT IN SVRB WKA  Y02072 09810402
+         B     TEST2305                 BR AROUND NEXT INST      Y02072 09820402
+ENQREQ   EQU   *                        ENQ REQ BIT SET          Y02072 09822402
+         OI    WKASW1,WKAENQRQ          SET ENQ BIT IN SVRB WKA  Y02072 09824402
+TEST2305 EQU   *                        TEST FOR WA              Y02072 09826402
+         TM    IOBDTYP2,IOBADDTY        IS THIS A WRITE ADD             09828102
+         BZ    NOTADD                   BRANCH IF NO                    09878102
+         TM    WKASW1,WKAD2305          IS THIS A 2305 FIXED     Y02072 09878502
+*                                       WRITE-ADD REQUEST?       Y02072 09878902
+         BZ    WRTADD                   BRANCH NO                Y02072 09879302
+*                                                                       09879402
+*              FOR A 2305 FIXED-FORMAT WRITE-ADD WITHOUT                09879702
+*              EXTENDED SEARCH, THE REQUEST REQUIRES EXCLUSIVE          09879802
+*              CONTROL OF A SINGLE TRACK.  AN EXTENDED SEARCH           09879902
+*              REQUEST GETS CONTROL OF THE WHOLE DATA SET,              09880002
+*              REPRESENTED BY R0 OF THE FIRST TRACK.                    09892002
+*                                                                       09902002
+         TM    DCBOPTCD,DCBOPTE         IS IT EXTENDED SEARCH    Y02072 09904002
+         BZ    WRTADD                   BRANCH NO, ENQ ON TRK    Y02072 09906002
+         USING DEBDASD-(DEBBASND-DEBBASIC),DEBREG                YM5762 09920002
+         MVC   WKANQUCB,DEBUCBA         UCB ADDR TO ENQ AREA     Y02072 09941602
+*                                       TRK 1 ADDR TO ENQ AREA   Y02072 09941702
+         MVC   WKANQCC(L'WKANQCC+L'WKANQHH),DEBSTRCC             Y02072 09942002
+         MVI   WKANQR,0                 REC# = 0                 Y02072 09942402
+         B     SCAN0                    BRANCH TO SCAN LIST      Y02072 09942802
+         DROP  DEBREG                   DROP DEB BASE            YM5762 09942902
+*                                                                       09943202
+WRTADD   MVI   WKANQR,X'00'             ZERO OUT REC# FIELD      Y02072 09943302
+*                                       MOVE RECORD ADDRESS TO   Y02072 09954902
+         MVC   WKANQDEV(L'WKANQCC+L'WKANQHH),IOBCC   ENQ AREA    Y02072 09966502
+         B     LOADEXTN                 BRANCH AROUND NEXT INST         09978102
+NOTADD   TM    IOBDTYP2,IOBRELEX        IS THIS A RELEX REQUEST? Y02072 09988102
+         BZ    EXCLCTL                  NO, MUST BE EXCL CTL     Y02072 09998102
+         MVC   WKANQDEV,IOBCC           SEARCH ARG IN IOBSEEK    Y02072 10008102
+         B     LOADEXTN                 BR TO GET UCB ADDR       Y02072 10018102
+EXCLCTL  MVC   WKANQDEV,IOBDNCRF+2      MOVE REC ADDR TO ENQ     Y02072 10028102
+*                                       AREA                     Y02072 10038102
+*                                                                       10078102
+LOADEXTN SR    DEBEXTRG,DEBEXTRG        CLEAR REGISTER                  10128102
+         CLC   IOBM(1),16(DEBREG)       COMPARE EXTENTS        @ZA28583 10138137
+         BH    ABEND435                 BRANCH IF IN EXCESS    @ZA28583 10148137
+         IC    DEBEXTRG,IOBM            GET EXTENT NUMBER               10178102
+         SLL   DEBEXTRG,4               TIMES 16                        10228102
+         AR    DEBEXTRG,DEBREG          PLUS DEB ADDRESS         Y02072 10278102
+         USING DEBDASD-(DEBBASND-DEBBASIC),DEBEXTRG    ADDRESS   Y02072 10378102
+*                                       EXTENT DESCRIPTION       Y02072 10388102
+         MVC   WKANQUCB,DEBUCBA         UCB ADDR TO ENQ AREA     Y02072 10428102
+*                                                                       10430102
+*              IT IS NOW NECESSARY TO VERIFY THAT THE TRACK             10438102
+*              WE WILL ENQUEUE ON IS IN THE DATA SET DESCRIBED          10448102
+*              BY THIS VALID DEB.                                       10458102
+*                                                                       10468102
+         CLC   WKANQCC,DEBSTRCC         COMPARE CYL : START CLY  Y02072 10474102
+         BL    ABEND335                 ABEND, NOT IN EXTENT     Y02072 10476102
+         BH    TSTHICYL                 CYL IS NOT 1ST IN EXT    Y02072 10476502
+         CLC   WKANQHH,DEBSTRHH         CYL IS 1ST IN EXTENT,    Y02072 10476902
+*                                        IS HEAD IN EXTENT?      Y02072 10477302
+         BL    ABEND335                 BRANCH NO, ABEND         Y02072 10477702
+         B     SCAN0                    YES, GOOD ADDRESS        Y02072 10477802
+*                                                                       10477902
+TSTHICYL CLC   WKANQCC,DEBENDCC         COMPARE CYL : END CYL    Y02072 10478002
+         BH    ABEND335                 ABEND, NOT IN EXTENT     Y02072 10528002
+         BL    SCAN0                    BRANCH, TRK IN EXTENT    Y02072 10538002
+         CLC   WKANQHH,DEBENDHH         CYL IS LAST IN EXTENT,   Y02072 10548002
+*                                        IS HEAD IN EXTENT       Y02072 10558002
+         BH    ABEND335                 BRANCH NO, ABEND         Y02072 10568002
+*                                                                       10570002
+         DROP  DEBEXTRG                                                 10757602
+         EJECT                                                          10759602
+*********************************************************************** 10761002
+*                                                                     * 10763002
+*   FOR ALL REQUESTS - SCAN EXCLUSIVE CONTROL LIST FOR MATCH          * 10763402
+*                                                                     * 10763502
+*        THE FOLLOWING ROUTINE SCANS THE EXCLUSIVE CONTROL LIST,      * 10763802
+*        INCLUDING ALL SEGMENTS IF THERE BE MORE THAN ONE, LOOKING    * 10764202
+*        FOR A MATCH WITH THE ENQ/DEQ ARGUMENT WHICH HAS JUST         * 10764302
+*        BEEN BUILT AND VERIFIED IN THE SVRB EXTENDED SAVEAREA.       * 10767702
+*                                                                     * 10769702
+*        WHEN THE SEARCH IS COMPLETED, EITHER BY FINDING A MATCH      * 10774902
+*        OR REACHING THE END OF THE LIST, THE TYPE OF REQUEST         * 10776902
+*        IS INTERROGATED, TO DETERMINE WHAT ROUTINE SHOULD            * 10777302
+*        RECEIVE CONTROL.                                             * 10777402
+*                                                                     * 10777502
+*   IN SUMMARY, THE FOLLOWING ACTIONS WILL BE TAKEN:                  * 10777602
+*                                                                     * 10777702
+*        IF THE REQUEST IS A DEQ REQUEST AND NO MATCH IS FOUND,       * 10778002
+*        AN ERROR CONDITION EXISTS, RESULTING IN A RETURN CODE        * 10778102
+*        OF 4 IF A RELEX REQUEST.                                     * 10788702
+*                                                                     * 10799902
+*        IF THE REQUEST IS A DEQ REQUEST AND A MATCH IS FOUND,        * 10809902
+*        CONTROL OF THE BLOCK WILL BE GIVEN TO THE FIRST IOB          * 10810302
+*        WAITING ON THE UNPOSTED QUEUE, OR IF NONE ARE WAITING,       * 10810702
+*        THE BLOCK WILL BE DEQUEUED AND REMOVED FROM THE LIST.        * 10810802
+*                                                                     * 10810902
+*        IF THE REQUEST IS AN ENQ REQUEST AND A MATCH IS FOUND,       * 10814602
+*        THE IOB FOR THIS REQUEST WILL BE ADDED TO THE UNPOSTED       * 10816602
+*        QUEUE ASSOCIATED WITH THIS BLOCK.                            * 10817002
+*                                                                     * 10817402
+*        IF THE REQUEST IS AN ENQ REQUEST AND NO MATCH IS FOUND,      * 10817802
+*        THE ENQ ARGUMENT IS PUT ON THE EXCLUSIVE CONTROL LIST,       * 10818202
+*        AN ENQ MACRO AND EXCP MACRO ARE ISSUED, GIVING THE           * 10818302
+*        CURRENT REQUESTOR CONTROL OF THE BLOCK.                      * 10820902
+*                                                                     * 10822902
+*********************************************************************** 10824502
+*                                                                       10827102
+SCAN0    EQU   *                        SCAN THE READX LIST      Y02072 10829702
+         MVI   WKATRALX,WKAVALRC        AUDIT TRAIL INDICATES    Y02072 10832302
+*                                       THAT VALIDATED REC HAS   Y02072 10834902
+*                                       BEEN SAVED IN SVRB       Y02072 10837502
+*                                       CHANGE TO CALLER'S       Y02072 10840102
+         MODESET KEYADDR=WKASVKEY,WORKREG=2     PROTECT KEY      Y02072 10842702
+*                                                                       10845302
+*                                                                       10847902
+SCANXARG EQU   *                        LOOK FOR MATCH ON READX LIST    10861402
+*                                                                       10878102
+*              GET EXCLUSIVE CONTROL LIST ADDRESS                       10928102
+*                                                                       10938102
+         LA    WKREG1,DEBBASIC-DEBPREFX LENGTH OF DEB PREFIX     Y02072 10970102
+         SR    DEBREG,WKREG1            ADDR OF DEB PREFIX       Y02072 10972102
+         USING DEBPREFX,DEBREG                                   Y02072 10974102
+         L     DEBREG,DEBXTNP           ADDR OF DEB EXTENSION    Y02072 10976102
+         USING DEBXTN,DEBREG            EXTENSION ADDRESSABILITY Y02072 10976502
+         L     RDXREG,DEBXXARG          READ EXCLUSIVE LIST ADDR Y02072 10976902
+         DROP  DEBREG                                            Y02072 10977302
+         USING RDXLIST,RDXREG           SET UP ADDRESSABILITY           10978102
+*                                                                       10988102
+         LA    RDXREG,0(0,RDXREG)       CLEAR HIGH ORDER BYTE           11028102
+         LR    WKREG2,RDXREG            SAVE PTR TO READX LIST   Y02072 11030102
+         LA    ENQREG,WKANQARG          POINT TO ENQ MINOR NAME  Y02072 11038102
+         USING WKANQARG,ENQREG                                   Y02072 11048102
+NXTSEG   LR    RDXSEGRG,RDXREG          PTR TO CURRENT SEGMENT   Y02072 11078102
+         LA    RDXCTREG,RDXMAXCT        PICK UP # SLOTS PER SEG  Y02072 11428102
+         LA    RDXENTRG,RDXENT          ESTABLISH BASE FOR ENTRY        11478102
+         USING RDXENTRY,RDXENTRG        IN THE READX LIST               11528102
+SCANLIST EQU   *                        DOES ENTRY ALREADY EXIST        11578102
+         CLC   RDXNQARG,WKANQARG        COMPARE ENQ ENTRY        Y02072 11628102
+         BE    TYPETST                  YES-DETERMINE TYPE OF REQUEST   11678102
+         LA    RDXENTRG,RDXENTLN(RDXENTRG) NO, UP PTR TO CK NEXT ENTR   11728102
+         BCT   RDXCTREG,SCANLIST        MORE ENTRIES CONTINUE IF YES    11778102
+GETPTR   L     RDXREG,RDXNEXT           GET ADDR OF NEXT SEGMENT        11828102
+         LA    RDXREG,0(0,RDXREG)       ZERO HI ORDER BTYE              11878102
+         LTR   RDXREG,RDXREG            TEST FOR ZERO(NO POINTER)       11928102
+         BNZ   NXTSEG                   GO SEARCH NEW SEGMENT    Y02072 11978102
+         DROP  RDXREG                                                   12078102
+*********************************************************************** 12178102
+*  THIS ROUTINE INTERROGATES THE KIND OF REQUEST.  IT MUST BE A READX,* 12228102
+*  WRITE ADD, WRITE RELEASE OR RELEX.  IF THE REQUEST IS A WRITE REL, * 12278102
+*  RELEX OR WRITE ADD TO RELEASE AN ENQ'D TRK, CONTROL IS PASSED TO   * 12328102
+*  THE 'WRTTYPE' ROUTINE.  ELSE IT IS ASSUMED THAT ENTRY IS TO ENQ ON * 12378102
+*  A BLOCK.  ONE OR TWO SEARCHES HAVE ALREADY BEEN MADE THROUGH THE   * 12428102
+*  READX LIST.  THE FIRST PASS THROUGH THE LIST IS TO FIND A COMPARE  * 12478102
+*  EQUAL ON THE BLOCK ID ASSOCIATED WITH THE CURRENT REQUEST.  THE    * 12528102
+*  SECOND PASS IS TO FIND AN EMPTY SLOT FOR AN ENQ REQUEST ENTRY WHEN * 12578102
+*  NO COMPARE WAS FOUND ON THE FIRST PASS.                            * 12628102
+*********************************************************************** 12678102
+TYPETST  EQU   *                        FIND OUT TYPE OF REQUEST        12728102
+         TM    IOBDTYP2,IOBRQUST+IOBADDTY  READ OR WRITE ADD?           12778102
+         BZ    WRTTYPE                  NO, MUST BE WRT REL             12828102
+         TM    IOBDSTAT,IOBENQUE        WAS THE WRITE ADD ENQ'D ALREADY 12878102
+         BO    WRTTYPE                  YES GO ON TO DEQ                12928102
+         CLC   AVAIL,0(ENQREG)          IS THIS THE 2ND PASS?    Y02072 12978102
+         BE    POSTQ                    YES-GO TO ENTER ON LIST  Y02072 13028102
+         LTR   RDXCTREG,RDXCTREG        NO- TEST FOR NO EQUAL FOUND     13078102
+         BNZ   PUTONQ                   BRANCH IF EQUAL FOUND    Y02072 13128102
+*********************************************************************** 13178102
+*  SET UP FOR SECOND PASS THROUGH READX LIST IN SEARCH FOR EMPTY SLOT * 13188102
+*  TO ADD NEW ENQ ENTRY.                                              * 13198102
+*********************************************************************** 13208102
+SCANZERO EQU   *                        LOOK FOR EMPTY SLOT ON RDX LIST 13218102
+         LA    ENQREG,AVAIL             SEARCH FOR EMPTY SLOT    Y02072 13220102
+         LR    RDXREG,WKREG2            GET ADDR OF 1ST SEGMENT  Y02072 13222502
+*                                       OF READX LIST            Y02072 13222902
+         B     NXTSEG                   SEARCH FOR AN EMPTY SLOT Y02072 13224102
+         EJECT                                                          13226102
+*********************************************************************** 13228102
+*                                                                     * 13230102
+*     ENQ REQUESTS                                                    * 13238102
+*                                                                     * 13248102
+*        THE FOLLOWING ROUTINE PROCESSES REQUESTS FOR EXCLUSIVE       * 13258102
+*        CONTROL OF A BLOCK.                                          * 13268102
+*                                                                     * 13270102
+*        PUTONQ - THIS SECTION ADDS THE CURRENT IOB TO THE            * 13270502
+*           UNPOSTED QUEUE ASSOCIATED WITH THE BLOCK. IT IS           * 13270902
+*           EXECUTED WHEN A MATCH FOR THE ENQ ARGUMENT IS FOUND       * 13271302
+*           TO ALREADY EXIST ON THE EXCLUSIVE CONTROL LIST.           * 13271702
+*                                                                     * 13272102
+*        POSTQ - THIS SECTION ADDS THE ENQ ARGUMENT TO THE            * 13322102
+*           EXCLUSIVE CONTROL LIST WHEN NO MATCH WAS FOUND.           * 13372102
+*           ONCE IT HAS BEEN PUT ON THE LIST, AN ENQ MACRO            * 13422102
+*           IS ISSUED TO ENSURE SYSTEM-WIDE CONTROL OF THE            * 13472102
+*           RESOURCE, AND AN EXCP IS ISSUED TO GET THE                * 13522102
+*           MOST RECENT COPY OF THE BLOCK.                            * 13572102
+*                                                                     * 13574102
+*********************************************************************** 13578102
+*                                                                       13624102
+*                                                                       13624202
+*********************************************************************** 13624502
+*     ADD THE CURRENT IOB TO THE UNPOSTED QUEUE FOR THIS BLOCK          13626102
+*********************************************************************** 13626202
+PUTONQ   MVC   IOBCSW-1(L'WKANQARG),WKANQARG                     Y02072 13628102
+*              NOTE:  THE ABOVE INSTRUCTION PLACES THE                  13638102
+*                     ENQUEUE ARGUMENT IN IOBCSW.  IT SHOULD            13648102
+*                     AID IN DETERMINING WHAT RECORD AN IOB IS          13658102
+*                     WAITING FOR.  HOWEVER, NO CODE IS DEPEN-          13668102
+*                     DENT ON EXECUTION OF THIS INSTRUCTION.            13670102
+         SR    IOBQREG1,IOBQREG1        CLEAR REGISTER           Y02072 13678102
+         TM    WKASW1,WKAD2305          2305 WRITE-ADD?          Y02072 13680102
+         BZ    PUTONQ1                  BRANCH IF NOT            Y02072 13682102
+         ST    IOBQREG1,DECSDECB        ZERO ECB, USER CAN WAIT  Y02072 13684102
+PUTONQ1  ST    IOBQREG1,IOBDQPTR        ZERO IOB'S LINK FIELD    Y02072 13688102
+         L     IOBQREG1,RDXUQND         ADDR OF LAST IOB WAITING Y02072 13728102
+*                                       ON THE UNPOSTED QUEUE           13778102
+         LTR   IOBQREG1,IOBQREG1        WERE THERE ANY ?         Y02072 13828102
+         BZ    PUTONQ2                  BRANCH IF NONE           Y02072 13878102
+         SPACE                                                          13878502
+*  CHANGE KEY AND SAVE THE IOB ADDRESS OF LAST IOB ON UNPOSTED QUEUE, * 13880102
+*  SETTING A BIT INDICATING THAT THIS IOB WAS SAVED IN THE SVRB WKA.  * 13882102
+*  THIS INFORMATION MAY BE REQUIRED BY THE ESTAE SHOULD AN ABEND OCCUR* 13884102
+         SPACE                                                          13886102
+*                                                                       13886502
+         MODESET  EXTKEY=ZERO           CHANGE TO SUPER KEY      Y02072 13886902
+*                                                                       13887302
+         ST    IOBQREG1,WKAIOBQX        SAVE LAST IOB IN WKA     Y02072 13887702
+         MVI   WKATRALX,WKAIOBST        SET BIT FOR LAST IOB     Y02072 13887802
+*                                                                       13887902
+         MODESET  KEYADDR=WKASVKEY,WORKREG=14  RET TO USER KEY   Y02072 13888002
+*                                                                       13891302
+         ST    IOBREG,IOBDQPTR-IOBSTDRD(IOBQREG1) POINT LAST IOB Y02072 13894802
+*                                       ON QUEUE TO THIS ONE     Y02072 13898102
+*                                                                       13908102
+         MODESET EXTKEY=DATAMGT         KEY OF READX LIST        Y02072 13918102
+*                                                                       13920102
+         ST    IOBREG,RDXUQND           MAKE THIS IOB LAST ON Q  Y02072 13922102
+         B     PUTONQ3                  Q UPDATE COMPLETE        Y02072 13924102
+*                                                                       13926102
+PUTONQ2  MODESET EXTKEY=DATAMGT         KEY OF READX LIST        Y02072 13926502
+*                                                                       13926902
+         ST    IOBREG,RDXUQND           MAKE THIS IOB LAST Q     Y02072 13927302
+         ST    IOBREG,RDXIOBUQ          ALSO FIRST ON Q          Y02072 13928102
+PUTONQ3  EQU   *                        Q UPDATE COMPLETE        Y02072 13978102
+         DROP  ENQREG                                            Y02072 14228502
+*                                                                       14230102
+         MODESET EXTKEY=ZERO            KEY ZERO FOR SETLOCK     Y02072 14232102
+*                                                                       14234102
+         MVI   WKATRALX,WKAIOBQD        SET AUDIT BIT WHEN IOB   Y02072 14234502
+*                                       ADDED TO UNPOSTED QUEUE  Y02072 14234902
+*                                                                       14235302
+FRELCK2  SETLOCK RELEASE,TYPE=LOCAL,                             Y02072X14236102
+               RELATED=(EXCLCTLQ,IGC0005C(LOCKSCAN))             Y02072 14236502
+*                                                                       14236902
+         SR    RETCODRG,RETCODRG        ZERO RETURN CODE         Y02072 14238102
+         B     EXIT3                    RETURN                   Y02072 14278102
+*                                                                       14328102
+*                                                                       14528102
+*********************************************************************** 14928102
+*  THE FOLLOWING ROUTINE ADDS A NEW ENTRY (BLOCK ID) TO THE READX     * 14978102
+*  LIST.  THIS IS ALWAYS FOLLOWED BY A SYSTEM ENQ TO PUT THE SAME     * 15028102
+*  ENTRY ON THE SYSTEM QUEUE, AND AN EXCP TO PROVIDE THE EXCLUSIVE    * 15078102
+*  USER WITH THE LATEST COPY OF THE BLOCK HE REQUESTED.               * 15128102
+*********************************************************************** 15178102
+POSTQ    EQU   *                        ADD ENTRY TO LIST               15228102
+*                                                                       15522602
+         BAL   RLINK,GETTCBA            ADDR OF DEB'S TCB IN R4, Y02072 15524602
+         DROP  DCBREG                   ADDR OF CURRENT TCB R2   Y02072 15526602
+*                                       FOR GETMAIN OR ENQ       Y02072 15530102
+*                                                                       15532102
+*              PLACE THE ENTRY IN THE EXCLUSIVE CONTROL LIST.           15533602
+*                                                                       15537102
+         LTR   RDXCTREG,RDXCTREG        IS THERE AN EMPTY SLOT?  Y02072 15540602
+         BNZ   ENQ04                    BRANCH YES               Y02072 15542602
+*                                                                       15546502
+*              IT IS FIRST NECESSARY TO GET CORE FOR ANOTHER            15548502
+*              SEGMENT OF THE READ EXCLUSIVE LIST, AND TO               15550502
+*              CHAIN IT TO THE CURRENT LAST SEGMENT.                    15554402
+*                                                                       15556402
+*              THE LOGIC MUST USE THE BRANCH ENTRY TO GETMAIN           15558402
+*              BECAUSE THE LOCAL LOCK IS HELD.                          15562302
+*              THE BRANCH ENTRY USES R3 (BASEREG) AS A PARAMETER        15564302
+*              REGISTER.   GETMAIN BRANCH ENTRY REQUIRES THAT           15566302
+*              GR4 CONTAIN THE TCB ADDRESS AND GR7 CONTAIN THE          15576302
+*              ASCB ADDRESS.                                            15576402
+*                                                                       15576602
+         LR    WKREG3,IOBREG            SAVE IOB ADDRESS         Y02072 15578602
+         LR    WKREG4,BASEREG           TEMPORARY BASE REGISTER  Y02072 15586602
+         USING BASEVAL,WKREG4           ADDRESSABILITY           Y02072 15586702
+         DROP  BASEREG                                           Y02072 15586802
+         L     R7,PSAAOLD               CURRENT ASCB ADDRESS     Y02072 15591302
+*                                                                       15591702
+         MODESET EXTKEY=ZERO            KEY ZERO FOR GETMAIN     Y02072 15592102
+*                                                                       15592702
+*              REQUEST AN ADDITIONAL SEGMENT, CONDITIONALLY,            15593902
+*              FROM SUBPOOL 230 IN DATA MANAGEMENT KEY.                 15595102
+*                                                                       15596302
+         GETMAIN RC,SP=SPDMGTNF,KEY=DATAMGT,LV=RDXLSTLG,         Y02072X15597502
+               BRANCH=YES                                        Y02072 15597902
+*                                                                       15598702
+         LR    BASEREG,WKREG4           RESTORE BASE REGISTER    Y02072 15599902
+         USING BASEVAL,BASEREG          MODULE ADDRESSABILITY    Y02072 15601102
+         DROP  WKREG4                                            Y02072 15602302
+         LR    IOBREG,WKREG3            RESTORE IOB POINTER      Y02072 15602702
+         USING IOBSTDRD,IOBREG          AND ADDRESSABILITY       Y02072 15603102
+         LTR   R15,R15                  WAS GETMAIN SUCCESSFUL   Y02072 15603502
+         BNZ   ABND535A                 NO, GO ABEND             Y02072 15605502
+         LR    RDXREG,R1                NEW SEGMENT ADDR         Y02072 15605902
+         USING RDXLIST,RDXREG           ESTABLISH BASE FOR READX LIST   15607502
+*                                                                       15617502
+*                                       CHANGE TO DATAMGT KEY TO Y02072 15620102
+         MODESET EXTKEY=DATAMGT          MODIFY READX LIST       Y02072 15622902
+*                                                                       15624902
+         XC    RDXLIST(RDXLSTLG),RDXLIST   CLEAR OUT THE LIST           15625502
+         ST    RDXREG,RDXNEXT-RDXLIST(RDXSEGRG)   STORE ADDR IN CHAIN   15628102
+*                                       FIELD OF PRIOR READX SEGMENT    15678102
+         LA    RDXENTRG,RDXENT          GET ADDR OF 1ST ENT IN NEW SEG  15728102
+         DROP  RDXREG                                                   15778102
+         B     ENQ04A                   GO TO MOVE ENTRY         Y02072 15788102
+*                                                                       15798102
+ENQ04    MODESET EXTKEY=DATAMGT         KEY OF READX LIST        Y02072 15848102
+*                                                                       15898102
+ENQ04A   MVC   RDXNQARG,WKANQARG        MOVE ENTRY TO READX LIST Y02072 15948102
+*                                                                       15998102
+         MODESET EXTKEY=ZERO            GET KEY ZERO FOR SETLOCK Y02072 16048102
+*                                                                       16098102
+         MVI   WKATRALX,WKARDXAD        SET AUDIT BIT WHEN RDX   Y02072 16100102
+*                                       ENTRY ADDED              Y02072 16102102
+*                                                                       16104102
+FRELCK1  SETLOCK RELEASE,TYPE=LOCAL,                             Y02072X16108102
+               RELATED=(EXCLCTLQ,IGC0005C(LOCKSCAN))             Y02072 16118102
+*                                                                       16127802
+*              INVOKE A RESTRICTED (SYSZ) ENQUEUE FOR THE               16137802
+*              TCB WHICH OPENED THIS DCB.                               16147802
+*                                                                       16147902
+         BAL   RLINK2,ENQRTNE           GET ENQUEUED             Y02072 16157902
+*                                                                       16159902
+         MVI   WKATRALX,WKAENQ          SET AUDIT BIT WHEN       Y02072 16160002
+*                                       RECORD IS ENQUEUED       Y02072 16168002
+*                                                                       16176102
+*                                       CHANGE TO CALLER'S       Y02072 16184102
+         MODESET KEYADDR=WKASVKEY,WORKREG=2     PROTECT KEY      Y02072 16192102
+*                                                                       16200102
+         OI    IOBDSTAT,IOBENQUE        INDICATE THE RECORD ENQUEUED    16208102
+         TM    WKASW1,WKAD2305          IF 2305 EXCP AFTER ENQ,  YM6585 16218102
+         BO    EXCPNOW                  ITS 1ST REQ FOR BLK SO   YM6585 16220102
+*                                       LET IOS CLEAR ECB        YM6585 16222102
+         L     WKREG1,IOBECBPT          GET THE ECB ADDRESS             16228102
+         LA    WKREG9,IOBCSW+3          LOAD 2ND HALF OF CSW TO USE AS  16278102
+*                                       DUMMY ECB FOR IOS        A39071 16328102
+         ST    WKREG9,IOBECBPT          ST CSW ADDR IN ECB       A39071 16378102
+         ST    WKREG1,IOBDQPTR          SAVE USER ECB ADDR IN    Y02072 16388102
+*                                       IOB. IT WILL BE RESTORED Y02072 16398102
+*                                       TO IOBECBPT BY THE CEA   Y02072 16408102
+*                                       OR EOE APPENDAGE         Y02072 16418102
+EXCPNOW  EQU   *                        ENTRY IF 1ST 2305 REQ    YM6585 16420102
+         EXCP  (IOBREG)                 ISSUE EXCP                      16428102
+*                                       IOB                      A39071 16528102
+*                                                                       16530102
+         MODESET  EXTKEY=ZERO           CHANGE KEY TO SVRB KEY   Y02072 16532102
+*                                                                       16534102
+         MVI   WKATRALX,WKAEXCPE        SET AUDIT BIT WHEN       Y02072 16536102
+*                                       EXCP ISSUED              Y02072 16536502
+         SR    RTCODRG2,RTCODRG2        ZERO RETURN CODE         Y02072 16538102
+         SR    PARREG0,PARREG0          SHOW NO IOB DEQUEUED     Y02072 16548102
+         B     EXIT2                    RETURN                   Y02072 16578102
+         EJECT                                                          16588102
+*********************************************************************** 16628102
+*                                                                     * 16630102
+*    DEQ REQUESTS                                                     * 16638102
+*                                                                     * 16648102
+*        THE FOLLOWING ROUTINE PROCESSES WRITE RELEASE REQUESTS,      * 16658102
+*        WRITE ADD REQUESTS TO RELEASE CONTROL OF A PREVIOUSLY        * 16668102
+*        ENQ'D TRACK, AND RELEX REQUESTS. AT THIS POINT A SCAN        * 16670102
+*        HAS ALREADY BEEN MADE OF THE EXCLUSIVE CONTROL LIST          * 16672102
+*        TO FIND THE ENTRY WHICH IS TO BE DEQUEUED.                   * 16674102
+*                                                                     * 16676102
+*        DEQ01 - THIS SECTION IS EXECUTED IF NO IOBS ARE FOUND        * 16676502
+*             TO BE WAITING FOR THE BLOCK IN QUESTION. A DEQ          * 16676902
+*             MACRO IS ISSUED 1ST. THEN THE ENTRY IN THE EX-          * 16677302
+*             CLUSIVE CONTROL LIST FOR THAT BLOCK IS CLEARED.         * 16677702
+*             HOWEVER, IF DURING THE DEQ, ANOTHER IOB IS ADDED        * 16677802
+*             TO THE UNPOSTED QUEUE, WAITING FOR THE SAME BLOCK,      * 16677902
+*             AN ENQ IS ONCE AGAIN ISSUED FOR THAT BLOCK, FOL-        * 16678002
+*             LOWED BY AN EXCP TO GET THE LATEST COPY. IF NO          * 16694702
+*             IOB HAS BEEN PUT ON THE UNPOSTED QUEUE FOR THAT         * 16704702
+*             BLOCK, THE ENTRY IS CLEARED.                            * 16706702
+*                                                                     * 16708702
+*        UPOSTIOB - THIS SECTION IS EXECUTED IF AN IOB IS FOUND       * 16710702
+*             TO BE WAITING FOR THE BLOCK IN QUESTION. IN THIS        * 16711102
+*             CASE THE FIRST WAITING IOB IS REMOVED FROM THE          * 16711202
+*             UNPOSTED QUEUE, THE LATEST COPY OF THE BLOCK IS         * 16711302
+*             MOVED INTO HIS BUFFER(UNLESS IT IS A RELEX REQUEST)     * 16716902
+*             AND ALL PROCESSING FOR THIS WAITING IOB IS COM-         * 16718902
+*             PLETED, INCLUDING CALCULATING FEEDBACK IF REQ-          * 16720902
+*             UESTED AND POSTING THE REQUEST COMPLETE. (IN THE        * 16721302
+*             CASE OF A COMPLETED WRITE ADD REQUEST, THE CURRENT      * 16721702
+*             REQUEST, RATHER THAN THE NEXT WAITING REQUEST,          * 16722102
+*             IS COMPLETED. THE NEXT WAITING IOB IS PASSED            * 16722202
+*             BACK TO THE CALLER -THE ASI,WHICH PASSES IT ON TO       * 16722302
+*             THE SELF-FORMAT MODULE, OR THE SELF-FORMAT MODULE.)     * 16722402
+*                                                                     * 16736302
+*********************************************************************** 16978102
+WRTTYPE  EQU   *                        WRITE RELEASE REQUEST           17028102
+         USING IHADCB,DCBREG                                     Y02072 17030102
+         USING RDXENTRY,RDXENTRG                                 Y02072 17038102
+         TM    WKASW1,WKADEQD           HAS DEQ ALREADY OCCURRED Y02072 17048102
+         BO    DEQ10                    BRANCH IF SO             Y02072 17058102
+         LTR   RDXCTREG,RDXCTREG        TEST TO SEE IF MATCH WAS FOUND  17078102
+         BZ    ERRWRT                   NO-GO SET EXCEPTION CODE Y02072 17128102
+         BAL   RLINK,SRCHUPST           SEARCH UNPOSTED QUEUE    Y02072 17178102
+*                                       FOR WAITING IOBS         Y02072 17228102
+         LTR   IOBQREG2,IOBQREG2        WAS ONE FOUND?           Y02072 17278102
+         BNZ   UPOSTIOB                 BR YES TO DEQUEUE IT     Y02072 17328102
+*                                                                       17428102
+DEQ01    EQU   *                                                 Y02072 17478102
+*                                                                       17528102
+*              NO IOB WAS FOUND WAITING FOR THE RECORD.  WE             17578102
+*              MUST DEQ AND CLEAR THE READ EXCLUSIVE LIST               17628102
+*              ENTRY.                                                   17678102
+*                                                                       17728102
+         MODESET EXTKEY=ZERO            KEY ZERO FOR SETLOCK     Y02072 17778102
+*                                                                       17828102
+*                                       MUST RELEASE LOCAL LOCK  Y02072 17878102
+FRELCK4  SETLOCK RELEASE,TYPE=LOCAL,      BEFORE DEQ MACRO CALL  Y02072X17928102
+               RELATED=(EXCLCTLQ,IGC0005C(LOCKSCAN))             Y02072 17978102
+*                                                                       18028102
+         DROP  RDXENTRG                                          Y02072 18038102
+         LR    WKREG3,DCBREG            SAVE DCB ADDR AROUND RTN Y02072 18048102
+         BAL   RLINK,GETTCBB            GET ADDR OF DEB'S TCB    Y02072 18078102
+         DROP  DCBREG                   ADDR WAS RETURNED IN R4  Y02072 18128102
+         MVC   WKANQLST(ENQLN),ENQLIST  MOVE DEQ LIST TO SVRB    Y02072 18178102
+*                                                                       18228102
+*                                       RELEASE CONTROL OF THIS  Y02072 18278102
+         DEQ   (,WKANQARG,,SYSTEM),TCB=(DEBTCBRG),   RECORD      YM1371X18328102
+               MF=(E,WKANQLST)                                   Y02072 18378102
+*                                                                       18388102
+         MVI   WKATRALX,WKADEQ          SET AUDIT BIT AFTER      Y02072 18398102
+*                                       DEQ IS ISSUED            Y02072 18408102
+         LR    DCBREG,WKREG3            RESTORE DCB ADDR         Y02072 18418102
+         USING IHADCB,DCBREG            ESTABLISH ADDRESSABILITY Y02072 18420102
+*                                                                       18428102
+*              IT IS POSSIBLE THAT SOME TIME AFTER WE RELEASED          18478102
+*              THE LOCAL LOCK (AT FRELCK4) ANOTHER ENQ REQUEST          18528102
+*              FOR THIS RECORD WAS PROCESSED.  SINCE THE ENTRY          18578102
+*              FOR THIS RECORD IS STILL IN THE READ EXCLUSIVE           18628102
+*              LIST, THE ENQ REQUEST WOULD HAVE BEEN PLACED ON          18678102
+*              THE UNPOSTED QUEUE.  IT IS THUS NECESSARY TO             18728102
+*              REACQUIRE THE LOCAL LOCK AND SEARCH THE UNPOSTED         18778102
+*              QUEUE FOR A REQUEST FOR THIS RECORD.                     18828102
+*                                                                       18878102
+SCANLCK2 SETLOCK OBTAIN,TYPE=LOCAL,MODE=UNCOND,                  Y02072X18928102
+               RELATED=(EXCLCTLQ,IGC0005C(FRELCK5,FRELCK6,FRELCK7))     18978102
+*                                                                       19028102
+*              BECAUSE WE HAVE NOT CONTINUOUSLY HELD THE LOCAL LOCK     19030102
+*              SINCE WE VALIDATED THE DEB AND LOCATED THE EXCLUSIVE     19032102
+*              CONTROL LIST, WE CANNOT BE SURE THAT WE CAN MODIFY       19034102
+*              THE CORE THAT RDXENTRG POINTS TO.  IT IS POSSIBLE        19036102
+*              (THOUGH HIGHLY UNLIKELY) THAT THE DCB HAS BEEN CLOSED    19036502
+*              AND THAT THE DEB IS NO LONGER VALID.                     19036902
+*                                                                       19037302
+         BAL   RLINK2,DEBCHKRT          VALIDATE DEB AGAIN       Y02072 19038102
+*                                                                       19048102
+*              IT IS ALSO POSSIBLE (ALTHOUGH EVEN MORE UNLIKELY),       19058102
+*              THAT THE DCB WAS CLOSED AND THEN REOPENED, AND THAT      19068102
+*              EVEN THOUGH THE DEB IS VALID, RDXENTRG DOES NOT POINT    19070102
+*              TO THE EXCLUSIVE CONTROL LIST ENTRY FOR THIS RECORD.     19072102
+*              WE WILL AGAIN GET THE READ EXCLUSIVE LIST POINTER        19074102
+*              FROM THE DEB, AND SEARCH THE LIST FOR AN ENTRY FOR       19076102
+*              THIS RECORD.                                             19076502
+*                                                                       19076902
+         OI    WKASW1,WKADEQD           INDICATE SECOND SEARCH   Y02072 19077302
+         L     DEBREG,WKASVDEB          GET DEB ADDRESS          Y02072 19077702
+         B     SCANXARG                 GO SEARCH EXCLUSIVE CON- Y02072 19077802
+*                                       TROL LIST AGAIN.         Y02072 19077902
+DEQ10    EQU   *                        RETURN HERE AFTER SEARCH Y02072 19078002
+         LTR   RDXCTREG,RDXCTREG        WAS THE ENTRY FOUND?     Y02072 19094702
+         BZ    ABEND435                 THE IMPROBABLE (& ILLE-  Y02072 19104702
+*                                       GAL) HAS OCCURRED, ABEND Y02072 19106702
+*                                                                       19108702
+*              EVERYTHING'S OK. RDXENTRG POINTS TO OUR EXCLUSIVE        19110702
+*              CONTROL LIST ENTRY.                                      19111102
+*                                                                       19115302
+         USING RDXENTRY,RDXENTRG                                 Y02072 19119702
+*                                       CHANGE TO CALLER'S       Y02072 19123902
+         MODESET KEYADDR=WKASVKEY,WORKREG=2     PROTECT KEY      Y02072 19128102
+*                                                                       19178102
+         BAL   RLINK,SRCHUPST           SEARCH UNPOSTED QUEUE    Y02072 19228102
+         LTR   IOBQREG2,IOBQREG2        WAS AN IOB FOUND?        Y02072 19278102
+         BNZ   DEQ02                    BRANCH YES               Y02072 19328102
+*                                                                       19378102
+*              NO IOB WAS FOUND.  CLEAR THE READ EXCLUSIVE LIST         19428102
+*              ENTRY AND EXIT.                                          19478102
+*                                                                       19528102
+         MODESET EXTKEY=DATAMGT         KEY OF READX LIST        Y02072 19578102
+*                                                                       19628102
+         XC    RDXENTRY(RDXENTLN),RDXENTRY   CLEAR ENTRY         Y02072 19678102
+         DROP  RDXENTRG                                          Y02072 19688102
+*                                                                       19728102
+         MODESET EXTKEY=ZERO            KEY ZERO FOR SETLOCK     Y02072 19778102
+*                                                                       19828102
+         MVI   WKATRALX,WKARDXZR        SET AUDIT BIT WHEN       Y02072 19838102
+*                                       READX ENTRY ZEROED       Y02072 19848102
+*                                                                       19858102
+FRELCK5  SETLOCK RELEASE,TYPE=LOCAL,    RELEASE LOCAL LOCK       Y02072X19878102
+               RELATED=(EXCLCTLQ,IGC0005C(SCANLCK2))             Y02072 19928102
+*                                                                       19978102
+         SR    RTCODRG2,RTCODRG2        NORMAL RETURN CODE       Y02072 20028102
+         TM    IOBDTYP2,IOBRELEX        WAS REQUEST RELEX?       YM1474 20078102
+         BO    RELEXIT1                 BRANCH YES TO FREE CORE  Y02072 20128102
+         SR    PARREG0,PARREG0          SHOW NO IOB DEQUEUED     Y02072 20178102
+         B     EXIT2                    GO TO EXIT               Y02072 20228102
+*                                                                       20328102
+DEQ02    EQU   *                                                 Y02072 20378102
+         LR    RIOB2,IOBQREG2           R11 WILL BE DESTROYED BY Y02072 20428102
+         USING IOBSTDRD,RIOB2            SETLOCK                 Y02072 20478102
+*                                                                       20528102
+*              AN IOB WAS FOUND WAITING FOR THIS RECORD ON THE          20578102
+*              UNPOSTED QUEUE.  IT IS NECESSARY TO RE-ENQUEUE           20628102
+*              ON THIS RECORD FOR THAT IOB.  IT IS ALSO NECESSARY       20678102
+*              TO REISSUE THE EXCP FOR THAT REQUEST IN CASE THE         20688102
+*              RECORD HAS BEEN ALTERED SINCE THE DEQ.                   20698102
+*                                                                       20708102
+         MODESET EXTKEY=ZERO            KEY ZERO FOR SETLOCK     Y02072 20718102
+*                                                                       20720102
+         MVI   WKATRALX,WKAENQRD        SET AUDIT BIT IF NEW     Y02072 20720502
+*                                       ENQ REQUIRED AFTER DEQ   Y02072 20720902
+*                                       RELEASE THE LOCK PRIOR   Y02072 20722102
+FRELCK6  SETLOCK RELEASE,TYPE=LOCAL,     TO ENQ                  Y02072X20724102
+               RELATED=(EXCLCTL,IGC0005C(SCANLCK2))              Y02072 20726102
+*                                                                       20726502
+*              THE ENQ LIST IS STILL GOOD FROM THE DEQ MACRO.           20726902
+*                                                                       20727302
+         BAL   RLINK,GETTCBA            GET ADDRESS OF DEB TCB   Y02072 20727702
+*                                       AND CURRENT TCB          Y02072 20727802
+         BAL   RLINK2,ENQRTNE           GO ENQUEUE               Y02072 20727902
+*                                                                       20744602
+         MVI   WKATRALX,WKAENQX         SET AUDIT BIT AFTER NEW  Y02072 20754602
+*                                       ENQ FOLLOWING DEQ        Y02072 20756602
+*                                                                       20761302
+*                                       CHANGE TO CALLER'S       Y02072 20778002
+         MODESET KEYADDR=WKASVKEY,WORKREG=2     PROTECT KEY      Y02072 20788002
+*                                                                       20798002
+DEQEXCP  L     WKREG9,IOBECBPT          GET DECB ADDRESS         Y02072 20808002
+         ST    WKREG9,IOBDQPTR          SAVE IT IN IOBDQPTR FOR  Y02072 20818002
+*                                       RESTORATION BY CEA OR    Y02072 20820002
+*                                       EOE APPENDAGE            Y02072 20820402
+         LA    WKREG3,IOBCSW+3          ADDR OF DUMMY ECB        Y02072 20822002
+         ST    WKREG3,IOBECBPT          FOR EXCP TO CLEAR        Y02072 20824002
+*                                                                       20826002
+         EXCP  (RIOB2)                  RE-ISSUE EXCP            Y02072 20826402
+*                                                                       20826802
+*                                                                       20827302
+         MODESET  EXTKEY=ZERO           CHANGE TO SVRB KEY       Y02072 20827702
+*                                                                       20829202
+         MVI   WKATRALX,WKAEXCPX        SET AUDIT BIT FOR EXCP   Y02072 20829602
+*                                                                       20830002
+         MODESET  KEYADDR=WKASVKEY,WORKREG=2    RET TO USER KEY  Y02072 20830402
+*                                                                       20830802
+         LR    PARREG0,RIOB2            ADDR OF DEQUEUED IOB     Y02072 20831102
+         B     EXIT0                    EXIT                     Y02072 20832802
+         DROP  RIOB2                                             Y02072 20834502
+*                                                                       20834902
+*                                                                       20835302
+*                                                                       20835702
+*                                                                       20836202
+*********************************************************************** 20837902
+*  THE FOLLOWING SECTION PROCESSES THE NEXT IOB WAITING ON THE        * 20887902
+*  UNPOSTED QUEUE. THIS INCLUDES MOVING THE DATA INTO HIS BUFFER,     * 20947302
+*  CALCULATING FEEDBACK, AND POSTING THE REQUEST COMPLETE.            * 20949302
+*********************************************************************** 20955002
+*                                                                       20962702
+UPOSTIOB LR    WKREG0,IOBQREG2          SAVE PTR TO UNPOSTED IOB Y02072 20970402
+         USING IOBSTDRD,IOBREG                                   Y02072 20972402
+         TM    IOBDTYP2,IOBRELEX+IOBADDTY ENTRY FROM RELEX OR WRITE ADD 20978102
+         BM    READPOST                 YES- BRANCH AROUND MOVING DATA  21028102
+*                                                                       21038102
+*                                       CHANGE TO CALLER'S       Y02072 21070102
+         MODESET KEYADDR=WKASVKEY,WORKREG=2     PROTECT KEY      Y02072 21072102
+*                                                                       21074102
+*********************************************************************** 21078102
+*  THE FOLLOWING ROUTINE MOVES THE DATA FROM THE BUFFER OF THE        * 21128102
+*  RELEASING IOB TO THE BUFFERS OF ALL IOBS WAITING FOR THE BLOCK     * 21178102
+*  BEING RELEASED. THE SMALLER OF THE TWO DECB LENGTH FIELDS CONTROLS * 21228102
+*  THE NUMBER OF BYTES OF DATA MOVED. THE LONGER BUFFER IS PADDED     * 21278102
+*  WITH ZEROES.                                                       * 21328102
+*********************************************************************** 21378102
+DATAMOVE EQU   *                        MOVE DATE INTO NEXT BUFFER      21428102
+*                                       ESTABLISH BASE FOR DECB         21528102
+         L     DECBREG2,IOBECBPT-IOBSTDRD(IOBQREG2) ON UNPOSTED QUEUE   21578102
+         CLC   DECLNGTH-DECB(L'DECLNGTH,DECBREG2),DECLNGTH  COMPARE     21678102
+*                                       THE LENGTH OF EACH BLOCK        21728102
+         BH    WRITELOW                 BRANCH IF WRITTEN AREA IS LESS  21778102
+         LH    LENREG1,DECLNGTH-DECB(DECBREG2)   LOAD CONTROLLING       21828102
+*                                       LENGTH FOR MOVE TO NEXT BUFFER  21878102
+AREAPTRS EQU   *                        SET UP BUFFER POINTERS          21928102
+         L     BUFREG1,DECAREA          LOAD ADDRESS OF THE TWO AREAS   21978102
+         L     BUFREG2,DECAREA-DECB(DECBREG2)  PRIOR TO THE MOVE        22028102
+         B     TEST256                  BR TO DETERMINE AMT TO MOVE     22078102
+MOVE256  EQU   *                        MV 256 BYTES OF DATA AT A TIME  22128102
+         MVC   0(MAXLG,BUFREG2),0(BUFREG1)  MOVE 256 BYTES TO BUFFER    22178102
+*                                       OF IOB ON  UNPOSTED QUEUE       22228102
+         LA    BUFREG1,MAXLG(BUFREG1)   UPDATE THE TWO                  22278102
+         LA    BUFREG2,MAXLG(BUFREG2)   BUFFER POINTERS                 22328102
+TEST256  EQU   *                        MOVE THE REMAINING DATA         22378102
+         SH    LENREG1,CON256           CAN 256 BYTES BE MOVED          22428102
+         BP    MOVE256                  YES, GO TO MOVE IT              22478102
+         LA    LENREG1,MAXLG-1(LENREG1) NO-RESTORE REMAINING LENGTH     22528102
+         EX    LENREG1,MOVEREST         MOVE REST OF THE DATA           22578102
+         AR    BUFREG2,LENREG1          UPDATE 2ND BUFFER AREA POINTER  22628102
+         LA    BUFREG2,1(BUFREG2)       ADD BYTE SUBTRACTED FOR EX INST 22678102
+         CLC   DECLNGTH-DECB(L'DECLNGTH,DECBREG2),DECLNGTH  WAS READ    22728102
+*                                       BUFFER(NEXT IOB) LARGER THAN    22778102
+*                                       WRITE BUFFER (CURRENT IOB)      22828102
+         BNH   TST4MORE                 NO-GO TEST FOR MORE READS ON    22878102
+*                                       UNPOSTED QUEUE                  22928102
+PADTST   EQU   *                        YES-PAD REMAINDER OF BLOCK      22978102
+         SH    LENREG2,CON256           IS PADDING GREATER THAN 256     23028102
+         BP    PAD256                   YES, GO PAD SOME MORE           23078102
+         LA    LENREG2,MAXLG-1(LENREG2) NO-RESTORE LENGTH-1(FOR EX INS) 23128102
+         EX    LENREG2,PADBLOCK         PAD REST OF BLOCK               23178102
+TST4MORE EQU   *                        ARE MORE IOBS WAITING FOR BLOCK 23228102
+         L     IOBQREG2,IOBDQPTR-IOBSTDRD(IOBQREG2) LOAD ADDR OF NEXT   23238102
+*                                       IOB ON THE UNPOSTED QUEUE       23248102
+         LTR   IOBQREG2,IOBQREG2        IS THERE ANOTHER IOB ON THE Q   23258102
+         BZ    READPOST                 NO-GO POST FIRST IOB FOUND      23268102
+         B     DATAMOVE                 YES-GO TO MOVE DATA             23270102
+PAD256   EQU   *                        PAD BUFFER IF LENGTHS VARY      23278102
+         XC    0(MAXLG,BUFREG2),0(BUFREG2) CLEAR 256 BYTES              23328102
+         LA    BUFREG2,MAXLG(BUFREG2)   UPDATE AREA POINTER             23378102
+         B     PADTST                   GO TO PAD BUFFER                23428102
+WRITELOW EQU   *                        SMALLER LENGTH IS CONTROLLER    23478102
+         LH    LENREG1,DECLNGTH         USE WRITTEN AREA AS DATA LENGTH 23528102
+         LH    LENREG2,DECLNGTH-DECB(DECBREG2)  CALCULATE THE AMOUNT    23578102
+         SR    LENREG2,LENREG1          OF PADDING REQUIRED IN BIG BUF  23628102
+         B     AREAPTRS                 GO SET UP FOR DATA MOVE         23678102
+*                                                                       24178102
+MOVEREST EQU   *                         EXEC INST FOR MOVING DATA      24228102
+         MVC   0(1,BUFREG2),0(BUFREG1)   EXECUTED DATA MOVE             24238102
+PADBLOCK EQU   *                         PAD REMAINDER OF BUFFER        24248102
+         XC    0(1,BUFREG2),0(BUFREG1)   EXECUTED CLEARING OF BLOCK     24258102
+*                                                                       24268202
+*********************************************************************** 24576802
+*                                                                       24577202
+         USING IHADCB,DCBREG            ENTRY REGISTER           Y02072 24577602
+READPOST EQU   *                        SET UP TO GO TO ASI ROUTINE     24578102
+*                                                                       24588102
+         MODESET EXTKEY=ZERO            KEY ZERO FOR SETLOCK     Y02072 24598102
+*                                                                       24608102
+*                                       RELEASE THE LOCAL LOCK   Y02072 24610102
+FRELCK3  SETLOCK RELEASE,TYPE=LOCAL,                             Y02072X24618102
+               RELATED=(EXCLCTLQ,IGC0005C(SCANLOCK))             Y02072 24620102
+*                                                                       24622102
+*                                       CHANGE TO CALLER'S       Y02072 24626902
+         MODESET KEYADDR=WKASVKEY,WORKREG=2     PROTECT KEY      Y02072 24627302
+*                                                                       24627702
+         LR    RIOB2,WKREG0             ADDR OF DEQUEUED IOB     Y02072 24627802
+         TM    IOBDTYP2,IOBADDTY        WRITE ADD REQUEST               24628102
+         BNO   TSTFDB                   NO, TEST FOR FEEDBACK    Y02072 24678102
+         TM    WKASW1,WKAD2305          TEST FOR 2305 RECFM=F    Y02072 24688102
+         BO    DEQEXCP                  YES, GO ISSUE EXCP       Y02072 24718102
+WTADVU   MVC   IOBDNCRF-IOBSTDRD(CAPRECLG,RIOB2),IOBSEEK+3       YM1152 24728102
+*                                       MV CAPACITY RECORD TO NEW IOB   24778102
+         SR    RTCODRG2,RTCODRG2        INDICATE NO ERROR RETURN Y02072 24788102
+         TM    IOBDSTAT,IOBADDVU        DID CURRENT RECORD FIT          24828102
+         BZ    EXIT1                    NO, RETURN TO SELF-      Y02072 24878102
+*                                       FORMAT ROUTINE           Y02072 24928102
+         LR    RIOB2,IOBREG             YES, COMPLETE PROCESSING Y02072 24938102
+         B     TSTFDB1                  OF CURRENT REQUEST       Y02072 24948102
+*                                                                       24958102
+*                                                                       24968102
+*********************************************************************** 24978102
+* IT IS NOW NECESSARY TO COMPLETE THE PROCESSING OF THE IOB WHICH       25028102
+* WAS REMOVED FROM THE UNPOSTED QUEUE, OR (IF A COMPLETED SELF-FORMAT   25078102
+* WRITE-ADD REQ WITH AN IOB WAITING) THE CURRENT REQUEST. (THE WAITING  25088102
+* REQUEST WILL BE PROCESSED BY THE SELF FORMAT MODULE.) THE REMAINING   25098102
+* PROCESSING INCLUDES PROVIDING FEEDBACK, AS APPROPRIATE, MAKING THE    25148102
+* IOB AVAILABLE, AND POSTING THE DECB.                                  25158102
+*                                                                       25278102
+**********************************************************************  25328102
+TSTFDB   EQU   *                        ADDR OF DEQUEUED IOB     Y02072 25428102
+         USING IOBSTDRD,RIOB2                                    Y02072 25478102
+         DROP  IOBREG                                            Y02072 25528102
+         MVC   IOBCC(L'IOBCC+L'IOBHH+L'IOBR),IOBDNCRF+2  MOVE    Y02072 25578102
+*                                       ACTUAL ADDR TO IOBSEEK   Y02072 25628102
+TSTFDB1  TM    DCBOPTCD,DCBOPTF         IS FEEDBACK SPECIFIED?   Y02072 25678102
+         BZ    ACTFDBK                  NO, PROVIDE ACTUAL ADDR  Y02072 25728102
+         TM    IOBDTYPE,IOBACTAD        DOES REQUEST SPECIFY     Y02072 25778102
+*                                       ACTUAL ADDRESSING        Y02072 25828102
+         BZ    TESTREL                  NO, TEST FOR RELATIVE    Y02072 25878102
+ACTFDBK  L     DECBREG2,IOBECBPT        DECB FOR THIS REQUEST    Y02072 25928102
+         USING DECB,DECBREG2                                     Y02072 25978102
+         L     WKREG9,DECRECPT          ADDR OF BLOCK REFERENCE  Y02072 26028102
+         MVC   0(L'IOBSEEK,WKREG9),IOBSEEK  MOVE IN ACTUAL ADDR  Y02072 26078102
+         DROP  DECBREG2                                          Y02072 26128102
+         B     POSTIOB                  GO POST IOB COMPLETE     Y02072 26178102
+TESTREL  TM    IOBDTYPE,IOBRELBL        IS RELATIVE BLOCK ADDR-  Y02072 26228102
+*                                       ESSING SPECIFIED?        Y02072 26278102
+         BZ    RELTRK                   NO, ASSUME RELATIVE      Y02072 26328102
+*                                       TRACK ADDRESSING         Y02072 26378102
+*                                                                       26428102
+*                        SET UP INPUT FOR THE FEEDBACK MODULES,         26478102
+*                        IGG019KG AND IGG019KH.                         26488102
+*                             R1     IOB ADDRESS                        26498102
+*                             R13    DCB ADDRESS                        26508102
+*                                                                       26518102
+*              THE FEEDBACK MODULE WILL PLACE THE RELATIVE BLOCK        26518502
+*              ADDRESS IN THE AREA POINTED TO BY DECRECPT.              26518902
+*                                                                       26519302
+         OI    IOBSTAT1,IOBSYNCH        INDICATE ENTRY VIA SYNCH Y02072 26520102
+         L     R15,DCBDFBK              FEEDBACK MODULE E.P.     Y02072 26522102
+         LR    WKREG4,IOBREG            SAV CUR IOB AROUND SYNCH YM6585 26522202
+         LR    RIOBFBK,RIOB2            IOB ADDR TO REG 1        Y02072 26522502
+         LR    RDCBFBK,DCBREG           DCB ADDRESS TO REG 13    Y02072 26524102
+         SYNCH (15)                                              Y02072 26526102
+         BALR  RSYNCHRT,0               ESTABLISH TEMP BASE      Y02072 26526202
+         USING *,RSYNCHRT               TEMPORARY ADDRESSABILITY Y02072 26526502
+         BAL   RLINK,SYNRETRN           GO TO RESTORE REGS       Y02072 26526902
+         DROP  RSYNCHRT                                          Y02072 26527302
+         USING BASEVAL,BASEREG          REESTABLISH BASE         Y02072 26527402
+         LR    RIOB2,RIOBFBK            RESTORE FDBCK IOB        YM6585 26528402
+         LR    DCBREG,RDCBFBK           RESTORE DCB REG          YM6585 26530402
+         LR    IOBREG,WKREG4            RESTORE CURRENT IOB      YM6585 26530802
+         NI    IOBSTAT1,X'FF'-IOBSYNCH  RESET SYNCH INDICATOR    Y02072 26531502
+         B     POSTIOB                  GO TO POST THIS IOB      Y02072 26532502
+RELTRK   EQU   *                                                        26533502
+*                       THE FOLLOWING LOGIC USES THE SYSTEM      Y02072 26534502
+*                       CONVERT ROUTINE, IECPRLTV, TO PROVIDE    Y02072 26535502
+*                       RELATIVE TRACK (TTR) FEEDBACK.           Y02072 26536502
+*                       INPUT TO THE CONVERT ROUTINE IS:         Y02072 26537502
+*                            R1   DEB ADDRESS                    Y02072 26538502
+*                            R2   ADDR OF MBBCCHHR               Y02072 26539502
+*                            R14  RETURN ADDRESS                 Y02072 26540502
+*                            R15  ENTRY-POINT ADDRESS            Y02072 26541502
+*                       OUTPUT IS:                               Y02072 26542502
+*                             R0   CONTAINS TTR0                 Y02072 26543502
+*                             R9 - R13 DESTROYED                 Y02072 26544502
+*                                                                       26545502
+         LA    R2,IOBSEEK               POINT TO MBBCCHHR        Y02072 26546502
+         L     R1,DCBDEBAD              GET DEB ADDR             Y02072 26547502
+         L     R15,CVTPTR               GET ADDR OF CVT          Y02072 26548502
+         USING CVT,R15                                           Y02072 26549502
+         L     R15,CVTPRLTV             ENTRY-POINT OF IECPRLTV  Y02072 26550502
+         DROP  R15                                               Y02072 26551502
+         BALR  R14,R15                  GO TO CONVERT ROUTINE    Y02072 26552502
+         L     WKREG9,IOBECBPT          GET DECB ADDRESS         Y02072 26553502
+         USING DECB,WKREG9              DECB ADDRESSABILITY      Y02072 26554502
+         L     WKREG9,DECRECPT          GET BLK REF ADDRESS      YM3019 26555502
+         DROP  WKREG9                                            Y02072 26556502
+         STCM  R0,B'1110',0(WKREG9)     STORE FEEDBACK (TOP 3 BY)YM3019 26557502
+POSTIOB  EQU   *                        POST THE IOB             Y02072 26558502
+*                                                                       26559502
+         MODESET  EXTKEY=ZERO           CHANGE TO SVRB KEY       Y02072 26560502
+*                                                                       26561502
+         MVI   WKATRALX,WKAFEED         SET AUDIT BIT FOR        Y02072 26562502
+*                                       FEEDBACK PROVIDED        Y02072 26563502
+         MODESET  KEYADDR=WKASVKEY,WORKREG=1 RETURN TO USER KEY  Y02072 26564502
+*                                                                       26565502
+         SR    R0,R0                    REGISTER WILL CONTAIN    Y02072 26566502
+*                                       POST CODE                Y02072 26567502
+         IC    R0,IOBSTAT2                                       Y02072 26568502
+         SLL   R0,16                    SHIFT TO PRODUCE 24-BIT  Y02072 26569502
+*                                       COMPLETION CODE          Y02072 26570502
+         L     R1,IOBECBPT              GET ECB ADDRESS          Y02072 26571502
+         POST  (1),(0)                                           Y02072 26572502
+*                                                                       26573502
+         MODESET  EXTKEY=ZERO           CHANGE TO SVRB KEY       Y02072 26574502
+*                                                                       26575502
+         MVI   WKATRALX,WKAPOST         SET AUDIT BIT FOR POST   Y02072 26576502
+*                                       COMPLETION               Y02072 26577502
+         MODESET  KEYADDR=WKASVKEY,WORKREG=2  RET TO USER KEY    Y02072 26578502
+*                                                                       26579502
+MAKEAVL  TM    DCBMACF1,DCBMRCK         TEST IF CHECK IS USED    Y02072 26580502
+         BO    NOCHECK                  IF SO, DON'T MAKE IOB    Y02072 26581502
+*                                       AVAILABLE                Y02072 26582502
+         MVI   IOBDAYLI,AVAILIOB        MARK IOB AVAILABLE       Y02072 26583502
+NOCHECK  L     PARREG0,WKAIOBQX         ADDR OF DEQUEUED IOB     Y02072 26584502
+         DROP  RIOB2                                             Y02072 26585502
+*                                                                       26586502
+         EJECT                                                          26587502
+*********************************************************************** 26588502
+*              SET UP PARAMETERS FOR EXIT                               26589502
+*********************************************************************** 26590502
+*                                                                       26591502
+         USING IOBSTDRD,IOBREG                                   Y02072 26592502
+EXIT0    EQU   *                        NORMAL EXIT FOR WRITE    Y02072 26593502
+*                                       RELEASE AND RELEX        Y02072 26594502
+         SR    RTCODRG2,RTCODRG2        SET ZERO RETURN CODE     Y02072 26595502
+         TM    IOBDTYP2,IOBRELEX        WAS REQUEST RELEX        YM1474 26596502
+         BO    RELEXIT2                 BRANCH IF YES            Y02072 26597502
+*                                                                       26598502
+EXIT1    EQU   *                        EXIT IF IN USER KEY      Y02072 26599502
+*                                                                       26609502
+         MODESET EXTKEY=ZERO            RETURN TO KEY ZERO       Y02072 26619502
+*                                                                       26619902
+EXIT2    EQU   *                        EXIT IF IN KEY ZERO      Y02072 26620302
+         LR    RETCODRG,RTCODRG2        RETURN CODE TO R15       Y02072 26620402
+EXIT3    LR    PARREG1,IOBREG           IOB ADDR IN R1           Y02072 26623902
+         L     RRETURN,WKASAV14         LOAD RETURN ADDRESS      Y02072 26625902
+         BR    RRETURN                  RETURN                   Y02072 26627902
+*                                                                       26628002
+*              THE FOLLOWING ERROR EXIT IS TAKEN IF A RELEASE           26628102
+*              REQUEST SPECIFIES A BLOCK THAT IS NOT UNDER              26628202
+*              EXCLUSIVE CONTROL.                                       26628302
+ERRWRT   EQU   *                                                 Y02072 26629002
+         OI    IOBSTAT2,DECCCREX        SET ERROR INDIC FOR ASI  Y02072 26629402
+         LA    RTCODRG2,NOTFOUND        ERROR RETURN CODE        Y02072 26629802
+*                                                                       26630202
+         MODESET EXTKEY=ZERO            KEY ZERO FOR SETLOCK     Y02072 26630302
+*                                                                       26630802
+FRELCKER SETLOCK RELEASE,TYPE=LOCAL,    RELEASE THE LOCAL LOCK   Y02072X26631202
+               RELATED=(EXCLCTLQ,IGC0005C(LOCKSCAN))             Y02072 26631602
+*                                                                       26631702
+         TM    IOBDTYP2,IOBRELEX        RELEX REQUEST?           YM1474 26631802
+         BNO   EXIT2                    NO, BRANCH               Y02072 26632002
+RELEXIT1 EQU   *                        RETURN TO CALLER'S KEY   Y02072 26632402
+         MODESET KEYADDR=WKASVKEY,WORKREG=2     FOR FREEMAIN     Y02072 26633302
+*                                                                       26633402
+RELEXIT2 EQU   *                        FREE GOTTEN IOB AREA     Y02072 26633802
+         L     R1,WKARLCOR              GET ADDR OF RELEX WKAREA Y02072 26633902
+         FREEMAIN RU,SP=SPIOB,LV=IOBLG,A=(1)                     Y02072 26634002
+*                                                                       26634802
+         MODESET EXTKEY=ZERO            RETURN TO KEY ZERO       Y02072 26635202
+*                                                                       26635602
+         XC    WKARLCOR,WKARLCOR        CLEAR CORE ADDR IN SVRB  Y02072 26635702
+         TM    WKASW1,WKAABEND          SHOULD I ABEND?          Y02072 26636002
+         BO    DEESTAE                  BRANCH YES               Y02072 26636102
+*                                                                       26636202
+         LR    RETCODRG,RTCODRG2        GET RETURN CODE INTO REG.15     26636402
+         L     RRETURN,WKASAV14         LOAD RETURN ADDRESS      Y02072 26636802
+         BR    RRETURN                  RETURN                   Y02072 26637202
+*                                                                       26638002
+         EJECT                                                          26638402
+*********************************************************************** 26638502
+*********************************************************************** 26638702
+*              SUBROUTINES                                              26640702
+*********************************************************************** 26640802
+*********************************************************************** 26640902
+*     SEARCH THE UNPOSTED QUEUE                                       * 26641002
+*        THE FOLLOWING SUBROUTINE SEARCHES THE UNPOSTED QUEUE         * 26641102
+*        FOR THE PARTICULAR ENTRY, REMOVING THE FIRST WAITING         * 26641502
+*        IOB FROM THE QUEUE. THIS WAITING IOB IS PASSED BACK          * 26641602
+*        TO THE CALLING ROUTINE IN REG IOBQREG2. IT WILL CONTAIN      * 26641702
+*        ZEROES IF NO IOBS WERE WAITING. RETURN REG IS RLINK(R14).    * 26643202
+*********************************************************************** 26643602
+         USING RDXENTRY,RDXENTRG                                 Y02072 26645102
+SRCHUPST L     IOBQREG2,RDXIOBUQ        LOAD POINTER TO FIRST    Y02072 26646602
+*                                       IOB ON THE QUEUE                26648102
+         LTR   IOBQREG2,IOBQREG2        ANY IOBS ON THE QUEUE?   Y02072 26649602
+         BZR   RLINK                    NO, RETURN TO CALLER     Y02072 26651102
+DEQUEUEU EQU   *                        REMOVE IOB FROM IOB QUEUE       26652602
+         USING IOBSTDRD,IOBQREG2        ADDRESS THIS IOB         Y02072 26662602
+         DROP  IOBREG                                            Y02072 26663002
+         L     WKREG0,IOBDQPTR          LOAD ADDRESS OF NEXT     Y02072 26663102
+*                                       IOB ON THE QUEUE                26666602
+         OI    IOBDSTAT,IOBENQUE        SET RECORD WAS ENQUEUED  Y02072 26668602
+*                                                                       26669002
+         MODESET  EXTKEY=ZERO           CHANGE TO SVRB KEY       Y02072 26669402
+*                                                                       26669802
+         ST    IOBQREG2,WKAIOBQX        SAVE NEXT IOB TO GET     Y02072 26669902
+*                                       CONTROL OF RECORD        Y02072 26670002
+         MVI   WKATRALX,WKAIOBSV        SET AUDIT BIT INDICATING Y02072 26670102
+*                                       IOB HAS BEEN SAVED       Y02072 26673102
+*                                                                       26675102
+         MODESET EXTKEY=DATAMGT         KEY OF RDX LIST          Y02072 26677102
+*                                                                       26677502
+         ST    WKREG0,RDXIOBUQ          SET NEXT IOB ADDR IN Q   Y02072 26677902
+         LTR   WKREG0,WKREG0            WAS THE IOB UNQUEUED THE ONLY   26678002
+*                                       IOB ON THE QUEUE                26678102
+         BNZ   SETBIT                   NO, OTHER IOBS ARE ON Q  Y02072 26678902
+         ST    WKREG0,RDXUQND           ZERO END OF QUEUE PTR    Y02072 26679302
+SETBIT   EQU   *                        SET AUDIT BIT BEFORE RET Y02072 26679702
+*                                                                       26680102
+         MODESET  EXTKEY=ZERO           CHANGE TO SVRB KEY       Y02072 26680502
+*                                                                       26680602
+         MVI   WKATRALX,WKAIOBDQ        SET AUDIT BIT WHEN IOB   Y02072 26681702
+*                                       REMOVED FROM UNPOSTED Q  Y02072 26683702
+*                                                                       26684102
+         MODESET  KEYADDR=WKASVKEY,WORKREG=13    RET TO USER KEY Y02072 26684202
+*                                                                       26684302
+         BR    RLINK                    RETURN TO CALLER         Y02072 26684802
+         DROP  IOBQREG2,RDXENTRG                                 Y02072 26685602
+*********************************************************************** 26686002
+*    GET TCB ADDRESS FROM DEB                                         * 26686102
+*        THE FOLLOWING SUBROUTINE GETS THE TCB ADDRESS FROM THE       * 26686202
+*        DEB, WHOSE ADDRESS HAS BEEN SAVED IN THE SVRB EXTENDED       * 26686302
+*        SAVEAREA. THE TCB ADDRESS IS PASSED BACK TO THE CALLER       * 26686402
+*        IN REG DEBTCBRG(R4). RETURN REG IS RLINK(R14).               * 26686502
+*********************************************************************** 26687102
+*                                                                       26688802
+GETTCBA  L     TCBREG,PSATOLD           CURRENT TCB ADDR         Y02072 26689402
+GETTCBB  L     DEBTCBRG,WKASVDEB        GET DEB ADDRESS          Y02072 26690002
+         USING DEBBASIC,DEBTCBRG        ADDRESSABILITY           Y02072 26690602
+         L     DEBTCBRG,DEBTCBAD        DEB'S TCB ADDRESS        Y02072 26691202
+         LA    DEBTCBRG,0(DEBTCBRG)     CLEAR HI-ORDER BYTE      Y02072 26693202
+         BR    RLINK                    RETURN TO CALLER         Y02072 26696202
+*                                                                       26699202
+*********************************************************************** 26702202
+*   RESTORE REGISTERS AFTER SYNCH                                     * 26705202
+*        THE FOLLOWING SUBROUTINE RESTORES THE BASE REG AND SVRB REG  * 26707202
+*        AFTER RETURNING FROM A MODULE THAT WAS SYNCHED TO.  THIS IS  * 26707602
+*        NECESSARY TO ENSURE THE INTEGRITY OF THE TWO REGISTERS, WHICH* 26708002
+*        IF CLOBBERED COULD THREATEN SYSTEM INTEGRITY. RETURN REG     * 26708102
+*        IS RLINK(R14). THE SVRB REG AND BASE REG ARE INITIALIZED.    * 26708202
+*********************************************************************** 26708302
+SYNRETRN EQU   *                        THIS ROUTINE RESTORES    Y02072 26708702
+*                                                                       26717202
+*              THE NEXT SEQUENCE OF INSTRUCTIONS REINITIALIZES   Y02072 26720202
+*              THE BASE REGISTER.                                Y02072 26723202
+*                                                                       26726202
+         BALR  BASEREG,0                ADDR OF THIS INSTRUC     Y02072 26729202
+         USING *,BASEREG                                         Y02072 26732202
+SYNCHVAL EQU   *                                                 Y02072 26735202
+         LA    WKREG0,SYNCHVAL-BASEVAL  DISP INTO MODULE         Y02072 26738202
+         SR    BASEREG,WKREG0           GET BASE VALUE FOR MOD   Y02072 26741202
+         USING BASEVAL,BASEREG          MODULE ADDRESSABILITY    Y02072 26744202
+         L     SVRBREG,PSATOLD          GET THIS TCB ADDRESS     Y02072 26747202
+         USING TCB,SVRBREG                                       Y02072 26750702
+         L     SVRBREG,TCBRBP           SVRB ADDRESS             Y02072 26754202
+         USING RBSECT,SVRBREG                                    Y02072 26757702
+*                                                                       26807702
+         BR    RLINK                    RETURN TO CALLER         Y02072 27257702
+*                                                                       27314402
+*********************************************************************** 27316402
+*   ENQ THE RESOURCE                                                  * 27317602
+*        THE FOLLOWING SUBROUTINE ISSUES AN ENQ MACRO TO ADD A BLOCK  * 27319602
+*        TO THE SYSTEM QUEUE. THE ENQ MUST BE ISSUED ULTIMATELY FOR   * 27321602
+*        THE TCB WHICH OPENED THE DATA SET(AND IS IN THE DEB). IF THIS* 27323602
+*        IS THE TASK WHICH REQUESTED EXCLUSIVE CONTROL, THERE IS NO   * 27323702
+*        PROBLEM. HOWEVER, IF AN0THER TASK IS ASKING FOR EXCLUSIVE    * 27323902
+*        CONTROL, A DIRECTED ENQ MUST BE REQUESTED. SINCE THIS TYPE   * 27324002
+*        OF ENQ DOES NOT SUPPORT THE WAIT-FOR-CONTROL OPTION, AN ENQ  * 27324102
+*        IS FIRST ISSUED ON THE CURRENT TASK WITH THE WAIT OPTION,    * 27324202
+*        AND WHEN CONTROL IS OBTAINED, IT IS QUICKLY DEQUEUED AND     * 27324302
+*        REENQ'D DIRECT. THE LOOP IS REPEATED UNTIL THE RIGHT TCB     * 27324402
+*        IS REPRESENTED ON THE SYSTEM QUEUE. RETURN REG IS RLINK2(R9) * 27324502
+*********************************************************************** 27324902
+*                                                                       27325002
+ENQRTNE  MVC   WKANQLST(ENQLN),ENQLIST  MOVE ENQ LIST TO SVRB    Y02072 27325102
+         CR    TCBREG,DEBTCBRG          IS THIS THE TCB WHICH    Y02072 27326102
+*                                       OPENED THIS DCB?         Y02072 27327302
+         BE    ENQHAVE                  IF SO, A DIRECTED ENQ    Y02072 27328502
+*                                       IS NOT NEEDED, BRANCH    Y02072 27329702
+*                                                                       27330902
+*              THE FOLLOWING MACRO WILL ENQ ON THE RECORD UNDER         27332102
+*              THE TCB WHICH OPENED THE DCB IF THE RECORD IS            27333302
+*              IMMEDIATELY AVAILABLE.                                   27334502
+*                                                                       27335702
+ENQUSE   ENQ   (,WKANQARG,E,,SYSTEM),TCB=(DEBTCBRG),RET=USE,     Y02072X27336902
+               MF=(E,WKANQLST)                                   Y02072 27338102
+*                                                                       27339302
+         LTR   R15,R15                  WAS IT AVAILABLE?        Y02072 27340502
+         BZR   RLINK2                   YES, RETURN TO CALLER    Y02072 27341702
+*                                                                       27342902
+*              THE FOLLOWING MACRO WILL REQUEST THE RECORD              27344102
+*              UNDER THIS TCB, AND WAIT UNTIL THE RECORD IS             27345302
+*              AVAILABLE.                                               27346502
+*                                                                       27347702
+ENQHAVE  ENQ   (,WKANQARG,E,,SYSTEM),RET=HAVE,MF=(E,WKANQLST)    Y02072 27348902
+*                                                                       27350102
+         CR    TCBREG,DEBTCBRG          IS THE RECORD ENQ'ED     Y02072 27351302
+*                                       UNDER THE CORRECT TCB    Y02072 27352502
+         BER   RLINK2                   BRANCH YES TO RETURN     Y02072 27353702
+*                                                                       27354902
+*              THE FOLLOWING MACRO WILL DEQ THE RECORD IN ORDER         27356102
+*              TO SUBSEQUENTLY ENQ IT UNDER THE RIGHT TCB.              27357302
+*                                                                       27358502
+         DEQ   (,,,SYSTEM),MF=(E,WKANQLST),RET=NONE              Y02072 27359702
+*                                                                       27360902
+         B     ENQUSE                   GO TRY AGAIN (FAST)      Y02072 27362102
+*                                                                       27363302
+*********************************************************************** 27364502
+*    VALIDATE THE DEB                                                 * 27364902
+*        THE FOLLOWING SUBROUTINE USES THE DEBCHK BRANCH ENTRY TO     * 27365302
+*        VALIDATE THIS JOB STEP'S ACCESS TO THE DATA SET DEFINED      * 27365402
+*        IN THE DEB REFERENCED BY THE DCB. RETURN REG IS RLINK2(R9).  * 27365502
+*********************************************************************** 27365602
+*                                                                       27365702
+DEBCHKRT EQU   *                                                        27366902
+*                                                                       27376902
+*        THE DEBCHK BRANCH ENTRY REQUIRES KEY ZERO AND THE              27416902
+*        LOCAL LOCK.                                                    27426902
+*                                                                       27428902
+*             INPUT TO DEBCHK (BRANCH ENTRY) IS:                        27429302
+*                  R1    DEB ADDRESS                                    27429702
+*                  R10   TCB ADDRESS                                    27430102
+*                  R14   NORMAL RETURN ADDRESS                          27430202
+*                  R15   DEBCHK ENTRY POINT                             27430302
+*             OUTPUT IS:                                                27430402
+*                  R10-R11 DESTROYED                                    27430902
+*                  R15   0 OR 4 DEPENDING ON WHETHER DEB IS             27431302
+*                        IN DEB TABLE OR NOT                            27431702
+*        IF DEB IS NOT IN DEB TABLE, RETURN IS TO NORMAL                27431802
+*        RETURN ADDRESS PLUS 4.                                         27432202
+*                                                                       27432602
+*                 GET ADDRESS OF CURRENT TCB                            27433002
+*                                                                       27433402
+         USING IHADCB,DCBREG                                     Y02072 27433502
+         L     R10,CVTPTR               CVT ADDRESS              Y02072 27433902
+         USING CVT,R10                                           Y02072 27434202
+         L     R15,CVTEXT2              CVT EXTENSION POINTER    Y02072 27434602
+         USING CVTXTNT2,R15             ADDRESS EXTENSION        Y02072 27435002
+         L     R15,CVTDEBVR             DEBCHK E.P. ADDR         Y02072 27435402
+         DROP  R15                                                      27435502
+*                                                                       27435902
+         L     R10,PSATOLD              CURRENT TCB ADDR         Y02072 27436002
+         DROP  R10                                                      27436102
+*                                                                       27436402
+         L     R1,DCBDEBAD              GET DEB ADDR             Y02072 27436802
+         LA    R1,0(R1)                 CLEAR HI-ORDER BYTE      Y02072 27436902
+*                                                                       27437002
+         USING DEBBASIC,R1              ESTABLISH DEB BASE       Y02072 27437102
+         CLM   DCBREG,B'0111',DEBDCBB   ENSURE THAT DEB POINTS   Y02072 27437202
+*                                       TO THIS DCB-DEBCHK BR    Y02072 27437302
+*                                       ENTRY SKIPS THIS CHECK   Y02072 27437402
+         BNE   ABEND435                 IF NOT EQUAL-WRONG DEB   Y02072 27437502
+         DROP  R1                                                       27437602
+         BALR  R14,R15                  GO TO DEBCHK             Y02072 27438002
+*                                                                       27438102
+         B     DEBSAVE                  GOOD DEB, SAVE IT        Y02072 27438202
+         B     ABEND435                 INVALID, GO ABEND        Y02072 27438302
+DEBSAVE  EQU   *                        SAVE VALID DEB IN SVRB   Y02072 27438502
+         ST    R1,WKASVDEB              SAVE DEB IN SVRB WKAREA  Y02072 27438902
+         SH    R1,XTNPTR                GET DEB EXTN.....      @ZA24816 27439337
+         L     R1,0(R1)                 AND TEST FOR.....      @ZA24816 27439437
+         TM    16(R1),X'20'             BDAM DATA SET          @ZA24816 27439537
+         BNO   ABEND435                 NOT BDAM - ABEND       @ZA24816 27439637
+         BR    RLINK2                   RETURN TO MAIN ROUTINE   Y02072 27439737
+*                                                                       27439837
+*********************************************************************** 27439937
+*     ABEND ROUTINE                                                   * 27440037
+*              THE FOLLOWING ABENDS ARE ISSUED:                       * 27440137
+*                   335  ENQUEUE REQUEST FOR INVALID BLOCK            * 27440402
+*                   435  INVALID DEB                                  * 27440502
+*                   535  INSUFFICIENT CORE TO PROCESS                 * 27440902
+*              THEY ARE NOT INTERCEPTED BY OUR RECOVERY RTNE          * 27441002
+*********************************************************************** 27441302
+*                                                                       27442102
+         USING IOBSTDRD,IOBREG                                   Y02072 27442202
+ABND535A LA    WKREG1,INSUFCOR          ABEND CODE TO WORK REG   Y02072 27442402
+         B     FRELCK7                  GO RELEASE LOCAL LOCK    Y02072 27442702
+ABEND435 LA    WKREG1,INVALCB           LOAD ABEND CODE          Y02072 27443002
+         B     ABESETSW                 GO SET FREEMAIN SWITCH   Y02072 27443302
+ABEND335 LA    WKREG1,CANTENQ           LOAD ABEND CODE          Y02072 27443602
+ABESETSW TM    IOBDTYP2,IOBRELEX        IS REQUEST RELEX         YM1474 27443902
+         BZ    FRELCK7                  BRANCH IF NOT            Y02072 27444902
+         OI    WKASW1,WKAABEND          INDICATES MUST FREE IOB  Y02072 27446102
+*                                                                       27447302
+FRELCK7  SETLOCK RELEASE,TYPE=LOCAL,    RELEASE THE LOCAL LOCK   Y02072X27448502
+               RELATED=(EXCLCTLQ,IGC0005C(SCANLOCK,SCANLCK2))    Y02072 27449702
+*                                                                       27450902
+         TM    WKASW1,WKAABEND          MUST I FREE IOB?         Y02072 27452102
+         BO    RELEXIT1                 BRANCH YES               Y02072 27453302
+*                                                                       27454502
+DEESTAE  ESTAE 0                         REMOVE ESTAE COVERAGE   Y02072 27455702
+*                                                                       27456902
+         ABEND (WKREG1),DUMP,,SYSTEM    TERMINATE TASK           Y02072 27458102
+*                                                                       27459302
+ABEND535 LA    WKREG1,INSUFCOR          LOAD ABEND CODE          Y02072 27460502
+         B     DEESTAE                  GET RID OF ESTAE         Y02072 27461702
+*                                                                       27462902
+         EJECT                                                          27463302
+*********************************************************************** 27464102
+*  THE FOLLOWING IS THE ESTAE EXIT ROUTINE, ENTERED BY RTM IF AN      * 27464502
+*  ABEND SHOULD OCCUR AT THIS RB LEVEL DURING EXCLUSIVE CONTROL       * 27464902
+*  PROCESSING.  THIS ROUTINE FINDS THE ADDRESS OF THE EXCLUSIVE       * 27465002
+*  CONTROL ESTAE ROUTINE, IGCT005C, IN THE LPALIB AND BRANCHES TO     * 27465102
+*  IT.  THE ROUTINE ISSUES THE MACRO, IGGSTAE, WHICH USES THE CON-    * 27465202
+*  TENTS SUPERVISOR ROUTINE, IEAVVMSR. THE ROUTINE IS ENTERED IN      * 27515202
+*  SUPERVISOR STATE AND SUPERVISOR KEY.                               * 27525202
+*********************************************************************** 27535202
+*                                                                       27565202
+ESTAERTN IGGSTAE TRRNAME                GENERATE BOOTSTRAP       Y02072 27615202
+*                                                                       27665202
+*                                                                       27715202
+*                                                                       27765202
+*********************************************************************** 30038102
+*                          MISCELLANEOUS EQUATES                      * 30048102
+*********************************************************************** 30058102
+CAPRECLG EQU   7                        DATA LENGTH OF R0-1      YM1152 30068102
+IOBLG    EQU   132                      LENGTH OF CORE GOTTEN FOR IOB   30076102
+LTTR     EQU   3                        LENGTH OF TTR            Y02072 30126102
+MAXLG    EQU   256                      MAX LENGTH THAT CAN BE MOVED    30378102
+SPIOB    EQU   0                        SUBPOOL OF IOB IS 0      Y02072 30428102
+SPDMGTNF EQU   230                      SUBPOOL FOR DATA MANAGE- Y02072 30478102
+*                                       MENT KEY, NOT FETCH      Y02072 30528102
+*                                       PROTECTED CORE           Y02072 30578102
+AVAILIOB EQU   0                        IOB IS AVAILABLE         Y02072 30738102
+DATAMGT  EQU   5                        DATA MANAGEMENT KEY      Y02072 30770102
+*********************************************************************** 30778102
+*                     CONSTANTS                                       * 30828102
+*********************************************************************** 30878102
+AVAIL    DC    1D'0'                     ZERO CONSTANT FOR RDX ENTRY    31078102
+MAJNAME  DC    C'SYSZGGLG'               MAJOR QUEUE NAME               31128102
+TRRNAME  DC    C'IGCT005C'              MODULE NAME FOR TRR      Y02072 31178102
+CON256   DC    H'256'                                                   31328102
+XTNPTR   DC    H'8'                     CONSTANT FOR SUBTRACT  @ZA24816 31333137
+*                                                                       31338102
+ESTAELST ESTAE ESTAERTN,RECORD=YES,MF=L                          Y02072 31348102
+ESTAELN  EQU   *-ESTAELST                                        Y02072 31358102
+*                                                                       31368102
+ENQLIST  ENQ   (MAJNAME,,S,L'WKANQARG),MF=L                      Y02072 31418102
+ENQLN    EQU   *-ENQLIST                LENGTH OF ENQ LIST       Y02072 31468102
+*                                                                       31470102
+MODID    DC    C'IGC0005C'              MODULE ID                Y02072 31470502
+FIX      DC    C'OZ31947 '              LATEST FIX IN MODULE     YM6585 31470937
+DATE     DC    CL8'&SYSDATE'            DATE OF LATEST FIX     @ZA24816 31471337
+PATCH    DC    XL((*-IGC0005C)/20)'0'   5% PATCH SPACE           Y02072 31472102
+         EJECT                                                          31478102
+*********************************************************************** 31528102
+*                              DSECTS                                 * 31578102
+*********************************************************************** 31628102
+         DCBD  DSORG=DA                                                 31678102
+         EJECT                                                          31728102
+         IEZIOB                                                         31778102
+         EJECT                                                          31786502
+*********************************************************************** 31788102
+*  THE FOLLOWING FORMATS THE ADDRESS VECTOR TABLE WHICH APPEARS IN    * 31798102
+*  THE FRONT OF THE FOUNDATION MODULES.  THE WORKAREA WHICH FUNCTIONS * 31808102
+*  SIMULTANEOUSLY AS AN IOB, DECB AND VECTOR TABLE FOR ROUTINES       * 31818102
+*  WHICH INTERFACE WITH THE READ EXCLUSIVE FUNCTION WILL CONTAIN      * 31820102
+*  FIELDS RELEVANT TO EACH, INCLUDING THE FOUNDATION MODULE ERROR     * 31822102
+*  ROUTINE ADDRESS, ALTERED TO POINT TO THIS MODULE.  IN ADDITION     * 31824102
+*  THE IOBCSW FIELD IS DEFINED ON A BOUNDARY AS IT IS SUBSEQUENTLY    * 31826102
+*  REFERENCED BY THE READ EXCLUSIVE FUNCTION.                         * 31826502
+*********************************************************************** 31826902
+FMVECTOR DSECT                     FOUNDATION MOD VECTOR TABLE          31827302
+FOUNDENT DS    XL4                                                      31827702
+RRAD     DS    A                   ADDRESS OF REL BLK MOD, IGG019KE     31827802
+RTAD     DS    A                   ADDRESS OF REL TRK MOD, IGG019KC     31827902
+VERAD    DS    A                   ADDRESS OF WRT VERIFY, IGG019KQ      31828002
+ASIAD    DS    A                   ADDRESS OF ASI FOR THIS MOD          31844702
+ERRENTRY DS    A                   ADDRESS OF ERROR RTN IN FOUND MOD    31854702
+KEYMODAD DS    A                   ADDRESS OF CHN PGM BY KEY, 19KI      31856702
+IDMODAD  DS    A                   ADDRESS OF CHN PGM BY ID, 19KK       31858702
+RROVAD   DS    A                   ADDRESS OF REL BLK TRK OVERFLO, 19KF 31860702
+         EJECT                                                          31872502
+         IEZDEB                                                         31878102
+         EJECT                                                          31928102
+         IGGRDX                                                         31978102
+         EJECT                                                          32111402
+         IHADECB                                                        32128102
+         EJECT                                                          32130102
+         CVT   DSECT=YES                                                32138102
+         EJECT                                                          32148102
+         IKJTCB                                                         32158102
+         EJECT                                                          32168102
+         IKJRB                                                          32170102
+         EJECT                                                          32170502
+RBPRFX   DSECT                          RESUME RB DSECT                 32170902
+         ORG   RBEXSAVE                                                 32172102
+WKAREAX  DS    0XL48                    SVC/ESTAE WORKAREA       Y02072 32172502
+WKASW1   DS    XL1                      SWITCH                   Y02072 32174102
+WKAD2305 EQU   BIT0                     2305 EXCLUSIVE REQ       Y02072 32174202
+WKAABEND EQU   BIT1                     SET IF RELEX IOB MUST BE Y02072 32174502
+*                                       FREED BEFORE ABEND       Y02072 32174902
+WKADEQD  EQU   BIT2                     DEQ HAS BEEN ISSUED      Y02072 32175002
+WKAENQRQ EQU   BIT5                     ENQ REQUEST              Y02072 32175302
+WKADEQRQ EQU   BIT6                     DEQ REQUEST              Y02072 32175702
+WKATRALX DS    XL1                      AUDIT TRAIL BYTE         Y02072 32176102
+*  THE FOLLOWING ARE AUDIT TRAIL BITS SET BY THIS SVC AND INTERROGATED* 32178102
+*  BY ITS BACKUP ESTAE, IGCT005C, SHOULD AN ABEND OCCUR DURING ITS    * 32180102
+*  PROCESSING. IT TRACKS THE COMPLETED OPERATIONS OF THIS SVC.        * 32182102
+WKAVALRC EQU   X'01'                    RECORD SAVED IN SVRB     Y02072 32184102
+WKADEQ   EQU   X'02'                    DEQ HAS BEEN ISSUED      Y02072 32184502
+WKARDXZR EQU   X'03'                    RDXENTRY IS CLEARED      Y02072 32184902
+WKAIOBSV EQU   X'04'                    NEXT IOB SAVED IN SVRB   Y02072 32185302
+WKAIOBDQ EQU   X'05'                    IOB DEQ'D FROM UNPOSTQ   Y02072 32185702
+WKAFEED  EQU   X'06'                    FEEDBACK FOR NEXT IOB    Y02072 32185802
+WKAPOST  EQU   X'07'                    NEXT IOB IS POSTED       Y02072 32185902
+WKAENQX  EQU   X'08'                    ENQ COMPLETED AFTER DEQ  Y02072 32186002
+WKAEXCPX EQU   X'09'                    EXCP COMPLETED AFTER DEQ Y02072 32191602
+WKAENQRD EQU   X'0A'                    ENQ REQUIRED AFTER DEQ   Y02072 32193602
+WKARDXAD EQU   X'20'                    RDXENTRY ADDED TO LIST   Y02072 32195602
+WKAENQ   EQU   X'30'                    ENQ ISSUED=ENQ REQUEST   Y02072 32196002
+WKAEXCPE EQU   X'40'                    EXCP ISSUED=ENQ REQUEST  Y02072 32196402
+WKAIOBST EQU   X'50'                    LAST IOB ON POSTQ SAVED  Y02072 32196802
+WKAIOBQD EQU   X'60'                    CURRENT IOB PUT ON POSTQ Y02072 32197202
+*                                                                       32197302
+WKASVKEY DS    XL1                      CALLERS PROTECT KEY      Y02072 32197602
+WKACLENX DS    XL1                      CLEANUP SW USED BY ESTAE Y02072 32203202
+WKASAV14 DS    A                        REGISTER 14 SAVEAREA     Y02072 32208802
+WKAIOBQX DS    A                        NEXT/LAST IOB ADDR       Y02072 32214402
+WKANQARG DS    0XL8                     MINOR NAME FOR ENQUEUE   Y02072 32220002
+WKANQUCB DS    AL3                      UCB ADDRESS              Y02072 32225602
+WKANQDEV DS    0XL5                     RECORD ADDR (CCHHR)      Y02072 32231202
+WKANQCC  DS    XL2                      CYLINDER NUMBER          Y02072 32236802
+WKANQHH  DS    XL2                      HEAD NUMBER              Y02072 32246802
+WKANQR   DS    X                        RECORD NUMBER            Y02072 32256802
+WKARLCOR DS    A                        RELEX CORE ADDRESS       Y02072 32258802
+WKASVDEB DS    A                        DEB ADDR FOR VALIDITY CK Y02072 32266802
+WKALST   EQU   *                        FOR MACRO LISTS          Y02072 32276802
+WKANQLST EQU   WKALST+4                 ALLOWS FOR 4-BYTE PREFIX Y02072 32286802
+WKALSTLN EQU   RBEXSAVE+L'RBEXSAVE-WKALST   MAXIMUM LIST LENGTH  Y02072 32386802
+         EJECT                                                          32426802
+         IHAPSA                                                         32476802
+         EJECT                                                          32486802
+         IHASDWA                                                        32496802
+         END                                                            32526802

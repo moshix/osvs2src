@@ -1,0 +1,656 @@
+201B TITLE 'IGG0201B - SAM OUTPUT CLOSE EXECUTOR, ERROR HANDLING'       00020003
+IGG0201B CSECT                                                          00024000
+*                                                                       00026002
+*MODULE NAME - IGG0201B                                                 00028002
+*                                                                       00030002
+*DESCRIPTIVE NAME - CLOSE EXECUTOR ERROR HANDLING ROUTINE               00032002
+*                                                                       00032402
+*COPYRIGHT - NONE                                                       00032802
+*                                                                       00069202
+*STATUS CHANGE LEVEL - SEE THE BEGINNING OF THE OBJECT CODE             00078803
+*                                                                       00080802
+*FUNCTION- THIS EXECUTOR IS ENTERED IF END-OF-VOLUME OR A PERMANENT     00084102
+*          ERROR WAS ENCOUNTERED WHILE FLUSHING QSAM OUTPUT BUFFERS     00089403
+*          OR IF IT IS BSAM ON A DASD  AND THE USER ISSUED CLOSE IN     00090003
+*          THE SYNAD ROUTINE AND THE LAST OPERATION WAS A WRITE.        00100003
+*        - FOR END-OF-VOLUME CONDITIONS:                                00139402
+*           IT FINDS THE FIRST IOB POSTED IN ERROR AND ISSUES AN EOV    00149402
+*           SVC FOR THIS IOB TO GET THE REMAINING BUFFERS RESCHEDULED.  00159402
+*           ON RETURN FROM EOV IT WILL ISSUE A STOW FOR THE DATA SET    00159802
+*           IF NECESSARY.                                               00159902
+*        - FOR PERMANENT ERRORS:                                        00193202
+*           FOR PAM DATA SETS IT WILL GO TO THE CONVERT ROUTINE         00203202
+*           TO GET THE LAST TTR CONVERTED TO A MBBCCHHR.  THIS TTR      00213203
+*           IS THE BEGINNING OF THE LAST OR ONLY MEMBER.                00215003
+*           FOR DA OUTPUT DATA SETS IT WILL ISSUE A TRK BALANCE SVC     00225702
+*           TO ERASE EVERYTHING ON A TRACK(S) FROM A SPECIFIED          00225802
+*           BLOCK (MBBCCHHR) TO THE END OF THE TRACK(S). (THE PORTION   00225902
+*           OF THE TRACK(S) ERASED WILL BE THE BAD RECORD).  DCBFDAD    00232703
+*           AND DCBTRBAL ARE SET SO THAT COMMON CLOSE WILL BE ABLE TO   00234003
+*           WRITE THE CORRECT 'LAST BLOCK TTR' AND TRACK BALANCE IN     00235003
+*           THE DSCB.                                                   00236003
+*        - BEFORE EXITING THIS MODULE, THE USER KEY SAVEAREA GOTTEN     00239602
+*          BY IGG0201Z OR IGG0201A IS FREEMAINED.                       00246402
+*                                                                       00253202
+*ENTRY POINTS - IGG0201B FROM IGG0201Z OR IGG0201A                      00260003
+*                                                                       00400000
+*INPUT - SEE DESCRIPTION OF REGISTERS, DCB (USER'S), IOB (USER'S).      00420002
+*                                                                       00440000
+*OUTPUT - NONE.                                                         00460000
+*                                                                       00470002
+*MACROS - ACTION : STOW, EOV, WAIT, DMABCOND, IECRES,                   00472003
+*                  MODESET, FREEMAIN, TRKBAL                            00472403
+*                                                                       00474002
+*MACROS - MAPPING : IECDSECS, IECDSECT, IEZIOB, CVT, IKJTCB, DCBD       00476002
+*                   IEZDEB, IHAECB, IHAICB, IHAPSA, IGGPARML     Y02072 00478002
+*                                                                       00480000
+*EXTERNAL ROUTINES - CONVERT ROUTINE, TRACK BALANCE ROUTINE             00500002
+*                                                                       00520000
+*EXITS - NORMAL : TO IGG0201Y FOR DIRECT ACCESS                         00540003
+*                 TO IGG0201X FOR TAPE                                  00550003
+*                                                                       00560000
+*EXITS - ERROR : ERROR ON CLOSE 'STOW'                                  00570002
+*                CALL PROBLEM DETERMINATION (IGG0206M) FOR B14 ABEND    00580002
+*                AND WTP                                                00600002
+*              : ERROR ON LAST BLOCK OUTPUT BY IGG0201A FOR TAPE        00602037
+*                ISSUE EOV FOR 001 ABEND AND WTP MESSAGE                00604037
+*                                                                       00606037
+*                                                                       00610002
+*TABLES/WORKAREAS - WHERE TO GO TABLE (WTG)                             00620002
+*                                                                       00640000
+*      BYTE  0-7  NAME                                                  00660000
+*      BYTE  8-10 RELATIVE DISK ADDRESS(TTR) OF FIRST RECORD            00680000
+*      BYTE 11    CONCATENATION NUMBER                                  00700000
+*      BYTE 12    ZERO                                                  00720000
+*      BYTE 13    ALIAS INDICATOR AND USER DATA FIELD DESCRIPTOR.       00740000
+*                        ALIAS INDICATOR 1 BIT                          00760000
+*                        NUMBER OF TTRS IN USERS DATA FIELD 2 BITS      00780000
+*      BYTE 14-16 TTR OF FIRST TEXT RECORD                              00800000
+*      BYTE 17    ZERO                                                  00820000
+*      BYTE 18-19 TTR OF NOTE LIST OR SCATTER LIST                      00840000
+*      BYTE 20    TRANSLATION TABLE                                     00860000
+*      BYTE 21    ZERO OR NUMBER OF ENTRIES IN THE NOTE LIST            00880000
+*      BYTE 22-23 ATTRIBUTES                                            00900000
+*      BYTE 24-26 TOTAL CONTIGUOUS MAIN STORAGE REQUIRED FOR MODULE     00920000
+*      BYTE 27-28 LENGTH OF FIRST TEXT RECORD                           00940000
+*      BYTE 29    LENGTH OF WTG TABLE (IN DOUBLE WORDS)                 00960000
+*      BYTE 30-31 PATH THROUGH LOADS OF ROUTINES                        00980000
+*      BYTE 32-36 IDTTR OF EXECUTOR FOR FIRST DCB                       01000000
+*      BYTE 37-39 WORKAREA ADDRESS FOR FIRST DCB                        01020000
+*      BYTE 40-   TABLE OF IDTTR'S                                      01040000
+*      BYTE 32+N(8) IDTTR OF EXECUTOR FOR N TH DCB   (5 BYTES)          01060000
+*                   WORKAREA ADDRESS FOR N TH DCB    (3 BYTES)          01080000
+*                   IDTTR OF LAST ROUTINE LOAD       (5 BYTES)          01100000
+*                   NOT USED                         (3 BYTES)          01120000
+*                                                                       01140000
+*      CLOSE WORK AREA                                                  01160002
+*                                                                       01180000
+*ATTRIBUTES - REENTRANT, REFRESHABLE, RUNS IN USER KEY UNLESS    Y02072 01200003
+*             OTHERWISE SPECIFIED, SUPERVISOR STATE              Y02072 01210002
+*                                                                       01220000
+*NOTES - ALL REGISTER EQUATES BEGIN WITH AN R                           01240002
+*        THE ADDR OF THE DEB MUST BE GOTTEN FROM THE PROTECTED   Y02072 01242002
+*        COPY OF THE DCB FOR INTEGRITY REASONS.                  Y02072 01244002
+*                                                                       01250002
+*CHANGE ACTIVITY - AS FOLLOWS:                                          01252002
+*                                                                       01254002
+*          VS2 RELEASE 3.0 CHANGES                                      01255003
+*A030410-030470,057485-057710,058636-058665                    @ZA00648 01255203
+*C058768-058931,063718                                         @ZA00648 01255403
+*D030200,033300,105160-105660                                  @ZA00648 01255603
+*          VS2 RELEASE 2 DELETIONS                                      01256002
+*000220,000788,004720,012000,024300,024600,024620,025000-025020, Y02072 01258002
+*025120-025180,038700,039600-039992,040192,047600-047800,050800, Y02072 01258402
+*052800,059376,059490-059661,97400-977000,12100,56980-57280,     Y02072 01258802
+*65218,92580-92664,93200,95500,48000-48600,50800,52800,53400,    Y02072 01259202
+*56600,57280,58614-58621,65218,92580-92664,93200,95500,          Y02072 01259302
+*55600-56000,92400                                               Y02072 01259402
+*38100                                                           YM1091 01259602
+*                                                                YM1457 01262202
+*C34000                                                          YM1477 01264202
+*                                                                YM3079 01264602
+*                                                                YM4640 01264702
+*                                                                YM7362 01264802
+*                                                                       01265002
+*          VS2 RELEASE 2 DELETIONS                                      01267003
+*                                                              @Z30TSMI 01267403
+*                                                                       01267503
+*          RELEASE 20 DELETIONS                                       * 01267602
+*1273027400-030000                                               M6099  01270202
+*1273                                                            M6176  01272802
+*1273092500-092600                                               A35776 01275402
+*1273                                                            A38803 01278002
+*1273058656                                                      M5904  01280602
+*1273058860                                                      M5902  01283202
+*          RELEASE 21 DELETIONS                                       * 01285802
+*1394058642                                                      A41680 01288402
+*1394035900,036000,039600                                        M0042  01291002
+*1394005800,054200,057000-057200,093200,094800-096200,096600-    S21042 01293602
+*1394096800                                                      S21042 01296202
+*1394025800,035800,039200-039600,089600,090000                   S21045 01298802
+*1394001430-001550,005000,022392-022398,025040-025160,025800-    M0153  01301402
+*1394027200,031600,034000-034200,035200-036400,037800-039700,    M0153  01304002
+*1394041600,088400-088520                                        M0153  01306602
+*1394                                                            M0182  01309202
+*1394016600,035000                                               M1755  01311802
+*1394057800-057848,058603,058643                                 M1761  01314402
+*                                                               SA63266 01316402
+*                                                                       01317002
+          EJECT                                                         01319602
+*                                                                       01322202
+* REGISTER USAGE                                                        01324802
+*                                                                       01327402
+R0       EQU   0                        INPUT TO PROB DET AND EOV       01330002
+RWK1     EQU   R0                       WORK REGISTER                   01340002
+R1       EQU   1                        PARAMETER REGISTER              01360002
+RWK2     EQU   R1                       WORK REGISTER                   01370002
+RDCB     EQU   2                        ADDR OF USERS DCB               01380002
+R2       EQU   RDCB                     INPUT TO THE CONVERT ROUTINE    01390002
+RBASE    EQU   3                        BASE REGISTER                   01400002
+RCORE    EQU   4                        ADDR OF CLOSE WORK AREA         01420002
+RPAR     EQU   5                        PARAMETER LIST                  01440002
+RWTG     EQU   6                        START OF WTG                    01460002
+RPARC    EQU   7                        CURRENT ENTRY IN PARAMETER LIST 01480002
+RWTGC    EQU   8                        CURRENT ENTRY IN WTG TABLE      01500002
+RCVT     EQU   9                        CVT REGISTER                    01510002
+RWK3     EQU   RCVT                     WORK REGISTER            Y02072 01520002
+RWK5     EQU   10                       WORK REGISTER                   01540002
+RTCB     EQU   RWK5                     TCB REGISTER                    01552002
+RDEB     EQU   11                       DEB ADDRESS                     01560002
+RIOB     EQU   12                       IOB REGISTER                    01580002
+R13      EQU   13                       SAVE AREA REG  (INPUT TO EOV)   01600002
+RRETRN   EQU   14                       RETURN ADDRESS REGISTER         01620002
+RWK4     EQU   RRETRN                   WORK REGISTER                   01630002
+RRETCODE EQU   15                       RETURN CODE REGISTER            01640002
+RBRNCH   EQU   RRETCODE                 BRANCH REGISTER                 01650402
+         SPACE 5                                                        01658803
+*                                                                       01659202
+* EQUATES FOR CONSTANTS                                                 01659602
+*                                                                       01659702
+DEBUPDAT EQU   X'04'                    FOR TESTING UPDATE IN DEB M1755 01660002
+UNITEXCP EQU   X'01'                    USED TO TEST CSW                02070002
+INTRNLCD EQU   120                      INTERNAL CODE FOR PD     S21042 02239102
+DEBDSMOD EQU   X'80'                    DEB DISP EQUAL TO MODIFY        02239502
+DADEVICE EQU   X'20'                    DIRECT ACCESS DEVICES           02239902
+CLEARFLG EQU   X'00'                    FOR CLEARING DCBIFLGS           02250602
+DIVIDBY4 EQU   2                        FOR SHIFT LOGICAL INST          02252602
+CLOSEFIN EQU   X'00'                    CLOSE FINISHED THIS DCB         02254602
+NOMEMNM  EQU   X'00'                    NO MEMBER NAME IN DEB           02256602
+LENUSERA EQU   0                        NO USER AREA FOR STOW           02259802
+PODATAST EQU   X'02'                    FOR TESTING DSCB DSORG          02260202
+TRKBAL   EQU   25                       TRACK BALANCE SVC NUMBER        02260302
+SAVELG   EQU   X'48'                    LENGTH OF AREA TO FREE   Y02072 02260402
+DIRACC   EQU   X'20'                    DEVICE TYPE = DIRECT AC  YM3079 02260502
+         EJECT                                                          02260602
+*                                                                       02262602
+* ADDRESSABILITY FOR DSECTS                                             02264602
+*                                                                       02266602
+         USING PSA,0                                             Y02072 02276602
+         USING WTG,RWTG                                                 02310002
+         USING WTGENTRY,RWTGC                                           02312002
+         BALR  RBASE,0                                                  02400000
+         USING AMCL1,RBASE                                              02402002
+*                                                                       02410002
+* INITIALIZE REGISTERS                                                  02412002
+*                                                                       02414002
+AMCL1    EQU   *                                                        02420000
+         B     BEGIN                    BRANCH AROUND MODULE ID  YM4640 02420202
+         DC    C'IGG0201B'              MODULE NAME              YM4640 02420402
+         DC    C'@Z30TSMI'              LAST SHIP CODE         @Z30TSMI 02420603
+         DC    C'10/15/74'              LAST SHIP DATE         @Z30TSMI 02420803
+BEGIN    DC    0H'0'                    END OF MODULE ID       @ZA00648 02421003
+         L     RCORE,WTGDCBWA           GET DCB'S WORK AREA      Y02072 02422002
+         USING FORCORE,RCORE                                     Y02072 02424002
+         MVC   WTGIDTTR,CLL1Y           ASSUME DA DEVICE       @Z30TSMI 02426003
+         USING IHADCB,RDCB                                              02470002
+         L     RDCB,DXPDCBAD            GET DATA MGT KEY DCB     YM3079 02472002
+         TM    DCBDEVT,DIRACC           IS THIS A DA DEVICE      YM3079 02480002
+         BO    AMCL1020                 YES, GET DEB ADDR        YM3079 02490002
+         MVC   WTGIDTTR,CLL1X           SET UP FOR TAPE        @Z30TSMI 02504003
+AMCL1020 EQU   *                                                 YM3079 02504402
+         L     RDEB,DCBDEBAD            GET VALID DEB ADDR       YM3079 02504802
+         MODESET  KEYADDR=DXUKEY,WORKREG=13                      YM3079 02506002
+         SPACE                                                          02508002
+         L     RDCB,DXUDCBAD            GET GET USER KEY DCB     Y02072 02508402
+         USING DEBBASIC,RDEB                                            02518402
+         L     RIOB,DCBIOBA             GET CURR IOB ADDRESS            02520002
+         LA    RIOB,0(RIOB)             CLEAR HIGH ORDER BYTE           02540002
+         LR    RWK4,RIOB                COPY ADDRESS OF CURRENT IOB     03040002
+*                                                                       03041003
+* FOR BSAM, THIS MODULE IS ENTERED ONLY WHEN IT IS FOR DASD, THE        03042003
+* USER ISSUED CLOSE IN THE SYNAD ROUTINE AND THE LAST OPERATION         03043003
+* WAS A WRITE FOR OUTPUT.                                               03044003
+*                                                                       03045003
+         TM    DCBCIND2,DCBCNQSM        TEST FOR QSAM          @ZA00648 03046003
+         BZ    AMCL1084                 BR IF BSAM, NOT QSAM   @ZA00648 03047003
+         USING IOBQSAMN,RWK4                                            03050002
+*                                                                       03060000
+* THE FOLLOWING CODE WILL FIND THE FIRST IOB WHICH INDICATES AN ERROR.  03120002
+* IF THE ERROR IS END-OF-VOLUME, IT WILL  ISSUE AN EOV SVC TO GET THE   03140002
+* PENDING IOBS RESCHEDULED AFTER A VOLUME SWITCH HAS BEEN DONE.         03160002
+*                                                                       03240000
+AMCL1022 EQU   *                                                        03260000
+         L     RWK4,IOBNIOBA            LINK TO NEXT IOB.               03320002
+         TM    IOBNECB,ECBNORM          IOB COMPLETE NORMALLY    YM7362 03380002
+         BO    AMCL1022                 GO CHK NEXT IOB IF OK    YM1477 03430002
+*                                                                       03440002
+* NOTE - ON ENTRY TO THIS MODULE, ALL I/O WILL BE COMPLETE              03450002
+*                                                                       03452002
+AMCL1025 EQU   *                                                 YM1477 03454002
+         TM    CSWFLGS,UNITEXCP         ERROR COND DUE TO UNIT EXCEPT.  03460002
+         BZ    AMCL1090                 IF NOT, BRANCH                  03480002
+*                                                                       03482002
+* MUST TEST FOR UPDATE PROCESSING. IF YES CANNOT ISSUE EOV BUT   M1755  03490002
+* MUST CLEAN UP LIKE PERR.                                       M1755  03500002
+*                                                                       03510002
+         TM    DEBOPATB,DEBACCS-DEBUPDAT BITS OTHER THAN UPDAT   M1755  03530002
+         BNZ   NOTUPD                   YES, ISSUE EOV           M1755  03580002
+         NI    DCBIFLGS,X'FF'-DCBIFEC   TURN OFF ERROR FLAGS     M1755  03630002
+         OI    DCBCIND2,DCBCNWR0        TURN ON EOV FLAG         M1755  03640002
+         MVI   IOBNECB,ECBNORM          SET ECB COMPLETE WITHOUT M1755  03650002
+*                                          ERROR                 M1755  03652021
+         ST    RWK4,DCBIOBA             UPDATE IOB POINTER       M1755  03654002
+         B     AMCL2000                 NO EOV FOR UPDATE        YM7362 03656002
+NOTUPD   EQU   *                                                 M1755  03658021
+*                                                                       03658102
+* AT THIS POINT THE ERROR IOB ADDRESS IS IN RWK4. MUST NOW       YM7362 03658502
+* FIND THE LAST IOB IN THE RESTART CHAIN AND STORE ITS ADDRESS   YM7362 03658902
+* IN DCBIOBA. (EOV WILL RESCHEDULE EVERTHING FROM THE IOB ADDR   YM7362 03659302
+* IN R0 TO THE IOB ADDRESS IN DCBIOBA.)                          YM7362 03659403
+*                                                                       03659602
+         LR    R0,RWK4                  INPUT TO EOV             YM7362 03659702
+AMCL1026 EQU   *                                                        03659802
+         LR    RWK3,RWK4                SAVE IOB ADDR            YM7362 03659902
+         L     RWK4,IOBNIOBA            GET NEXT IOB TO TEST     YM7362 03663202
+         LA    RWK4,0(RWK4)             CLEAR HI BYTE            YM7362 03663602
+         TM    IOBNECB,ECBNORM          IS THIS IOB TO BE RESCH  YM7362 03665202
+         BO    AMCL1028                 NO, GO SET UP FOR EOV    YM7362 03665602
+         CR    RWK4,RIOB                IS THIS THE LAST IOB     YM7362 03666002
+         BNE   AMCL1026                 NO, GO TEST NEXT         YM7362 03666402
+         LR    RWK3,RWK4                RESTART ALL IOB'S        YM7362 03667102
+AMCL1028 EQU   *                                                        03668602
+         ST    RWK3,DCBIOBA             ST AS LAST IOB IN RE-    YM7362 03669302
+*                                         START CHAIN            YM7362 03670002
+         LA    R1,0(RDCB)               ADDR OF DCB IN REG 1 AND YM1091 03710002
+*                                         CLEAR HI BYTE          YM1091 03760002
+         L     R13,SCWGETMA             LOAD WORKAREA PTR IN     Y02072 03870002
+*                                         R13 TO GIVE EOV A SAVEAREA    03880002
+         EOV   (1)                      GO TO EOV FOR NEW EXTENT  M0153 03910002
+         SPACE                                                          03960002
+*                                                                       03970002
+* MUST VERIFY DEB ADDRESS. EOV MAY HAVE GOTTEN A NEW ONE.        YM1106 03980002
+*                                                                       03990002
+         BAL   RWK5,CHECKDEB            GO ISSUE DEBCHK          YM1106 04000002
+*                                                                       04009202
+* AFTER RETURN FROM EOV CHECK COMPLETION CODE OF ECB. IF IN ERROR       04019202
+* GO BACK TO ISSUE EOV FOR DATA SET AGAIN.                              04029202
+*                                                                       04039202
+         LR    RWK4,RIOB                BEGIN LOOP WITH ORIG IOB YM7362 04198002
+AMCL1035 EQU   *                                                        04200002
+         L     RWK4,IOBNIOBA            LOOP UNTIL ALL IOBS ARE  YM7362 04202002
+*                                         COMPLETE OR AN ERROR   YM7362 04204002
+*                                         IOB IS FOUND           YM7362 04206002
+         LA    RWK4,0(RWK4)             CLEAR HI BYTE            YM7362 04216002
+AMCL1040 EQU   *                                                        04232402
+         TM    IOBNECB,ECBNORM          THIS IOB COMPLETE OK     YM7362 04234002
+         BM    AMCL1025                 NO, GO ISSUE EOV         YM7362 04234402
+         BO    AMCL1045                 YES, GO TEST FOR LAST    YM7362 04236002
+         WAIT  ECB=IOBNECB              WAIT IF NOT COMPLETE     YM7362 04238402
+         B     AMCL1040                                                 04260002
+AMCL1045 EQU   *                                                        04270002
+         CR    RWK4,RIOB                MORE IOB'S TO TEST       YM7362 04280002
+         BNE   AMCL1035                 YES, GET NEXT            YM7362 04290002
+*                                       NO, ALL MUST HAVE COMP   YM7362 04300002
+*                                         OK                     YM7362 04302002
+         DROP  RWK4                                                     04304002
+         SPACE 5                                                        04310003
+         TM    DCBDEVT,DIRACC           IS THIS A DA DEVICE      YM3079 04311902
+         BZ    AMCL2000                 NO, GO FREE WORKAREA     YM3079 04321902
+*                                                                       04334002
+* THE FOLLOWING SECTION OF THIS MODULE WILL ISSUE A STOW IF             04345002
+* NECESSARY.                                                            04356002
+*                                                                       04367002
+         TM    DCBOPTCD,DCBOPTT         TEST FOR TOTALING          UT18 04378002
+         BO    AMCL2000                 BR IF TOTALING SPECIFIED   UT18 04389002
+         TM    DCBCIND2,DCBCNSTO        HAS STOW BEEN ACCOMPLISHED YET  04400002
+         BO    AMCL2000                 YES BRANCH                      04420002
+*                                                                       04460000
+* PREPARE TO ISSUE A STOW ON USER MEMBERNAME IF MEMBERNAME IN DEB.      04480002
+*                                                                       04500000
+         SR    RWK2,RWK2                                                04520002
+         SR    RWK5,RWK5                                                04540002
+         IC    RWK5,DEBNMEXT            GET NUMBER OF EXTENTS           04560002
+         IC    RWK2,DEBEXSCL            GET SCALING FACTOR  FOR EXTENT  04580002
+         SLL   RWK5,0(RWK2)             EXTENT SIZE X EXTENT NUMBER     04600002
+         LA    RWK5,DEBBASND(RWK5)      EXTENTS+DEB+BASE                04620002
+         USING DEBACSMD,RWK5                                            04630002
+         TM    DCBDSORG,DCBDSGPO        DCB FOR  PO DATA SET            04640002
+         BO    AMCL1060                 YES BRANCH                      04660002
+         LA    RWK5,DEBDSNM             ADD SAM LEN TO DEB SIZE         04700002
+AMCL1060 EQU   *                                                        04720000
+         DROP  RDEB                                                     04730002
+         CLI   DEBDSNAM,NOMEMNM         IS MEMBERNAME IN DEB     A25961 04746002
+         BE    AMCL2000                 BRANCH IF NO             A25961 04752019
+*                                                                       04752402
+* STOW PARM LIST MUST BE IN THE SAME KEY AS THE STOW IS ISSUED   Y02072 04752802
+* IN TO KEEP STOW FROM PROGRAM CHECKING.                         Y02072 04753202
+*                                                                       04753602
+         L     RWK3,SCWGETMA            WORK AREA FOR PARM LIST  Y02072 04754002
+         USING STOW,RWK3                                         Y02072 04756002
+         MVC   STONAME,DEBDSNAM         STORE MEMBERNAME IN      Y02072 04766002
+*                                         PARM LIST              Y02072 04768002
+         DROP  RWK5                                                     04770002
+         MVI   STOCTTRN,LENUSERA        INDIC NOT AN ALIAS AND   Y02072 04780002
+*                                         LEN OF USER DATA ZERO  Y02072 04830002
+         LA    RDCB,0(RDCB)             CLEAR HI BYTE            YM1457 04840002
+         USING DEBBASIC,RDEB                                            04870002
+         TM    DEBOFLGS,DEBDISP         THIS MEMBERNAME NEW, DISP=NEW   04900002
+         BO    AMCL1070                 YES BRANCH                      04920002
+         TM    DEBOFLGS,DEBDSMOD        MEMBER BEING MODIFIED, DISP=MOD 04940002
+         BO    AMCL1070                 YES BRANCH                      04960002
+*                                                                       04980000
+* MEMBER IS BEING REPLACED IN PARTITIONED DATA SET                      05000002
+*                                                                       05060000
+         STOW  (RDCB),(RWK3),R          REPLACE MEMBER IN PDS    Y02072 05080002
+*                                                                       05100000
+         LR    RWK3,RRETCODE            SAVE STOW RETURN CODE    Y02072 05110002
+         BAL   RWK5,CHECKDEB            GO VERIFY DEB ADDR       Y02027 05112002
+         CH    RWK3,ERRCODE             NO ROOM AVAIL FOR FM,I/O ERROR  05120002
+         BH    ABEND                    YES BRANCH - ABEND B14          05140002
+         B     AMCL2000                 GO FREE WORKAREA         Y02072 05160002
+AMCL1070 EQU   *                                                        05200000
+*                                                                       05220000
+* MEMBERNAME IS BEING ADDED TO DIRECTORY OF DATA SET                    05240002
+*                                                                       05260000
+         STOW  (RDCB),(RWK3),A          ADD MEMBER NAME TO DIR.  Y02072 05280002
+*                                                                       05300000
+         LR    RWK3,RRETCODE            SAVE STOW RETURN CODE    Y02072 05310002
+         BAL   RWK5,CHECKDEB            GO VERIFY DEB ADDR       Y02072 05312002
+         LTR   RWK3,RWK3                WERE THERE ANY ERRORS           05320002
+         BNE   ABEND                    YES, BRANCH              Y02072 05340402
+         DROP  RWK3                                              Y02072 05350002
+         B     AMCL2000                 GO FREE WORKAREA         Y02072 05360002
+ABEND    EQU   *                                                        05380000
+*                                                                       05390002
+* REG 9 WILL HAVE A RETURN CODE FROM STOW. THE RETURN CODE WILL         05401002
+* RESULT IN THE  GENERATION OF THE FOLLOWING INTERNAL CODES FOR A       05402002
+* B14 ABEND 04 - 121                                                    05403002
+*           08 - 122                                                    05408002
+*           0C - 123                                                    05409002
+*           10 - 124                                                    05410002
+*           14 - 125                                            SA63266 05410402
+*           18 - 126                                            SA63266 05410802
+* THE FOLLOWING ROUTINE WILL INITIALIZE THE INTERNAL CODE TO 120,       05412002
+* DIVIDE THE RETURN CODE IN REG 9 BY 4 AND ADD THAT TO 120 TO           05414002
+* CALCULATE THE INTERNAL CODE.                                          05416002
+*                                                                       05418021
+         LA    R0,INTRNLCD              CODE 120                 S21042 05419002
+         SRL   RWK3,DIVIDBY4            DIVIDE RETURN CODE BY 4  S21042 05420002
+         AR    R0,RWK3                  CALCULATE INTERNAL CODE  S21042 05421002
+         L     RTCB,PSATOLD             GET CURRENT TCB          Y02072 05431002
+         USING TCB,RTCB                                                 05460002
+         TM    TCBFLGS1,TCBFA           IS THIS ENTRY TO CLOSE FROM     05620002
+*                                         ABEND                         05640002
+         BO    AMCL2000                 IF SO, BRANCH--WE MUST NOT      05650002
+*                                         ABEND AGAIN.                  05680002
+         MODESET  EXTKEY=DATAMGT                                 Y02072 05682002
+         DMABCOND (0),PDLOAD,RETURN=NONE,RES=NO,REGSAVE=YES      S21042 05686002
+         STC   R0,SCWSAVCD              SAVE PROB DET CODE       Y02072 05688002
+*                                         ACROSS FREEMAIN        Y02072 05690002
+         SPACE                                                          05690402
+         MODESET  KEYADDR=DXUKEY,WORKREG=1                       Y02072 05690802
+         SPACE                                                          05691202
+         B     AMCL2000                 GO FREE WORKAREA         Y02072 05691602
+         DROP  RTCB                                                     05738002
+         EJECT                                                          05748002
+*********************************************************************** 05748503
+*      AT THIS POINT, WE KNOW IT IS BSAM AND THE USER ISSUED A CLOSE    05749003
+* AFTER HAVING GONE TO HIS SYNAD ROUTINE FOR AN OUTPUT WRITE OPERATION. 05749503
+* CURRENTLY, DCBFDAD POINTS TO THE BLOCK BEFORE THE ONE FOR WHICH THE   05750003
+* LAST WRITE MACRO WAS ISSUED, BUT WE WANT IT TO POINT TO THE BLOCK     05750503
+* BEFORE THE ONE WITH THE ERROR.                                        05751003
+*********************************************************************** 05751503
+AMCL1084 EQU   *                                               @ZA00648 05752003
+* FOR CHAINED SCHEDULING, WE USE IOBSEEK FROM THE IOB, NOT AN ICB.      05752503
+         TM    DCBCIND2,DCBCNCHS        TEST FOR CHAINED SCHED @ZA00648 05753003
+         BO    AMCL1090                 BR IF CHAINED SCHED    @ZA00648 05753503
+*                                                                       05753803
+* IT IS NOT CHAINED SCHEDULING.  WE MUST SEARCH FOR THE IOB THAT        05754003
+* CAUSED ENTRY TO SYNAD.  WE START WITH THE ONE AFTER THE IOB POINTED   05754203
+* TO BY DCBIOBA AND SEARCH FOR THE LAST ONE THAT WAS NOT POSTED WITH    05754403
+* 00, 48 OR 7F.  WE CANNOT LOOK AT THE ECB BECAUSE IT IS IN THE USER'S  05754603
+* DECB AND MAY HAVE BEEN FREED OR OVERLAID, SO WE LOOK AT IOBECBCC,     05754803
+* WHICH IS WHAT IOS USED TO POST THE ECB.  00 MEANS THE IOB HAS NEVER   05755003
+* BEEN USED.  48 MEANS IT WAS PURGED DUE TO AN ERROR IN A DIFFERENT     05755203
+* IOB.  7F MEANS IT COMPLETED SUCCESSFULLY.  WE MUST LOOK FOR THE LAST  05755403
+* SUCH POSTING BECAUSE THE USER MAY HAVE GONE TO SYNAD MORE THAN ONCE   05755603
+* AND IGNORED ALL EXCEPT THE LAST ERROR.                                05755803
+*                                                                       05756203
+         LR    RWK2,RIOB                SAVE LOOP STOPPER      @ZA00648 05756603
+AMCL1086 EQU   *                        LOOP TO SEARCH IOBS    @ZA00648 05757003
+         USING IOBBSAMN,RIOB                                   @ZA00648 05757403
+         L     RIOB,IOBNIOBA            POINT TO NEXT IOB      @ZA00648 05757803
+         LA    RIOB,0(,RIOB)            CLEAR HI-ORDER BYTE    @ZA00648 05757903
+         TM    IOBECBCC,ECBNORM-ECBREPRG  TEST COMPLETION      @ZA00648 05758003
+         BNM   AMCL1088                 BR IF 00, 48 OR 7F     @ZA00648 05758103
+         LR    RWK4,RIOB                SAVE IOB THAT IS BAD   @ZA00648 05758203
+AMCL1088 EQU   *                                               @ZA00648 05758303
+         CR    RIOB,RWK2                TEST FOR END OF LOOP   @ZA00648 05758403
+         BNE   AMCL1086                 LOOP IF MORE IOBS      @ZA00648 05758503
+* THE TRKBAL SVC WILL TEST THIS IOB FOR WRITE STATUS.                   05758603
+         ST    RIOB,DCBIOBA             SAVE LAST BAD IOB      @ZA00648 05758703
+* THE TRKBAL SVC USES THE ECB POINTED TO BY THE IOB.  SINCE IT NOW      05758803
+* POINTS TO THE USERS DECB, WHICH CANNOT BE USED HERE, WE MUST USE      05759003
+* THE IOB PREFIX AS AN ECB.                                             05759103
+         LA    RWK2,IOBNECB             PT TO SAM'S WORK ECB   @ZA00648 05759203
+         ST    RWK2,IOBECBPT            SHOW ECB TO TRKBAL     @ZA00648 05759303
+         DROP  RIOB                                            @ZA00648 05759703
+*                                                                       05759803
+AMCL1090 EQU   *                        QSAM OUTPUT ENTERS HERE         05760003
+*                                                                       05761003
+*********************************************************************** 05762003
+*      THERE HAS BEEN AN OUTPUT ERROR OTHER THAN END-OF-VOLUME.  IT IS  05763003
+*  ONE OF THE FOLLOWING SITUATIONS.                                     05764003
+*      1. BSAM, AND THE USER HAS ISSUED CLOSE AFTER HAVING ENTERED      05765003
+*         THE SYNAD ROUTINE FOR A NON-UPDATE WRITE AND THE USER HAS     05766003
+*         NOT MODIFIED THE DCB TO ATTEMPT TO CONTINUE USING IT.         05767003
+*      2. QSAM, AND AN ERROR OCCURED.  THE USER MAY HAVE CLOSED IN THE  05768003
+*         SYNAD ROUTINE OR THE ERROR MAY HAVE BEEN ENCOUNTERED DURING   05769003
+*         CLOSE'S FLUSHING OF BUFFERS.                                  05770003
+*********************************************************************** 05771003
+*                                                                       05818437
+         TM    DCBOFLGS,DCBOFLWR        LAST OPERATION A WRITE     8383 05821437
+         BZ    AMCL2000                 NO, BRANCH                 8383 05824437
+         TM    DCBCIND2,DCBCNQSM        TEST FOR QSAM          @ZA11562 05827437
+         BZ    AMCL1091                 BRANCH IF BSAM         @ZA11562 05830437
+         LR    RWK2,RDCB                GET DCB ADDR FOR EOV   @ZA11562 05833437
+         LA    RWK2,0(0,RWK2)           CLR HI ORDER FOR EOV   @ZA11562 05836437
+*                                       R1 HI ORDRER BIT ON    @ZA11562 05839437
+*                                       MEANS R0 = ABEND CODE  @ZA11562 05842437
+         LR    R0,RWK4                  LOAD IOB ADDR FOR EOV  @ZA11562 05845437
+         L     R13,SCWGETMA             GIVE EOV A SAVE AREA   @ZA11562 05848437
+         EOV   (1)                      ISSUE EOV FOR 001 ABEND@ZA11562 05851437
+*                                                                       05854437
+*********************************************************************** 05863603
+*      IF IT IS A SEQUENTIAL DATA SET, WE WANT TO SET DCBFDAD TO POINT  05863803
+* TO THE BLOCK BEFORE THE BLOCK THAT WAS ATTEMPTED TO BE WRITTEN.  IT   05863903
+* NOW POINTS TO WHERE THE USER'S LAST BLOCK WOULD HAVE BEEN WRITTEN IF  05864003
+* A PREVIOUS ONE HAD NOT GOTTEN AN ERROR.  THESE ARE PROBABLY DIFFERENT 05864103
+* BLOCKS.                                                               05864303
+*      IF IT IS A PARTITIONED DATA SET, WE WANT TO POINT DCBFDAD TO     05864403
+* THE BEGINNING OF THE MEMBER BEING WRITTEN SO THAT THERE WILL NOT BE   05864503
+* UNUSED SPACE IN THE PDS AND SO THAT SOME FUTURE USER OF THE DATA SET  05864603
+* WILL NOT RUN INTO THE BAD TRACK WHILE IN THE MIDDLE OF COMPRESSING    05865003
+* THE DATA SET.                                                         05865103
+*      WHETHER SEQUENTIAL OR PARTITIONED, IT IS POSSIBLE THAT THE       05865203
+* CURRENT ERROR WAS CAUSED BY A USER-PROGRAM ERROR AND NOT BY A BAD     05865303
+* TRACK OR, IF IT IS A BAD TRACK, THE DATA MAY BE RECOVERED WITH THE    05865403
+* ATLAS MACRO OR THE IEHATLAS UTILITY.  WE WISH TO MAXIMIZE THE         05865503
+* CHANCES THAT THE NEXT USER OF THIS DATA SET CAN EXTEND IT BY USING    05865603
+* DISP=MOD ON THE DD STATEMENT.  THIS REQUIRES A CORRECT VALUE HERE     05865703
+* FOR DCBFDAD, A CORRECT VALUE FOR DCBTRBAL AND THAT THE BAD PLACE      05865803
+* ON THE TRACK BE ERASED.  DATA WILL NOT NECESSARILY BE ADDED ON THIS   05865903
+* TRACK.                                                                05866203
+*********************************************************************** 05866503
+*                                                                       05866837
+AMCL1091 EQU   *                                               @ZA11562 05866937
+         TM    DCBDEVT,DIRACC           IS THIS A DA DEVICE?   @ZA11562 05867037
+         BZ    AMCL2000                 NO, GO FREE WORKAREA   @ZA11562 05867137
+         TM    DSCFILTY,PODATAST        PARTITIONED ORGANIZATION  M1761 05867237
+         BO    AMCL1097                 YES, BRANCH                8383 05867337
+*                                                                       05867402
+* MUST UPDATE DCBFDAD BEFORE GOING TO TRACK BALANCE ROUTINE.            05869402
+* TEST FOR CHAINED SCHEDULING BEFORE MOVING IOBSEEK FIELD.        M5904 05871802
+*                                                                       05873802
+         TM    DCBCIND2,DCBCNCHS        CHAINED SCHEDULING USED   M5904 05874302
+         BZ    NOTCHAIN                 NO, BR AROUND             M5904 05876803
+*                                                                       05878902
+* FOR NORMAL SCHEDULING, RWK4 HAS THE ADDRESS OF THE IOB.  FOR CHAINED  05879003
+* SCHEDULING, WE NOW POINT RWK4 TO BEFORE THE IOB (NOT ICB) SO THAT IT  05879103
+* LOOKS LIKE A NORMAL SCHEDULING IOB SO ITS SEEK FIELD CAN BE COPIED.   05879503
+*                                                                       05881102
+         USING IOBBSAMC,RWK4                                            05883103
+         L     RWK4,DCBIOBAD            PT TO CHAIN SCHED IOB  @ZA00648 05885103
+         LA    RWK4,IOBQSAMN            ADJUST AS IF NORM SCHED@ZA00648 05889103
+*                                                                       05891103
+NOTCHAIN EQU   *                                                  M5904 05893103
+         USING IOBQSAMN,RWK4                                            05895102
+         MVC   DCBFDAD,IOBSEEK          MOVE FROM X'28' OFFSET    M5904 05897102
+         B     AMCL1098                                            8383 05899102
+         DROP  RWK4                                                     05899502
+*                                                                       05901102
+* MUST CONVERT FULL DISK ADDRESS BEFORE GOING TO TRACK BALANCE ROUTINE  05903102
+* FOR PAM DATA SETS.                                                    05903502
+*                                                                       05905102
+AMCL1097 EQU   *                                                   8383 05907102
+         MODESET  EXTKEY=DATAMGT                                 Y02072 05907502
+         STM   RWK1,RRETCODE,SCWRALL    SAVE ALL REGISTERS         8383 05909102
+         MODESET  KEYADDR=DXUKEY,WORKREG=13                      Y02072 05911102
+         L     RWK1,DCBRELAD            GET TTR TO BE CONVERTED    8383 05914802
+         SRL   RWK1,8                   SHIFT OUT R VALUE          8383 05920502
+         BCTR  RWK1,0                   SUBTRACT 1                 8383 05926202
+         SLL   RWK1,8                   SHIFT BACK                 8383 05931902
+         LR    R1,RDEB                  GET DEB ADDR             Y02072 05941902
+         LA    R2,DCBFDAD               POINT TO FULL DISK ADDRESS 8383 05971802
+         DROP  RDCB                                                     05981802
+         L     RCVT,CVTPTR              ADDRESS AF CVT             8383 06021802
+         USING CVT,RCVT                                          Y02072 06031802
+         L     RBRNCH,CVTPCNVT          CONVERT ROUTINE ADDRESS    8383 06071802
+         BALR  RRETRN,RBRNCH            BRANCH TO CONVERT ROUTINE  8383 06121802
+         LM    RWK1,RBRNCH,SCWRALL      RESTORE REGISTERS          8383 06171802
+AMCL1098 EQU   *                                                   8383 06221800
+         USING IHADCB,RDCB                                              06231802
+         LA    R1,0(RDCB)               LOAD DCB ADDRESS          M3940 06271802
+         USING IOBQSAMN,RIOB                                            06291802
+         OI    IOBNFLG1,IOBWRITE        TURN ON WRITE BIT          8383 06321802
+         NI    DCBIFLGS,X'FF'-DCBIFEC   TURN OFF ERROR FLAGS   @ZA00648 06371803
+         SVC   TRKBAL                   DETERMINE TRACK BALANCE    8383 06421802
+         EJECT                                                          06428202
+*                                                                       06441802
+* FREEMAIN USER KEY WORKAREA AND XCTL TO NEXT MODULE                    06451802
+*                                                                       06461802
+AMCL2000 EQU   *                                                        06471800
+         L     R1,SCWGETMA              ADD OF WORK AREA TO FREE Y02072 06475802
+         FREEMAIN  R,LV=SAVELG,A=(1),SP=230                      Y02072 06480602
+         SPACE 2                                                        06481002
+         MODESET  EXTKEY=DATAMGT        XCTL IN DATA MGT KEY     Y02072 06481402
+         SPACE 2                                                        06481502
+         SR    R0,R0                    PREPARE REG FOR PD CODE  Y02072 06491502
+         IC    R0,SCWSAVCD              ASSUME NEXT MODULE IS PD Y02072 06501502
+*                                         (NO HARM DONE IF NOT)  Y02072 06503502
+         CLC   WTGIDNX,PDLOAD           IS NEXT MODULE PD        Y02072 06511502
+         BE    AMCL5019                 YES, DO NOT RELOOP       Y02072 06521502
+         EJECT                                                          06621802
+*                                                                       06671802
+* LOOP THROUGH WTG TABLE ENTRIES TO SEE IF THIS ROUTINE IS NEEDED AGAIN 06721802
+*                                                                       06771802
+RELOOP1  EQU   *                                                 S21045 08855021
+         LA    RWTGC,L'WTGENTRY(0,RWTGC)  STEP TO NEXT ENTRY            08860002
+         LA    RPARC,L'PARDCBAD(0,RPARC)  STEP TO NEXT ENTRY            08880002
+         CLC   WTGIDNX,AMIDCNST         THIS RTN NEEDED AGAIN           08900002
+         BCR   8,RBASE                  YES, ECURSE THRU MODULE         08920002
+         CLC   WTGIDNX,CLLDB            IS THIS THE END OF THE TABLE?   08940002
+         BL    RELOOP1                  NO BRANCH                S21045 08960021
+         CLC   WTGIDNX,CLLDG            IS THIS THE END OF THE TABLE?   08980002
+         BH    RELOOP1                  NO BRANCH                S21045 09000021
+         LR    RPARC,RPAR               INITIALIZATION                  09020000
+         DROP  RWTGC                                                    09030002
+         LA    RWTGC,WTGENTRY           GET FIRST ENTRY IN WTG TABLE    09040002
+         USING WTGENTRY,RWTGC                                           09050002
+AMCL5011 EQU   *                                                        09060000
+         CLI   WTGIDTTR,CLOSEFIN        IS THIS ENTRY FINISHED          09080002
+         BNE   AMCL5019                 NO BRANCH                       09100002
+         LA    RWTGC,L'WTGENTRY(0,RWTGC) STEP TO NEXT ENTRY             09120002
+         LA    RPARC,L'PARDCBAD(0,RPARC) STEP TO NEXT ENTRY             09140002
+         B     AMCL5011                 CHECK NEXT ENTRY                09160002
+AMCL5019 EQU   *                                                        09200000
+         IECRES LOAD,PREFIX=WTGPREFX,BRANCH=DIRECT,            @Z30TSMI*09250003
+               MODID=WTGENTRY          GO TO NEXT ROUTINE      @Z30TSMI 09300003
+         EJECT                                                          09330002
+*                                                                       09330402
+* THIS ROUTINE WILL VERIFY THE DEB ADDRESS AND THEN UPDATE THE   Y02072 09330802
+* PROTECTED COPY OF THE DCB AND THIS MODULES DEB REGISTER.       Y02072 09331202
+*                                                                       09331602
+CHECKDEB EQU   *                                                 Y02072 09331702
+         DEBCHK  (RDCB)                 VERIFY DEB ADDRESS       Y02072 09331802
+         LR    RDEB,R1                  GET VALID DEB ADDRESS    Y02072 09331902
+         L     RDCB,DXPDCBAD            GET PROTECTED DCB ADDR   Y02072 09340602
+         MODESET  EXTKEY=DATAMGT        KEY OF PROTECTED DCB     Y02072 09342602
+         SPACE                                                          09344602
+         ST    RDEB,DCBDEBAD            UPDATE PROTECTED DCB     Y02072 09346602
+         MODESET  KEYADDR=DXUKEY,WORKREG=2  RESUME USER KEY      Y02072 09348602
+         SPACE                                                          09349002
+         L     RDCB,DXUDCBAD            GET USERS DCB ADDR       Y02072 09349402
+         BR    RWK5                     RETURN                   Y02072 09349502
+         EJECT                                                          09349602
+*                                                                       09349802
+* CONSTANTS                                                             09358502
+*                                                                       09367202
+AMIDCNST DC    C'1B'                                                    09375902
+CLLDB    DC    C'0B'                    FOR TEST END OF WTG TAB  S19015 09384602
+CLLDG    DC    C'0G'                    FOR TEST END OF WTG TAB  S19015 09393302
+CLL1Y    DC    C'1Y',VL3(IGG0201Y)      NEXT EXEC FOR DA       @Z30TSMI 09402003
+CLL1X    DC    C'1X',VL3(IGG0201X)      NEXT MOD FOR TAPE      @Z30TSMI 09404003
+PDLOAD   DC    C'6M',VL3(IGG0206M)      PROB DETERMINATION     @Z30TSMI 09412003
+ERRCODE  DC    H'8'                     IF STOW RETURN CODE IS HIGHER,  09420002
+*                                         GO TO PROBLEM DETER           09430002
+         SPACE                                                          09480002
+PATCH    DC    25H'0'                   PATCH AREA               YM4640 09490002
+END      EQU   *                        END OF THIS MODULE       Y02072 09584002
+         TITLE 'IGG0201B - DSECT FOR PSA'                               09590002
+         IHAPSA                                                  Y02072 09592002
+         TITLE 'IGG0201B - DSECT FOR STOW PARAMETER LIST'               09600002
+         IHASTOW                                                        09610002
+         TITLE 'IGG0201B - WTG TABLE DSECT'                             09650002
+         IECDSECS WTG,PREFX,EXPAND=YES                                  09670003
+         ORG   WTG+8                                             Y02072 09720102
+WRKRETRN DS    A                        RETURN ADDR TO FORCE     Y02072 09720202
+*                                         CLOSE EXECUTOR         Y02072 09720302
+         ORG   WTGIDTTR                                                 09726402
+WTGIDNX  DS    CL2                      ID NEXT MODULE                  09728402
+         ORG   WTGIDTTR+4                                               09732402
+WTGDCBWA DS    A                        ADDR OF WORK AREA FOR DCB       09734402
+         TITLE 'IGG0201B - FORMAT OF GOTTEN CORE'                       09735502
+         IECDSECS  (MAIN,(IOB,NO)),EXPAND=YES                    Y02072 09740002
+         TITLE 'IGG0201B - DSECT FOR FORCE CLOSE AUDIT TRAIL'           09750002
+FORCORE  DSECT                                                   Y02072 09790002
+         IHAFCAUD  ORG=YES                                       Y02072 09800002
+         IGGSCW                                                         09820002
+         TITLE 'IGG0201B - IOB DSECT'                                   09854502
+         IEZIOB                                                         09855702
+         ORG   IOBCSW                                                   09860002
+         DS    3X                                                       09870002
+CSWFLGS  DS    2B                                                       09920002
+         TITLE 'IGG0201B - CVT DSECT'                                   10230002
+         CVT   DSECT=YES                                                10260002
+         TITLE 'IGG0201B - TCB DSECT'                                   10290002
+         IKJTCB                                                         10330002
+         TITLE 'IGG0201B - DCB DSECT'                                   10390002
+         DCBD  DSORG=PS                                                 10400000
+         TITLE 'IGG0201B - DEB DSECT'                                   10410402
+         IEZDEB                                                         10412002
+         TITLE 'IGG0201B - ECB DSECT'                                   10414402
+         IHAECB                                                         10416002
+         TITLE 'IGG0201B - CLOSE PARAMETER LIST DSECT'                  10616002
+         IGGPARML                                                       10666002
+         END                                                            50420000

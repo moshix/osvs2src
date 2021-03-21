@@ -1,0 +1,1822 @@
+ TITLE ' IEBTCR05 - READ/EDIT MODULE -- INTRODUCTORY NARRATIVE'         00050019
+* FUNCTION/OPERATION:  THIS MODULE IS THE READ/EDIT PORTION OF THE      00100019
+*   UTILITY. IT CONSISTS OF TWO CSECTS; ONE CONTAINING THE MTST AND     00150019
+*   MTDI TRANSLATE & TEST TABLES AND THE MTST TRANSLATE TABLES, THE     00200019
+*   OTHER CONTAINING THE REMAINDER OF THE MODULE.                       00250019
+*                                                                       00300019
+*        CSECT NAME         CSECT USAGE             CSECT SIZE          00350019
+*       ------------       -------------           ------------         00400019
+*        IEBTCR05           READ AND EDIT              3572             00450019
+*        CSECT2             TABLES                      778             00500019
+*                                                                       00550019
+*   DATA FROM THE 2495 TAPE CARTRIDGE READER IS READ VIA EXCP CODING    00600019
+*   INTO ONE OF TWO BUFFERS WHICH ARE GETMAINED AS A RESULT OF THE USER 00650019
+*   SPECIFYING THE BUFL = XXXX PARAMETER IN THE SYSUT1 DD STATEMENT.THE 00700019
+*   DATA IS PROCESSED FROM ONE BUFFER WHILE MORE DATA IS BEING READ     00750019
+*   INTO THE OTHER BUFFER.                                              00800019
+*                                                                       00850019
+*   THIS MODULE SCANS THE INPUT BUFFERS FOR SPECIAL CHARACTERS, & EDITS 00900019
+*   AND/OR TRANSLATES THE DATA AS SPECIFIED BY THE USER. IF NO EDIT-    00950019
+*   ING OR TRANSLATING IS REQUESTED, DATA IS SIMPLY PASSED FROM THE     01000019
+*   INPUT BUFFERS TO THE OUTPUT AREA. IN EITHER CASE, DATA IS MOVED     01050019
+*   EVENTUALLY TO THE OUTPUT AREA UNTIL THE AREA BECOMES FULL OR UNTIL  01100019
+*   A LOGICAL END-OF-RECORD IS DETECTED, IN WHICH CASE THE OUTPUT AREA  01150019
+*   IS TRANSFERRED TO AN OUTPUT DEVICE (IF REQUESTED) VIA THE QSAM PUT  01200019
+*   MACRO (MOVE MODE). THE OUTPUT AREA IS THEN MADE AVAILABLE FOR       01250019
+*   ANOTHER GROUP OF BYTES.                                             01300019
+*                                                                       01350019
+*   THIS CYCLE CONTINUES UNTIL AN END-OF-FILE CONDITION IS DETECTED ON  01400019
+*   THE 2495 OR UNTIL A CONDITION ARISES THAT REQUIRES ABNORMAL TERM-   01450019
+*   INATION OF THE MODULE.                                              01500019
+*                                                                       01550019
+*   INSTRUCTION LABELS ARE OF THE FORM TCRXXX OR TSWXXX WHERE XXX IS A  01600019
+*   3 DIGIT NUMBER SEQUENCING UPWARD IN THE ORDER OF APPEARANCE IN THE  01650019
+*   PROGRAM. THE TCRXXX LABELS INDICATE NORMAL INSTRUCTIONS, WHILE THE  01700019
+*   TSWXXX LABELS INDICATE INSTRUCTIONS WHICH ARE MODIFIED DURING PRO-  01750019
+*   GRAM EXECUTION. CONSTANTS AND WORKING AREAS ARE LABELLED IN SUCH A  01800019
+*   MANNER AS TO BE MEANINGFUL OF THE FUNCTION FOR WHICH THEY WERE DE-  01850019
+*   FINED. NO SPECIAL PATTERN IS USED EXCEPT THAT ALL CONTROL BLOCKS    01900019
+*   FOR THE SYSUT1 DATA SET ARE LABELLED WITH THE PREFIX 'TCR'. ALSO,   01950019
+*   THE TRANSLATE AND TEST TABLE VALUES ARE PREFIXED WITH 'MTST' OR     02000019
+*   'MTDI' ACCORDING TO WHICHEVER TYPE VALUE IS BEING DEFINED.          02050019
+*                                                                       02100019
+* ENTRY POINTS:                                                         02150019
+*        IEBTCR05 - READ/EDIT MODULE                                    02200019
+*                                                                       02250019
+*   PARAMETER DATA IS PASSED 'BY NAME' AND CONSISTS OF A 560 BYTE       02300019
+*   TABLE WHICH IS DEFINED AND DESCRIBED IN THE DRIVER MODULE, AND IS   02350019
+*   COMMON TO ALL OTHER MODULES. IT CONSISTS OF EDIT PARAMETERS,        02400019
+*   EXIT ROUTINE ADDRESSES, THE MTST TRANSLATE TABLE ADDRESS, MESSAGE   02450019
+*   INDICATOR WORDS, EXIT LISTS, SPECIAL DCB PARAMETERS, AND THE DCBS   02500019
+*   FOR SYSUT1, SYSUT2, AND SYSUT3.                                     02550019
+*                                                                       02600019
+*   THIS MODULE IS LINKED TO FROM THE DRIVER MODULE (IEBTCRIN) :        02650019
+*                                                                       02700019
+*                  LINK   EP=IEBTCR05,PARAM=COMMON                      02750019
+           EJECT                                                        02800019
+* INPUT:  INPUT CONSISTS OF DATA BYTES (READ VIA AN EXCP MACRO) FROM A  02850019
+*   MAGNETIC TAPE CARTRIDGE MOUNTED ON A 2495 TAPE CARTRIDGE READER.    02900019
+*   THIS TAPE MAY CONTAIN MTST DATA OR MTDI DATA, BOTH OF WHICH WILL    02950019
+*   USUALLY REQUIRE EDITTING OF SPECIAL CHARACTERS. MTST DATA WILL      03000019
+*   ALSO USUALLY REQUIRE TRANSLATION TO EBCDIC. THESE FUNCTIONS ARE     03050019
+*   PERFORMED BY THIS MODULE.                                           03100019
+*                                                                       03150019
+*   THE FORMAT OF THE INPUT IS A CONTINUOUS STREAM OF CHARACTERS        03200019
+*   WITHOUT INTER-RECORD GAPS. A READ COMMAND IS VALIDLY TERMINATED     03250019
+*   BY ONE OF TWO CHARACTERS (HEX '19' AND HEX '1D') OR BY THE END-OF-  03300019
+*   TAPE MARKER. IT MAY BE INVALIDLY TERMINATED BY A DATA CHECK OR BY   03350019
+*   SOME OTHER HARDWARE FAILURE. IT IS THE FUNCTION OF THIS MODULE, BY  03400019
+*   USE OF ITS EDITTING CAPABILITIES, TO CONVERT THE STREAM OF DATA     03450019
+*   BYTES TO AN INTELLIGIBLE SET OF RECORDS FOR OUTPUT.                 03500019
+*                                                                       03550019
+* OUTPUT:  OUTPUT CONSISTS OF RECORDS IN SEQUENTIAL MODE DIRECTED TO    03600019
+*   ONE OF TWO DATA SETS WHICH MAY BE DEFINED BY THE USER TO EXIST ON   03650019
+*   ANY DEVICE SUPPORTED BY THE QSAM ACCESS METHOD. ONE DATA SET        03700019
+*   (SYSUT2) CONTAINS VALID RECORDS (AS DETERMINED BY THE MODULE IN     03750019
+*   CONJUNCTION WITH THE USER'S SPECIFICATIONS). THE OTHER DATA SET     03800019
+*   (SYSUT3) CONTAINS ERROR RECORDS (ALSO DETERMINED BY THIS MODULE IN  03850019
+*   CONJUNCTION WITH THE USER'S SPECIFICATIONS). THESE ERROR RECORDS    03900019
+*   WILL HAVE A FOUR BYTE ERROR DESCRIPTION WORD (EDW) APPENDED TO THE  03950019
+*   FRONT OF THE RECORD (MTDI ONLY).                                    04000019
+*                                                                       04050019
+*   OUTPUT IS PERFORMED BY USING THE QSAM 'PUT' MACRO IN THE 'MOVE'     04100019
+*   MODE OF OPERATION, AND IS DIRECTED TO ANY VALID SEQUENTIAL DATA SET 04150019
+*   AS DEFINED BY THE USER EITHER IN THE CURRENT STEP OR ANY PREVIOUS   04200019
+*   STEP OR JOB. THE OUTPUT DATA MAY BE FIXED, VARIABLE, OR UNDEFINED   04250019
+*   AND MAY BE BLOCKED OR UNBLOCKED. THESE DATA SETS WILL NOT BE OPENED 04300019
+*   OPENED UNTIL THE FIRST TIME A RECORD IS TO BE SENT TO THEM.         04350019
+*                                                                       04400019
+* EXTERNAL ROUTINES:  N/A                                               04450019
+           EJECT                                                        04500019
+* EXITS - NORMAL:  OUTREC EXIT.                                         04550019
+*                  THIS EXIT IS GIVEN CONTROL VIA A BAL INSTRUCTION     04600019
+*                  JUST BEFORE THE OUTPUT RECORD IS PASSED TO THE NOR-  04650019
+*                  MAL (SYSUT2) DATA SET. AT ENTRY, REG 1 CONTAINS THE  04700019
+*                  ADDRESS OF A PARAMETER LIST WHICH CONTAINS THE ADDR  04750019
+*                  OF THE OUTPUT RECORD AND THE ADDRESS OF THE RECORD   04800019
+*                  LENGTH. IN THIS EXIT,THE  USER MAY PROCESS THE       04850019
+*                  RECORD AND/OR PERFORM HIS OWN OUTPUT. UPON RETURN,   04900019
+*                  A RETURN CODE OF ZERO WILL CAUSE THE RECORD NOT TO   04950019
+*                  BE SENT TO SYSUT2. A RETURN CODE OF FOUR WILL CAUSE  05000019
+*                  THE RECORD TO BE SENT TO SYSUT2. ANY OTHER RETURN    05050019
+*                  CODE WILL CAUSE THE UTILITY TO TERMINATE.            05100019
+*                                                                       05150019
+*                  OUTHDR2,OUTHDR3,OUTTLR2, AND OUTTLR3 EXITS.          05200019
+*                                                                       05250019
+*                  OUTHDR2 AND OUTHDR3 ARE GIVEN CONTROL AT OPEN TIME   05300019
+*                  FOR SYSUT2 AND SYSUT3 RESPECTIVELY,FOR THE PURPOSE   05350019
+*                  OF CREATING USER OUTPUT HEADER LABELS.               05400019
+*                  OUTTLR2 AND OUTTLR3 ARE GIVEN CONTROL AT CLOSE TIME  05450019
+*                  FOR SYSUT2 AND SYSUT3 RESPECTIVELY,FOR THE PURPOSE   05500019
+*                  OF CREATING USER OUTPUT TRAILER LABELS.              05550019
+*                  AT ENTRY, REG 1 CONTAINS THE ADDRESS OF A PARAMETER  05600019
+*                  LIST WHICH CONTAINS THE ADDRESS OF THE OUTPUT LABEL  05650019
+*                  BUFFER AREA AND THE ADDR OF THE DCB BEING PROCESSED. 05700019
+*                  UPON RETURN, A RETURN CODE OF ZERO WILL CAUSE NO     05750019
+*                  LABEL TO BE WRITTEN AND NORMAL PROCESSING TO CON-    05800019
+*                  TINUE. A RETURN CODE OF FOUR WILL CAUSE A LABEL TO   05850019
+*                  BE WRITTEN AND NORMAL PROCESSING TO CONTINUE. A RE-  05900019
+*                  TURN CODE OF EIGHT WILL CAUSE A LABEL TO BE WRITTEN  05950019
+*                  AND A CHECK MADE FOR A COUNT OF EIGHT LABELS. IF     06000019
+*                  EIGHT LABELS HAVE BEEN WRITTEN, NORMAL PROCESSING    06050019
+*                  CONTINUES. IF LESS THAN EIGHT LABELS HAVE BEEN       06100019
+*                  WRITTEN, CONTROL IS RETURNED TO THE EXIT ROUTINE.    06150019
+*                  A RETURN CODE OF SIXTEEN CAUSES THE UTILITY TO       06200019
+*                  TERMINATE.                                           06250019
+*                                                                       06300019
+*          ERROR:  ERROR EXIT.                                          06350019
+*                  THIS EXIT IS GIVEN CONTROL VIA A BAL INSTRUCTION     06400019
+*                  JUST BEFORE AN ERROR RECORD IS PASSED TO SYSUT3.     06450019
+*                  AT ENTRY, REG 1 CONTAINS THE ADDRESS OF A PARAMETER  06500019
+*                  LIST WHICH CONTAINS THE ADDRESS OF THE ERROR RECORD  06550019
+*                  AND THE ADDRESS OF THE RECORD LENGTH. THE USER MAY   06600019
+*                  EXAMINE AND MODIFY ANY BYTE IN THE ERROR RECORD      06650019
+*                  AND/OR THE EDW. UPON RETURN, A RETURN CODE OF ZERO   06700019
+*                  WILL CAUSE THE RECORD NOT TO BE SENT TO SYSUT3, BUT  06750019
+*                  RATHER TO BE TREATED AS A VALID RECORD. THE EDW WILL 06800019
+*                  BE REMOVED (AND RESET). A RETURN CODE OF FOUR WILL   06850019
+*                  CAUSE THE RECORD TO BE SENT TO SYSUT3. ANY OTHER     06900019
+*                  RETURN CODE WILL CAUSE THE UTILITY TO TERMINATE.     06950019
+           EJECT                                                        07000019
+* TABLES/WORKAREAS:  WORKING STORAGE CONSISTS OF THE I/O CONTROL        07050019
+*   BLOCKS AND THE CHANNEL PROGRAM NECESSARY FOR READING THE TCR,       07100019
+*   SWITCHES, POINTERS, AND SAVE AREAS FOR VARIOUS EDITTING FUNCTIONS.  07150019
+*   THE INPUT BUFFERS AND INTERMEDIATE OUTPUT WORKAREA ARE GETMAINED    07200019
+*   FROM OUTSIDE THE PROGRAM AREA.                                      07250019
+*   THREE TABLES ARE USED: AN MTDI TRANSLATE & TEST TABLE, AN MTST      07300019
+*   TRANSLATE & TEST TABLE, AND AN MTST TRANSLATE TABLE. THE TRT TABLES 07350019
+*   TABLES ARE USED TO DETECT SPECIAL CHARACTERS IN THE INPUT STREAM    07400019
+*   FOR EDITTING PURPOSES. THE MTST TRANSLATE TABLE IS USED TO TRANS-   07450019
+*   LATE THE MTST CHARACTERS TO EBCDIC. AN UPPER CASE TABLE, A LOWER    07500019
+*   CASE TABLE, OR A USER DEFINED TABLE MAY BE USED.                    07550019
+*                                                                       07600019
+* ATTRIBUTES:  THIS MODULE IS AN ONLY-LOADABLE MODULE. IT IS NOT        07650019
+*   RE-ENTERABLE NOR RE-USABLE.                                         07700019
+*                                                                       07750019
+* NOTES:  THIS MODULE CONTAINS TYPE E CHARACTER CODE DEPENDENCIES. THE  07800019
+*   THE OPERATION OF THIS MODULE DEPENDS UPON THE FOLLOWING PROPERTIES  07850019
+*   OF THE INTERNAL REPRESENTATION OF THE EXTERNAL CHARACTER SET: HEX   07900019
+*   REPRESENTATION IN TABLE FORM, AND CHARACTER CODE SEQUENCE. THE      07950019
+*   SPECIFIC INSTRUCTION SEQUENCES, TABLES, AND CONSTANTS THAT REQUIRE  08000019
+*   MODIFICATION WHEN THESE PROPERTIES OF THE CHARACTER SET ARE         08050019
+*   CHANGED MAY BE IDENTIFIED BY:                                       08100019
+*                                                                       08150019
+*   1) THE INSTRUCTION SEQUENCE TCR320-4 TO TSW328 (SCAN ROUTINE) WHICH 08200019
+*      DOES A PROGRAM LEVEL SEARCH, ASSUMES THAT THE PL CODES ARE       08250019
+*      SEQUENTIALLY AND SUCCESSIVELY ASSIGNED.                          08300019
+*                                                                       08350019
+*   2) THE INSTRUCTION SEQUENCE FROM TCR610 TO TCR612 (SCAN ROUTINE     08400019
+*      FOR PL CODES) AND AT TCR860 (OUTPUT ROUTINE) WHICH CONVERT THE   08450019
+*      PL CODES TO THE FORM '01' THROUGH '08' ALSO ASSUMES THAT THE PL  08500019
+*      CODES ARE SEQUENTIALLY AND SUCCESSIVELY ASSIGNED.                08550019
+*                                                                       08600019
+*   3) THE TRANSLATE TABLES LABELLED 'EDWTT', 'UPPER', AND 'LOWER'      08650019
+*      CONTAIN ENTRIES IN HEX NOTATION TO CONVERT DATA TO THE EBCDIC    08700019
+*      CHARACTER SET.                                                   08750019
+*                                                                       08800019
+*   4) THE CONSTANT LABELLED 'HEXEOR' AND THE SET OF EQU INSTRUCTIONS   08850019
+*      FROM 'MTDILZF' TO 'MTSTUSRC' DEFINE THE SPECIAL CHARACTERS (IN   08900019
+*      CHARACTER FORM) FOR THE INPUT DATA SET.                          08950019
+*                                                                       09000019
+*   COMMENTS AND REMARKS ARE PROVIDED TO INDICATE THE CONSIDERATIONS    09050019
+*   INVOLVED AND THE MECHANISM FOR CHANGING THE CODE.                   09100019
+  TITLE  ' IEBTCR05 - READ/EDIT MODULE -- REGISTER DEFINITIONS'         09150019
+         SPACE 4                                                        09200019
+IEBTCR05 START 0                                                        09250019
+R0       EQU   0                   PARAMETER REGISTER                   09300019
+R1       EQU   1                   PARAMETER REGISTER                   09350019
+R2       EQU   2                   WORK REGISTER                        09400019
+R3       EQU   3                   INPUT BUFFER POINTER                 09450019
+R4       EQU   4                   WORK REGISTER                        09500019
+R5       EQU   5                   WORK REGISTER                        09550019
+R6       EQU   6                   WORK REGISTER                        09600019
+R7       EQU   7                   WORK REGISTER                        09650019
+R8       EQU   8                   WORK REGISTER                        09700019
+R9       EQU   9                   OUTPUT RECORD LENGTH                 09750019
+R10      EQU   10                  READ/EDIT BASE REGISTER              09800019
+R11      EQU   11                  COMMON AREA BASE REGISTER            09850019
+R12      EQU   12                  TRANSFER REGISTER                    09900019
+R13      EQU   13                  SAVEAREA REGISTER                    09950019
+R14      EQU   14                  TRANSFER REGISTER                    10000019
+R15      EQU   15                  PARAMETER REGISTER                   10050019
+         TITLE ' IEBTCR05 - READ/EDIT MODULE -- ENTRY ROUTINE'          10100019
+*        THIS SECTION SAVES THE CALLERS GENERAL REGISTERS,ESTABLISHES   10150019
+*        BASE REGISTERS FOR THE MODULE AND THE COMMON AREA,AND          10200019
+*        COMPLETES FILLING IN THE COMMON AREA AND THE TCR IOB.          10250019
+         SPACE 4                                                        10300019
+         SAVE  (14,12)             SAVE REGISTERS                       10350019
+         BALR  R10,0               SET UP                               10400019
+         USING *,R10                    READ/EDIT BASE                  10450019
+         ST    R13,SAVEREG+HSA                                          10500019
+         LA    R5,SAVEREG          SET UP                               10550019
+         ST    R5,LSA(R13)                REGISTER                      10600019
+         LR    R13,R5                              SAVEAREA             10650019
+         L     R11,0(R1)           GET ADDRESS OF COMMON AREA           10700019
+         USING COMMON,R11          SET UP DSECT BASE                    10750019
+         LA    R0,TCRDCB           PUT ADDRESS OF TCR DCB               10800019
+         ST    R0,DCBADDR                      IN EXCP IOB              10850019
+         LA    R0,TCRIOB           PUT ADDRESS OF TCR IOB               10900019
+         ST    R0,IOBADDR                      IN COMMON AREA           10950019
+         MVC   EXLST2(DBLWRD),XL2  SET UP EXIT LIST FOR SYSUT2          11000019
+         MVC   EXLST3(DBLWRD),XL3  SET UP EXIT LIST FOR SYSUT3          11050019
+         LH    R0,BUFL             PICK UP INPUT BUFFER LENGTH          11100019
+         EJECT                                                          11150019
+*        THIS SECTION DETERMINES THE SIZE OF THE INPUT BUFFERS AND      11200019
+*        THE OUTPUT WORKAREA; THEN GETMAINS THESE AREAS. IF THERE IS    11250019
+*        INSUFFICIENT CORE FOR THE GETMAIN, THE UTILITY IS TERMINATED.  11300019
+         SPACE 4                                                        11350019
+         STH   R0,TCRCCW1+CNTFLD   STORE IT IN                          11400019
+         STH   R0,TCRCCW2+CNTFLD   BOTH CCWS                            11450019
+         SLA   R0,1                MULTIPLY BUFL BY 2                   11500019
+         ST    R0,BUFL1            SAVE 2*BUFL FOR FREEMAIN             11550019
+         ST    R0,BUFL2                                                 11600019
+         GETMAIN VC,LA=BUFL1,A=GM1 GETMAIN INPUT BUFFERS                11650019
+         LTR   R15,R15             SUCCESSFUL GETMAIN ?                 11700019
+         BZ    TCR015              BRANCH IF YES                        11750019
+TCR010   OI    ERRIND,NOCORE       INDICATE NOT ENOUGH CORE AVAILABLE   11800019
+         MVI   GMAINERR,MSGFLAG    SET THE GETMAIN ERROR MESSAGE FLAG   11850019
+         B     TCR999              BRANCH TO END UTILITY                11900019
+TCR015   MVC   TCRCCW1(WORD),GM1   PUT INPUT BUFFER ADDRESS IN CCW1     11950019
+         MVI   TCRCCW1,READ        RE-LOAD READ COMMAND                 12000019
+         L     R1,GM1                                                   12050019
+         AH    R1,TCRCCW1+CNTFLD   COMPUTE SECOND BUFFER ADDRESS        12100019
+         ST    R1,TCRCCW2          STORE IT IN CCW2                     12150019
+         MVI   TCRCCW2,READ        RE-LOAD READ COMMAND                 12200019
+         LH    R0,UT2LRECL         GET SYSUT2 LRECL FOR WORKAREA LENGTH 12250019
+         CH    R0,UT3LRECL         IS IT GREATER THAN SYSUT3 LRECL ?    12300019
+         BNL   TCR020              BRANCH IF YES                        12350019
+         LH    R0,UT3LRECL         IF NO,USE SYSUT3 LRECL INSTEAD       12400019
+TCR020   CH    R0,MAXLN            IS IT GREATER THAN MAXLN ?           12450019
+         BNL   TCR030              BRANCH IF YES                        12500019
+         LH    R0,MAXLN            IF NO,USE MAXLN AS WORKAREA LENGTH   12550019
+TCR030   AH    R0,TCON8            ADD 8 FOR EDW AND VAR LNG CTR        12600019
+         ST    R0,WORKL1           SAVE IT FOR FREEMAIN                 12650019
+         ST    R0,WORKL2                                                12700019
+         GETMAIN VC,LA=WORKL1,A=GM2         GETMAIN WORKAREA            12750019
+         LTR   R15,R15             SUCCESSFUL GETMAIN ?                 12800019
+         BNZ   TCR010              BRANCH IF NO TO INDICATE GETMAIN ERR 12850019
+         L     R1,GM2                                                   12900019
+         BAL   R14,TCR932          SET UP WORKAREA POINTERS             12950019
+         EJECT                                                          13000019
+*        THIS SECTION SETS THE NOP SWITCHES WHEN MTDI IS SPECIFIED.     13050019
+*        THE SWITCHES ARE ASSEMBLED FOR DEFAULT VALUES AS FOLLOWS:      13100019
+*                   TYPE = MTDI                                         13150019
+*                   EDIT = EDITD                                        13200019
+*                   VERCHK = VOKCHK                                     13250019
+         SPACE 4                                                        13300019
+         TM    PARM1,MTST          TYPE = MTST ?                        13350019
+         BO    TCR055              BRANCH IF YES                        13400019
+         L     R1,MTDIADDR         LOAD ADDR OF MTDI TRT TABLE          13450019
+         TM    PARM2,NOEDIT        EDIT = NOEDIT ?                      13500019
+         BZ    TCR040              BRANCH IF NO                         13550019
+         OI    TSW315+1,BRANCH     TURN OFF SOR-EXPECTED SWITCH         13600019
+         NI    TSW148+1,NOP        SET NOEDIT SWITCH                    13650019
+         B     TCR060              SKIP ALL EDIT SWITCH SETTINGS        13700019
+TCR040   TM    PARM2,VOKCHK        VERCHK = VOKCHK ?                    13750019
+         BZ    TCR045              BRANCH IF NO                         13800019
+         NI    TSW658+1,NOP        SET VOKCHK SWITCH                    13850019
+TCR045   CLC   MINLN(2),TCON0      MINLN SPECIFIED ?                    13900019
+         BE    TCR050              BRANCH IF NO                         13950019
+         NI    TSW857+1,NOP        SET MINLN SWITCH                     14000019
+TCR050   TM    PARM2,EDITD         EDIT = EDITD ?                       14050019
+         BO    TCR070              BRANCH IF YES                        14100019
+         OI    TSW328+1,BRANCH     ELSE                                 14150019
+         NI    TSW612+1,NOP            SET                              14200019
+         OI    TSW616+1,BRANCH                                          14250019
+         OI    TSW625+1,BRANCH            SWITCHES                      14300019
+         OI    TSW662+1,BRANCH                    FOR                   14350019
+         NI    TSW846+1,NOP                                             14400019
+         NI    TSW854+1,NOP                          EDITR              14450019
+         NI    TSW888+1,NOP                                             14500019
+         NI    TSW911+1,NOP                                             14550019
+         B     TCR070              BRANCH TO SKIP MTST SWITCH SETTINGS  14600019
+         EJECT                                                          14650019
+*        THIS SECTION SETS THE NOP SWITCHES WHEN MTST IS SPECIFIED      14700019
+*        OR WHEN NOTRAN OR NOEDIT IS SPECIFIED.                         14750019
+         SPACE 4                                                        14800019
+TCR055   L     R1,MTSTADDR         LOAD ADDR OF MTST TRT TABLE          14850019
+         OI    TSW140+1,BRANCH     AND SET MTST SWITCH                  14900019
+         OI    TSW315+1,BRANCH     TURN OFF SOR-EXPECTED SWITCH         14950019
+         TM    PARM1,NOTRAN        TRANS = NOTRAN ?                     15000019
+         BO    TCR060              BRANCH IF YES                        15050019
+         OI    TSW852+1,BRANCH     SET MTST-WITH-TRANSLATE SWITCH       15100019
+         TM    PARM1,STDUC         TRANS = STDUC ?                      15150019
+         BZ    TCR057              BRANCH IF NO                         15200019
+         L     R2,UPPERADR                                              15250019
+         B     TCR058              BRANCH AROUND LOWER CASE SETTING     15300019
+TCR057   TM    PARM1,STDLC         TRANS = STDLC ?                      15350019
+         BZ    TCR065              BRANCH IF NO;  TRANS = 'USERNAME'    15400019
+         L     R2,LOWERADR                                              15450019
+TCR058   ST    R2,TRANTABL         STORE TRANSLATE TABLE ADDRESS        15500019
+         B     TCR065              SKIP NOTRAN-NOEDIT SWITCH            15550019
+TCR060   OI    TSW347+1,BRANCH     SET NOTRAN-NOEDIT SWITCH             15600019
+TCR065   OI    TSW100+1,BRANCH       AND                                15650019
+         OI    TSW114+1,BRANCH          SET                             15700019
+         OI    TSW125+1,BRANCH                                          15750019
+         NI    TSW815+1,NOP                THE                          15800019
+         OI    TSW840+1,BRANCH                                          15850019
+         OI    TSW853+1,BRANCH                SWITCHES                  15900019
+         OI    TSW863+1,BRANCH                                          15950019
+         OI    TSW914+1,BRANCH                        FOR               16000019
+         OI    TSW929+1,BRANCH                                          16050019
+         OI    TSW931+1,BRANCH                  NOT-MTDI-WITH-EDIT      16100019
+         EJECT                                                          16150019
+*        THIS SECTION SETS THE NOP SWITCHES WHEN THE ERROPT OPTION      16200019
+*        (DEFAULT IS ERROPT = NORMAL) IS SPECIFIED,WHEN OUTREC AND/OR   16250019
+*        ERROR EXIT IS SPECIFIED,AND/OR WHEN THE SYSUT2 AND/OR SYSUT3   16300019
+*        DD STATEMENTS ARE MISSING.                                     16350019
+         SPACE 4                                                        16400019
+TCR070   TM    EXITS,ERREXT        ERROR EXIT SPECIFIED ?               16450019
+         BZ    TCR075              BRANCH IF NO                         16500019
+         NI    TSW862+1,NOP        SET ERROR EXIT SWITCHES              16550019
+         NI    TSW992+1,NOP                                             16600019
+         B     TCR080              BYPASS THE ERROPT CHECK              16650019
+TCR075   TM    PARM2,NOERR         ERROPT = NOERR ?                     16700019
+         BZ    TCR080              BRANCH IF NO                         16750019
+         OI    TSW878+1,BRANCH     SET NOERR SWITCH                     16800019
+TCR080   TM    EXITS,OUTEXT        OUTREC EXIT SPECIFIED ?              16850019
+         BZ    TCR085              BRANCH IF NO                         16900019
+         NI    TSW880+1,NOP        SET OUTREC EXIT SWITCHES             16950019
+         NI    TSW994+1,NOP                                             17000019
+TCR085   TM    NODDCARD,NOUT2      SYSUT2 DD CARD MISSING ?             17050019
+         BZ    TCR090              BRANCH IF NO                         17100019
+         OI    TSW900+1,BRANCH     SET SYSUT2-DD-MISSING SWITCH         17150019
+TCR090   TM    NODDCARD,NOUT3      SYSUT3 DD CARD MISSING ?             17200019
+         BZ    TCR095              BRANCH IF NO                         17250019
+         OI    TSW935+1,BRANCH     SET SYSUT3-DD-MISSING SWITCH         17300019
+TCR095   LA    R12,TSW315          SET RETURN ADDRESS FROM READ-ROUTINE 17350019
+         ST    R1,TRTTABLE         STORE ADDRESS OF TRT TABLE           17400019
+         TITLE ' IEBTCR05 - READ/EDIT MODULE -- READ ROUTINE'           17450019
+*        THIS SECTION IS ENTERED (ONLY FOR MTDI WITH EDIT) WHEN THE     17500019
+*        INPUT BUFFER IS EMPTY AND AN ED OR GS CODE TERMINATED THE      17550019
+*        PREVIOUS READ. IF A START-OF-RECORD IS EXPECTED,NORMAL         17600019
+*        PROCESSING CONTINUES;HOWEVER,IF NOT,THEN AN EOR MUST BE        17650019
+*        FORCED ON THIS RECORD BEING PROCESSED (UNLESS IT IS TO BE      17700019
+*        DELETED).                                                      17750019
+         SPACE 4                                                        17800019
+TSW100   NOP   TCR102              NOP IF MTDI WITH EDIT,ELSE BRANCH    17850019
+TSW101   B     TCR102              NOP IF ED/GS SW IS ON; BR IF NOT ON  17900019
+         OI    TSW101+1,BRANCH     TURN OFF ED/GS SW. (MAKE IT A BR)    17950019
+         CLI   TSW315+1,NOP        IS SOR EXPECTED                      18000019
+         BE    TCR102              BRANCH IF SOR IS EXPECTED            18050019
+         TM    SWITCH1,DELETE      IS THIS RECORD BEING DELETED?        18100019
+         BZ    TCR615              BRANCH IF NO TO FORCE END OF RECORD  18150019
+         NI    TSW315+1,NOP        ELSE SET SOR-EXPECTED SWITCH ON      18200019
+         NI    SWITCH1,NORMAL      TURN OFF DELETE SWITCH               18250019
+TCR102   L     R5,CCWADDR          GET CCW ADDRESS                      18300019
+         EJECT                                                          18350019
+*        THIS SECTION IS ENTERED IMMEDIATELY AFTER THE FIRST EXCP       18400019
+*        INSTRUCTION FOR EACH TAPE;AND THEREAFTER ONLY WHEN PROCESSING  18450019
+*        IS COMPLETED ON THE DATA FROM A PREVIOUS READ (EXCP).          18500019
+         SPACE 4                                                        18550019
+TCR103   WAIT  ECB=TCRECB          WAIT FOR PREVIOUS READ,IF NEEDED     18600019
+         NI    SWITCH2,X'FF'-EXCP  INDICATE EXCP COMPLETED              18650019
+         CLI   TCRECB,NORMAL       NORMAL INTERRUPT?                    18700019
+         BNE   TCR105              BRANCH IF NO                         18750019
+TSW104   NOP   TCR110              NOP FOR FIRST TIME THRU,ELSE BRANCH  18800019
+         OI    TSW104+1,BRANCH     CHANGE FIRST-TIME SWITCH TO BRANCH   18850019
+         L     R2,MOUNTID                                               18900019
+         DOM   MSG=(R2)            DELETE MOUNT MESSAGE (MCS FEATURE)   19000019
+         B     TCR110              CONTINUE PROCESSING                  19150019
+TCR105   CLI   TCRECB,INTRCEPT     INTERCEPT CONDITION ?                19200019
+         BE    TCR106              BRANCH IF YES                        19250019
+         CLI   TCRECB,PERMERR      PERMANENT ERROR ?                    19300019
+         BE    TCR107              BRANCH IF YES                        19350019
+TCR106   OI    ERRIND,TROUBLE      SET READ/EDIT ERR SW FOR TROUBLE     19400019
+         B     TCR995              THEN BRANCH TO ABNORMAL END          19450019
+TCR107   TM    STATUS+1,CDC+CCC+ICC  CHANNEL ERRORS ?                   19500019
+         BNZ   TCR106              BRANCH IF YES TO QUIT                19550019
+         TM    STATUS+1,PROGRAM+PROTECT  PROG OR PROTECTION CHECKS ?    19600019
+         BNZ   TCR106              BRANCH IF YES TO QUIT                19650019
+         TM    STATUS,UNITCHK      UNIT CHECK ?                         19700019
+         BZ    TCR108              BRANCH IF NO                         19750019
+         TM    SENSE,DATACHK       DATA CHECK ?                         19800019
+         BZ    TCR106              BRANCH IF NO                         19850019
+         TM    SENSE,MULTERR       ARE THERE MULTIPLE ERRORS ?          19900019
+         BNZ   TCR106              BRANCH IF YES                        19950019
+         OI    SWITCH2,DATACHK     INDICATE DATA CHECK ON THIS READ     20000019
+         B     TCR109              SKIP UNIT EXCEPTION CHECK            20050019
+TCR108   TM    STATUS,UNITEXC      UNIT EXCEPTION ?                     20100019
+         BZ    TCR106              BRANCH IF NO TO QUIT, ELSE           20150019
+         OI    SWITCH2,UNITEXC     INDICATE UNIT EXCEPTION ON THIS READ 20200019
+TCR109   MVI   IOBFLG1,TWO         RESET            * THIS IS           20250019
+         MVI   IOBFLG2,ZERO            IOB          * NECESSARY         20300019
+         MVI   IOBFLG3,ZERO              FLAGS      * TO ALLOW          20350019
+         LA    R6,TCRDCB                            * ANOTHER EXCP      20400019
+         USING IHADCB,R6                            * INSTRUCTION       20450019
+         MVI   DCBIFLGS,ZERO       RESET DCB IFLAGS * TO BE             20500019
+         DROP  R6                                   * VALIDLY EXECUTED  20550019
+TCR110   MVI   TCRECB,ZERO         ZERO THE ECB COMPLETE BIT            20600019
+         EJECT                                                          20650019
+*        THIS SECTION IS ENTERED AFTER EVERY WAIT INSTRUCTION. IF EOT   20700019
+*        CONDITION IS ON,SOME INITIALIZATION MUST BE DONE FOR MTDI WITH 20750019
+*        EDIT. IF UNIT EXCEPTION WAS DETECTED WITH THE EOT CONDITION ON 20800019
+*        IT MEANS THAT IT HAPPENED ON A REWIND AND UNLOAD COMMAND.      20850019
+*        (THIS RESULTS IN A EOF CONDITION FOR THE 2495). THEREFORE, THE 20900019
+*        FINAL BUFFER MUST BE SENT TO THE PROPER OUTPUT DATA SET BEFORE 20950019
+*        TERMINATING. IF UNIT EXCEPTION WAS NOT DETECTED ON THE REWIND  21000019
+*        AND UNLOAD COMMAND, THEN ANOTHER TAPE IS READY TO BE READ, SO  21050019
+*        EXCP IS ISSUED.                                                21100019
+         SPACE 4                                                        21150019
+TSW113   NOP   TCR120              NOP IF EOT OR 1ST TIME THRU.ELSE BR  21200019
+TSW114   NOP   TCR116              NOP IF MTDI WITH EDIT,ELSE BRANCH    21250019
+         MVI   PLCNT,ZERO          ZERO THE PROGRAM LEVEL               21300019
+         MVC   PLCNT+1(15),PLCNT                LENGTH SAVE AREAS       21350019
+         OI    SWITCH1,NODUP       PREVENT DUPING IN FIRST RECORD       21400019
+         MVI   SAVELS,LS0          RESET THE PREVIOUS LEVEL STATUS      21450019
+TCR116   TM    SWITCH2,UNITEXC     WAS UNIT EXCEPTION POSTED?           21500019
+         BZ    TCR118              BRANCH IF NO                         21550019
+         L     R5,NXTAVAIL         IF YES,RESET R5 TO 'PUT' FINAL BFR   21600019
+         OI    TSW927+1,BRANCH     SET BRANCH TO END-UTILITY            21650019
+         C     R5,STARTREC         ANY BYTES IN FINAL BUFFER ?          21700019
+         BNE   TCR850              IF YES,BRANCH TO 'PUT' FINAL BUFFER  21750019
+         B     TSW992              ELSE, BRANCH TO NORMAL END           21800019
+TCR118   OI    TSW113+1,BRANCH     TURN OFF END OF TAPE  (EOT) SWITCH   21850019
+         MVI   0(R5),READ          RE-LOAD TCR READ COMMAND             21900019
+         OI    SWITCH2,EXCP        INDICATE EXCP ISSUED                 21950019
+         EXCP  TCRIOB                                                   22000019
+         B     TCR103              BRANCH TO WAIT                       22050019
+         EJECT                                                          22100019
+*        THIS SECTION IS ENTERED AFTER EVERY NORMAL READ COMMAND.       22150019
+*        THE INPUT RECORD LENGTH IS COMPUTED AND THE INPUT POINTERS     22200019
+*        ARE SET. IF A DATA CHECK WAS DETECTED,IT IS REPLACED WITH THE  22250019
+*        REPLACE CHARACTER,AND A CHECK FOR DOUBLE DATA CHECK IS MADE.   22300019
+*        WHEN ALL CHECKING IS DONE, THE CCWS ARE SWAPPED FOR THE NEXT   22350019
+*        EXCP INSTRUCTION.                                              22400019
+         SPACE 4                                                        22450019
+TCR120   LH    R6,CNTFLD(R5)       LOAD CCW COUNT                       22500019
+         SH    R6,RESIDUAL         CCW CNT - RESIDUAL CNT = RCD LNG     22550019
+         L     R7,0(R5)            LOAD INPUT BUFFER ADDRESS            22600019
+         LA    R7,0(R7)            CLEAR HIGH ORDER BYTE                22650019
+         BCTR  R7,0                INPUT BUFFER - 1                     22700019
+         ST    R7,INPUTPTR         STORE IT FOR SCAN                    22750019
+         AR    R7,R6               BUFFER-1  +  LENGTH = END OF BUFFER  22800019
+         TM    SWITCH2,DATACHK     WAS READ STOPPED BY A DATA CHECK?    22850019
+         BNO   TCR130              BRANCH IF NO                         22900019
+         MVC   0(1,R7),REPLACE     INSERT REPLACE CHARACTER             22950019
+         NI    SWITCH2,X'FF'-DATACHK                                    23000019
+TSW125   NOP   TCR128              NOP IF MTDI WITH EDIT,ELSE BRANCH    23050019
+         CH    R6,TCON1            RECORD LENGTH = 1 ?                  23100019
+         BH    TCR128              BRANCH IF NO                         23150019
+         TM    SWITCH1,DATACHK     WAS LAST READ ALSO TERM BY DATA CHK? 23200019
+         BZ    TCR128              BRANCH IF NO                         23250019
+         OI    SWITCH1,TWOCHKS     INDICATE 2 SUCCESSIVE DATA CHECKS    23300019
+TCR128   OI    SWITCH1,DATACHK     TURN ON DATA CHECK SWITCH            23350019
+         B     TCR131              BYPASS NO-DATA-CHECK INDICATION      23400019
+TCR130   NI    SWITCH1,NODATCHK    INDICATE NO DATA CHECK               23450019
+TCR131   XI    TSW132,SWAP         CHANGE ADD TO SUB  OR  SUB TO ADD    23500019
+TSW132   SH    R5,TCON8            CALCULATE NEXT CCW ADDR              23550019
+         ST    R5,CCWADDR          STORE IT IN IOB                      23600019
+         EJECT                                                          23650019
+*        IF UNIT EXCEPTION IS DETECTED AND IT IS CAUSED BY AN ED OR ST  23700019
+*        CODE, THEN A REWIND AND UNLOAD COMMAND IS ISSUED. OTHERWISE    23750019
+*        ANOTHER READ COMMAND IS ISSUED.                                23800019
+         SPACE 4                                                        23850019
+         TM    SWITCH2,UNITEXC     WAS UNIT EXCEPTION POSTED?           23900019
+         BNO   TCR160              BRANCH IF NO                         23950019
+         NI    SWITCH2,X'FF'-UNITEXC    TURN OFF UNIT EXCEPTION SWITCH  24000019
+TSW140   NOP   TCR150              NOP IF TYPE=MTDI    BR IF TYPE=MTST  24050019
+         NI    TSW101+1,NOP        SET ED/GS SWITCH ON (NOP)            24100019
+         CLI   0(R7),MTDIGS        WAS UE CAUSED BY GS CODE?            24150019
+         BNE   TCR150              BR IF NO                             24200019
+TSW148   B     TCR163              NOP IF EDIT=NOEDIT, ELSE    DROP GS  24250019
+         B     TCR160              GO INCLUDE THE GS CODE               24300019
+TCR150   NI    TSW113+1,NOP        SET EOT SWITCH ON (SET TO NOP)       24350019
+         MVI   0(R5),REWIND        LOAD REWIND/UNLOAD COMMAND IN CCW    24400019
+         B     TCR163              BRANCH TO DROP END DATA CODE         24450019
+TCR160   LA    R7,1(R7)            ADDR OF BUFFER END + 1               24500019
+TCR163   ST    R7,INPUTEND         STORE IT FOR SCAN                    24550019
+         OI    SWITCH2,EXCP        INDICATE EXCP ISSUED                 24600019
+         EXCP  TCRIOB                                                   24650019
+         SPACE 10                                                       24700019
+*        THIS SECTION INCREMENTS THE INPUT BUFFER POINTER.              24750019
+         SPACE 2                                                        24800019
+TCR200   L     R3,INPUTPTR         POINT TO                             24850019
+         LA    R3,1(R3)              NEXT BYTE IN                       24900019
+         ST    R3,INPUTPTR             INPUT BUFFER                     24950019
+         ST    R3,FRSTSCAN         STORE SCAN START ADDRESS             25000019
+         C     R3,INPUTEND         ANY BYTES LEFT IN BUFFER?            25050019
+         BCR   LOW,R12             BR IF YES TO CALLER                  25100019
+         B     TSW100              NO,BRANCH TO READ RTN                25150019
+         TITLE ' IEBTCR05 - READ/EDIT MODULE -- SCAN ROUTINE'           25200019
+*        THE SCAN ROUTINE IS ALWAYS ENTERED AT TCR310. AFTER SUCESS-    25250019
+*        FULLY POINTING TO THE NEXT BYTE IN THE INPUT BUFFER,A CHECK    25300019
+*        IS MADE TO SEE IF A SOR IS EXPECTED. IF NOT,NORMAL SCANNING    25350019
+*        CONTINUES. IF AN SOR IS EXPECTED,A SPECIAL SCAN IS MADE FOR    25400019
+*        THE SOR CHARACTER. THIS IS DONE BY MODIFYING THE IMMEDIATE     25450019
+*        OPERAND OF THE CLI INSTRUCTION AT TSW322 TO COMPARE AGAINST    25500019
+*        THE 8 PROGRAM LEVEL CODES. IF THE BYTE IS NOT A VALID SOR      25550019
+*        CODE,THE PROPER INDICATORS ARE SET AND NORMAL SCANNING         25600019
+*        CONTINUES. TSW315 WILL ALWAYS BE A BRANCH IF MTST OR           25650019
+*        MTDI WITH NOEDIT IS SPECIFIED. FOR MTDI WITH EDIT, IT IS       25700019
+*        INITIALLY A NOP.                                               25750019
+         SPACE 4                                                        25800019
+TCR310   BAL   R12,TCR200          POINT TO NEXT BYTE IN BUFFER         25850019
+TSW315   NOP   TCR340              NOP IF SOR EXPECTED      BR IF NOT   25900019
+         OI    TSW315+1,BRANCH     TURN OFF SOR-EXPECTED SWITCH         25950019
+         MVI   EDWLS,LS0           RESET LEVEL STATUS                   26000019
+         MVI   EDWTS,ZERO          RESET TYPE STATUS                    26050019
+         NI    SWITCH1,RESET       RESET LEFT ZERO SWITCHES             26100019
+         TM    SWITCH2,FRAGMENT    PROCESSING SHORT RECORD ? (EDITD)    26150019
+         BZ    TCR319              BRANCH IF NO                         26200019
+         NI    SWITCH2,X'FF'-FRAGMENT                                   26250019
+         MVI   SAVELS,LS0          RESET PREVIOUS LEVEL STATUS          26300019
+         OI    SWITCH1,NODUP       TURN OFF DUP ALLOW SWITCH            26350019
+TCR319   LA    R5,MTDIPL1-1        INITIALIZE SCAN FOR PL CODES         26400019
+TCR320   LA    R5,1(R5)                                                 26450019
+         STC   R5,TSW322+1         INCREMENT IMMEDIATE OPERAND OF CLI   26500019
+TSW322   CLI   0(R3),MTDIPL1       IS THIS BYTE A PL CODE ?             26550019
+         BE    TCR610              BRANCH IF YES                        26600019
+         CLI   TSW322+1,MTDIPL8    HAS SCAN CHECKED FOR ALL PL CODES ?  26650019
+         BNE   TCR320              IF NO, CHECK NEXT PL CODE            26700019
+         CLI   0(R3),MTDICAN       IS THIS BYTE A CANCEL CODE ?         26750019
+         BE    TCR330              BRANCH IF YES                        26800019
+         OI    EDWTS,SOREOR        INDICATE SOR/EOR ERR IN TYPE STATUS  26850019
+         MVI   EDWLS,LS1           INDICATE LEVEL STATUS ERROR          26900019
+         MVI   EDWSOR,BADSOR       MOVE '0E' TO SOR IN EDW              26950019
+TSW328   NOP   TCR810              NOP IF EDITD; ELSE MOVE INVALID SOR  27000019
+         B     TCR310              BRANCH TO CONTINUE SCAN              27050019
+TCR330   OI    SWITCH1,DELDUP      SET DELETE SW; TURN OFF DUP ALLOW SW 27100019
+         MVI   SAVELS,LS0          RESET PREVIOUS LEVEL STATUS          27150019
+         B     TCR310              BRANCH TO CONTINUE SCAN              27200019
+         EJECT                                                          27250019
+*        THIS SECTION DOES THE ACTUAL SCANNING OF THE INPUT BUFFER      27300019
+*        BY USE OF A TRT INSTRUCTION (EXCEPT FOR NOEDIT OR NOTRAN).     27350019
+*        AFTER THE TRT,REG 2 IS USED IN A BRANCH TABLE TO BRANCH TO     27400019
+*        THE PROPER ROUTINE TO PROCESS THE SPECIAL CHARACTER THAT       27450019
+*        STOPPED THE TRT.                                               27500019
+         SPACE 4                                                        27550019
+TCR340   L     R8,INPUTEND         GET BUFFER END + 1                   27600019
+         SR    R8,R3               GET LENGTH OF BUFFER REMAINING       27650019
+         CH    R8,TCON256          MORE THAN 256 BYTES LEFT?            27700019
+         BNH   TCR345              BRANCH IF NO                         27750019
+         LH    R8,TCON256          SET LENGTH = 256                     27800019
+TCR345   BCTR  R8,0                DECREMENT LENGTH FOR TRT INST        27850019
+         LR    R5,R3               GET ADDR OF FIRST BYTE SCANNED       27900019
+         AR    R5,R8               ADD SCAN LENGTH - 1                  27950019
+         ST    R5,INPUTPTR         STORE AS BFR PTR IF NO SPECIAL CODES 28000019
+         ST    R5,LASTSCAN         STORE LAST SCAN BYTE                 28050019
+TSW347   NOP   TCR360              BR IF NOTRAN OR NOEDIT,ELSE NOP      28100019
+         SR    R2,R2               CLEAR R2 FOR BRANCH CODE FROM TRT    28150019
+         L     R7,TRTTABLE         GET TRT TABLE ADDRESS                28200019
+         EX    R8,TCR350           EXECUTE TRT                          28250019
+         BZ    TCR360              BRANCH IF NO SPECIAL CODES FOUND     28300019
+         ST    R1,INPUTPTR         STORE SCAN END AS INPUT BUFFER PTR   28350019
+         LR    R3,R1               SET R3 LIKEWISE                      28400019
+         TM    SWITCH1,DELETE      IS THIS RECORD BEING DELETED ?       28450019
+         BZ    TCR349              BRANCH IF NO                         28500019
+         CH    R2,HEXEOR           ELSE,IS THIS END OF DELETED RECORD?  28550019
+         BL    TCR310              BR TO SCAN IF VOK,RM,OR SOR          28600019
+TCR349   B     TCR349(R2)          BR TO BRANCH TABLE FOR SPECIAL CODES 28650019
+         B     TCR420              LEFT ZERO FILL                       28700019
+         B     TCR500              DUP                                  28750019
+         B     TCR400              LEFT ZERO START                      28800019
+         B     TCR620              CANCEL                               28850019
+         B     TCR650              VERIFY OK OR RECORD MARK             28900019
+         B     TCR600              PROGRAM LEVEL CODE                   28950019
+         B     TCR390              FD,AS,SW                             29000019
+         B     TCR370              SRC                                  29050019
+         SPACE 2                                                        29100019
+TCR350   TRT   0(0,R3),0(R7)                                            29150019
+         EJECT                                                          29200019
+*        THIS SECTION IS ENTERED WHEN NO SPECIAL CODES ARE DETECTED BY  29250019
+*        THE SCAN TRT OR WHEN EITHER NOTRAN OR NOEDIT IS SPECIFIED.     29300019
+         SPACE 2                                                        29350019
+TCR360   TM    SWITCH1,DELETE      IS THIS RECORD BEING DELETED ?       29400019
+         BO    TCR310              BRANCH IF YES TO CONTINUE SCAN       29450019
+         L     R3,LASTSCAN         GET ADDR OF LAST SCAN BYTE           29500019
+         L     R6,INPUTEND         IS LAST SCAN BYTE                    29550019
+         BCTR  R6,0                     ALSO THE LAST BYTE              29600019
+         CR    R6,R3                      IN THE INPUT BUFFER?          29650019
+         BNE   TCR810              BR IF NO TO MOVE RTN                 29700019
+         TM    SWITCH1,DATACHK     YES,WAS IT A DATA CHECK?             29750019
+         BZ    TCR810              BR IF NO TO MOVE RTN                 29800019
+         OI    SWITCH1,MOVEDC      INDICATE DATA CHECK TO BE MOVED      29850019
+         B     TCR810              BR TO MOVE RTN                       29900019
+         SPACE 2                                                        29950019
+*        THIS SECTION REDUCES AN MTST REFERENCE CODE TO A SINGLE SRC    30000019
+*        CODE. IT IS ENTERED (AT TCR370) WHEN A SRC CODE IS DETECTED    30050019
+*        BY THE SCAN TRT. IT IS NOT ENTERED IF NOTRAN IS SPECIFIED.     30100019
+         SPACE 2                                                        30150019
+TCR370   BAL   R12,TCR811          CALL MOVE RTN TO MOVE TO INCLUDE SRC 30200019
+         LH    R7,ENDREF           SET MAX LNG  TO END OF REF CODE      30250019
+TCR375   BAL   R12,TCR200          POINT TO NEXT BYTE IN BUFFER         30300019
+         L     R6,INPUTEND         IS LAST SCAN BYTE                    30350019
+         BCTR  R6,0                     ALSO THE LAST BYTE              30400019
+         CR    R6,R3                      IN THE INPUT BUFFER?          30450019
+         BNE   TCR380              BR IF NO                             30500019
+         TM    SWITCH1,DATACHK     YES,WAS IT A DATA CHECK?             30550019
+         BO    TCR385              BR IF YES TO CHECK NEXT BYTE         30600019
+TCR380   CLI   0(R3),MTSTREF       NO,WAS IT A REFERENCE FILL CODE?     30650019
+         BE    TCR385              BR IF YES                            30700019
+         CLI   0(R3),MTSTLSRC      NO,WAS IT A LOWER CASE SRC ?         30750019
+         BE    TCR385              BR IF YES                            30800019
+         CLI   0(R3),MTSTUSRC      NO,WAS IT AN UPPER CASE SRC ?        30850019
+         BE    TCR385              BR IF YES                            30900019
+         CLI   0(R3),MTSTLCR       NO,WAS IT A LOWER CASE CARRIER RET?  30950019
+         BE    TCR310              BR IF YES  (END OF REF CODE)         31000019
+         CLI   0(R3),MTSTUCR       NO,WAS IT AN UPPER CASE CARRIER RET? 31050019
+         BE    TCR310              BR IF YES  (END OF REF CODE)         31100019
+         BCTR  R3,0                DECREMENT BUFFER PTR  FOR RE-SCAN    31150019
+         ST    R3,INPUTPTR         STORE IT AS INPUT BUFFER PTR         31200019
+         B     TCR310              BR TO SCAN                           31250019
+TCR385   BCT   R7,TCR375           BR IF NOT END OF REF CODE            31300019
+         B     TCR310              BR TO SCAN                           31350019
+         SPACE 2                                                        31400019
+*        THIS SECTION DROPS A FD,SW,OR AS CODE WHEN DETECTED BY THE     31450019
+*        SCAN TRT. IT IS NOT ENTERED IF NOTRAN IS SPECIFIED.            31500019
+         SPACE 2                                                        31550019
+TCR390   BCTR  R3,0                DECREMENT BUFFER PTR TO DROP CODE    31600019
+         B     TCR810              BR TO MOVE RTN                       31650019
+         EJECT                                                          31700019
+*        THIS SECTION PROCESSES A LEFT ZERO START CODE. IT IS ENTERED   31750019
+*        (AT TCR400) WHEN A LZS CODE IS DETECTED BY THE SCAN TRT.       31800019
+         SPACE 2                                                        31850019
+TCR400   BCTR  R3,0                DECR BUFFER PTR TO SKIP LZS CODE     31900019
+         MVI   LZCNT+1,ZERO        RESET LEFT ZERO FILL COUNT           31950019
+         BAL   R12,TCR811          MOVE ALL BYTES UP TO LZS CODE        32000019
+         L     R8,NXTAVAIL         SAVE LOCATION                        32050019
+         ST    R8,LZFLD                          FOR LZ FIELD           32100019
+         OI    SWITCH1,LZSTART     SET LZS SWITCH                       32150019
+         B     TCR310              BRANCH TO CONTINUE SCAN              32200019
+         SPACE 10                                                       32250019
+*        THIS SECTION PROCESSES A LEFT ZERO FILL CODE. IT IS ENTERED    32300019
+*        (AT TCR420) WHEN A LZF CODE IS DETECTED BY THE SCAN TRT.       32350019
+         SPACE 2                                                        32400019
+TCR420   TM    SWITCH1,LZSTART     LZS SWITCH ON ?                      32450019
+         BZ    TCR450              BRANCH IF NO                         32500019
+TCR422   LH    R2,LZCNT            INCREMENT                            32550019
+         LA    R2,1(R2)                      LZ FILL                    32600019
+         STH   R2,LZCNT                              COUNT              32650019
+         MVC   0(1,R3),REPLACE     REPLACE LZ FILL; INDICATE LZ FLD ERR 32700019
+         OI    SWITCH1,LZERR       IN CASE JUSTIFICATION FAILS          32750019
+         BAL   R12,TCR811          MOVE ALL SCANNED INCLUDING LZ FILL   32800019
+         TM    SWITCH1,LZSTART     LZS SWITCH ON ?                      32850019
+         BZ    TCR310              BRANCH IF NO TO RESCAN               32900019
+         BAL   R12,TCR200          POINT TO NEXT BYTE IN INPUT BUFFER   32950019
+         CLI   0(R3),MTDILZF       IS THIS BYTE ALSO A LZ FILL          33000019
+         BE    TCR422              BR IF YES TO CONTINUE LZ FILL SCAN   33050019
+         BCTR  R3,0                DECR BUFFER PTR TO RE-SCAN IT        33100019
+         ST    R3,INPUTPTR         STORE IT                             33150019
+         NI    SWITCH1,RESET       RESET LEFT ZERO SWITCHES             33200019
+         L     R5,NXTAVAIL         GET ADDR OF END OF LZ FIELD + 1      33250019
+         L     R2,LZFLD            GET ADDR OF START OF LZ FIELD        33300019
+         SR    R5,R2               GET FIELD LENGTH                     33350019
+         CH    R5,LZMAX            FIELD LENGTH GREATER THAN 15 ?       33400019
+         BNH   TCR430              BRANCH IF NO TO JUSTIFY              33450019
+         OI    EDWTS,FIELD         SET FIELD ERROR IN TYPE STATUS       33500019
+         B     TCR310              BRANCH TO CONTINUE SCAN              33550019
+         EJECT                                                          33600019
+*        THIS SECTION PERFORMS LEFT ZERO JUSTIFICATION. IT IS ENTERED   33650019
+*        (AT TCR430) AT THE COMPLETION OF A LEFT ZERO FIELD,PROVIDED    33700019
+*        THE FIELD IS NOT LONGER THAN 15 CHARACTERS.                    33750019
+         SPACE 2                                                        33800019
+TCR430   LH    R4,LZCNT            GET COUNT OF LEFT ZERO FILL CODES    33850019
+         BCTR  R5,0                DECREMENT COUNT FOR MVC INST         33900019
+         SR    R5,R4               GET NO. OF SIGNIFICANT DIGITS        33950019
+         LR    R6,R2               GET ADDRESS OF START OF LZ FIELD     34000019
+         AR    R6,R4               ADD SPACE FOR LZ FILLS               34050019
+         EX    R5,TCR440           MOVE SIGNIFICANT DIGITS TO HOLDAREA  34100019
+         EX    R5,TCR442           MOVE THEM BACK RIGHT JUSTIFIED       34150019
+TCR435   MVI   0(R2),LS0           INSERT A LEADING ZERO                34200019
+         LA    R2,1(R2)            INCREMENT THRU LZ FIELD              34250019
+         BCT   R4,TCR435                UNTIL FIRST SIGNIFICANT DIGIT   34300019
+         STH   R4,LZCNT            RESET LZ FILL COUNTER                34350019
+         B     TCR310              BRANCH TO CONTINUE SCAN              34400019
+         SPACE 2                                                        34450019
+TCR440   MVC   LZSAVE(0),0(R2)                                          34500019
+TCR442   MVC   0(0,R6),LZSAVE                                           34550019
+         SPACE 10                                                       34600019
+*        THIS SECTION SETS FIELD ERROR IN THE TYPE STATUS (OF EDW)      34650019
+*        IF DUPLICATION OR LEFT ZERO JUSTIFICATION DOES NOT OCCUR.      34700019
+*        IT IS ENTERED (AT TCR450) FROM THE LZF SECTION (NEAR TCR420),  34750019
+*        AND FROM THE DUP SECTION (NEAR TCR500).                        34800019
+         SPACE 2                                                        34850019
+TCR450   MVC   0(1,R3),REPLACE     REPLACE FIELD ERROR BYTE             34900019
+         OI    EDWTS,FIELD         SET FIELD ERROR IN TYPE STATUS       34950019
+         B     TCR810              MOVE ALL BYTES UP TO & INCL ERR BYTE 35000019
+         EJECT                                                          35050019
+*        THIS SECTION PROCESSES DUP CODES. IT IS ENTERED (AT TCR500)    35100019
+*        WHEN A DUP CODE IS DETECTED BY THE SCAN TRT.                   35150019
+         SPACE 2                                                        35200019
+TCR500   NI    SWITCH1,RESET       RESET LEFT ZERO SWITCHES             35250019
+         BCTR  R3,0                DECR INPUT PTR  TO RE-SCAN DUP CODE  35300019
+         ST    R3,INPUTPTR         STORE IT                             35350019
+         BAL   R12,TCR811          MOVE ALL BYTES UP TO DUP CODE        35400019
+         CLI   TSW315+1,NOP        SOR EXPECTED NOW ?                   35450019
+         BE    TCR310              IF YES, BR TO RE-SCAN SOR POSITION   35500019
+         BAL   R12,TCR200          POINT TO DUP CODE AGAIN              35550019
+         OI    SWITCH1,DUPCODE     SET DUP-ENCOUNTERED SWITCH           35600019
+         TM    SWITCH1,NODUP       IS DUP ALLOWED ?                     35650019
+         BO    TCR450              BRANCH IF NO                         35700019
+         L     R5,NXTAVAIL         GET POSITION OF DUP CODE             35750019
+         C     R5,PREVLB           IS DUP BEYOND END OF PREV RCD        35800019
+         BNL   TCR450              BRANCH IF YES                        35850019
+         CLC   0(1,R5),REPLACE     IS BYTE TO BE DUPED A REPLACE CHAR ? 35900019
+         BE    TCR450              BRANCH IF YES                        35950019
+         MVC   0(1,R3),0(R5)       PERFORM DUPLICATION                  36000019
+         B     TCR810              GO MOVE THE DUPED CHARACTER          36050019
+         EJECT                                                          36100019
+*        THIS SECTION PROCESSES SOR POSITIONS. IT IS ENTERED AT         36150019
+*        ONE OF FOUR PLACES:                                            36200019
+*              TCR600 - IF A PL CODE IS DETECTED BY THE SCAN TRT. THIS  36250019
+*                       WILL OCCUR ONLY WHEN THE PREVIOUS RECORD DOES   36300019
+*                       NOT HAVE A VALID END-OF-RECORD CHARACTER.       36350019
+*                                                                       36400019
+*              TCR610 - IF A PL CODE IS FOUND WHEN IT IS EXPECTED.      36450019
+*                       SEE CODE AT TSW322.                             36500019
+*                                                                       36550019
+*              TCR615 - IF A RECORD ENDS WITH A GS OR ED CODE WITHOUT   36600019
+*                       A VALID END-OF-RECORD. SEE CODE NEAR TSW101.    36650019
+*                                                                       36700019
+*              TCR620 - IF A CAN CODE IS DETECTED BY THE SCAN TRT. THIS 36750019
+*                       WILL OCCUR ONLY WHEN THE PREVIOUS RECORD DOES   36800019
+*                       NOT HAVE A VALID END-OF-RECORD.                 36850019
+         SPACE 4                                                        36900019
+TCR600   TM    SWITCH1,DELETE      IS THIS RECORD BEING DELETED ?       36950019
+         BO    TCR608              BRANCH IF YES                        37000019
+         L     R5,INPUTPTR         IF NO, ARE THERE                     37050019
+         C     R5,FRSTSCAN         ANY BYTES TO MOVE ?                  37100019
+         BE    TCR618              IF NO,DROP BAD EOR FROM WORKAREA     37150019
+         B     TCR620              IF YES,DONT MOVE BAD EOR TO WORKAREA 37200019
+TCR608   NI    SWITCH1,NORMAL      TURN OFF DELETE SWITCH               37250019
+TCR610   MVC   EDWSOR(1),0(R3)     STORE PL CODE IN SOR OF EDW          37300019
+         NI    EDWSOR,HEXSOR       PUT SOR IN FORM OF HEX '0X'          37350019
+TSW612   B     TCR310              NOP IF EDITR,ELSE BR TO CONT SCAN    37400019
+         ST    R3,FRSTSCAN         STORE AS START OF SCAN               37450019
+         B     TCR810              GO MOVE THE PL CODE                  37500019
+TCR615   NI    TSW845+1,NOP        SET EOR FORCED SWITCH                37550019
+TSW616   NOP   TCR640              NOP IF EDITD, BRANCH IF EDITR        37600019
+TCR618   L     R5,NXTAVAIL                                              37650019
+         C     R5,STARTREC         ANY BYTES TO OUTPUT ?                37700019
+         BE    TCR620              BRANCH IF NO, ELSE                   37750019
+         BCTR  R5,0                DECR WORKAREA ADDR SO THE BAD EOR    37800019
+         ST    R5,NXTAVAIL         WONT BE RETAINED AS PART OF THE RCD. 37850019
+TCR620   BCTR  R3,0                DECR INPUT PTR                       37900019
+         ST    R3,INPUTPTR         STORE IT FOR RE-SCAN                 37950019
+TSW625   NOP   TCR640              NOP IF EDITD,ELSE MOVE TO INCL EOR   38000019
+         BCTR  R3,0                DECR INPUT PTR TO AVOID MOVING EOR   38050019
+TCR640   NI    TSW315+1,NOP        SET SOR SWITCH TO EXPECT SOR (NOP)   38100019
+         NI    SWITCH1,RESET       RESET LEFT ZERO SWITCHES             38150019
+         OI    EDWTS,SOREOR        SET SOR/EOR ERROR IN TYPE STATUS     38200019
+         MVI   EDWEOR,BADEOR       MOVE 'E' TO EOR IN EDW               38250019
+         B     TCR810              GO MOVE PROPER NO. OF BYTES          38300019
+         EJECT                                                          38350019
+*        THIS SECTION PROCESSES VOK AND/OR RM CODES. IT IS ENTERED      38400019
+*        (AT TCR650) WHEN A VOK OR RM CODE IS DETECTED BY THE SCAN TRT. 38450019
+         SPACE 2                                                        38500019
+TCR650   NI    SWITCH1,RESET       RESET LEFT ZERO SWITCHES             38550019
+         NI    TSW315+1,NOP        SET SOR SWITCH TO EXPECT SOR  (NOP)  38600019
+         TM    SWITCH1,DELETE      IS THIS RECORD BEING DELETED ?       38650019
+         BZ    TCR655              BRANCH IF NO                         38700019
+         NI    SWITCH1,NORMAL      TURN OFF DELETE SWITCH               38750019
+         B     TCR310              BRANCH TO CONTINUE SCAN              38800019
+TCR655   MVI   EDWEOR,VOK          MOVE 'V' TO EOR IN EDW  (FOR VOK)    38850019
+         CLI   0(R3),MTDIVOK       IS EOR A VOK ?                       38900019
+         BE    TSW662              BRANCH IF YES                        38950019
+         MVI   EDWEOR,RM           MOVE 'U' TO EOR IN EDW  (FOR RM)     39000019
+TSW658   B     TSW662              NOP IF VERCHK = VOKCHK,BR IF NOCHK   39050019
+         OI    EDWTS,SOREOR        SET SOR/EOR ERROR IN TYPE STATUS     39100019
+TSW662   NOP   TCR810              BR IF EDITR TO INCL EOR, ELSE        39150019
+         BCTR  R3,0                DECR INPUT PTR TO AVOID MOVING EOR   39200019
+         B     TCR810              GO MOVE PROPER NO. OF BYTES          39250019
+         TITLE ' IEBTCR05 - READ/EDIT MODULE -- MOVE ROUTINE'           39300019
+*        THIS ROUTINE IS ENTERED ANY TIME A SPECIAL CHARACTER IS DE-    39350019
+*        TECTED,OR THE END OF SCAN AREA IS REACHED. IF AN EOR WAS       39400019
+*        FORCED, CONTROL PASSES DIRECTLY TO THE OUTPUT ROUTINE. OTHER-  39450019
+*        WISE THE NUMBER OF BYTES TO MOVE AND THE NUMBER OF BYTES TO    39500019
+*        OUTPUT ARE CALCULATED. IF THERE ARE NO BYTES TO MOVE AND:      39550019
+*           1) NO BYTES TO OUTPUT, CONTROL RETURNS TO THE CALLER.       39600019
+*           2) SOME BYTES TO OUTPUT, THEN:                              39650019
+*              A) IF SOR IS EXPECTED, CONTROL PASSES TO THE OUTPUT RTN. 39700019
+*              B) IF SOR IS NOT EXPECTED, CONTROL RETURNS TO CALLER.    39750019
+*        IF THERE ARE BYTES TO MOVE, THE SPACE AVAILABLE TO RECEIVE     39800019
+*        THEM IS CALCULATED. IF ALL THE BYTES WILL FIT, ALL WILL BE     39850019
+*        MOVED, ELSE ONLY ENOUGH WILL BE MOVED TO FILL THE AREA.        39900019
+*                                                                       39950019
+*        THIS ROUTINE IS ENTERED AT ONE OF TWO PLACES:                  40000019
+*                                                                       40050019
+*              TCR810 - WHEN CONTROL MUST RETURN TO THE SCAN ROUTINE.   40100019
+*              TCR811 - WHEN CONTROL MUST RETURN TO THE CALLING ROUTINE 40150019
+         SPACE 4                                                        40200019
+TCR810   LA    R12,TCR310          SET RETURN TO SCAN RTN               40250019
+TCR811   L     R5,NXTAVAIL         GET ADDR OF NEXT AVAIL IN WORKAREA   40300019
+         CLI   TSW845+1,NOP        WAS EOR FORCED ?                     40350019
+         BE    TCR850              BRANCH IF YES TO OUTPUT              40400019
+         L     R7,FRSTSCAN         GET ADDR OF FIRST BYTE SCANNED       40450019
+         LA    R4,1(R3)            GET ADDRESS OF LAST SCANNED + 1      40500019
+         SR    R4,R7               GET LENGTH OF SCANNED AREA           40550019
+         BP    TCR814              BRANCH IF WE HAVE BYTES TO MOVE      40600019
+         C     R5,STARTREC         ELSE, CHECK FOR BYTES TO OUTPUT      40650019
+         BNE   TCR813              BRANCH IF WE'VE GOT SOME             40700019
+         OI    SWITCH2,FRAGMENT    IF NONE, SET POSSIBLE SHORT RCD SW   40750019
+         BR    R12                 AND RETURN TO CALLER                 40800019
+TCR813   CLI   TSW315+1,NOP        IF SOME, IS SOR EXPECTED ?           40850019
+         BE    TCR850              BRANCH IF YES TO OUTPUT              40900019
+         BR    R12                 ELSE RETURN TO CALLER                40950019
+TCR814   L     R6,ENDREC           GET END OF RECORD + 1                41000019
+         SR    R6,R5               NO. OF BYTES LEFT IN WORKAREA        41050019
+TSW815   B     TCR816              BRANCH IF MTDI WITH EDIT, ELSE NOP   41100019
+         BZ    TCR850              BRANCH TO OUTPUT IF WORKAREA FULL    41150019
+TCR816   CR    R4,R6               WILL ALL SCANNED BYTES FIT?          41200019
+         BNH   TCR820              BRANCH IF YES                        41250019
+         LR    R4,R6               ELSE                                 41300019
+         B     TSW840                   GO MOVE WHAT WE CAN             41350019
+         EJECT                                                          41400019
+*        THIS SECTION IS ENTERED ONLY IF ALL THE SCANNED BYTES WILL FIT 41450019
+*        IN THE OUTPUT WORKAREA.                                        41500019
+         SPACE 1                                                        41550019
+TCR820   TM    SWITCH1,MOVEDC      DATA CHECK TO BE MOVED?              41600019
+         BZ    TCR844              BRANCH IF NO                         41650019
+         NI    SWITCH1,X'FF'-MOVEDC  INDICATE DC HAS BEEN MOVED         41700019
+         OI    EDWTS,DATACHK       SET DATA CHECK SWITCH IN EDW         41750019
+         TM    SWITCH1,TWOCHKS     TWO SUCCESSIVE DATA CHECKS ?         41800019
+         BZ    TCR844              BRANCH IF NO                         41850019
+         NI    SWITCH1,NODATCHK    INDICATE DBL D.C. HANDLING COMPLETE  41900019
+         MVI   EDWLS,LS1           INDICATE LEVEL STATUS ERROR          41950019
+         B     TCR844              GO MOVE THE SECOND DATA CHECK BYTE   42000019
+         SPACE 4                                                        42050019
+*        THIS SECTION IS ENTERED WHEN THERE ARE MORE BYTES TO MOVE THAN 42100019
+*        SPACE REMAINING IN THE OUTPUT WORKAREA. THIS MEANS THE RECORD  42150019
+*        EXCEEDED MAXLN BEFORE A VALID EOR WAS ENCOUNTERED.             42200019
+         SPACE 1                                                        42250019
+TSW840   NOP   TCR844              NOP IF MTDI WITH EDIT,ELSE BRANCH    42300019
+         OI    EDWTS,SOREOR+LNGERR SET SOR/EOR & INCORRECT LNG IN EDW   42350019
+         MVI   EDWEOR,BADEOR       MOVE 'E' TO EOR IN EDW               42400019
+         NI    TSW315+1,NOP        SET SOR EXPECTED SWITCH              42450019
+         NI    TSW845+1,NOP        SET EOR FORCED SWITCH                42500019
+         MVI   EDWLS,LS1           INDICATE LEVEL STATUS ERROR          42550019
+         TM    SWITCH1,LZERR       INCOMPLETE LEFT ZERO FIELD ?         42600019
+         BZ    TCR842              BRANCH IF NO                         42650019
+         OI    EDWTS,FIELD         SET FIELD ERROR IN TYPE STATUS       42700019
+TCR842   NI    SWITCH1,RESET       TURN OFF LEFT ZERO SWITCHES          42750019
+         SPACE 4                                                        42800019
+*        THIS SECTION DOES THE ACTUAL MOVING OF DATA BYTES FROM THE     42850019
+*        INPUT BUFFER TO THE OUTPUT WORKAREA,AND UPDATES THE POINTERS.  42900019
+         SPACE 1                                                        42950019
+TCR844   LTR   R4,R4               ANY BYTES TO MOVE ?                  43000019
+         BZ    TSW845              IF NO, SKIP MOVE CODE                43050019
+         BCTR  R4,0                DECREMENT LENGTH FOR MVC INST        43100019
+         EX    R4,TCR848           MOVE SOME BYTES                      43150019
+         LA    R4,1(R4)            RESTORE LENGTH                       43200019
+         AR    R5,R4               COMPUTE NEXT AVAIL BYTE IN WORKAREA  43250019
+         ST    R5,NXTAVAIL         SAVE IT                              43300019
+         AR    R7,R4               COMPUTE NEXT BYTE TO BE MOVED        43350019
+         ST    R7,FRSTSCAN         SAVE IT                              43400019
+TSW845   B     TCR811              NOP IF EOR FORCED, ELSE BR TO MOVE   43450019
+TSW846   B     TCR847              BR IF EDITD TO SKIP NEXT SCAN POS    43500019
+         BCTR  R7,0                IF EDITR, SCAN NEXT POS FOR EOR      43550019
+TCR847   ST    R7,INPUTPTR         RESET SCAN POINTER ACCORDINGLY       43600019
+         B     TCR811              GO MOVE SOME MORE                    43650019
+         SPACE 2                                                        43700019
+TCR848   MVC   0(0,R5),0(R7)                                            43750019
+ TITLE ' IEBTCR05 - READ/EDIT MODULE -- OUTPUT PROCESSOR ROUTINE'       43800019
+*        THIS ROUTINE IS CALLED BY THE MOVE ROUTINE ANY TIME THE OUT-   43850019
+*        PUT WORKAREA BECOMES FULL,OR AN EOR IS DETECTED. FOR MTDI WITH 43900019
+*        EDIT,CHECKS ARE MADE FOR PROGRAM LEVEL LENGTHS,MINLN, AND      43950019
+*        DUP CODES. THE EDW IS PROPERLY UPDATED AND MOVED TO THE RCD.   44000019
+         SPACE 2                                                        44050019
+TCR850   OI    TSW845+1,BRANCH     TURN OFF EOR FORCED SWITCH           44100019
+         SR    R7,R7               ZERO OUT REG 7                       44150019
+         SR    R8,R8                              AND REG 8             44200019
+         L     R9,NXTAVAIL         COMPUTE                              44250019
+         S     R9,STARTREC                RECORD LENGTH                 44300019
+         BNZ   TSW852              IF POSITIVE, GO PROCESS OUTPUT       44350019
+         OI    SWITCH2,CANCEL      ELSE SET SHORT RECORD SWITCH         44400019
+         B     TSW927              AND BYPASS OUTPUT                    44450019
+TSW852   NOP   TCR940              BR IF MTST WITH TRANS, ELSE NOP      44500019
+TSW853   NOP   TCR861              NOP IF MTDI WITH EDIT,ELSE BRANCH    44550019
+TSW854   B     TCR855              NOP IF EDITR   BRANCH IF EDITD       44600019
+         CH    R9,TCON3            IS RECORD LESS THAN 3 BYTES ?        44650019
+         BNL   TCR855              BRANCH IF NO                         44700019
+         OI    SWITCH2,CANCEL      SET SWITCH FOR RCD LESS THAN 3 BYTES 44750019
+         B     TSW927              TREAT RCD AS BEING DELETED           44800019
+TCR855   CLI   EDWSOR,BADSOR       WAS SOR IN ERROR ?                   44850019
+         BE    TSW857              BRANCH IF YES                        44900019
+         IC    R8,EDWSOR           GET SOR VALUE                        44950019
+         AR    R8,R8               DOUBLE IT TO POINT TO TABLE ENTRY    45000019
+         CH    R7,PLCNT-2(R8)      IS PL LENGTH COUNT SET ?             45050019
+         BNE   TCR856              BRANCH IF YES                        45100019
+         TM    EDWTS,TSERR         DOES RECORD HAVE AN ERROR ?          45150019
+         BNZ   TSW857              BRANCH IF YES                        45200019
+         STH   R9,PLCNT-2(R8)      SET LENGTH FOR THIS PL CODE          45250019
+         B     TSW857              SKIP LENGTH CHECK                    45300019
+TCR856   CH    R9,PLCNT-2(R8)      RECORD LENGTH = PL LENGTH ?          45350019
+         BE    TSW857              BRANCH IF YES                        45400019
+         OI    EDWTS,LNGERR        SET INCORRECT LENGTH IN TYPE STATUS  45450019
+         MVI   EDWLS,LS1           INDICATE LEVEL STATUS ERROR          45500019
+TSW857   B     TCR858              NOP IF MINLN SPECIFIED, BR IF NOT    45550019
+         CH    R9,MINLN            RECORD LENGTH LESS THAN MINLN ?      45600019
+         BNL   TCR858              BRANCH IF NO, ELSE                   45650019
+         OI    EDWTS,LNGERR        SET INCORRECT LENGTH IN TYPE STATUS  45700019
+TCR858   TM    SAVELS,LSERR        PREVIOUS LEVEL STATUS = 0 ?          45750019
+         BZ    TCR860              BRANCH IF YES                        45800019
+         TM    EDWLS,LSERR         PRESENT LEVEL STATUS = 0 ?           45850019
+         BNZ   TCR859              BRANCH IF NO                         45900019
+         TM    SWITCH1,DUPCODE     ANY DUP CODES IN THIS RECORD ?       45950019
+         BZ    TCR860              BRANCH IF NO                         46000019
+TCR859   MVI   EDWLS,LS2           SET LEVEL STATUS = 2                 46050019
+TCR860   TR    EDWTS(2),EDWTT      TRANSLATE TYPE STAT & SOR TO EBCDIC  46100019
+         L     R8,EDWADDR                                               46150019
+         MVC   0(WORD,R8),EDW      MOVE EDW INTO OUTPUT RECORD          46200019
+         TM    EDWLS,LSERR         LEVEL STATUS ERROR ?                 46250019
+         BM    TSW862              IF YES, CHECK FOR ERROR EXIT         46300019
+TCR861   TM    EDWTS,TSERR         TYPE STATUS ERROR ?                  46350019
+         BZ    TSW880              IF NO, CHECK FOR OUTREC EXIT         46400019
+         EJECT                                                          46450019
+*        THIS SECTION HANDLES THE ERROR EXIT. THE RECORD PLUS THE EDW   46500019
+*        ARE ALWAYS PASSED TO THE EXIT. IF SYSUT2 SPECIFIES VARIABLE    46550019
+*        LENGTH RECORDS, THE RDW IS ALSO APPENDED. UPON RETURN, THE NEW 46600019
+*        EDW AND RECORD LENGTH ARE USED. IF THE RECORD HAS BEEN FIXED:  46650019
+*            1) MTDI WITH EDIT --- PL LENGTH CHECKING IS PERFORMED AND  46700019
+*                                  WE GO CHECK FOR OUTREC EXIT.         46750019
+*            2) MTST OR NOEDIT --- DIRECTLY GO CHECK FOR OUTREC EXIT.   46800019
+*        IF THE RECORD IS STILL INCORRECT, IT IS SENT TO SYSUT3.        46850019
+*        IF RETURN CODE DOES NOT = 0 OR 4, THE UTILITY IS TERMINATED    46900019
+*        WITH A MESSAGE.                                                46950019
+         SPACE 2                                                        47000019
+TSW862   B     TSW878              NOP IF ERROR EXIT SPECIFIED,BR IF NO 47050019
+         L     R6,STARTREC         SET POINTER FOR OUTPUT RECORD        47100019
+TSW863   NOP   TCR864              NOP IF MTDI WITH EDIT, ELSE BRANCH   47150019
+         AH    R9,TCON4            INCLUDE EDW IN RECORD LENGTH         47200019
+         SH    R6,TCON4            SET POINTER TO INCLUDE EDW           47250019
+TCR864   TM    UT3RECFM,NOTVAR     FIXED OR UNDEFINED RECORDS ?         47300019
+         BO    TCR868              BRANCH IF YES                        47350019
+         AH    R9,TCON4            INCLUDE VAR FIELD IN RECORD LENGTH   47400019
+         STH   R9,RDW              SET UP VARIABLE FIELD                47450019
+         SH    R6,TCON4            SET POINTER TO INCLUDE VAR FIELD     47500019
+         MVC   0(WORD,R6),RDW      MOVE THE VAR FIELD INTO THE RECORD   47550019
+TCR868   ST    R6,PARMLIST              SET UP PARAMETER LIST           47600019
+         ST    R9,RECLEN                FOR ERROR EXIT                  47650019
+         LA    R1,PARMLIST         SET UP REG 1 FOR USER ERROR EXIT     47700019
+         L     R15,ERROR           LOAD ADDRESS OF USER ERROR EXIT      47750019
+         BALR  R14,R15             BRANCH TO USER ERROR EXIT            47800019
+         L     R1,EDWADDR                                               47850019
+         MVC   EDW(WORD),0(R1)     USE NEW EDW (IF MODIFIED)            47900019
+         L     R9,RECLEN           ALSO USE NEW RCD LGN (IF MODIFIED)   47950019
+         L     R8,STARTREC         RESTORE R9 TO                        48000019
+         S     R8,PARMLIST             LOGICAL RECORD LENGTH            48050019
+         SR    R9,R8                       FOR IEBTCRIN                 48100019
+         L     R5,STARTREC         COMPUTE                              48150019
+         AR    R5,R9                       EOR + 1  FOR BLANK-OUT RTN   48200019
+         CH    R15,TCON8           SHOULD RCD GO TO NORMAL DATA SET ?   48250019
+         BE    TSW880              BRANCH IF YES TO CHECK FOR OUTREC    48300019
+         CH    R15,TCON4           SHOULD RCD GO TO ERROR DATA SET ?    48350019
+         BE    TCR879              BRANCH IF YES TO OUTPUT IT           48400019
+         CH    R15,TCON0           SHOULD RECORD GO NOPLACE ?           48450019
+         BE    TCR887              BRANCH IF YES TO SKIP OUTPUT         48500019
+         MVI   EXITERR+1,ERRABORT  ELSE SET MESSAGE TABLE AND           48550019
+         B     TCR990              BRANCH TO ABNORMAL END               48600019
+         EJECT                                                          48650019
+         SPACE 2                                                        48700019
+*        THIS SECTION HANDLES THE ERROPT OPTION.                        48750019
+         SPACE 2                                                        48800019
+TSW878   NOP   TSW880              NOP IF ERROPT = NORMAL, BR IF NOERR  48850019
+TCR879   OI    SWITCH2,SYSUT3      INDICATE SYSUT3 RECORD               48900019
+         B     TSW935               AND BRANCH TO OUTPUT SYSUT3         48950019
+         SPACE 6                                                        49000019
+*        THIS SECTION HANDLES THE OUTREC EXIT. IF SYSUT2 SPECIFIES      49050019
+*        VARIABLE LENGTH RECORDS, THE RDW IS APPENDED TO THE RECORD.    49100019
+*        UPON RETURN, THE NEW RECORD LENGTH IS USED. THE RECORD IS      49150019
+*        THEN SENT TO SYSUT2 UNLESS THE USER INDICATES NOT TO DO SO.    49200019
+*        IF THE RETURN CODE DOES NOT = 0 OR 4, THE UTILITY IS           49250019
+*        TERMINATED WITH A MESSAGE.                                     49300019
+         SPACE 2                                                        49350019
+TSW880   B     TSW900              NOP IF OUTREC SPECIFIED,BR IF NOT    49400019
+         L     R6,STARTREC         SET POINTER FOR OUTPUT RECORD        49450019
+         TM    UT2RECFM,NOTVAR     FIXED OR UNDEFINED RECORDS ?         49500019
+         BO    TCR883              BRANCH IF YES                        49550019
+         AH    R9,TCON4            INCLUDE VAR FIELD IN RECORD LENGTH   49600019
+         STH   R9,RDW              SET UP VARIABLE FIELD                49650019
+         SH    R6,TCON4            SET POINTER TO INCLUDE VAR FIELD     49700019
+         MVC   0(WORD,R6),RDW      MOVE THE VAR FIELD INTO THE RECORD   49750019
+TCR883   ST    R6,PARMLIST              SET UP PARAMETER LIST           49800019
+         ST    R9,RECLEN                FOR OUTREC EXIT                 49850019
+         LA    R1,PARMLIST         SET UP REG1 FOR USER OUTREC EXIT     49900019
+         L     R15,OUTREC          LOAD ADDRESS OF USER OUTREC EXIT     49950019
+         BALR  R14,R15             BRANCH TO USER OUTREC EXIT           50000019
+         L     R9,RECLEN           USE NEW RCD LNG (IF MODIFIED)        50050019
+         L     R8,STARTREC         RESTORE R9 TO                        50100019
+         S     R8,PARMLIST             LOGICAL RECORD LENGTH            50150019
+         SR    R9,R8                       FOR IEBTCRIN                 50200019
+         L     R5,STARTREC         COMPUTE                              50250019
+         AR    R5,R9                       EOR + 1  FOR BLANK-OUT RTN   50300019
+         CH    R15,TCON4           SHOULD RCD GO TO NORMAL DATA SET ?   50350019
+         BE    TSW900              BRANCH IF YES TO OUTPUT SYSUT2       50400019
+         CH    R15,TCON0           SHOULD RECORD GO NOPLACE ?           50450019
+         BNE   TCR890              IF NOT, THE GAME'S OVER,CHARLIE      50500019
+TCR887   ST    R5,PREVLB           SAVE ADDR FOR END OF PREV RCD        50550019
+TSW888   B     TSW927              BRANCH IF EDITD, ELSE                50600019
+         LR    R8,R5               DECREMENT POINTER TO                 50650019
+         BCTR  R8,0                AVOID POSSIBILITY OF                 50700019
+         ST    R8,PREVLB           DUPING THE EOR CODE (FOR EDITR)      50750019
+         B     TSW927              GO CLEAN UP                          50800019
+TCR890   MVI   EXITERR+1,OUTABORT  SET MESSAGE TABLE AND                50850019
+         B     TCR990              BRANCH TO ABNORMAL END               50900019
+         EJECT                                                          50950019
+*        THIS SECTION OPENS THE SYSUT2 (OR SYSUT3) DATA SET AND         51000019
+*        CHECKS FOR ANY ADVERSE RESULTS FROM THE OPEN PROCESS.          51050019
+*        IT IS ENTERED AT TSW900 FOR SYSUT2 RECORDS, AND AT             51100019
+*        TSW903 (FROM TSW935) FOR SYSUT3 RECORDS.                       51150019
+         SPACE 2                                                        51200019
+TSW900   NOP   TSW927              BRANCH IF SYSUT2 DD MISSING,ELSE NOP 51250019
+         LA    R4,UT2DCB           GET ADDRESS OF SYSUT2 DCB            51300019
+         MVI   OPENERR+1,UT2OPERR  SET UP MESSAGE TABLE (JUST IN CASE)  51350019
+         MVI   DCBERR+1,UT2OPERR                                        51400019
+         USING IHADCB,R4           ESTABLISH DCB BASE                   51450019
+TCR903   TM    DCBOFLGS,DCBOPEN    IS DCB ALREADY OPEN?                 51500019
+         BO    TCR910              BRANCH IF YES                        51550019
+         OPEN  ((R4),(OUTPUT))     OPEN THE DCB                         51600019
+         TM    DCBOFLGS,DCBOPEN    DID DCB OPEN OK?                     51650019
+         BO    TCR904              BRANCH IF YES                        51700019
+         MVI   OPENERR,MSGFLAG     SET THE OPEN ERROR MESSAGE FLAG      51750019
+         B     TCR991              BRANCH TO ABNORMAL END               51800019
+TCR904   TM    ERRIND,BADDCB       INCONSISTENT DCB PARAMETERS ?        51850019
+         BZ    TCR905              BRANCH IF NO  -  ALL OK              51900019
+         MVI   DCBERR,MSGFLAG      SET DCB ERROR MESSAGE FLAG           51950019
+         B     TCR991              BRANCH TO ABNORMAL END               52000019
+TCR905   TM    ERRIND,DCBBIT4      PERMANENT HEADER ERROR ?    @ZA29418 52050003
+         BZ    TCR907              BRANCH IF NO                         52100019
+         CLI   OPENERR+1,UT3OPERR  PROCESSING SYSUT3 ?                  52150019
+         BE    TCR906              BRANCH IF YES, ELSE WE HAVE SYSUT2   52200019
+         MVI   EXLST2,DELETE       DELETE TLR2 EXIT REQUEST             52250019
+         B     TCR995              BRANCH TO ABNORMAL END               52300019
+TCR906   MVI   EXLST3,DELETE       DELETE TLR3 EXIT REQUEST             52350019
+         B     TCR995              ELSE BRANCH TO ABNORMAL END          52400019
+TCR907   LH    R0,DCBLRECL                                              52450019
+         AH    R0,TCON8                                                 52500019
+         C     R0,WORKL1           LRECL GREATER THAN CURRENT WORKAREA  52550019
+         BH    TCR923              BRANCH IF YES                        52600019
+TCR908   CLI   OPENERR+1,UT3OPERR  PROCESSING SYSUT3 ?                  52650019
+         BE    TCR909              BRANCH IF YES, ELSE WE'RE ON SYSUT2  52700019
+         MVC   UT2RECFM(1),DCBRECFM    SET RECFM FOR SYSUT2             52750019
+         B     TCR910               BRANCH TO CONTINUE                  52800019
+TCR909   MVC   UT3RECFM(1),DCBRECFM    SET RECFM FOR SYSUT3             52850019
+TCR910   ST    R5,PREVLB               SAVE ADDR FOR END OF PREV RCD    52900019
+TSW911   B     TCR912              BRANCH IF EDITD, ELSE                52950019
+         LR    R2,R5               DECREMENT POINTER TO                 53000019
+         BCTR  R2,0                AVOID POSSIBILITY OF                 53050019
+         ST    R2,PREVLB           DUPING THE EOR CODE (FOR EDITR)      53100019
+         EJECT                                                          53150019
+*        THIS SECTION DOES THE ACTUAL 'PUT' FOR THE RECORD. THE         53200019
+*        RECORD DESCRIPTOR WORD IS CONSTRUCTED AND INCLUDED FOR         53250019
+*        VARIABLE LENGTH RECORDS. IF A PERMANENT I/O ERROR OCCURS,      53300019
+*        THE UTILITY IS TERMINATED WITH A MESSAGE.                      53350019
+         SPACE 2                                                        53400019
+TCR912   L     R6,STARTREC         SET POINTER FOR OUTPUT RECORD        53450019
+TSW914   NOP   TCR915              NOP IF MTDI WITH EDIT, ELSE BRANCH   53500019
+         TM    SWITCH2,SYSUT3      IS THIS A SYSUT3 RECORD ?            53550019
+         BZ    TCR915              BRANCH IF NO                         53600019
+         AH    R9,TCON4            INCLUDE EDW IN RECORD LENGTH         53650019
+         SH    R6,TCON4            SET POINTER TO INCLUDE EDW           53700019
+TCR915   TM    DCBRECFM,NOTVAR     FIXED OR UNDEFINED RECORDS ?         53750019
+         BZ    TCR918              BRANCH IF VARIABLE                   53800019
+         TM    DCBRECFM,UNDEF      UNDEFINED ?                          53850019
+         BZ    TCR917              BRANCH IF NO                         53900019
+         CH    R9,DCBBLKSI         OUTPUT RCD GREATER THAN BLKSIZE ?    53950019
+         BNH   TCR916              BRANCH IF NO  -  WE'RE OK            54000019
+         LH    R9,DCBBLKSI         ELSE USE BLKSIZE FOR OUTPUT RCD LNG  54050019
+TCR916   STH   R9,DCBLRECL         PUT RECORD LENGTH IN LRECL           54100019
+         B     TCR922              GO OUTPUT THE RECORD                 54150019
+TCR917   BAL   R14,TCR936          ELSE GO BLANK OUT REMAINING RECORD   54200019
+         B     TCR922              CONTINUE                             54250019
+TCR918   AH    R9,TCON4            INCLUDE VAR FIELD IN RECORD LENGTH   54300019
+         CH    R9,DCBLRECL         OUTPUT RECORD GREATER THAN LRECL ?   54350019
+         BL    TCR920              BRANCH IF NO.  WE'RE OK              54400019
+         LH    R9,DCBLRECL         ELSE USE LRECL FOR OUTPUT RCD LNG    54450019
+TCR920   STH   R9,RDW              SET UP VARIABLE FIELD                54500019
+         SH    R6,TCON4            SET POINTER TO INCLUDE VAR FIELD     54550019
+         MVC   0(WORD,R6),RDW      MOVE THE VAR FIELD INTO THE RECORD   54600019
+TCR922   PUT   (R4),(R6)           WRITE A RECORD FROM WORKAREA         54650019
+         TM    ERRIND,DCBBIT6      PERMANENT I/O ERROR ?       @ZA29418 54700003
+         BZ    TSW927              IF NO, GO CLEAN UP AFTER OUTPUT      54730003
+         OI    ERRIND,DCBBIT4      SET READ/EDIT ERROR SWITCH  @ZA29418 54760003
+         B     TCR998              RETURN TO DRIVER MODULE              54850019
+         EJECT                                                          54900019
+*        THIS SECTION IS ENTERED ONLY WHEN LRECL ON THE DATA SET LABEL  54950019
+*        IS GREATER THAN THE OUTPUT WORKAREA SIZE,THUS NECESSITATING A  55000019
+*        GETMAIN FOR A LARGER WORKAREA. THE OLD WORKAREA IS THEN FREED  55050019
+*        AFTER THE NEW POINTERS ARE SET UP.                             55100019
+         SPACE 2                                                        55150019
+TCR923   MVC   OLDLGTH,WORKL1      SAVE OLD WORKAREA LNG  FOR FREEMAIN  55200019
+         MVC   OLDAREA,STRTWORK    SAVE OLD WORKAREA ADDR FOR FREEMAIN  55250019
+         L     R5,STRTWORK         SET REG 5 = FROM-AREA                55300019
+         ST    R0,WORKL1                                                55350019
+         ST    R0,WORKL2                                                55400019
+         GETMAIN VC,LA=WORKL1,A=GM2         GETMAIN NEW WORKAREA        55450019
+         LTR   R15,R15             GETMAIN SUCCESSFUL ?                 55500019
+         BNZ   TCR010              BRANCH IF NO TO INDICATE GETMAIN ERR 55550019
+         L     R1,GM2                                                   55600019
+         BAL   R14,TCR932          SET UP NEW WORKAREA POINTERS         55650019
+         LH    R0,TCON256                                               55700019
+         L     R1,STRTWORK         SET REG 1 = TO-AREA                  55750019
+         LR    R6,R9               GET LENGTH OF RECORD TO MOVE         55800019
+         LA    R6,8(R6)            ADD 8 TO ALLOW FOR RDW & EDW         55850019
+         B     TCR926              GO SET UP FOR MOVE                   55900019
+TCR924   MVC   0(0,R1),0(R5)                                            55950019
+TCR925   MVC   0(256,R1),0(R5)     MOVE 256 BYTES                       56000019
+         AR    R1,R0               UPDATE THE TO-POINTER                56050019
+         AR    R5,R0                AND THE FROM-POINTER                56100019
+TCR926   SR    R6,R0               IS LENGTH GREATER THAN 256 ?         56150019
+         BP    TCR925              BRANCH IF YES                        56200019
+         AR    R6,R0               RESTORE LENGTH IF LESS THAN 256      56250019
+         BCTR  R6,0                DECREMENT COUNT FOR MVC INST         56300019
+         EX    R6,TCR924           MOVE THE REST OF THE RECORD          56350019
+         L     R5,STARTREC                                              56400019
+         AR    R5,R9               COMPUTE NEXT AVAIL BYTE IN NEW AREA  56450019
+         L     R0,OLDLGTH                                               56500019
+         L     R1,OLDAREA                                               56550019
+         FREEMAIN R,LV=(0),A=(1)   FREE THE OLD WORKAREA                56600019
+         B     TCR908              CONTINUE NORMAL PROCESSING           56650019
+         EJECT                                                          56700019
+*        THIS SECTION RE-INITIALIZES VARIOUS POINTERS AND THE EDW FOR   56750019
+*        THE NEXT RECORD. IT IS ENTERED AFTER EVERY RECORD IS OUTPUT.   56800019
+*        REG 7 = ZERO AT ENTRY.                                         56850019
+         SPACE 2                                                        56900019
+TSW927   NOP   TSW992              NOP UNTIL EOF HAS BEEN REACHED       56950019
+         NI    SWITCH1,DATACHK+MOVEDC  RE-SET READ/EDIT SWITCH1         57000019
+         TM    SWITCH2,CANCEL      IS THIS A CANCELLED SHORT RECORD ?   57050019
+         BZ    TCR928              BRANCH IF NO                         57100019
+         OI    SWITCH1,NODUP       ELSE SET SWITCH TO PREVENT DUPING    57150019
+         MVI   EDWLS,LS0           RESET LS FOR RCDS LESS THAN 3 BYTES  57200019
+TCR928   NI    SWITCH2,EXCP        RESET READ/EDIT SWITCH2              57250019
+         L     R2,STARTREC         RESET POINTER TO                     57300019
+         ST    R2,NXTAVAIL         NEXT AVAILABLE BYTE IN WORKAREA      57350019
+TSW929   NOP   TCR930              NOP IF MTDI WITH EDIT,ELSE BRANCH    57400019
+         MVC   SAVELS(1),EDWLS     SAVE LEVEL STATUS                    57450019
+TCR930   ST    R7,EDW                                                   57500019
+         MVI   EDW,LS0             RE-INITIALIZE EDW                    57550019
+TSW931   NOP   TCR811              NOP IF MTDI WITH EDIT,ELSE GO MOVE   57600019
+         BR    R12                 RETURN TO CALLER                     57650019
+         SPACE 2                                                        57700019
+*        THIS SECTION SETS UP THE OUTPUT WORKAREA POINTERS AFTER THE    57750019
+*        AREA IS GETMAINED. IT NEED ONLY BE DONE ONCE UNLESS A NEW      57800019
+*        WORKAREA IS GETMAINED. AT ENTRY,REG 1 CONTAINS THE ADDRESS     57850019
+*        OF THE GETMAINED WORKAREA. REG 14 HAS THE ADDRESS OF THE       57900019
+*        CALLING ROUTINE.                                               57950019
+         SPACE 2                                                        58000019
+TCR932   ST    R1,STRTWORK         SAVE START OF WORKAREA               58050019
+         AH    R1,TCON4                                                 58100019
+         ST    R1,EDWADDR          SET POINTER FOR ERROR RECORD         58150019
+         AH    R1,TCON4                                                 58200019
+         ST    R1,NXTAVAIL         SAVE AS NEXT AVAIL RECORD AREA BYTE  58250019
+         ST    R1,STARTREC         SAVE AS START OF RECORD              58300019
+         AH    R1,MAXLN            ADD MAXLN                            58350019
+         ST    R1,ENDREC           SAVE AS ADDRESS OF SOR + MAXLN + 1   58400019
+         L     R1,STRTWORK         GET START OF WORKAREA                58450019
+         A     R1,WORKL1           ADD TOTAL WORKAREA LENGTH            58500019
+         ST    R1,ENDWORK          SAVE AS END OF WORKAREA + 1          58550019
+         BR    R14                 RETURN TO CALLER                     58600019
+         SPACE 2                                                        58650019
+*        THIS SECTION IS ENTERED INITIALLY FOR ALL SYSUT3 (ERROR)       58700019
+*        RECORDS. THE DCB ADDRESS IS PICKED UP AND CONTROL IS PASSED    58750019
+*        TO THE GENERAL OUTPUT SECTION (TSW902).                        58800019
+         SPACE 2                                                        58850019
+TSW935   NOP   TSW927              BRANCH IF SYSUT3 DD MISSING,ELSE NOP 58900019
+         LA    R4,UT3DCB           GET ADDRESS OF SYSUT3 DCB            58950019
+         MVI   OPENERR+1,UT3OPERR  SET UP MESSAGE TABLE  (JUST IN CASE) 59000019
+         MVI   DCBERR+1,UT3OPERR                                        59050019
+         B     TCR903              BR TO COMMON OUTPUT PROCESSOR        59100019
+         EJECT                                                          59150019
+*        THIS SECTION BLANKS OUT THE REMAINDER OF THE OUTPUT WORKAREA   59200019
+*        (FROM 'NXTAVAIL' TO 'ENDWORK') FOR FIXED LENGTH RECORDS.       59250019
+         SPACE 2                                                        59300019
+TCR936   L     R2,ENDWORK          GET ADDRESS OF END OF WORKAREA       59350019
+         SR    R2,R5               GET LENGTH IF AREA TO BLANK OUT      59400019
+         BCR   NOTPLUS,R14         RETURN IF ZERO OR NEGATIVE           59450019
+         MVI   0(R5),BLANK         BLANK OUT FIRST BYTE                 59500019
+         BCTR  R2,0                SO, DECREMENT COUNT BY ONE           59550019
+         LH    R0,TCON256                                               59600019
+         B     TCR939              GO SET UP FOR MOVE                   59650019
+TCR937   MVC   1(0,R5),0(R5)       BLANK OUT REST OF WORKAREA           59700019
+TCR938   MVC   1(256,R5),0(R5)     BLANK OUT 256 BYTES OF WORKAREA      59750019
+         AR    R5,R0               ADJUST WORKAREA POINTER              59800019
+TCR939   SR    R2,R0               IS LENGTH GREATER THAN 256 ?         59850019
+         BP    TCR938              BRANCH IF YES                        59900019
+         AR    R2,R0               RESTORE LENGTH IF LESS THAN 256      59950019
+         BCTR  R2,0                DECREMENT COUNT FOR MVC INST         60000019
+         EX    R2,TCR937           BLANK OUT REST OF WORKAREA           60050019
+         BR    R14                 RETURN                               60100019
+         SPACE 2                                                        60150019
+*        THIS SECTION TRANSLATES MTST CODE IN THE OUTPUT WORKAREA TO    60200019
+*        STANDARD UPPER CASE EBCDIC,STANDARD LOWER CASE EBCDIC,OR ANY   60250019
+*        USER SUPPLIED CHARACTER SET. IT IS CALLED JUST PRIOR TO OUT-   60300019
+*        PUTTING THE RECORD (TSW852).                                   60350019
+         SPACE 2                                                        60400019
+TCR940   L     R2,STARTREC         GET START OF RECORD TO TRANSLATE     60450019
+         L     R8,NXTAVAIL         GET ADDR OF NEXT AVAIL IN WORKAREA   60500019
+         SR    R8,R2               GET LENGTH OF RECORD TO TRANSLATE    60550019
+         L     R6,TRANTABL         GET TRANSLATE TABLE ADDRESS          60600019
+         LH    R0,TCON256                                               60650019
+         B     TCR948              GO SET UP FOR TRANSLATE              60700019
+TCR944   TR    0(0,R2),0(R6)       TRANSLATE REST OF BUFFER             60750019
+TCR946   TR    0(256,R2),0(R6)     TRANSLATE 256 BYTES                  60800019
+         AR    R2,R0               ADJUST RECORD POINTER                60850019
+TCR948   SR    R8,R0               IS LENGTH GREATER THAN 256?          60900019
+         BP    TCR946              BRANCH IF YES                        60950019
+         AR    R8,R0               RESTORE LENGTH IF LESS THAN 256      61000019
+         BCTR  R8,0                DECREMENT COUNT FOR TR INST          61050019
+         EX    R8,TCR944           TRANSLATE REST OF BUFFER             61100019
+         B     TCR861              RETURN TO OUTPUT ROUTINE             61150019
+ TITLE ' IEBTCR05 - READ/EDIT MODULE -- OUTHDR,OUTTLR EXITS'            61200019
+*        THIS SECTION PROCESSES THE OUTHDR AND OUTTLR EXIT ROUTINES.    61250019
+*        AT ENTRY, REG 0 IS UNPREDICTABLE, REG 2 - REG 13 ARE THE SAME  61300019
+*        AS BEFORE. REG 1 CONTAINS THE ADDRESS OF A PARAMETER LIST      61350019
+*        CREATED BY IOS AS FOLLOWS:                                     61400019
+*              WORD 1 - POINTER TO 80 BYTE LABEL BUFFER AREA            61450019
+*              WORD 2 - POINTER TO DCB BEING PROCESSED                  61500019
+*              WORD 3 - POINTER TO STATUS INFO (SEE SRL C28-6646)       61550019
+*              WORD 4 - RESERVED                                        61600019
+         SPACE 2                                                        61650019
+TCR950   MVI   TSW975+1,HDR2       SET TM INST  TO CHECK FOR OUTHDR2    61700019
+         CLI   EXITERR,MSGFLAG     ERROR FLAG ALREADY ON ?              61750019
+         BE    TCR953              IF YES, LEAVE IT ALONE               61800019
+         MVI   EXITERR+1,HDR2BORT    SET MESSAGE                        61850019
+TCR953   L     R15,OUTHDR2                    AND EXIT ADDR FOR OUTHDR2 61900019
+         B     TSW975              GO CHECK FOR OUTHDR2                 61950019
+         SPACE 2                                                        62000019
+TCR955   MVI   TSW975+1,TLR2       SET TM INST  TO CHECK FOR OUTTLR2    62050019
+         CLI   EXITERR,MSGFLAG     ERROR FLAG ALREADY ON ?              62100019
+         BE    TCR958              IF YES, LEAVE IT ALONE               62150019
+         MVI   EXITERR+1,TLR2BORT      SET MESSAGE                      62200019
+TCR958   L     R15,OUTTLR2                    AND EXIT ADDR FOR OUTTLR2 62250019
+         B     TSW975              GO CHECK FOR OUTTLR2                 62300019
+         SPACE 2                                                        62350019
+TCR960   MVI   TSW975+1,HDR3       SET TM INST  TO CHECK FOR OUTHDR3    62400019
+         CLI   EXITERR,MSGFLAG     ERROR FLAG ALREADY ON ?              62450019
+         BE    TCR963              IF YES, LEAVE IT ALONE               62500019
+         MVI   EXITERR+1,HDR3BORT      SET MESSAGE                      62550019
+TCR963   L     R15,OUTHDR3                    AND EXIT ADDR FOR OUTHDR3 62600019
+         B     TSW975              GO CHECK FOR OUTHDR3                 62650019
+         SPACE 2                                                        62700019
+TCR965   MVI   TSW975+1,TLR3       SET TM INST  TO CHECK FOR OUTTLR3    62750019
+         CLI   EXITERR,MSGFLAG     ERROR FLAG ALREADY ON ?              62800019
+         BE    TCR968              IF YES, LEAVE IT ALONE               62850019
+         MVI   EXITERR+1,TLR3BORT      SET MESSAGE                      62900019
+TCR968   L     R15,OUTTLR3                    AND EXIT ADDR FOR OUTTLR3 62950019
+         SPACE 2                                                        63000019
+TSW975   TM    EXITS,ZERO          EXIT REQUESTED ?                     63050019
+         BZ    TCR979              IF NOT,RETURN TO OPEN/CLOSE ROUTINE  63100019
+         ST    R14,SAVE14                                               63150019
+         BALR  R14,R15             BRANCH TO USER LABEL EXIT            63200019
+         CH    R15,TCON16          TERMINATION REQUESTED ?              63250019
+         L     R14,SAVE14                                               63300019
+         BNE   TCR980              BRANCH IF NO                         63350019
+         MVI   EXITERR,MSGFLAG     ELSE SET PROPER                      63400019
+         OI    ERRIND,DCBBIT4      ERROR INDICATORS            @ZA29418 63450003
+TCR979   SR    R15,R15             SET RETURN CODE TO ZERO              63500019
+TCR980   BR    R14                 RETURN TO OPEN/CLOSE ROUTINE         63550019
+ TITLE ' IEBTCR05 - READ/EDIT MODULE -- END OF MODULE PROCESSOR'        63600019
+*        THIS SECTION SETS PROPER ERROR SWITCHES (IF NEEDED),           63650019
+*        BRANCHES TO ERROR AND OUTREC ROUTINES (IF SPECIFIED) TO INDI-  63700019
+*        CATE END-OF-FILE,CLOSES SYSUT2 AND SYSUT3 (IF OPENED),FREES    63750019
+*        THE INPUT BUFFERS AND OUTPUT WORKAREA,AND RETURNS TO DRIVER.   63800019
+         SPACE 1                                                        63850019
+TCR990   MVI   EXITERR,MSGFLAG     SET EXIT ERROR MESSAGE FLAG          63900019
+TCR991   OI    ERRIND,DCBBIT4      SET READ/EDIT ERROR FLAG    @ZA29418 63950003
+         B     TCR995              SKIP USER EXITS                      64000019
+TSW992   B     TSW994              NOP IF ERROR EXIT SPECIFIED,ELSE BR  64050019
+         SR    R1,R1               SET PARAM REG = 0 TO DENOTE EOF      64100019
+         L     R15,ERROR                                                64150019
+         BALR  R14,R15             BRANCH TO ERROR EXIT ROUTINE         64200019
+TSW994   B     TCR995              NOP IF OUTREC EXIT SPECIFIED,ELSE BR 64250019
+         SR    R1,R1               SET PARAM REG = 0  TO DENOTE EOF     64300019
+         L     R15,OUTREC                                               64350019
+         BALR  R14,R15             BRANCH TO OUTREC EXIT ROUTINE        64400019
+TCR995   LA    R4,UT2DCB           GET ADDRESS OF SYSUT2 DCB            64450019
+         TM    DCBOFLGS,DCBOPEN    HAS SYSUT2 BEEN OPENED?              64500019
+         BZ    TCR996              BRANCH IF NO TO AVOID CLOSE          64550019
+         CLOSE ((R4))              CLOSE SYSUT2                         64600019
+TCR996   LA    R4,UT3DCB           GET ADDRESS OF SYSUT3 DCB            64650019
+         TM    DCBOFLGS,DCBOPEN    HAS SYSUT3 BEEN OPENED?              64700019
+         BZ    TCR998              BRANCH IF NO TO AVOID CLOSE          64750019
+         CLOSE ((R4))              CLOSE SYSUT3                         64800019
+TCR998   TM    SWITCH2,EXCP        EXCP BEEN ISSUED           @ZA29418  64850003
+         BZ    TCR997              BR IF NO                   @ZA29418  64857003
+         WAIT  ECB=TCRECB          WAIT FORFINAL EXCP         @ZA29418  64864003
+TCR997   L     R0,BUFL1                                       @ZA29418  64880003
+         L     R1,TCRCCW1                                               64900019
+         FREEMAIN R,LV=(0),A=(1)   FREE THE INPUT BUFFERS               64950019
+         L     R0,WORKL1                                                65000019
+         L     R1,STRTWORK                                              65050019
+         FREEMAIN R,LV=(0),A=(1)   FREE THE WORKAREA                    65100019
+TCR999   L     R13,SAVEREG+HSA     RESTORE SAVE REGISTER                65300019
+         RETURN (14,12),RC=(15)    RETURN TO DRIVER ROUTINE             65350019
+  TITLE ' IEBTCR05 - READ/EDIT MODULE -- CONSTANTS SECTION'             65400019
+*                   * * * * * * * * * * *                               65450019
+* * * * * * * * * * * CONSTANTS SECTION * * * * * * * * * * * * *       65500019
+*                   * * * * * * * * * * *                               65550019
+           SPACE 2                                                      65600019
+LZMAX    DC    H'15'               MAXIMUM LEFT ZERO FIELD LENGTH       65650019
+         SPACE 2                                                        65700019
+*                  MISCELLANEOUS COMPARE CONSTANTS                      65750019
+         SPACE 1                                                        65800019
+TCON0    DC    H'0'                ZERO                                 65850019
+TCON1    DC    H'1'                ONE                                  65900019
+TCON3    DC    H'3'                THREE                                65950019
+TCON4    DC    H'4'                FOUR                                 66000019
+TCON8    DC    H'8'                EIGHT                                66050019
+TCON16   DC    H'16'               SIXTEEN                              66100019
+ENDREF   DC    H'45'               END OF REFERENCE CODE (MTST)         66150019
+TCON256  DC    H'256'              TWO-FIFTY-SIX                        66200019
+         SPACE 6                                                        66250019
+*                  TR  &  TRT  TABLE ADDRESSES                          66300019
+         SPACE 1                                                        66350019
+MTDIADDR DC    A(TRTMTDI)          ADDRESS OF MTDI TRT TABLE            66400019
+MTSTADDR DC    A(TRTMTST)          ADDRESS OF MTST TRT TABLE            66450019
+UPPERADR DC    A(UPPER)            ADDR OF UPPER CASE TR TABLE (MTST)   66500019
+LOWERADR DC    A(LOWER)            ADDR OF LOWER CASE TR TABLE (MTST)   66550019
+         SPACE 6                                                        66600019
+*                  EXIT LIST ADDRESSES FOR HDR & TLR EXITS              66650019
+         SPACE 1                                                        66700019
+XL2      DC    X'02'               CODE                                 66750019
+         DC    AL3(TCR950)         A(OUTHDR2 EXIT)                      66800019
+         DC    X'84'               CODE                                 66850019
+         DC    AL3(TCR955)         A(OUTTLR2 EXIT)                      66900019
+XL3      DC    X'02'               CODE                                 66950019
+         DC    AL3(TCR960)         A(OUTHDR3 EXIT)                      67000019
+         DC    X'84'               CODE                                 67050019
+         DC    AL3(TCR965)         A(OUTTLR3 EXIT)                      67100019
+         EJECT                                                          67150019
+*        THIS PAGE OF CONSTANTS DEFINES CHARACTER CODE DEPENDENT        67200019
+*        VALUES. THE SHORT TR TABLE LABELLED EDWTT IS USED TO TRANSLATE 67250019
+*        THE TYPE STATUS AND SOR VALUE IN THE EDW TO EBCDIC. IT MUST BE 67300019
+*        CHANGED ACCORDINGLY, IF ANY OTHER CHARACTER SET IS TO BE USED. 67350019
+*        THE LEVEL STATUS (EDWLS) AND THE EOR VALUE (EDWEOR) OF THE EDW 67400019
+*        RECEIVE EBCDIC CODES DIRECTLY,SO THESE VALUES MUST BE CHANGED  67450019
+*        IN THE CODING WHEREVER THEY ARE REFERENCED.                    67500019
+*                                                                       67550019
+*        THE REMAINING VALUES ON THE PAGE ARE CHARACTER DEFINITIONS     67600019
+*        FOR TCR INPUT (SYSUT1). IF THIS INPUT EVER CHANGES ITS CHAR-   67650019
+*        ACTER SET,THESE VALUES WILL HAVE TO BE CHANGED ACCORDINGLY.    67700019
+         SPACE 2                                                        67750019
+EDWTT    DC    C'01234567'         TRANSLATE TABLE FOR TYPE STATUS  &   67800019
+         DC    C'89ABCDEF'         SOR IN ERROR DESCRIPTION WORD        67850019
+         SPACE 1                                                        67900019
+HEXEOR   DC    H'20'               TRT TABLE ENTRIES FOR EOR (HEX 20)   67950019
+         SPACE 2                                                        68000019
+MTDILZF  EQU   X'00'               LEFT ZERO FILL                       68050019
+MTDIDUP  EQU   X'11'               DUP                                  68100019
+MTDILZS  EQU   X'12'               LEFT ZERO START                      68150019
+MTDICAN  EQU   X'18'               CANCEL                               68200019
+MTDIVOK  EQU   X'1E'               VERIFY OK                            68250019
+MTDIRM   EQU   X'3C'               RECORD MARK                          68300019
+MTDIPL1  EQU   X'71'               PROGRAM LEVEL 1                      68350019
+MTDIPL8  EQU   X'78'               PROGRAM LEVEL 8                      68400019
+MTDIGS   EQU   X'1D'               GROUP SEPARATOR                      68450019
+         SPACE 2                                                        68500019
+MTSTREF  EQU   X'00'               REFERENCE CODE FILLER                68550019
+MTSTLCR  EQU   X'10'               LOWER CASE CARRIER RETURN            68600019
+MTSTLSW  EQU   X'11'               LOWER CASE SWITCH CODE               68650019
+MTSTLFD  EQU   X'13'               LOWER CASE FEED CODE                 68700019
+MTSTUCR  EQU   X'14'               UPPER CASE CARRIER RETURN            68750019
+MTSTUSW  EQU   X'15'               UPPER CASE SWITCH CODE               68800019
+MTSTUFD  EQU   X'17'               UPPER CASE FEED CODE                 68850019
+MTSTLAS  EQU   X'51'               LOWER CASE AUTOSEARCH CODE           68900019
+MTSTUAS  EQU   X'55'               UPPER CASE AUTOSEARCH CODE           68950019
+MTSTLSRC EQU   X'80'               LOWER CASE SEARCH CODE               69000019
+MTSTUSRC EQU   X'84'               UPPER CASE SEARCH CODE               69050019
+         EJECT                                                          69100019
+*                  CHANNEL COMMANDS FOR THE 2495 TAPE CARTRIDGE READER  69150019
+         SPACE 1                                                        69200019
+READ     EQU   X'02'               READ COMMAND CODE FOR TCR            69250019
+REWIND   EQU   X'0F'               REWIND/UNLOAD COMMAND CODE FOR TCR   69300019
+         SPACE 2                                                        69350019
+*                  MESSAGE CODES TO BE INSERTED INTO THE MESSAGE        69400019
+*                  INDICATOR WORDS IN THE COMMON REGION                 69450019
+         SPACE 1                                                        69500019
+UT2OPERR EQU   X'04'               * * * * * * * *                      69550019
+UT3OPERR EQU   X'05'               *             *                      69600019
+HDR2BORT EQU   X'06'               *   MESSAGE   *                      69650019
+TLR2BORT EQU   X'07'               *             *                      69700019
+HDR3BORT EQU   X'08'               *    CODES    *                      69750019
+TLR3BORT EQU   X'09'               *             *                      69800019
+OUTABORT EQU   X'0A'               *             *                      69850019
+ERRABORT EQU   X'0B'               * * * * * * * *                      69900019
+         SPACE 1                                                        69950019
+MSGFLAG  EQU   X'FF'               FLAG TO INDICATE MSG IS REQUIRED     70000019
+         SPACE 2                                                        70050019
+*                  CSW STATUS BYTE MASKS                                70100019
+         SPACE 1                                                        70150019
+CDC      EQU   X'08'               CHANNEL DATA CHECK                   70200019
+CCC      EQU   X'04'               CHANNEL CONTROL CHECK                70250019
+ICC      EQU   X'02'               INTERFACE CONTROL CHECK              70300019
+PROGRAM  EQU   X'20'               PROGRAM CHECK                        70350019
+PROTECT  EQU   X'10'               PROTECTION CHECK                     70400019
+UNITCHK  EQU   X'02'               UNIT CHECK                           70450019
+UNITEXC  EQU   X'01'               UNIT EXCEPTION                       70500019
+         SPACE 2                                                        70550019
+*                  DATA CHECK MASKS                                     70600019
+         SPACE 1                                                        70650019
+DATACHK  EQU   X'08'               ONE DATA CHECK FOUND                 70700019
+TWOCHKS  EQU   X'04'               TWO CONSECUTIVE DATA CHECKS FOUND    70750019
+NODATCHK EQU   X'E3'               NO DATA CHECKS FOUND                 70800019
+MOVEDC   EQU   X'10'               DATA CHECK TO BE MOVED               70850019
+         SPACE 2                                                        70950019
+*                  ECB CONDITION CODES                                  71000019
+         SPACE 1                                                        71050019
+NORMAL   EQU   X'7F'               NORMAL INTERRUPT CONDITION           71100019
+PERMERR  EQU   X'41'               PERMANENT I/O ERROR CONDITION        71150019
+INTRCEPT EQU   X'44'               INTERCEPT CONDITION                  71200019
+         SPACE 2                                                        71250019
+*                  BRANCH-ON-CONDITION CODES                            71300019
+         SPACE 1                                                        71350019
+LOW      EQU   X'04'               CONDITION CODE 4                     71400019
+NOTPLUS  EQU   X'0D'               CONDITION CODE 13                    71500019
+         EJECT                                                          71550019
+*                  MISCELLANEOUS EQU CONSTANTS -- THE LABELS AND        71600019
+*                  REMARKS SERVE TO EXPLAIN THEIR FUNCTION              71650019
+         SPACE 1                                                        71700019
+NOP      EQU   X'00'               INSTRUCTION                          71750019
+BRANCH   EQU   X'F0'                      MODIFIER BYTES                71800019
+         SPACE 2                                                        71850019
+MTST     EQU   X'80'               * * * * * * * * * *                  71900019
+NOTRAN   EQU   X'02'               *                 *                  71950019
+STDLC    EQU   X'08'               *   KEYWORD       *                  72000019
+STDUC    EQU   X'10'               *     PARAMETER   *                  72050019
+NOERR    EQU   X'02'               *       SWITCHES  *                  72100019
+VOKCHK   EQU   X'10'               *                 *                  72150019
+NOEDIT   EQU   X'20'               *                 *                  72200019
+EDITD    EQU   X'80'               * * * * * * * * * *                  72250019
+         SPACE 2                                                        72300019
+DUPCODE  EQU   X'01'               DUP CODE ENCOUNTERED                 72350019
+NODUP    EQU   X'02'               DUPLICATION NOT ALLOWED              72400019
+DELETE   EQU   X'80'               RECORD IS TO BE DELETED              72450019
+DELDUP   EQU   X'82'               COMBINATION OF NODUP AND DELETE      72500019
+RESET    EQU   X'9F'               RESET LEFT ZERO SWITCHES             72550019
+SOREOR   EQU   X'01'               SOR  OR  EOR ERROR                   72600019
+LNGERR   EQU   X'02'               LENGTH ERROR                         72650019
+FRAGMENT EQU   X'10'               CANCELLED SHORT RECORD  (EDITD)      72700019
+CANCEL   EQU   X'20'               CANCELLED SHORT RECORD  (EDITR)      72750019
+FIELD    EQU   X'04'               FIELD ERROR                          72800019
+LZSTART  EQU   X'40'               LEFT ZERO START CODE ENCOUNTERED     72850019
+LZERR    EQU   X'20'               LEFT ZERO JUSTIFICATION ERROR        72900019
+         SPACE 2                                                        72950019
+ERREXT   EQU   X'04'               ERROR EXIT REQUESTED                 73000019
+OUTEXT   EQU   X'08'               OUTREC EXIT REQUESTED                73050019
+         SPACE 2                                                        73100019
+LSERR    EQU   X'03'               LEVEL STATUS ERROR MASK              73150019
+TSERR    EQU   X'0F'               TYPE STATUS ERROR MASK               73200019
+         SPACE 2                                                        73250019
+VOK      EQU   X'E5'               VOK INDICATION IN EDW                73300019
+RM       EQU   X'E4'               RM  INDICATION IN EDW                73350019
+BADSOR   EQU   X'0E'               BAD SOR INDICATION IN EDW            73400019
+BADEOR   EQU   X'C5'               BAD EOR INDICATION IN EDW            73450019
+HEXSOR   EQU   X'0F'               HEX MASK FOR SOR CONVERSION          73500019
+         SPACE 2                                                        73550019
+TROUBLE  EQU   X'28'               TROUBLE FLAG (PERM I/O ERROR ON UT1) 73750019
+MULTERR  EQU   X'37'               MULTIPLE ERROR MASK (SYSUT1)         73800019
+NOCORE   EQU   X'48'               NO CORE AVAILABLE FOR GETMAIN        73850019
+         EJECT                                                          73900019
+ZERO     EQU   0                   ZERO                                 73950019
+TWO      EQU   2                   TWO                                  74000019
+BLANK    EQU   X'40'               BLANK                                74050019
+         SPACE 2                                                        74100019
+NOUT2    EQU   X'04'               SYSUT2 DD STATEMENT MISSING          74150019
+NOUT3    EQU   X'08'               SYSUT3 DD STATEMENT MISSING          74200019
+BADDCB   EQU   X'80'               INCONSISTENT DCB PARAMETERS          74250019
+SYSUT3   EQU   X'40'               SYSUT3 RECORD  ( ERROR RECORD )      74300019
+         SPACE 2                                                        74350019
+LS0      EQU   X'F0'               LEVEL                                74400019
+LS1      EQU   X'F1'                    STATUS                          74450019
+LS2      EQU   X'F2'                          VALUES                    74500019
+         SPACE 2                                                        74550019
+HDR2     EQU   X'80'               HEADER                               74600019
+TLR2     EQU   X'40'                     TRAILER                        74650019
+HDR3     EQU   X'20'                            EXIT                    74700019
+TLR3     EQU   X'10'                                INDICATORS          74750019
+         SPACE 2                                                        74800019
+HSA      EQU   4                   NEXT HIGHER LEVEL SAVEAREA           74850019
+LSA      EQU   8                   NEXT LOWER LEVEL SAVEAREA            74900019
+         SPACE 2                                                        74950019
+CNTFLD   EQU   X'06'               COUNT FIELD IN CCW                   75000019
+SWAP     EQU   X'01'               SWITCH FOR SWAPPING CCW'S            75050019
+WORD     EQU   X'04'               FULL WORD LENGTH                     75100019
+DBLWRD   EQU   X'08'               DOUBLE WORD LENGTH                   75150019
+         SPACE 2                                                        75200019
+DCBOPEN  EQU   X'10'               DCB IS PROPERLY OPENED               75250019
+EXCP     EQU   X'80'               EXCP HAS BEEN ISSUED                 75300019
+         SPACE 2                                                        75350019
+NOTVAR   EQU   X'80'               NOT VARIABLE LENGTH RCDS  ( F OR U ) 75400019
+UNDEF    EQU   X'40'               UNDEFINED RECORD (RECFM=U)           75450019
+ TITLE ' IEBTCR05 - READ/EDIT MODULE -- WORKING STORAGE SECTION'        75500019
+*                   * * * * * * * * * * * * * *                         75550019
+* * * * * * * * * * * WORKING STORAGE SECTION * * * * * * * * * *       75600019
+*                   * * * * * * * * * * * * * *                         75650019
+           SPACE 2                                                      75700019
+SAVELS   DC    X'F0'               LEVEL STATUS FOR PREVIOUS RECORD     75750019
+SAVEREG  DS    18F                 REGISTER SAVE AREA                   75800019
+SAVE14   DS    F                   SAVEWORD FOR R14 AT HDR,TLR TIME     75850019
+         SPACE 4                                                        75900019
+TCRECB   DC    X'7F000000'         TCR EVENT CONTROL BLOCK              75950019
+         SPACE 4                                                        76000019
+TCRIOB   EQU   *                   TCR INPUT/OUTPUT BLOCK               76050019
+         SPACE 1                                                        76100019
+IOBFLG1  DC    X'02'               I/O FLAGS 1                          76150019
+IOBFLG2  DC    X'00'               I/O FLAGS 2                          76200019
+SENSE    DC    X'00'               TCR SENSE BYTE                       76250019
+         DC    X'00'               NOT USED (SECOND SENSE BYTE)         76300019
+         DC    X'00'               TCR ECB COMPLETION CODE              76350019
+         DC    AL3(TCRECB)         TCR ECB ADDRESS                      76400019
+IOBFLG3  DC    X'00'               I/O FLAGS 3                          76450019
+         DC    XL3'00'             LAST SEVEN    -     COMMAND ADDR     76500019
+STATUS   DC    XL2'00'             BYTES OF      -     STATUS           76550019
+RESIDUAL DC    XL2'00'             PREV CSW      -     RESIDUAL COUNT   76600019
+CCWADDR  DC    X'00'               SIO CONDITION CODE                   76650019
+         DC    AL3(TCRCCW1)        CHANNEL PROGRAM ADDRESS              76700019
+DCBADDR  DC    X'00'               RESERVED                             76750019
+         DC    XL3'00'             TCR DCB ADDRESS                      76800019
+         DC    2F'0'               USED BY IOS                          76850019
+         SPACE 4                                                        76900019
+TCRCCW1  CCW   02,X'00',X'20',2000               TCR INPUT              76950019
+TCRCCW2  CCW   02,X'00',X'20',2000               CHANNEL PROGRAM        77000019
+         SPACE 4                                                        77050019
+RDW      DC    F'0'                RECORD DESCRIPTOR WORD               77100019
+         SPACE 2                                                        77150019
+LZCNT    DC    H'0'                COUNT OF LEFT ZERO FILL CODES        77200019
+         EJECT                                                          77250019
+SWITCH1  DC    B'00000010'     READ/EDIT SWITCHES    AS FOLLOWS:        77300019
+*                                                                       77350019
+*              BIT 0  SET TO 1 INDICATES RECORD TO BE DELETED           77400019
+*              BIT 1  SET TO 1 INDICATES FIELD IN LZ MODE               77450019
+*              BIT 2  SET TO 1 INDICATES LZ FIELD ERROR                 77500019
+*              BIT 3  SET TO 1 INDICATES DATA CK TO BE MOVED            77550019
+*              BIT 4  SET TO 1 INDICATES DATA CHECK                     77600019
+*              BIT 5  SET TO 1 INDICATES TWO SUCCESSIVE DATA CHECKS     77650019
+*              BIT 6  SET TO 1 INDICATES DUP NOT ALLOWED                77700019
+*              BIT 7  SET TO 1 INDICATES DUP ENCOUNTERED                77750019
+         SPACE 1                                                        77800019
+SWITCH2  DC    B'00000000'                                              77850019
+*              BIT 0  SET TO 1 INDICATES EXCP HAS BEEN ISSUED           77900019
+*              BIT 1  SET TO 1 INDICATES SYSUT3 RECORD                  77950019
+*              BIT 2  SET TO 1 INDICATES RCD LESS THAN 3 BYTES (EDITR)  78000019
+*              BIT 3  SET TO 1 INDICATES POSSIBLE SHORT RECORD (EDITD)  78050019
+*              BIT 4  SET TO 1 INDICATES DATA CHECK                     78100019
+*              BIT 5  NOT USED                                          78150019
+*              BIT 6  NOT USED                                          78200019
+*              BIT 7  SET TO 1 INDICATES UNIT EXCEPTION                 78250019
+         SPACE 2                                                        78300019
+EDW      EQU   *         ERROR DESCRIPTION WORD   AS FOLLOWS:           78350019
+*                                                                       78400019
+*                   THE 4 BYTE EDW IS APPENDED TO AN ERROR RECORD       78450019
+*                   TO BE PASSED TO THE ERROR EXIT OR TO SYSUT3         78500019
+*                   THE FIRST BYTE IS USED TO STORE LEVEL STATUS        78550019
+*        IF IT = 0, ERROR WONT CAUSE QUESTIONABLE DATA IN NEXT RECORD   78600019
+*        IF IT = 1, ERROR MAY CAUSE QUESTIONABLE DATA IN NEXT RECORD    78650019
+*        IF IT = 2, RECORD HAS QUESTIONABLE DATA DUE TO PREVIOUS RECORD 78700019
+*                   AND MAY CAUSE QUESTIONABLE DATA IN NEXT RECORD      78750019
+*                                                                       78800019
+EDWLS    DC    X'F0'     LEVEL STATUS                                   78850019
+         SPACE 2                                                        78900019
+*                   THE SECOND BYTE IS USED TO STORE TYPE STATUS        78950019
+*        IF ALL BITS ARE 0, THIS RECORD CONTAINS NO IDENTIFIABLE ERROR  79000019
+*        BITS 0,1,2 3  ARE UNUSED AND MUST BE 0                         79050019
+*        IF BIT 4 = 1, RECORD CONTAINS A CHARACTER ERROR                79100019
+*        IF BIT 5 = 1, RECORD CONTAINS A FIELD ERROR                    79150019
+*        IF BIT 6 = 1, RECORD CONTAINS A LENGTH ERROR                   79200019
+*        IF BIT 7 = 1, RECORD CONTAINS A FIELD (SOR/EOR) ERROR          79250019
+*                                                                       79300019
+EDWTS    DC    X'00'     TYPE STATUS                                    79350019
+         SPACE 2                                                        79400019
+*                   THE THIRD BYTE IS USED TO STORE THE SOR CHARACTER   79450019
+*                                                                       79500019
+EDWSOR   DC    X'00'     SOR                                            79550019
+         SPACE 2                                                        79600019
+*                   THE FOURTH BYTE IS USED TO STORE THE EOR CHARACTER  79650019
+*                                                                       79700019
+EDWEOR   DC    X'00'     EOR                                            79750019
+         EJECT                                                          79800019
+*                  POINTERS WITHIN THE INPUT BUFFER                     79850019
+         SPACE 1                                                        79900019
+INPUTPTR DC    F'0'      ADDR OF NEXT AVAILABLE BYTE IN INPUT BUFFER    79950019
+INPUTEND DC    F'0'      ADDR OF LAST BYTE + 1  IN INPUT BUFFER         80000019
+FRSTSCAN DC    F'0'      ADDR OF FIRST BYTE SCANNED                     80050019
+LASTSCAN DC    F'0'      ADDR OF LAST BYTE SCANNED                      80100019
+         SPACE 2                                                        80150019
+*                  POINTERS WITHIN THE OUTPUT WORKAREA                  80200019
+         SPACE 1                                                        80250019
+STRTWORK DC    F'0'      ADDRESS OF WORKAREA                            80300019
+EDWADDR  DC    F'0'      ADDRESS OF ERROR DESCRIPTION WORD              80350019
+STARTREC DC    F'0'      ADDRESS OF OUTPUT RECORD                       80400019
+NXTAVAIL DC    F'0'      ADDRESS OF NEXT AVAILABLE BYTE IN WORKAREA     80450019
+LZFLD    DC    F'0'      ADDR OF FIRST BYTE OF LZ FIELD IN WORKAREA     80500019
+PREVLB   DC    F'0'      ADDR OF LAST BYTE + 1 OF PREVIOUS RECORD       80550019
+ENDREC   DC    F'0'      ADDRESS OF STARTREC + MAXLN + 1 IN WORKAREA    80600019
+ENDWORK  DC    F'0'      ADDRESS OF END OF WORKAREA                     80650019
+         SPACE 2                                                        80700019
+GM1      DC    F'0'      WORKWORDS                                      80750019
+BUFL1    DC    F'0'               USED                                  80800019
+BUFL2    DC    F'0'                   FOR                               80850019
+GM2      DC    F'0'                      GETMAIN                        80900019
+WORKL1   DC    F'0'                             AND                     80950019
+WORKL2   DC    F'0'                                FREEMAIN             81000019
+         SPACE 2                                                        81050019
+OLDLGTH  DC    F'0'      LENGTH OF DISCARDED WORKAREA                   81100019
+OLDAREA  DC    F'0'      ADDRESS OF DISCARDED WORKAREA                  81150019
+         SPACE 4                                                        81200019
+PARMLIST DC    F'0'      PARAMETER LIST FOR USER EXITS                  81250019
+         DC    A(RECLEN) PTR TO RCD LNG FOR ERROR,OUTREC EXITS          81300019
+         SPACE 2                                                        81350019
+RECLEN   DC    F'0'      RECORD LENGTH FOR ERROR,OUTREC EXITS           81400019
+         SPACE 4                                                        81450019
+TRTTABLE DC    F'0'      ADDRESS OF TRT TABLE                           81500019
+LZSAVE   DC    4F'0'     SAVE AREA FOR LZ JUSTIFICATION                 81550019
+PLCNT    DC    8H'0'     RECORD LENGTHS FOR PROGRAM LEVELS              81600019
+ TITLE ' IEBTCR05 - READ/EDIT MODULE -- TRANSLATE AND TEST TABLES'      81650019
+*                   * * * * * * * * * * * * * * *                       81700019
+* * * * * * * * * * * TRANSLATE AND TEST TABLES * * * * * * * * * *     81750019
+*                   * * * * * * * * * * * * * * *                       81800019
+         SPACE 2                                                        81850019
+IEBTCRTB CSECT                                                          81900019
+         DS    0F                  TABLE ALIGNMENT                      81950019
+         SPACE 2                                                        82000019
+TRTMTDI  DC    256X'00'            START OF MTDI TRANSLATE TABLE        82050019
+         SPACE 1                                                        82100019
+         ORG   TRTMTDI+MTDILZF     LEFT ZERO FILL                       82150019
+         DC    X'04'                              CODE                  82200019
+         ORG   TRTMTDI+MTDIDUP     DUP                                  82250019
+         DC    X'08'                              CODE                  82300019
+         ORG   TRTMTDI+MTDILZS     LEFT ZERO START                      82350019
+         DC    X'0C'                              CODE                  82400019
+         ORG   TRTMTDI+MTDICAN     CANCEL                               82450019
+         DC    X'10'                              CODE                  82500019
+         ORG   TRTMTDI+MTDIVOK     VERIFY OK                            82550019
+         DC    X'14'                              CODE                  82600019
+         ORG   TRTMTDI+MTDIRM      RECORD MARK                          82650019
+         DC    X'14'                              CODE                  82700019
+         ORG   TRTMTDI+MTDIPL1     PROGRAM LEVEL                        82750019
+         DC    8X'18'                             CODES                 82800019
+         SPACE 1                                                        82850019
+         ORG   TRTMTDI+256         END OF MTDI TRANSLATE TABLE          82900019
+         SPACE 4                                                        82950019
+TRTMTST  DC    256X'00'            START OF MTST TRANSLATE TABLE        83000019
+         SPACE 1                                                        83050019
+         ORG   TRTMTST+MTSTLSW     LOWER CASE                           83100019
+         DC    X'1C'                          SWITCH CODE               83150019
+         ORG   TRTMTST+MTSTLFD     LOWER CASE                           83200019
+         DC    X'1C'                          FEED CODE                 83250019
+         ORG   TRTMTST+MTSTUSW     UPPER CASE                           83300019
+         DC    X'1C'                          SWITCH CODE               83350019
+         ORG   TRTMTST+MTSTUFD     UPPER CASE                           83400019
+         DC    X'1C'                          FEED CODE                 83450019
+         ORG   TRTMTST+MTSTLAS     LOWER CASE                           83500019
+         DC    X'1C'                          AUTOSEARCH CODE           83550019
+         ORG   TRTMTST+MTSTUAS     UPPER CASE                           83600019
+         DC    X'1C'                          AUTOSEARCH CODE           83650019
+         ORG   TRTMTST+MTSTLSRC    LOWER CASE                           83700019
+         DC    X'20'                          SEARCH CODE               83750019
+         ORG   TRTMTST+MTSTUSRC    UPPER CASE                           83800019
+         DC    X'20'                          SEARCH CODE               83850019
+         SPACE 1                                                        83900019
+         ORG   TRTMTST+256         END OF MTST TRANSLATE TABLE          83950019
+ TITLE ' IEBTCR05 - READ/EDIT MODULE -- MTST TRANSLATE TABLES'          84000019
+*                   * * * * * * * * * * * * *                           84050019
+* * * * * * * * * * * MTST TRANSLATE TABLES * * * * * * * * * * *       84100019
+*                   * * * * * * * * * * * * *                           84150019
+         SPACE 2                                                        84200019
+UPPER    DC    X'E9F2E3D5E97CE3D5'     *********************            84250019
+         DC    X'F1F3E7E49E7BE7E4'     *                   *            84300019
+         DC    X'0D4040400D404040'     *                   *            84350019
+         DC    X'4019404040194040'     *                   *            84400019
+         DC    X'F5F6C5D26C4AC5D2'     *      UPPER        *            84450019
+         DC    X'F7F8C4C3505CC4C3'     *                   *            84500019
+         DC    X'F0F9C8C25D4DC8C2'     *      CASE         *            84550019
+         DC    X'F440D3405B40D340'     *                   *            84600019
+         DC    X'5A4BD17EA14BD14E'     *      MTST         *            84650019
+         DC    X'D4E5C7C6D4E5C7C6'     *                   *            84700019
+         DC    X'0540404005404040'     *      TRANSLATE    *            84750019
+         DC    X'1640402216404022'     *                   *            84800019
+         DC    X'7DC9D7D87FC9D7D8'     *      TABLE        *            84850019
+         DC    X'D9C15E6BD9C17A6B'     *                   *            84900019
+         DC    X'E2E6E860E2E6E86D'     *                   *            84950019
+         DC    X'D6406140D6406F40'     *                   *            85000019
+         DC    X'1E4040401E'           *********************            85050019
+         SPACE 4                                                        85100019
+LOWER    DC    X'A9F2A395E97CE3D5'     *********************            85150019
+         DC    X'F1F3A7A49E7BE7E4'     *                   *            85200019
+         DC    X'0D4040400D404040'     *                   *            85250019
+         DC    X'4019404040194040'     *                   *            85300019
+         DC    X'F5F685926C4AC5D2'     *      LOWER        *            85350019
+         DC    X'F7F88483505CC4C3'     *                   *            85400019
+         DC    X'F0F988825D4DC8C2'     *      CASE         *            85450019
+         DC    X'F44093405B40D340'     *                   *            85500019
+         DC    X'5A4B917EA14BD14E'     *      MTST         *            85550019
+         DC    X'94A58786D4E5C7C6'     *                   *            85600019
+         DC    X'0540404005404040'     *      TRANSLATE    *            85650019
+         DC    X'1640402216404022'     *                   *            85700019
+         DC    X'7D8997987FC9D7D8'     *      TABLE        *            85750019
+         DC    X'99815E6BD9C17A6B'     *                   *            85800019
+         DC    X'A2A6A860E2E6E86D'     *                   *            85850019
+         DC    X'96406140D6406F40'     *                   *            85900019
+         DC    X'1E4040401E'           *********************            85950019
+ TITLE ' IEBTCR05 - READ/EDIT MODULE -- COMMON TABLE AREA'              86000019
+COMMON   DSECT                     COMMON TABLE                         86050019
+         SPACE 2                                                        86100019
+EXITS    DS    1C                  EXIT ROUTINE INDICATORS              86150019
+         SPACE 1                                                        86200019
+*                   BIT 0     SET TO 1 INDICATES OUTHDR2 EXIT REQUESTED 86250019
+*                   BIT 1     SET TO 1 INDICATES OUTTLR2 EXIT REQUESTED 86300019
+*                   BIT 2     SET TO 1 INDICATES OUTHDR3 EXIT REQUESTED 86350019
+*                   BIT 3     SET TO 1 INDICATES OUTTLR3 EXIT REQUESTED 86400019
+*                   BIT 4     SET TO 1 INDICATES OUTREC  EXIT REQUESTED 86450019
+*                   BIT 5     SET TO 1 INDICATES ERROR   EXIT REQUESTED 86500019
+*                   BIT 6-7   NOT USED                                  86550019
+         SPACE 3                                                        86600019
+PARM1    DS    1C                  TYPE AND TRANS INDICATORS            86650019
+         SPACE 1                                                        86700019
+*                   BIT 0     SET TO 1 INDICATES  TYPE = MTST           86750019
+*                   BIT 1     SET TO 1 INDICATES  TYPE = MTDI           86800019
+*                   BIT 2     NOT USED                                  86850019
+*                   BIT 3     SET TO 1 INDICATES  TRANS = STDUC         86900019
+*                   BIT 4     SET TO 1 INDICATES  TRANS = STDLC         86950019
+*                   BIT 5     SET TO 1 INDICATES  TRANS = 'USERNAME'    87000019
+*                   BIT 6     SET TO 1 INDICATES  TRANS = NOTRAN        87050019
+*                   BIT 7     NOT USED                                  87100019
+         SPACE 3                                                        87150019
+PARM2    DS    1C                  EDIT,VERCHK,AND ERROPT INDICATORS    87200019
+         SPACE 1                                                        87250019
+*                   BIT 0     SET TO 1 INDICATES  EDIT = EDITD          87300019
+*                   BIT 1     SET TO 1 INDICATES  EDIT = EDITR          87350019
+*                   BIT 2     SET TO 1 INDICATES  EDIT = NOEDIT         87400019
+*                   BIT 3     SET TO 1 INDICATES  VERCHK = VOKCHK       87450019
+*                   BIT 4     SET TO 1 INDICATES  VERCHK = NOCHK        87500019
+*                   BIT 5     SET TO 1 INDICATES  ERROPT = NORMAL       87550019
+*                   BIT 6     SET TO 1 INDICATES  ERROPT = NOERR        87600019
+*                   BIT 7     NOT USED                                  87650019
+         SPACE 3                                                        87700019
+REPLACE  DS    1C                  DATA CHECK REPLACE CHARACTER         87750019
+         SPACE 3                                                        87800019
+MINLN    DS    2C                  MINLN VALUE                          87850019
+         SPACE 3                                                        87900019
+MAXLN    DS    2C                  MAXLN VALUE                          87950019
+         EJECT                                                          88000019
+OUTHDR2  DS    F                   A(OUTHDR2 EXIT)                      88050019
+OUTTLR2  DS    F                   A(OUTTLR2 EXIT)                      88100019
+OUTHDR3  DS    F                   A(OUTHDR3 EXIT)                      88150019
+OUTTLR3  DS    F                   A(OUTTLR3 EXIT)                      88200019
+OUTREC   DS    F                   A(OUTREC EXIT)                       88250019
+ERROR    DS    F                   A(ERROR  EXIT)                       88300019
+TRANTABL DS    F                   A(TRANSLATE TABLE)                   88350019
+         DS    F                   A(MESSAGE MODULE)                    88400019
+         SPACE 3                                                        88450019
+         DS    24F                 NOT USED BY R/E                      88500019
+         SPACE 3                                                        88550019
+*              THE FOLLOWING TABLE CONTAINS MESSAGE INDICATORS          88600019
+*              EACH ENTRY CONSISTS OF 4 BYTES                           88650019
+*              A LITERAL WILL BE INSERTED IN MSG VIA A CODE IN BYTE 2   88700019
+         SPACE 2                                                        88750019
+         DS    14F       *                                              88800019
+OPENERR  DS    F         *                                              88850019
+DCBERR   DS    F         *    BYTE 1  = X'00'     DO NOT DISPLAY MSG    88900019
+         DS    F         *            = X'FF'     DISPLAY THE MSG       88950019
+EXITERR  DS    F         *                                              89000019
+GMAINERR DS    F         *    BYTE 2  = X'03'     INSERT X'SYSUT1  '    89050019
+         DS    F         *            = X'04'            X'SYSUT2  '    89100019
+*                        *            = X'05'            X'SYSUT3  '    89150019
+*                        *            = X'06'            X'OUTHDR2 '    89200019
+*                        *            = X'07'            X'OUTTLR2 '    89250019
+*                        *            = X'08'            X'OUTHDR3 '    89300019
+*                        *            = X'09'            X'OUTTLR3 '    89350019
+*                        *            = X'10'            X'OUTREC  '    89400019
+*                        *            = X'11'            X'ERROR   '    89450019
+*                        *                                              89500019
+*                        *    BYTES 3,4           NOT USED              89550019
+         SPACE 2                                                        89600019
+MOUNTID  DS    F                   MOUNT MESSAGE ID                     89650019
+         SPACE 2                                                        89700019
+IOBADDR  DS    F                   IOB ADDRESS                          89750019
+         SPACE 2                                                        89800019
+BUFL     DS    2C                  BUFFER LENGTH                        89850019
+         SPACE 2                                                        89900019
+ERRIND   DS    C                   BIT 4 ON INDICATES READ/EDIT ERROR   89950019
+*                                  BIT 2 ON INDICATES PERM I/O ERROR    90000019
+*                                  BIT 1 ON INDICATES NO CORE AVAILABLE 90050019
+*                                  BIT 0 ON INDICATES INCONSISTENT      90100019
+*                                                       DCB PARAMETERS  90150019
+         SPACE 1                                                        90200019
+NODDCARD DS    C                   BIT 5 INDICATES SYSUT2 DD MISSING    90250019
+*                                  BIT 4 INDICATES SYSUT3 DD MISSING    90300019
+         EJECT                                                          90350019
+         DS    3F                  EXIT LIST FOR SYSIN                  90400019
+         DS    5F                  EXIT LIST FOR SYSPRINT               90450019
+         DS    F                   EXIT LIST FOR SYSUT1                 90500019
+         DS    3F                  EXIT LIST                            90550019
+EXLST2   DS    2F                            FOR SYSUT2                 90600019
+         DS    3F                  EXIT LIST                            90650019
+EXLST3   DS    2F                            FOR SYSUT3                 90700019
+         SPACE 3                                                        90750019
+         DS    3F                  NOT USED BY R/E                      90800019
+         SPACE 3                                                        90850019
+UT2LRECL DS    2C                  SYSUT2 LRECL                         90900019
+UT2BLKSI DS    2C                  SYSUT2 BLKSIZE                       90950019
+UT2RECFM DS    2C                  SYSUT2 RECFM                         91000019
+UT3LRECL DS    2C                  SYSUT3 LRECL                         91050019
+UT3BLKSI DS    2C                  SYSUT3 BLKSIZE                       91100019
+UT3RECFM DS    2C                  SYSUT3 RECFM                         91150019
+         SPACE 3                                                        91200019
+TCRDCB   DS    13F                 DCB FOR SYSUT1                       91250019
+UT2DCB   DS    24F                 DCB FOR SYSUT2                       91300019
+UT3DCB   DS    24F                 DCB FOR SYSUT3                       91350019
+ TITLE ' IEBTCR05 - READ/EDIT MODULE -- DCB TEMPLATE'                   91400019
+         DCBD  DSORG=PS                                                 91450019
+         END                                                            91500019

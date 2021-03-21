@@ -1,0 +1,1278 @@
+         TITLE 'IGC0N05B SYSIN/SYSOUT AND D.A. POSITIONING MODULE 1'    00080008
+IGC0N05B CSECT                                                          00180008
+*                                                                       00280008
+*                                                                       00380008
+*********************************************************************** 00480008
+*                                                                       00580008
+*TITLE-  SYSIN/SYSOUT AND DIRECT ACCESS DATA SET POSITIONING MODULE 1   00680008
+*                                                                       00780008
+*FUNCTION    1.READS VSAM SSCRS FROM THE RESTART DATA SET IF THERE      00880008
+*              ARE ANY, CHAINS THEM TOGETHER, LOADS THE VSAM            00980008
+*              PROCESSING MODULE(IDA0C05B), TRANSFERS CONTROL T0        01080008
+*              THE MODULE, AND THEN DELETES IT.                         01180008
+*            2.READS SUBSYSTEM SSCR RECORDS FROM THE RESTART DATA SET   01280008
+*              IF THERE ARE ANY, CALLING THE SUBSYSTEM ROUTINE FOR EACH 01380008
+*              ONE VIA THE IEFSSREQ MACRO. COUNTS AND BUILDS A TABLE OF 01480008
+*            3.COUNTS AND BUILDS A TABLE OF UCB ADDRESSES FOR DIRECT    01580008
+*              ACCESS DATA SETS.                                        01680008
+*            4.FOR EACH DIRECT ACCESS ENTRY IN THE FORTY EIGHT BYTE     01780008
+*              TABLE,THE JFCB IS READ,THE UCB TABLE INDICATES WHETHER   01880008
+*              PASSWORD CHECKING HAS BEEN DONE,IF NOT,THE DATA SET      03298802
+*              DSCB IS READ TO DETERMINE IF A PASSWORD CHECK IS         03299202
+*              TO BE MADE. WHEN A PASSWORD CHECK IS MADE, SECLOADA      03299608
+*              IS CALLED TO REQUEST THE PASSWORD FROM THE OPERATOR      03299702
+*              BEFORE PROCESSING IS ALLOWED TO CONTINUE.                03299802
+*              RAC DEFINED DATA SETS ARE AUTHORIZATION         @Z40RSGD 03300008
+*              CHECKED AND IF THE USER IS AUTHORIZED           @Z40RSGD 03400008
+*              PASSWORD CHECKING IS BYPASSED, OTHERWISE        @Z40RSGD 03404008
+*              IGCMSG6C IS CALLED TO PROVIDE A MESSAGE.        @Z40RSGD 03408008
+*              RACHECKS ARE BYPASSED IF JSCBPASS IS SET.       @G32DSPD 03448032
+*ENTRY POINTS-                                                          03500018
+*               IGC0N05B - CAN BE ENTERED VIA XCTL FROM IGC0M05B OR     03600018
+*                          IGC0L05B.                                    03700018
+*                                                                       03800018
+*                                                                       03900018
+*INPUT.        REGISTER 8 - BEGINNING OF DATA SET TABLE                 04000018
+*              REGISTER 1 - RESTART WORKAREA                            04100018
+*              REGISTER 10 - RESTART WORKAREA                           04150002
+*                                                                       04200018
+*                                                                       04300018
+*                                                                       04400018
+*OUTPUT-                                                                04500018
+*           NOT APPLICABLE                                              04600018
+*                                                                       04700018
+*EXTERNAL ROUTINES                                                      04800018
+*              SECLOADA - FOR PASSWORD CHECK                     YM7337 04850002
+*              IGC0Q05B - FOR CHKPT D.S. SECURITY CHECK          YM7337 04860002
+*              IDA0C05B - FOR VSAM SSCR PROCESSING             @Z30SSDT 04910008
+*                                                                       05000018
+*EXITS                                                                  05100018
+*              (1) IGC0R05B - DA PROCESSING                             05300002
+*              (2) IGC0V05B WITH ONE OF THE FOLLOWING ERROR CODES       05450032
+*                  SET IN THE RESTART WORK AREA:                        05454032
+*                  39 - I/O ERROR READING CHECKPOINT DATA SET           05458032
+*                  73 - I/O ERROR READING JFCB OR DSCB                  05462032
+*                 207 - TABLE ENTRY FOR SUBSYS. DATASET NOT FOUND       05466032
+*                 208 - NONZERO R/C FROM JES PROCESSING ROUTINE         05470032
+*                 220 - DSCB ADDRESS CHANGED SINCE CHECKPOINT           05474032
+*                 221 - PASSWORD ERROR                                  05478032
+*                 236 - UNEXPECTED RECORD TYPE FROM CHECKPOINT D/S      05482032
+*                 254 - RAC ERROR                                       05486032
+*                                                                       05500008
+* OS/VSA RELEASE 030 ADDS/DELETIONS/CHANGES                             05560008
+*A191666-191696                                                @ZA08277 05620008
+*                                                                       05680008
+* OS/VS2 RELEASE 037 ADDS/DELETIONS/CHANGES                             05740008
+*D191666-191696                                                @ZA12948 05800008
+* APAR OZ31489 HAS BEEN FLAGGED AS @ZSUT222                    @ZSUT222 05804032
+*C131840,136659,137748,137910,181166,575000,599061             @ZSUT222 05808032
+*C599375,599385,599453,604901                                  @ZSUT222 05810032
+*A136879,596105-596115,616200                                  @ZSUT222 05814032
+* CHANGES ADDITIONS DELETIONS FOR SU 8                                  05820008
+*A489509                                                       @ZA29067 05840008
+*                                                                       05860008
+* OS/VS2 SU 32 ADDS/DELETIONS/CHANGES                          @G32DSPD 05880032
+*D604564,A604206-604230,A604793,A885000-910000                 @G32DSPD 05900032
+*                                                                       05920008
+*TABLES/WORKAREAS - SEE BELOW AND DSECT AT END                          05980008
+*********************************************************************** 06040008
+         EJECT                                                          06100008
+*                                                                       06200018
+*********************************************************************** 06300018
+*                                                                     * 06400018
+*    THE FOLLOWING IS A DESCRIPTION OF THE 48 BYTE TABLE ENTRY THAT   * 06500018
+*    IS USED IN THE RESTART PORTION OF CHECKPOINT/RESTART.  EACH      * 06600018
+*    ENTRY IN THE TABLE (ONE FOR EACH OPEN DATA SET AT CHECKPOINT)    * 06700018
+*    IS 48 BYTES LONG.                                                * 06800018
+*                                                                     * 06900018
+*********************************************************************** 07000018
+*                                                                       07100018
+*        ------------------- 4 BYTES -----------------                  07200018
+*                                                                       07300018
+*      0 +++++++++++++++++++++++++++++++++++++++++++++                  07400018
+*        +DATA SET  +           DCB                  +                  07500018
+*        + ORGN.    +         ADDRESS                +                  07600018
+*        +++++++++++++++++++++++++++++++++++++++++++++ 4                07700018
+*        +FLAG BYTE +    WORKAREA SEGMENT            +                  07800018
+*        + NO. 1    +         ADDRESS                +                  07900018
+*      8 +++++++++++++++++++++++++++++++++++++++++++++                  08000018
+*        +NUMBER    +         JFCB TTR               +                  08100018
+*        + OF VOLS  +         ADDRESS                +                  08200018
+*        +++++++++++++++++++++++++++++++++++++++++++++ 12               08300018
+*                                                                       08400018
+*     12 +++++++++++++++++++++++                                        08500018
+*        +TAPE LABL + FILE SEQ +        DEVICE = TAPE                   08600018
+*        +INFO BYTE + NUMBER   +                                        08700018
+*        +++++++++++++++++++++++                                        08800018
+*                                                                       08900018
+*     12 +++++++++++++++++++++++                                        09000018
+*        +    OLD   TIOT       +        DA AND UNIT RECORD              09100018
+*        +      OFFSET         +                                        09200018
+*        +++++++++++++++++++++++                                        09300018
+*                                                                       09400018
+*                              +++++++++++++++++++++++                  09500018
+*                              +FLAG BYTE +FLAG BYTE +                  09600018
+*                              +  NO. 2   +  NO. 3   +                  09700018
+*     16 +++++++++++++++++++++++++++++++++++++++++++++                  09800018
+*        +FLAG BYTE +FLAG BYTE +                     +                  09900018
+*        + NO. 4    + NO. 5    +   VOLUME ID NO. 1   +                  10000018
+*        +++++++++++++++++++++++                     + 20               10100018
+*        +                                           +                  10200018
+*        +                                           +                  10300018
+*     24 +++++++++++++++++++++++++++++++++++++++++++++                  10400018
+*        +                                           +                  10500018
+*        +   VOLUME ID NO. 2                         +                  10600018
+*        +                     +++++++++++++++++++++++ 28               10700018
+*        +                     +                     +                  10800018
+*        +                     +   VOLUME ID NO. 3   +                  10900018
+*     32 +++++++++++++++++++++++                     +                  11000018
+*        +                                           +                  11100018
+*        +                                           +                  11200018
+*        +++++++++++++++++++++++++++++++++++++++++++++ 36               11300018
+*        +                                           +                  11400018
+*        +   VOLUME ID NO. 4                         +                  11500018
+*     40 +                     +++++++++++++++++++++++                  11600018
+*        +                     +                     +                  11700018
+*        +                     +                     +                  11800018
+*        +++++++++++++++++++++++   VOLUME ID NO. 5   + 44               11900018
+*        +                                           +                  12000018
+*        +                                           +                  12100018
+*        +++++++++++++++++++++++++++++++++++++++++++++ 48               12200018
+*                                                                       12300018
+*                                                                       12400018
+         EJECT                                                          12450008
+*                                                                       12500018
+*********      ***************     **********     **********     ****** 12600018
+*                                                                     * 12700018
+*              OFFSETS TO BE USED IN REP I/O PHASE                    * 12800018
+*                                                                     * 12900018
+*********      ***************     **********     **********     ****** 13000018
+*                                                                     * 13100018
+IS       EQU   X'80'                    INDEXED SEQUENCIAL              13102018
+SAVWK4R  EQU   48                                                       13103018
+PS       EQU   X'40'                    PHYSICAL SEQUENCIAL             13104018
+DA       EQU   X'20'                    DIRECT ACCESS                   13106018
+PO       EQU   X'02'                    PARTITIONED ORGANIZATION        13108018
+NULL     EQU   X'80'                    NULLFILE OR SYSCHECK            13110018
+INOROUT  EQU   X'40'                    SYSIN OR SYSOUT DATA SET        13112018
+DADEV    EQU   X'20'                    DA DEVICE                       13114018
+TPDEV    EQU   X'10'                    TAPE DEVICE                     13116018
+LASTENT  EQU   X'08'                    LAST ENTRY                      13118018
+UNITREC  EQU   X'04'                    UNIT RECORD EQUIPMENT           13120018
+ERRINNSL EQU   X'80'                    ERROR IN NSL ROUTINE            13122018
+NSLMTSW  EQU   X'40'                    NSL MOUNT SWITCH                13124018
+NSLCOMU  EQU   X'20'                    NSL COMMUNICATION BIT           13126018
+BYPASS   EQU   X'10'                    BYPASS LABEL PROCESSING         13128018
+NSL      EQU   X'04'                    NON-STANDARD LABEL              13130018
+SL       EQU   X'02'                    STANDARD LABEL                  13132018
+NL       EQU   X'01'                    NO LABEL                        13134018
+GTR5VOL  EQU   X'80'                    GREATER THAN 5 VOLUMES          13136018
+POCONCAT EQU   X'40'                    P.O. CONCATENATED               13138018
+DAFLAG   EQU   X'80'                    DA DATA SET FLAG                13140018
+NONDAFLG EQU   X'40'                    NON-DA DATA SET FLAG            13142018
+NSLFLAG  EQU   X'10'                    NSL ROUTINE FLAG                13144018
+TYPERST  EQU   X'80'                    IMMEDIATE RESTART               13146018
+TABENT   EQU   48                       TABLE ENTRY LENGTH              13148018
+WRITE    EQU   X'01'                    WRITE ON TAPE                   13150018
+READ     EQU   X'02'                    READ FOR TAPE                   13152018
+NOPOP    EQU   X'03'                    NOP                             13154018
+SENSE    EQU   X'04'                    SENSE                           13156018
+REWIND   EQU   X'07'                    REWIND                          13158018
+READBACK EQU   X'0C'                    READBACK                        13160018
+UNLOAD   EQU   X'0F'                    REWIND AND UNLOAD               13162018
+WTM      EQU   X'1F'                    WRITE TAPE MARK                 13164018
+BSFOP    EQU   X'2F'                    BACKWARD SPACE FILE             13166018
+FSFOP    EQU   X'3F'                    FORWARD SPACE FILE              13168018
+SEARCH   EQU   X'31'                    SEARCH                          13170018
+SRCHCNT  EQU   X'05'                    COUNT FOR SEARCH ID             13172018
+TIC      EQU   X'08'                    TIC                             13174018
+READDA   EQU   X'06'                    READ FOR DA                     13176018
+LENJFCB  EQU   X'B0'                    LENGTH OF JFCB                  13178018
+LBLLEN   EQU   X'50'                    LENGTH OF LABEL                 13180018
+PERMERR  EQU   X'7F'                    PERMANENT ERROR                 13182018
+ERR073   EQU   73                       ERROR READING DSCB     @ZSUT222 13184032
+CHAIN    EQU   X'40'                    CHAINING FLAG                   13330018
+EXCHPGM  EQU   X'80'                    EXCP                            13360018
+OUTP     EQU   X'04'                    OUT OR OUTIN (DEBOPATB)  A27241 13390002
+PCI      EQU   X'20'                    CHAIN SCHEDULING                13420018
+ZEROM    EQU   X'00'                    CONSTANT ZERO FOR M OF DA ADDR. 13450018
+WRITEDA  EQU   X'05'                    WRITE FOR DA                    13480018
+READKND  EQU   X'0E'                    READ KEY AND DATA               13510018
+LENGTH   EQU   X'8C'                    LENGTH OF KEY AND DATA          13540018
+SUBIDLN  EQU   19                       LN-1 OF SUB RTN ID IN DEB       13550018
+LNGBFID  EQU   87                       LN-1 OF DEB PREFIX+BASIC+SUBRTN 13560018
+*                                            ID SECTIONS                13570018
+TAPEPOS  EQU   C'P'                     TAPE POS                 Y02076 13580002
+NAMERS   EQU   C'V'                     RESTART MOD                     13590018
+SP253    EQU   253                      SUB POOL NUMBER          Y02076 13592002
+UCBSIZE  EQU   4                        SIZE OF A UCB ENTRY      Y02049 13594002
+ZEROBYTE EQU   0                        HIGH ORDER BYTE MASK     Y02076 13596002
+PASSCHK  EQU   X'FF'                    PASSWORD CHK DONE IND    Y02049 13598002
+PASSWCHK EQU   X'10'                    PASSWORD CHK MASK        Y02049 13598402
+WRITECHK EQU   X'04'                    WRITE ONLY MASK          Y02049 13598802
+INONLY   EQU   X'0F'                    INPUT ONLY (REVERSE TEST)Y02049 13599202
+ISAMDEB  EQU   X'80'                    ISAM ACCESS METHOD FLG   Y02049 13599602
+BDAMDEB  EQU   X'40'                    BDAM ACCESSMETHOD ID     YM7523 13612102
+ISAMSEC  EQU   16                       ISAM DEP SECT OFFSET     Y02049 13624802
+EXTLNGTH EQU   16                       EXTENT LENGTH            Y02049 13637302
+ECBBGADR EQU   32                       ECB ADR OFFSET           Y02049 13649802
+DCBBGADR EQU   4                        DCB ADR OFFSET           Y02049 13659802
+CCW      EQU   96                       CCW OFFSET               Y02049 13661802
+ERR220   EQU   220                      LABEL ADR CHANGED        Y02049 13664202
+ERR221   EQU   221                      WRONG PASSWORD GIVEN     Y02049 13665802
+ERR236   EQU   236                      ERROR CODE FOR UN-     @ZSUT222 13665932
+*                                       EXPECTED RECORD READ FROMYM6509 13666032
+*                                       CHECKPOINT DATA SET      YM6509 13666432
+PASSCKID EQU   X'01'                    ENTRY FROM PASSWORD CHK  Y02049 13666532
+ENDTAB   EQU   X'08'                    END OF DATA SET TABLE    Y02049 13666602
+TABENTL  EQU   48                       DATA SET TAB ENTRY LENGTHY02049 13677702
+ERR207   EQU   207                      SUBSYSTEM FAILURE ERR CD Y02076 13687702
+ERR208   EQU   208                      SUBSYSTEM FAILURE ERR. @ZSUT222 13687932
+DUMMYDS  EQU   X'80'                    DUMMY DATA SET FLAG MASK Y02076 13688102
+DEBBGOFF EQU   48                       OFFSET FROM PREFIX TO UCBY02049 13688502
+ECRMASK  EQU   X'FF'                    END CHK PT DATA SET ID   Y02076 13694502
+SUBSYSIF EQU   X'00'                    SUBSYSTEM SSCR IDENT     Y02076 13694602
+HIORDER  EQU   8                        HIGH ORDER BYTE MASK     Y02076 13736202
+ADRBYTES EQU   7                        LOW ORDER 3 BYTES MASK   Y02076 13736602
+DE       EQU   14                       HI THREE BYTES           Y02049 13738702
+D0       EQU   0                        CONSTANT ZERO            Y02076 13741202
+D1       EQU   1                        CONSTANT ONE             Y02076 13743302
+D2       EQU   2                        CONSTANT TWO             Y02049 13745402
+D3       EQU   3                        CONSTANT THREE           Y02076 13747502
+D4       EQU   4                        CONSTANT FOUR            Y02076 13749602
+D5       EQU   5                        CONSTANT FIVE            Y02076 13751702
+D6       EQU   6                        CONSTANT SIX             Y02076 13753802
+D7       EQU   7                        CONSTANT SEVEN           Y02076 13755902
+D8       EQU   8                        CONSTANT EIGHT           Y02076 13758002
+D9       EQU   9                        CONSTANT NINE            Y02076 13760102
+D12      EQU   12                       CONSTANT 12              Y02049 13762102
+D24      EQU   24                       CONSTANT TWENTY FOUR     Y02049 13762202
+D40      EQU   40                       CONSTANT FORTY           Y02076 13764302
+D44      EQU   44                       CONSTANT FORTY FOUR      Y02049 13766402
+D68      EQU   68                       CONSTANT SIXTY EIGHT     Y02049 13768502
+D164     EQU   164                      CONSTANT 164             Y02049 13770602
+D128     EQU   128                      CONSTANT ONE TWENTY EIGHTY02049 13772702
+ERR039   EQU   39                       ERROR READING SSCRS    @ZSUT222 13774832
+JFCBDSN  EQU   16                       OFST JFCB DSN FR SWA RCD YM7523 13776802
+DSCBCKDS EQU   X'01'                    FMT1 CHKPT D/S INDR      YM7337 13782602
+LNRIDEN  EQU   2                        SHIFT CONSTANT FOR     @Z40RSGD 13786608
+*                                       LENGTH RID ENTRY       @Z40RSGD 13787408
+DS1RACDF EQU   X'40'                    DS1DSIND-RAC DEFINED   @Z40RSGD 13788208
+SP230    EQU   230                      SUBPOOL RID TABLE      @Z40RSGD 13788308
+KEY5     EQU   X'50'                    KEY RIDTABLE           @Z40RSGD 13790208
+ERR254   EQU   254                      RAC ERROR              @ZSUT222 13791032
+*                                                                     * 13792308
+*********      ***************     **********     **********     ****** 13794202
+*                                                                       13800018
+*                                                                       13900018
+         EJECT                                                          14000008
+*                                                                       14100018
+         USING DEBBASIC,DEBR            DEB                      Y02076 14450002
+         USING IHADCB,DCBR              DCB                             14800002
+*                                                                       15100018
+*********************************************************************** 15200018
+*                                                                       15300018
+*   REGISTER CONVENTION TO BE USED                                      15400018
+*                                                                       15500018
+*********************************************************************** 15600018
+*                                                                       15700018
+WRKR1    EQU   0                        WORK/PARM                       15800002
+R0       EQU   0                        REG 0                    YM7543 15850002
+WRKR2    EQU   1                        WORK/PARM                       15900002
+R1       EQU   1                        REG 1                    YM7543 15950002
+DCBR     EQU   2                        CURRENT DCB REGISTER            16000002
+R2       EQU   2                        REG 2                    YM7543 16050002
+BASER    EQU   3                        BASE REGISTER                   16100002
+DEBR     EQU   4                        CURRENT DEB REGISTER            16200002
+R4       EQU   4                        REG 4                    YM7543 16250002
+UCBR     EQU   5                        CURRENT UCB REGISTER            16300002
+R5       EQU   5                        REG 5                    YM7543 16350002
+TIOTR    EQU   6                        NEW TIOT REGISTER               16400002
+R6       EQU   6                        WORK REG                 YM7523 16450002
+TCBR     EQU   7                        TCB REGISTER                    16500002
+RETNREG  EQU   7                        VSAM READ RETURN REG     Y02076 16550002
+R7       EQU   7                        WORK REG                 YM7523 16560002
+TABLR    EQU   8                        START OF DCB TABL REG.          16600002
+R8       EQU   8                        WORK REG                 YM7523 16650002
+CTABLR   EQU   9                        CURRENT DCB IN TABL REG.        16700002
+BUFR     EQU   10                       USER BUFFER AREA                16800002
+RA       EQU   10                       REG 10                   YM7543 16850002
+DSCNTR   EQU   11                       NUMBER OF DATA SETS             16900002
+BUFADR   EQU   11                       VSAM BUFFER ADR REG      Y02076 16950002
+RB       EQU   11                       WORK REG                 YM7523 16960002
+WRKR3    EQU   12                       WORK REGISTER                   17000002
+WRKR4    EQU   13                       WORK REGISTER                   17100002
+RD       EQU   13                       REG 13                   YM7543 17150002
+WRKR5    EQU   14                       WORK/PARM REGISTER              17200002
+RE       EQU   14                       REG 14                   YM7543 17250002
+WRKR6    EQU   15                       WORK/PARM REGISTER              17300002
+RF       EQU   15                       REG 15                   YM7543 17350002
+*                                                                       17400018
+*********************************************************************** 17500018
+*                                                                       17600018
+*                                                                       17700018
+*                                                                       17800018
+         EJECT                                                          17850008
+         BALR  BASER,0                  SET UP BASE REGISTER            17900002
+         USING *,BASER                                                  18000018
+         B     BEGIN                    BR AROUND EYE CATCHER    Y01909 18050002
+         CNOP  0,8                      ALIGN TO DBL WORD BNDRY  Y01909 18060002
+         DC    CL8'IGC0N05B'            MODULE NAME            @ZSUT222 18070032
+         DC    CL8'&SYSDATE'            LAST DATE SHIPPED      @ZSUT222 18070432
+         DC    CL8'@ZSUT222'            LAST CODE SHIPPED      @ZSUT222 18070832
+         DC    CL8'@SU83200'            SELECTABLE UNIT ID     @ZSUT222 18071232
+*********************************************************************** 18072002
+*              TEST FOR ENTRY FROM PASSWORD PROCESSING                * 18074002
+*********************************************************************** 18076002
+BEGIN    EQU   *                                                 Y01909 18080000
+         MODESET EXTKEY=ZERO                                     Y02049 18080402
+         USING TABL,CTABLR                                       Y02049 18082402
+         TM    TABFLG2,TABSW            SECLOADA RETURN          Y02049 18084002
+         BNZ   PASSWORD                 YES  PROCESS RESULTS     YM7523 18086002
+         USING RSTWA,BUFR               RESTART WORK AREA        Y02049 18086302
+         ST    TABLR,REG8SAVE           SAVE REG 8               Y02049 18087802
+*********************************************************************** 18088402
+*               ROUTINE TO HANDLE THE PROCESSING OF VSAM SSCR         * 18088702
+*               RECORDS.                                              * 18089002
+*********************************************************************** 18089302
+VSAMCR00 EQU   *                        INSTR MUST FOLLOW        Y02076 18089602
+         L     WRKR3,SSCRSIZE                                    Y02076 18089902
+         STH   WRKR3,RSLNGTH1           SET BUFFER LENGTH TO 4K  Y02076 18090202
+         LR    WRKR3,BUFR               BASE ADR                 Y02076 18090502
+         A     WRKR3,RSBFOFST           1ST BUFFER ADR           Y02076 18090802
+         ST    WRKR3,RSBUFADC           STORE ADR OF BUFFER      Y02076 18092602
+         ST    WRKR3,SSCRCMPA           SAV WRK BUF ADR FOR CMP ZA00600 18093502
+         XC    RSSSCR(D4),RSSSCR        ZERO ANCHOR FIELD        Y02076 18095902
+*********************************************************************** 18096802
+*               SET SYNAD ADDRESS IN RESTART DCB                      * 18097702
+*********************************************************************** 18098602
+         LA    WRKR3,RSBDCB             RS DCB ADR               Y02076 18099502
+         USING IHADCB,WRKR3                                      Y02076 18100402
+         LA    WRKR6,RPM127             SYSNAD ROUTINE ADDRESS   Y02076 18101302
+         STCM  WRKR6,ADRBYTES,DCBSYNAD+D1   STORE IN RS DCB      Y02076 18102202
+         DROP  WRKR3                                             Y02076 18103102
+*********************************************************************** 18104002
+*               READ IN VSAM SSCR RECORD (0R SUB SYS SSCR)            * 18104902
+*********************************************************************** 18105802
+         L     BUFADR,RSBUFADC          BUFFER ADDRESS           Y02076 18106702
+         CLC   0(2,BUFADR),SPIEREC      TEST FOR SPIE REC        Y02049 18107602
+         BE    VSAMCRX                  BR IF YES                Y02049 18108502
+VSAMCR01 EQU   *                        INSTR MUST FOLLOW        Y02076 18109402
+         CLC   0(2,BUFADR),SSREC        TEST FOR SS REC          Y02049 18110302
+         BE    VSAMCR04                 BR IF YES                Y02049 18111202
+         CLC   0(2,BUFADR),VSAMREC      TEST FOR VSAM            Y02049 18112102
+         BE    VSAMCRY                  BR IF YES                Y02049 18113002
+         CLC   0(2,BUFADR),ENDREC       TEST FOR END REC         Y02049 18113902
+         BE    VSAMCR04                 BR IF YES               ZA00600 18114800
+SSCRERR  EQU   *                                                        18115702
+         MVI   RSRETCOD+D1,ERR236       ERROR-UNEXPECTED RECORD@ZSUT222 18116632
+         B     INOUT750                 GO TO ERROR EXIT RTN   @Z30SSDT 18117008
+         USING SSCR,BUFADR                                       Y02076 18118402
+*********************************************************************** 18119302
+*               UPDATE CHAIN OF VSAM SSCR'S                           * 18120202
+*********************************************************************** 18121102
+VSAMCRY  CLC   RSSSCR(D4),ZEROWORD      1ST SSCR                 Y02076 18122002
+         BNZ   VSAMCR02                 NO                       Y02076 18122902
+         MVC   RSSSCR(D4),RSBUFADC      SAV ADR 1ST SSCR IN CHAINY02076 18123802
+         B     VSAMCR03                 SET UP PREVIOUS ADR      Y02076 18124702
+VSAMCR02 EQU   *                        INSTR MUST FOLLOW        Y02076 18125602
+         L     BUFADR,RSBUFADP          PREV SSCR ADR            Y02076 18126502
+         MVC   SSCRFCHN(D4),RSBUFADC    STR CUR SSCR ADR IN PREV Y02076 18127402
+         DROP  BUFADR                                            Y02076 18128302
+VSAMCR03 EQU   *                        INSTR MUST FOLLOW        Y02076 18129202
+         MVC   RSBUFADP(D4),RSBUFADC    CURRENT BECOMES PREVIOUS Y02076 18130102
+*********************************************************************** 18131002
+*               GET STORAGE FOR NEXT SSCR                             * 18131902
+*********************************************************************** 18132608
+         L     WRKR1,SSCRSIZE           GET 4K BYTES             Y02076 18133008
+         ICM   WRKR1,HIORDER,SBP253                              Y02076 18134602
+         GETMAIN R,LV=(WRKR1)           GET STORAGE              Y02076 18145608
+         ST    WRKR2,RSBUFADC           SAVE ADR OF NEW BLOCK    Y02076 18148308
+         LR    BUFADR,WRKR2             OBTAIN BUFFER ADDRESS    YM6509 18149208
+VSAMCRX  BAL   RETNREG,VSAMREAD         READ RECORD              Y02076 18150108
+         B     VSAMCR01                 VALIDITY CHECK NEXT RCD  Y02076 18151008
+*********************************************************************** 18152608
+*               PROCESS VSAM SSCR'S IF THERE ARE ANY                  * 18152808
+*********************************************************************** 18153708
+VSAMCR04 EQU   *                        INSTR MUST FOLLOW        Y02076 18154608
+         CLC   RSSSCR(D4),ZEROWORD      TEST ANCHOR WORD         Y02076 18155508
+         BZ    VSAMCR07                 NO VSAM SSCR'S           Y02076 18156408
+*********************************************************************** 18158208
+*               LOAD VSAM SSCR PROCESSING MODULE IDA0C05B             * 18159108
+*********************************************************************** 18160008
+         MVC   VSAMLOAD(D8),VSAMODUL    SET UP EPLOC             Y02076 18163708
+         LOAD  EPLOC=VSAMLOAD           GET MODULE               Y02076 18163908
+         ST    WRKR1,VSAMODAD           SAVE ADR OF MODULE       Y02076 18164108
+         MVI   VSAMODAD,ZEROBYTE                                 Y02076 18164308
+         LA    WRKR4,RSREGSAV           REGISTER 13 = SAVEAREA @Z30SSDT 18164708
+         L     WRKR6,VSAMODAD                                    Y02076 18166308
+         LR    WRKR2,BUFR               REG 1 = ADR RSTWA        Y02076 18167208
+*********************************************************************** 18168108
+*               BRANCH TO VSAM MODULE TO PROCESS VSAM SSCR'S          * 18169008
+*********************************************************************** 18169908
+         BALR  WRKR5,WRKR6              IDA0C05B               @Z30SSDT 18172608
+*                                                                       18173508
+         ST    WRKR6,VSAMRTCD           SAVE RETURN CODE         Y02076 18174408
+*********************************************************************** 18176108
+*               TEST VSAM PROCESSING ROUTINE RETURN CODE              * 18176508
+*********************************************************************** 18176608
+         LTR   WRKR6,WRKR6              WERE THERE ANY ERRORS  @Z30SSDT 18176808
+         BNZ   INOUT750                 YES, XCTL TO IGC0V05B  @Z30SSDT 18177208
+*********************************************************************** 18178108
+*               FREEMAIN ANY STORAGE GOTTEN FOR VSAM SSCR'S           * 18178308
+*********************************************************************** 18178508
+         L     WRKR2,RSSSCR             GET 1ST OF SSCR CHAIN    Y02076 18179408
+         XC    RSSSCR(D4),RSSSCR        CLEAR ANCHOR FIELD       Y02076 18179608
+         USING SSCR,WRKR2                                        Y02076 18179808
+         L     WRKR2,SSCRFCHN           DON'T FREE RWA BUFFER  @Z30SSDT 18180908
+VSAMCR05 EQU   *                        INSTR MUST FOLLOW        Y02076 18181608
+         L     WRKR3,SSCRFCHN           SAVE NEXT SSCR ADR       Y02076 18182508
+         LTR   WRKR2,WRKR2              IS THERE A BLOCK TO REL  Y02076 18183408
+         BZ    VSAMCR06                 NO                       Y02076 18184308
+         L     WRKR1,SSCRSIZE           AMOUNT TO RELEASE        Y02076 18185908
+         ICM   WRKR1,HIORDER,SBP253     SUBPOOL 253              Y02076 18186108
+         FREEMAIN R,LV=(WRKR1),A=(WRKR2)  RELEASE STORAGE        Y02076 18187008
+         LR    WRKR2,WRKR3              NEXT SSCR BLK ADR        Y02076 18187908
+         B     VSAMCR05                 RELEASE AGAIN IF REQUIREDY02076 18188808
+*********************************************************************** 18189708
+*               DELETE VSAM SSCR PROCESSING MODULE                    * 18190608
+*********************************************************************** 18191508
+VSAMCR06 EQU   *                        INSTR MUST FOLLOW        Y02076 18192408
+         DELETE EPLOC=VSAMLOAD                                   Y02076 18193308
+         L     WRKR3,TABFLG1            RELOAD WORK AREA ADDR  @Z30SSDT 18194108
+*********************************************************************** 18201408
+*               DETERMINE IF SUBSYSTEM SSCR IS TO BE PROCESSED        * 18202308
+*********************************************************************** 18203208
+VSAMCR07 EQU   *                        INSTR MUST FOLLOW        Y02076 18204108
+         L     WRKR2,RSBUFADC           GET SSCR ADDRESS         Y02076 18205008
+         CLI   SSCRID,ECRMASK           TEST FOR END CKT DATA SETY02076 18205908
+         BE    INOUTX00                 NO SSCRS REL LAST BUFFERZA00600 18206808
+         CLI   SSCRSSID,SUBSYSIF                                 Y02076 18207708
+         BE    INOUT900                 PROCESS SUBSYSTEM SSCR   Y02076 18208608
+         B     SSCRERR                  ERROR-UNEXPECTED RCD     YM6509 18209508
+INOUTX00 EQU   *                        INSTR MUST FOLLOW       ZA00600 18210408
+         CLC   SSCRCMPA(D4),RSBUFADC    SPACE  OUTSIDE WRK AREA ZA00600 18211308
+         BE    INOUT000                 NO   CONTINUE           ZA00600 18212208
+         L     WRKR1,SSCRSIZE           YES GET SIZE            ZA00600 18213108
+         ICM   WRKR1,HIORDER,SBP253     SUBPOOL NO.             ZA00600 18214008
+         FREEMAIN R,LV=(WRKR1),A=(WRKR2) RELEASE STORAGE        ZA00600 18214908
+         EJECT                                                   YM7523 18215808
+INOUT000 EQU   *                                                 Y02049 18216708
+*                                                                       18217608
+*        AT RESTART TIME, IF THE CHECKPOINT DATA SET IS ON TAPE,        18218508
+*        THE CHECKPOINT DCB IN THE PROBLEM PROGRAM MUST BE UPDATED      18219408
+*        FROM THE CHECKPOINT DCB IN THE RESTART WORK AREA               18220308
+*                                                                       18221208
+         TM    RSFLAG1,RSTAPE           IS CHKPT DS ON TAPE?     YM6589 18222108
+         BNO   INOUT001                 NO, CONTINUE             YM6589 18223008
+         L     WRKR4,RSCKDCB            POINT TO OLD CHKPT DCB   YM6589 18223908
+         MVC   BLKCT(D4,WRKR4),RSBDCB+BLKCT  CORRECT BLKCT IN    YM6589 18224808
+*                                       USER'S CHKPT DCB         YM6589 18225708
+         EJECT                                                          18226108
+*********************************************************************** 18226608
+*                                                                     * 18227508
+*        NOW READ IN THE FORMAT1 DSCB FOR EVERY DATA SET OPEN         * 18228408
+*        AND DETERMINE ITS PROTECTION STATUS AS WELL AS WHETHER       * 18229308
+*        THE DSCB REPRESENTED BY THE DEB HAS BEEN MOVED               * 18230208
+*                                                                     * 18231108
+*********************************************************************** 18232008
+INOUT001 EQU   *                                                 YM6589 18232908
+         L     CTABLR,REG8SAVE          GET FIRST TAB ADR        YM7523 18233808
+***                                                              YM7543 18234708
+*        GET DADSM-LIKE WORK AREA FOR BOTH SECLOADA CALL         YM7543 18235602
+*        AND CALL TO Q05B                                        YM7543 18245602
+***                                                              YM7543 18255602
+         LA    RF,RSREGSAV              GET ADDR SAVE AREA       YM7543 18257602
+         STM   R2,RF,D0(RF)             SAVE REGS                YM7543 18259602
+         XR    R1,R1                    PHONY PREV WORK AREA     YM7543 18264002
+         IECRES GET,LV=256,A=(R1),ID=N05B,PREFIX=YES             YM7543*18264402
+                                        GET SECLOADA WORK AREA   YM7543 18264802
+         USING IECEXTPR,R1              W/A ADDR                 YM7543 18265202
+         MODESET EXTKEY=ZERO            RET FROM GET IS KEY=5    YM7543 18265302
+         LM    R2,RF,D0(RF)             RESTORE REGS             YM7543 18265402
+         MVC   WTGWTOPR(D4),WTGCODE     SET WTO FLAGS            YM7543 18265502
+         ST    R1,SECSWICH              SAVE CORE ADDR           YM7543 18265602
+         DROP  R1                       R1 = BLAH                YM7543 18282202
+INOUT040 EQU   *                        CHECK TABS               YM7523 18298902
+         L     WRKR3,TABFLG1            PTR WEG W/A              YM7523 18315602
+         USING RSDSECT,WRKR3            SEG W/A ADDRESSABILITY   YM7523 18325602
+         L     DCBR,TABDSORG            PTR DCB                  YM7523 18365602
+         L     DEBR,DCBDEBAD            PTR DEB                  YM7523 18415602
+         TM    TABFLG1,TABSYS           CHK - SUBSYS DATA SET    YM7523 18465602
+         BO    INOUT060                 Y - NO DSCB              YM7523 18515602
+         TM    TABFLG2,TABRSDS          CHK RESTART DCB          YM7523 18565602
+         BO    INOUT060                 Y - NO DSCB CHK          YM7523 18615602
+         TM    TABFLG1,TABDA            CHK DA                   YM7523 18665602
+         BO    INOUT080                 Y - CHK DSCB             YM7523 18715602
+INOUT060 EQU   *                        CHK NEXT ENTRY           YM7523 18765602
+         TM    TABFLG1,TABLAST          CHK LAST ENTRY           YM7523 18815602
+         BO    INOUT720                 Y - EXIT                 YM7523 18865602
+         LA    CTABLR,TABENT(,CTABLR)   GET NEXT TAB ENTRY       YM7523 18915602
+         B     INOUT040                 TRY IT                   YM7523 18965602
+         EJECT                                                          19015608
+*********************************************************************** 19065602
+*        FOR DA THERE ARE 4 VARIATIONS:                               * 19075602
+*        1. PS - THE DEB REPRESENTS 1 DATA SET ON 1 VOLUME            * 19085602
+*        2. BDAM - THE DEB REPRESENTS 1 DATA SET ON N VOLUMES         * 19095602
+*        3. ISAM - THE DEB REPRESENTS 1 DATA SET ON N VOLUMES AND     * 19105602
+*              THE DSCB ADDR IN THE DEB IS FOR THE INDEX/PRIME FMT1   * 19107602
+*              WHICHEVER COMES FIRST                                  * 19108002
+*        4. PO CONCAT - THE DEB REPRESENTS N DATA SETS, EACH ON 1     * 19109602
+*              VOLUME AND THE DSCB ADDR IN THE DEB IS FOR THE FIRST   * 19111602
+*              DATA SET                                               * 19113602
+*********************************************************************** 19115602
+INOUT080 EQU   *                        INIT ENTRY               YM7523 19165602
+         MVI   TABFLG5,D0               DEFAULT - 1ST EXTENT FOR YM7523 19172608
+*                                       DSCB ADDR CHK            YM7523 19202608
+         SH    DEBR,DEBPROFF            PT DEB PREFIX            YM7523 19232608
+         USING DEBPREFX,DEBR            DEB PREFIX               YM7523 19262608
+         L     WRKR2,DEBXTNP            PTR DEBX                 YM7523 19315602
+         L     RB,DEBXDSAB-DEBXTN(,WRKR2) PTR DSAB               YM7523 19365602
+         L     WRKR2,DSABTIOT-DSAB(,RB) PTR TIOT                 YM7523 19415602
+         MVC   TABJFCB,TIOEJFCB-TIOENTRY(WRKR2) DEFALT JFCB ADR  YM7523 19465602
+         CLI   DEBAMTYP,ISAMDEB         CHK IF ISAM DEB          YM7523 19515602
+         BE    INOUT100                 BR IF ISAM               YM7523 19565602
+         CLI   DEBAMTYP,BDAMDEB         CHK IF BDAM DEB          YM7523 19615602
+         BE    INOUT160                 BR IF BDAM DEB           YM7523 19665602
+         TM    TABFLG2,TABPOCAT         CHK IF PO CONCAT         YM7523 19715602
+         BO    INOUT200                 BR IF PO CONCAT          YM7523 19765602
+*********************************************************************** 19815602
+*        ASSUME PS LIKE DATA SET                                      * 19825602
+*              1 DATA SET ON 1 VOL                                    * 19835602
+*********************************************************************** 19865602
+         LA    R6,D1                    1 SET OF EXTENTS         YM7523 19915602
+         LA    R7,D1                    1 EXTENT TO CHK          YM7523 19965602
+         LA    R8,DEBBASND              PTR TO 1ST EXTENT        YM7523 20015602
+         B     INOUT300                 CONTIN                   YM7523 20065602
+*********************************************************************** 20115602
+*        ISAM - CHK OVERFLOW,PRIME,AND INDEX FOR MULTI VOL            * 20125602
+*********************************************************************** 20165602
+INOUT100 EQU   *                        ISAM                     YM7523 20215602
+         LA    R6,D3                    3 SETS OF EXTENTS        YM7523 20265602
+INOUT120 EQU   *                        ISAM NTH EXTENT          YM7523 20365602
+         LA    WRKR2,D3                 GET EXTENT GROUP         YM7523 20415602
+         SR    WRKR2,R6                 INDEX FOR CURRENT EXTENT YM7523 20465602
+         SLL   WRKR2,2                  1 WORD PER EXTENT PTR    YM7523 20515602
+         L     R8,DEBISAM-DEBPREFX(DEBR,WRKR2) ADDR OF EXTENT    YM7523 20565602
+         SR    R7,R7                    CLEAR REG                YM7523 20615602
+         IC    R7,DEBISAM-DEBPREFX(DEBR,WRKR2) GET NO. OF EXTNTS YM7523 20665602
+         LTR   R8,R8                    CHK NO EXTENT            YM7523 20715602
+         BZ    INOUT610                 CHK NEXT EXTENT          YM7523 20765602
+         B     INOUT300                 CONTIN                   YM7523 20965602
+*********************************************************************** 21015602
+*        BDAM - ALLOW FOR MULTI-VOL DATA SET                          * 21025602
+*********************************************************************** 21065602
+INOUT160 EQU   *                        BDAM                     YM7523 21115602
+         LA    R6,D1                    1 SET OF EXTENTS         YM7523 21165602
+         SR    R7,R7                    CLEAR REG                YM7523 21175602
+         IC    R7,DEBNMEXT              GET NO. DEXTENTS         YM7523 21215602
+         LA    R8,DEBBASND              PT FIRST EXTENT          YM7523 21265602
+         B     INOUT300                 CONTIN                   YM7523 21315602
+*********************************************************************** 21365602
+*        PO CONCANTENATION - ALLOW FOR MULTIPLE DATA SETS - EACH ON A * 21375602
+*              SINGLE VOLUME                                          * 21385602
+*********************************************************************** 21415602
+INOUT200 EQU   *                        PO CONCAT                YM7523 21465602
+         SR    R6,R6                    CLEAR REG                YM7523 21515602
+         IC    R6,DEBAMLNG              NO. OF DDS -1            YM7523 21565602
+         LA    R6,D1(,R6)               NO. OF DDS               YM7523 21615602
+         LA    R7,D1                    CHK 1 EXTENT             YM7523 21665602
+         LA    R8,DEBBASND              PTR 1ST EXTENT           YM7523 21715602
+         B     INOUT300                 CONTIN                   YM7523 21765602
+***                                                              YM7523 21815602
+*        PO CONCAT - NTH EXTENT                                  YM7523 21865602
+***                                                              YM7523 21915602
+INOUT220 EQU   *                        PO CONCAT                YM7523 21965602
+         LA    R7,D1                    1 EXTENT                 YM7523 22015602
+         SR    WRKR2,WRKR2              CLEAR REG                YM7523 22065602
+         IC    WRKR2,DEBAMLNG           NO. OF DDS -1            YM7848 22115602
+         SR    WRKR2,R6                 CURRENT DD NO. (=-1)     YM7523 22165602
+         LA    WRKR6,D2(,WRKR2)         CURRENT DD NO. (=1)      YM7523 22215602
+         L     WRKR4,DEBXTNP            PTR DEB EXTENSION        YM7523 22265602
+         L     RB,DEBXDSAB-DEBXTN(,WRKR4) PTR DSAB               YM7523 22315602
+         B     INOUT260                 SCAN FOR CURRENT DSAB    YM7523 22365602
+INOUT240 EQU   *                        SCAN DSAB                YM7523 22415602
+         L     RB,DSABFCHN-DSAB(,RB)    GET NEXT DSAB            YM7523 22465602
+INOUT260 EQU   *                        SCAN DSAB                YM7523 22515602
+         BCT   WRKR6,INOUT240           FIND THE DSAB            YM7523 22565602
+         L     WRKR4,DSABTIOT-DSAB(,RB) PTR CURRENT TIOT         YM7523 22615602
+         MVC   TABJFCB,TIOEJFCB-TIOENTRY(WRKR4) SET JFCB ADDR    YM7523 22665602
+*                                                                YM7523 22715602
+*        NOW LOCATE THE CURRENT DEB EXTENT                       YM7523 22765602
+*                                                                YM7523 22815602
+         SR    R8,R8                    CLEAR REG                YM7523 22865602
+         IC    R8,DEBNMEXT              NO. OF EXTENTS           YM7523 22915602
+         SLL   R8,D4                    NO. EXTS * 16 = A/M SECT YM7523 22965602
+         AR    R8,WRKR2                 OFFSET TO A/M BYTE       YM7523 23015602
+         SR    WRKR4,WRKR4              CLEAR REG                YM7523 23065602
+         IC    WRKR4,DEBBASND-DEBPREFX(DEBR,R8) NO. EXTS TO DD   YM7523 23115602
+         SLL   WRKR4,D4                 NO. EXTS * 16 = EXT      YM7523 23165602
+         LA    R8,DEBBASND-DEBPREFX(DEBR,WRKR4) PT TO EXTENT     YM7523 23215602
+         B     INOUT300                 CONTIN                   YM7523 23265602
+         EJECT                                                          23315608
+*********************************************************************** 23365602
+*                                                                     * 23375602
+*        READ DSCB AND CHK FOR PASSWORD                               * 23385602
+*              R2 = PTR DCB(USER)                                     * 23387602
+*              R4 = PTR DEBPREFX                                      * 23389602
+*              R6 = NO. OF EXTENT GROUPS                              * 23395602
+*              R7 = NO. OF EXTENTS                                    * 23405602
+*              R8 = EXTENT DESCRIPTION                                * 23407602
+*              R9 = PTR TAB                                           * 23408002
+*              RA = PTR RESTART WORK AREA                             * 23408402
+*              RB = DSAB PTR                                          * 23409602
+*              RC = PTR SEG WORK AREA                                 * 23411602
+*********************************************************************** 23415602
+INOUT300 EQU   *                        GET DSCB                 YM7523 23465602
+         L     UCBR,DEBDVMOD-DEBDVMOD(,R8) GET UCB ADDR          YM7523 23515602
+         LA    UCBR,D0(,UCBR)           CLEAR HI-ORDER BYTE      YM7523 23565602
+         USING MNTUCB,UCBR              UCB ADDRESSABILITY       YM7523 23615602
+         TM    UCBJBNR,UCBVRDEV         CHK FOR VIO UCB          YM7523 23665602
+         BO    INOUT490                 BR IF VIO                YM7523 23715602
+*********************************************************************** 31156602
+*              DSCB IS NOW READ IN FOR CHECKING                       * 31163302
+*********************************************************************** 31167802
+         MVC   RSDEBMOD(6),DEBDVMOD-DEBDVMOD(R8) UCB ADR TO SYS  YM7523 31170102
+* DEB IN THE WORK AREA                                           YM7523 31172102
+* TO CONVERT VTOC ADDR FROM TTR TO ABSOLUTE AND THEN READ FROM IT,      31173402
+* DEB EXTENTS MUST COVER THE ENTIRE VOLUME.  STARTING CCHH IS           31176702
+* ZERO, AND ENDING CCHH IS OBTAINED FROM THE SYSTEM DEVICE              31180021
+* CHARACTERISTICS TABLE.                                                31190021
+*                                                                       31200021
+         L     WRKR6,CVTPTR             FOLLOW POINTER CHAIN     M0187  31210021
+         L     WRKR6,CVTZDTAB-CVTMAP(WRKR6) ADDR CHARACTERISTICS Y02049 31220002
+*                                       TABLE                    M0187  31230021
+         IC    WRKR5,UCBTBYT4           PICK UP DEVITYPE BYTE    M0187  31240021
+         N     WRKR5,MASK1              USE LO-ORDER 4 BITS      M0187  31250021
+         IC    WRKR5,0(WRKR6,WRKR5)     GET INDEX TO TYPE ENTRY  M0187  31260021
+         AR    WRKR6,WRKR5              POINT TO ENTRY           M0187  31270021
+         XC    RSDEBSCC(8),RSDEBSCC     CLEAR EXTENT AREA        M0187  31280021
+         MVC   RSDEBECC,0(WRKR6)        GET HI CC FROM DEVTAB    M0187  31290021
+         SPACE 3                                                        31300018
+**************      ***************     ***************     *********** 31400018
+*                                                                       31500018
+*        GET VTOC ADDR. FROM UCB FOR READING DSCB- CONVERT TTR TO       31600018
+*        MBBCCHHR.                                                      31700018
+*                                                                       31800018
+**************      ***************     ***************     *********** 31900018
+*                                                                       32000018
+*                                                                       32100018
+         L     WRKR1,SRTEFSCT      GET VTOC TTR FROM UCB.               32300018
+*                                                                       32354018
+*                                                                       32390018
+         SRL   WRKR1,8                  RIGHT JUSTIFY.                  32400002
+         BCTR  WRKR1,0                  DECR R BY ONE FOR SEEK.         32500002
+         SLL   WRKR1,8                  LEFT JUSTIFY.                   32600002
+         LA    WRKR2,RSDSCB             SAVE AREA ADDR TO REG.   YM7523 32700002
+         STM   WRKR1,WRKR6,0(WRKR2)     SAVE REGISTERS 0-15.     YM7523 32800002
+         LR    R6,WRKR2                 SAVE REG ACCROSS CALL    YM7523 32850002
+         L     WRKR6,CVTPTR             CVT ADDRESS                     32900002
+         LA    WRKR2,RSDEB              LOAD DEB ADDR-WK AREA           33000002
+         LA    DCBR,RSIOBDAD            LOCATION OF RESULTS.            33100002
+         L     WRKR6,CVTPCNVT-CVTMAP(WRKR6) GET ADR OF CNVRT RTN Y02049 33200002
+         BALR  WRKR5,WRKR6              GO TO CONVERT.                  33300002
+         LM    WRKR1,WRKR6,0(R6)        RESTORE REGISTERS 0-15.  YM7523 33400002
+         SPACE 3                                                        33600018
+**************      ***************     ***************     *********** 33700018
+*                                                                       33800018
+*  BUILD CHANNEL PROGRAM TO BE USED TO READ IN DSCB.                    33900018
+*                                                                       34000018
+*  CHN PROG- SEARCH ID-TIC-READ COUNT-SEARCH KEY EQ-TIC-READ DATA       34100018
+*                                                                       34200018
+**************      ***************     ***************     *********** 34300018
+*                                                                       34400018
+         L     WRKR2,TABJFCB-D1         GET JFCB PREFIX ADDR     YM7523 34500002
+         MVC   RSDSN(44),JFCBDSN(WRKR2) SET DSN FOR SEARCH ID    YM7523 34550002
+*                                       NOTE THE DSN NOT IN JFCB AREA   34650002
+*                                       BECAUSE 6 CCW'S ARE NEEDED TO   34670002
+*                                       READ IN THE DSCB AND ITS ADDR.  34680002
+*                                       NOTE THAT THERE IS ONLY SPACE   34690002
+*                                       FOR 3 CCW'S IN THE RSDSECT.     34692002
+*                                       THUS THIS CHNL PROG WILL EXTEND 34900002
+*                                       INTO THE JFCB AREA.             34950002
+*                                                                       35400018
+         XC    RSCCW1(48),RSCCW1        CLEAR CCW AREA.          YM5512 35600002
+         LA    WRKR5,RSIOBDAD+3         GET ADR OF SEARCH ARG    YM5515 35650002
+         ST    WRKR5,RSCCW1             ST IN SRCH CCW           YM5515 35660002
+         LA    WRKR5,RSCCW1             GET TIC TO ADR           YM5515 35670002
+         ST    WRKR5,RSCCW2             STORE IN TIC CCW         YM5515 35680002
+         LA    WRKR5,RSCCW3             LOAD READ COUNT CCW ADDRESS.    35700018
+         ST    WRKR5,RSCCW3+16          STORE ADDRESS AT TIC AFTER      35800002
+*                                       SEARCH KEY EQ.                  35900018
+         LA    WRKR5,RSDSN              LOAD ADDR OF KEY(DSN)    YM7523 36000002
+         ST    WRKR5,RSCCW3+8           STORE ADDRESS AT SEARCH KEY EQ. 36100018
+         LA    WRKR5,RSDSCB             AREA DSCB TO BE READ-IN  YM7523 36200002
+         ST    WRKR5,RSCCW3+24          STORE ADDRESS AT READ DATA.     36300018
+         LA    WRKR5,RSRDCNT            BUFFER AREA FOR READ CNT YM7523 36400002
+         ST    WRKR5,RSCCW3             BUF ADDRESS TO RD COUNT CCW     36500018
+         OC    RSCCW1(48),DSCBCP        READ DSCB CHANNEL PROG   YM5515 36600002
+*                                                                       36700018
+*                              READ IN DSCB                             36800018
+*                                                                       36900018
+         BAL   WRKR5,INOUT700           BAL TO EXCP RTN          YM7523 37000002
+*                                                                       37100018
+*                                                                       54100018
+*********************************************************************** 54150002
+*              DSCB IS NOW BEING CHECKED                              * 54160002
+*********************************************************************** 54170002
+         SPACE 1                                                 YM7523 54172002
+*********************************************************************** 54195202
+*              TEST FOR CHANGE OF ADDRESS OF THE DATA SET LABEL       * 54195602
+*********************************************************************** 54195702
+         TM    TABFLG5,D1               CHK IF DSCB TTR CHK      YM7523 54195802
+         BO    INOUT420                 BR IF NO CHK             YM7523 54196202
+         CLC   DEBDSCBA+D2(D5),RSRDCNT  CCHHR FIELDS MATCH       YM7523 54196602
+         BE    INOUT420                 YES  RESTORE DEB ADDRESS YM7523 54197002
+         MVI   RSRETCOD+D1,ERR220       LABEL MOVED SINCE CKT PT Y02049 54197402
+         B     INOUT750                 SEND ERROR MSG           YM7523 54197502
+INOUT420 EQU   *                        INSTR MUST FOLLOW        Y02049 54197702
+         OI    TABFLG5,D1               SET DSCB NOT CHK         YM7523 54197802
+*********************************************************************** 54214802
+*              DETERMINE IF PASSWORD CHECK IS TO BE MADE              * 54218702
+*********************************************************************** 54222602
+         LA    WRKR2,RSDSCB             DSCB START ADDRESS       YM7523 54228502
+         USING DS1FMTID,WRKR2           DSCB ADDRESSABILITY      YM7523 54228902
+*   BYPASS PASSWORD CHECKING IF DATA SET IS RAC DEFINED.       @Z40RSGD 54229308
+         TM    DS1DSIND,DS1RACDF        RAC DEFINED            @Z40RSGD 54229708
+         BO    RACDS000                 YES-SKIP PASSWORD      @Z40RSGD 54230108
+         TM    DS1DSIND,PASSWCHK        PASSWORD FLAG SET        Y02049 54230402
+         BNO   INOUT500                 NO  GO TO NEXT EXTENT    YM7523 54234302
+         TM    DS1DSIND,WRITECHK        WRITE ONLY FLAG SET      Y02049 54238202
+         BNO   INOUT440                 NO  PASSWD CHK IS REQ    YM7523 54242102
+         TM    DEBOPATB,INONLY          INPUT ONLY DATA SET      Y02049 54246002
+         BZ    INOUT500                 YES  GO TO NEXT EXTENT   YM7523 54249902
+         DROP  WRKR2                                             YM7337 54251902
+         EJECT                                                          54255908
+*********************************************************************** 54259902
+*              SET UP TO DO PASSWORD VERIFICATION                     * 54269902
+*                                                                     * 54271902
+*        INTERFACE TO SECLOADA AS FOLLOWS:                            * 54273902
+*              R1 = PTR DSAB                                          * 54275902
+*              R4 = PTR FMT1 IF DA                                    * 54277902
+*              R5 = PTR DEB                                           * 54278302
+*              RA = 4(D/A) - HI-ORDER BYTE                            * 54278702
+*              RB = PTR DATA SET NAME                                 * 54279102
+*              RD = PTR DADSM TYPE W/A                                * 54279502
+*              RE = 0                                                 * 54279602
+*                                                                     * 54279702
+*        RETURN AS FOLLOWS:                                           * 54279802
+*              R1-RD RESTORED                                         * 54320002
+*              RA = HI-ORDER BYTE (0) = O.K.                          * 54330002
+*                   HI-ORDER BYTE (NOT = 0) = BAD                     * 54340002
+*********************************************************************** 54360402
+INOUT440 EQU   *                        INSTR MUST FOLLOW        YM7523 54400602
+         STM   R0,RF,RSREGSAV           SAVE REGS BEFORE SETUP   YM7543 54458802
+         LA    R6,RSREGSAV              GET REG SAVE AREA        YM7543 54460802
+         OI    TABFLG2,TABSW            IND SECLOADA CALL        YM7543 54463102
+         LR    R1,RB                    R1 PTR DSAB              YM7543 54465102
+         LA    R4,RSDSCB                R4 PTR DSCB              YM7543 54466602
+         LA    R5,DEBBASIC              R5 PTR DEB               YM7543 54476602
+         ICM   RA,HIORDER,DAIND         INDR - CALL FROM N05B    YM7543 54476702
+         LA    RB,RSDSN                 RB PTR DSN               YM7543 54476802
+         L     RD,SECSWICH              RD PTR DADSM-LIKE W/A    YM7543 54478302
+         USING IECEXTPR,RD              SECLOADA W/A ADDR        YM7543 54480302
+         IECRES LOAD,MODNM=SECMODNM,EXTPR=(RD),BRCODE=0,         YM7543*54480702
+               BRANCH=DIRECT            EXIT TO SECLOADA         YM7543 54481102
+*********************************************************************** 54481302
+*              TEST SECLOADA RESPONSE; RIGHT PASSWORD GIVEN.          * 54486602
+*********************************************************************** 54496302
+PASSWORD EQU   *                        INSTR MUST FOLLOW        YM7523 54506002
+         MODESET EXTKEY=ZERO            ENSURE KEY 0             YM7543 54506102
+         STCM  RA,HIORDER,4*RA(R6)      SAVE RET CODE            YM7543 54506402
+         LM    R0,RF,D0(R6)             RESTORE REGS             YM7543 54512002
+         NI    TABFLG2,X'FF'-TABSW      RESET SECLOADA CALL      YM7543 54512402
+         CLI   RSREGSAV+4*RA,D0         CHK FOR PASSWORD ERROR   YM7543 54512802
+         BE    INOUT500                 BR IF NO PASSWORD ERROR  YM7543 54513202
+         ST    RA,TABVLID1+D2           SAV RET COD FOR PROB DET YM7543 54513602
+         MVI   RSRETCOD+D1,ERR221       SET PASSWORD ERROR       YM7543 54514402
+         B     INOUT750                 GO TO ERROR EXIT         YM7543 54514802
+*********************************************************************** 54514902
+INOUT490 EQU   *                        VIO UCB                  YM7523 54515202
+         OI    TABFLG5,D1               INDIC NO DSCB-DEB CHK    YM7523 54515602
+         MVC   RSDSCB(LVDSCB),VDSDSCB-VDSUCB+L'JFCBDSNM(R5)      YM7337*54525602
+                                        GET VIO DSCB             YM7337 54526002
+         EJECT                                                          54527408
+*********************************************************************** 54535402
+*        CHECK IF FORMAT1 INDICATES THAT THIS IS A CHECKPOINT         * 54535802
+*        DATA SET.  IF IT DOES THEN SET UP TO CALL Q05B.              * 54536202
+*                                                                     * 54536602
+*        INPUT TO Q05B AS FOLLOWS:                                    * 54537002
+*              R1 = 0(CHKPT D.S. CHECK)                               * 54537102
+*                   4(OLD CHKPT D.S. AND THE D.S. IS NOT CHKPT)       * 54537202
+*              R5 = PTR UCB                                           * 54537302
+*              R9 = PTR TAB ENTRY                                     * 54537402
+*              RA = PTR RESTART WORK AREA                             * 54540302
+*              RE = RETURN ADDRESS                                    * 54542302
+*                                                                     * 54542702
+*        OUTPUT FROM Q05B AS FOLLOWS:                                 * 54543102
+*              ALL REGS SAVED AND RESTORED                            * 54543202
+*              DSABCKVL SET IF VOL SECURE.  Q05B XCTL TO V05B IF ERR. * 54543302
+*********************************************************************** 54543402
+INOUT500 EQU   *                        CHK IF CHECKPOINT D.S.   YM7543 54546402
+         XR    R1,R1                    Q05B CHKPT D.S. CHECK    YM7337 54548402
+         LA    RF,RSDSCB                GET PTR DSCB             YM7337 54550402
+         USING DS1FMTID,RF              DSCB ADDRESSABILITY      YM7337 54552402
+         TM    DS1DSIND,DSCBCKDS        CHK IF IS CHKPT D.S.     YM7337 54553802
+         BO    INOUT520                 GO DO CHKPT CHECK        YM7337 54554202
+         LA    R1,D4                    SET INVALID CHKPT D.S.   YM7337 54554302
+         TM    DSABFLG4-DSAB(RB),DSABCKDS CHK IF WAS CHKPT D/S   YM7337 54554502
+         BNO   INOUT600                 BR IF NOT CHKPT D.S.     YM7337 54554602
+INOUT520 EQU   *                        CHECK CURRENT STATUS     YM7337 54554702
+         LA    RE,INOUT600              GET RETURN ADDR          YM7337 54554802
+         L     RD,SECSWICH              ADDR O/C/E WORK AREA     YM7337 54554902
+         IECRES LOAD,MODNM=COMMODNM,EXTPR=(RD),BRCODE=(14),      YM7337*54555202
+               BRANCH=DIRECT            GO CHECK SECURITY        YM7337 54557402
+         DROP  RF                                                YM7337 54559402
+         SPACE 3                                                 YM7543 54560302
+*********************************************************************** 54563002
+*              PROCESS NEXT EXTENT,IF THERE IS ONE. OTHERWISE         * 54565702
+*              GO BACK TO PROCESS NEXT DATA SET.                      * 54568402
+*********************************************************************** 54581602
+INOUT600 EQU   *                        INSTR MUST FOLLOW        YM7523 54594802
+         BCT   R7,INOUT620              CHK ANY MORE EXTENTS     YM7523 54644802
+INOUT610 EQU   *                        NO EXTENTS LEFT          YM7523 54654802
+         BCT   R6,INOUT640              CHK ANY MORE EXT GRPS    YM7523 54694802
+         XC    TABFLG5,TABFLG5          CLEAR DSCB CHK FLAG      YM7523 54704802
+         B     INOUT060                 END OF THIS DEB          YM7523 54744802
+*                                                                YM7523 54794802
+*        MORE EXTENTS TO CHK                                     YM7523 54844802
+*                                                                YM7523 54854802
+INOUT620 EQU   *                        MORE EXTENTS             YM7523 54864802
+         LA    R8,EXTLNGTH(,R8)         PT NEXT EXTENT           YM7523 54874802
+         L     WRKR2,DEBDVMOD-DEBDVMOD(,R8) GET UCB NEXT         YM7523 54884802
+         LA    WRKR2,D0(,WRKR2)         CLEAR HI-ORDER BYTE      YM7523 54886802
+         CR    WRKR2,UCBR               CHK SAME UCB             YM7523 54888802
+         BE    INOUT600                 IF SAME - IGNORE         YM7523 54890802
+         B     INOUT300                 NOT SAME THEN CHK        YM7523 54892802
+*                                                                YM7523 54893202
+*        MORE EXTENT GROUPS                                      YM7523 54893602
+*                                                                YM7523 54894002
+INOUT640 EQU   *                        MORE EXTENT GRPS         YM7523 54894402
+         CLI   DEBAMTYP,ISAMDEB         CHK IF ISAM              YM7523 54894502
+         BE    INOUT120                 BR IF ISAM               YM7523 54894602
+         B     INOUT220                 BR PO CONCAT             YM7523 54894702
+         SPACE 3                                                        54894802
+         SPACE 3                                                        55000018
+**************      ***************     ***************     *********** 55100018
+*                                                                       55200018
+*                    EXCP -WAIT AND CHECK FOR ERROR                     55300018
+*                                                                       55400018
+**************      ***************     ***************     *********** 55500018
+*                                                                       55600018
+INOUT700 EQU   *                                                 YM7523 55700002
+*                                                                       55800018
+         EXCP  RSIOB                    EXCP CHANNEL PROGRAM            55900002
+*                                                                       56000018
+         WAIT  ,ECB=RSECBAD             WAIT FOR I/O COMP        YM7523 56100002
+*                                                                       56200018
+         TM    RSECBAD,PERMERR          I/O ERROR                       56300002
+         BCR   1,WRKR5                  RETURN IF NOT                   56400002
+*                                                                       56500018
+**************      ***************     ***************     *********** 56600018
+*                                                                       56700018
+*  PERMANENT I/O ERROR WHILE READING IN JFCB OR DSCB FOR REALLOCATED    56800018
+*  DATA SET.                                                            56900018
+*                                                                       57000018
+**************      ***************     ***************     *********** 57100018
+         MVI   RSRETCOD+1,ERR073        DSCB I/O ERROR  73     @ZSUT222 57500032
+         B     INOUT750                 GO TO ERROR EXIT         YM7523 57550002
+         EJECT                                                          57750008
+**************      ***************     ***************     *********** 58100018
+*                                                                       58200018
+*                   TRANSFER TO NEXT MODULE                             58300018
+*                                                                       58400018
+**************      ***************     ***************     *********** 58500018
+INOUT720 MVC   RSJFCB(8),NEXTMOD        NO SYSIN/SYSOUT PROC     YM7523 58740002
+         TM    RSDCBFLG,NONDAFLG        ANY TAPE DS              Y02049 58790002
+         BNO   INOUT730                 NO                       YM7523 58840002
+         MVI   RSJFCB+D4,TAPEPOS        IGC0P05B                 Y02049 58890002
+INOUT730 EQU   *                        NO TAPE                  YM7523 58892002
+         NC    SECSWICH,SECSWICH        TEST FOR SECLOADA CORE   YM7523 59080002
+         BZ    INOUT740                 NONE  NO RELEASE REQ     YM7523 59090002
+         LA    RF,RSREGSAV              GET REG SAVE AREA        YM7543 59092002
+         STM   R0,RF,D0(RF)             SAVE REGS                YM7543 59094002
+         L     R1,SECSWICH              GET DADSM-LIKE W/A       YM7543 59096002
+         IECRES FREE,A=(R1),PREFIX=YES  FREE DADSM-LIKE W/A      YM7543 59096102
+         MODESET EXTKEY=ZERO            KEY 0                    Y02049 59096402
+         LM    R0,RF,D0(RF)             RESTORE REGS             YM7543 59146402
+***************     ***************     **********     **********       59200018
+INOUT740 EQU   *                        INSTR MUST FOLLOW        YM7523 59250002
+         LA    WRKR6,RSJFCB+8                                           59260002
+         LR    WRKR2,BUFR               PT REG. 1 TO REST W/A           59300002
+         L     TABLR,REG8SAVE           RESTORE TABL ADR         Y02049 59310002
+         XC    RSERAS00(D40),RSERAS00   CLEAR SCRTCH AREA        Y02076 59350002
+***************     ***************     **********     **********       59400018
+*                                                                       59500018
+         XCTL  EPLOC=RSJFCB,SF=(E,(15)) TRANSFER CONTROL TO NEXT MOD    59600018
+***************     ***************     **********     **********       59602002
+*        ERROR EXIT - TRY NOT TO DESTROY USEFUL INFO             YM7523 59602402
+***************     ***************     **********     **********       59604002
+INOUT750 EQU   *                        INSTR MUST FOLLOW        YM7523 59610002
+         MVC   RSREGSAV(8),MODID        SAVE NAME OF MODULE    @ZSUT222 59610532
+*                                       DETECTING THE ERROR.   @ZSUT222 59611032
+         STM   0,15,RSREGSAV+8          SAVE CURRENT REGISTERS @ZSUT222 59611532
+         MVC   TABVLID2(D8),ERRMOD      SET XCTL TO V05B         YM7523 59612002
+         LA    WRKR6,TABVLID2+D8        ERROR MOD ID + 8         YM7523 59620002
+         LR    WRKR2,BUFR               PT REG. 1 TO REST W/A    YM7523 59630002
+         L     TABLR,REG8SAVE           RESTORE TABL ADR         YM7523 59640002
+         XC    RSERAS00(D40),RSERAS00   CLEAR SCRTCH AREA        YM7523 59642002
+***************     ***************     **********     **********       59644002
+*                                                                       59646002
+         XCTL  EPLOC=TABVLID2,SF=(E,(15)) XFER CTL TO NEXT MOD   YM7523 59648002
+         EJECT                                                   YM7523 59648402
+*********************************************************************** 59650002
+*                                                                     * 59660002
+*                                                                     * 59670002
+*              REPOSITIONING LOGIC FOR SYSIN/SYSOUT SUBSYSTEM         * 59680002
+*              DATA SETS.                                             * 59690002
+*                                                                     * 59692002
+*                                                                     * 59694002
+*********************************************************************** 59696002
+INOUT900 EQU   *                        INSTR MUST FOLLOW        Y02076 59696402
+         L     DSCNTR,RSBUFADC          SSCR ADDRESS             Y02076 59698002
+         USING SSCR,DSCNTR              SSCR ADDRESSABILITY      Y02076 59698402
+         L     CTABLR,REG8SAVE          DATA SET TABLE ADDRESS   Y02076 59698802
+         USING TABL,CTABLR              ADDRESSABILITY           Y02076 59699202
+*********************************************************************** 59699602
+*              SEARCH RESTART WORK AREA FOR CORRECT SUBSYSTEM         * 59699702
+*              DATA SET DCB.                                          * 59699802
+*********************************************************************** 59699902
+INOUT910 EQU   *                        INSTR MUST FOLLOW        Y02076 59733202
+         CLC   TABDCBAD(D3),SSCRDCBA+1  CORRECT DCB ADDRESS      YM5300 59743202
+         BE    INOUT930                 YES  TEST FOR DUMMY      Y02076 59753202
+         TM    TABFLG1,TABLAST          END OF TABLE             YM5300 59763202
+         BO    INOUT920                 YES  DCB ADR NOT FOUND   YM5300 59765202
+         LA    CTABLR,TABENTL(CTABLR)   INCR TO NEXT TAB ENT     YM5300 59765602
+         B     INOUT910                 TEST NEXT TABLE ENTRY    Y02076 59766002
+INOUT920 EQU   *                        INSTR MUST FOLLOW        Y02076 59766402
+         MVI   RSRETCOD+D1,ERR207       SET ERR0R CODE           Y02076 59766502
+         B     INOUT750                 SEND ERR0R MESSAGE     @Z30SSDT 59766608
+INOUT930 EQU   *                        INSTR MUST FOLLOW        Y02076 59777702
+         TM    TABFLG1,TABNULL          TEST FOR DUMMY DATA SET  YM5300 59787702
+         BO    VSAMCRX                  READ NEXT SSCR           YM5300 59792502
+         ST    WRKR2,REG1SAVE           SAVE REGISTER ONE        Y02076 59794502
+         SR    WRKR5,WRKR5                                       Y02076 59794902
+         ICM   WRKR5,D7,TABDCBAD        DCB ADDRESS              Y02076 59795302
+         USING IHADCB,WRKR5             DCB ADDRESSABILITY       Y02076 59795702
+         ICM   WRKR5,D7,DCBDEBA         DEB ADDRESS              Y02076 59796102
+         USING DEBBASIC,WRKR5           DEB ADDRESSABILITY       Y02076 59796202
+         LA    WRKR5,DEBBASND           END OF DEBBASIC SECT     Y02076 59806202
+         LA    WRKR5,D4(WRKR5)          ADDR OF SSIB             Y02076 59816202
+         USING SSIB,WRKR5                                        Y02076 59826202
+         AH    WRKR5,SSIBLEN            ADDR OF SSOB             Y02076 59828202
+         USING SSOB,WRKR5               SSOB ADDRESSABILITY      Y02076 59832102
+         LR    WRKR2,WRKR5                                       Y02076 59842102
+         MVI   SSOBFUNC+D1,SSOBREST     SET RESTART ID IN SSOB   YM5300 59846102
+         TM    RSFLAG1,HIGHOBIT         AUTOMATIC RESTART        Y02076 59848102
+         BO    INOUT940                 YES                      Y02076 59856702
+         MVI   SSDARESF,SSDADEFR        SET DEFERRED RS BIT SSOB Y02076 59858702
+         B     INOUT945                 SET UP REGISTER 13       Y02076 59860702
+INOUT940 EQU   *                        INSTR MUST FOLLOW        Y02076 59862702
+         MVI   SSDARESF,SSDAAUTO        SET AUTO RS BIT IN SSOB  Y02076 59864702
+INOUT945 EQU   *                        INSTR MUST FOLLOW        Y02076 59865102
+         LA    WRKR4,RSREGSAV           REGISTER SAVE AREA       YM5300 59865202
+         ST    WRKR2,RSERAS04           SS0B ADDR IN PARM WD     YM5300 59865302
+         LA    WRKR2,RSERAS04           ADDR PARM WD IN REG1     YM5300 59869802
+         MVI   RSERAS04,HIGHOBIT        SET HI ORDER BIT-PARM WD YM5300 59871802
+         LA    WRKR1,SSCRDATA           GET ADR OF DATA AREA     YM5300 59874402
+         ST    WRKR1,SSDABUFR           STORE IN SSOB            YM5300 59874502
+*********************************************************************** 59874602
+*              CALL SUBSYSTEM PROCESSING ROUTINE                      * 59879102
+*********************************************************************** 59883602
+         IEFSSREQ                                                Y02076 59888102
+         L     WRKR5,RSERAS04           RESTORE REG 14           YM5300 59890102
+         L     WRKR2,REG1SAVE           RESTORE REGISTER ONE     Y02076 59892602
+         A     WRKR6,SSOBRETN           SUM RETURN CODES         Y02076 59897102
+         BZ    VSAMCRX                  ZERO  READ NEXT SSCR     YM5300 59901602
+         MVI   RSRETCOD+D1,ERR208       NONZERO SET ERROR CODE @ZSUT222 59906132
+         B     INOUT750                 SEND ERROR MESSAGE     @Z30SSDT 59916108
+         EJECT                                                          59921108
+*********************************************************************** 59926102
+*              ROUTINE TO READ VSAM AND SUBSYSTEM SSCRS               * 59928102
+*********************************************************************** 59928502
+VSAMREAD EQU   *                        INSTR MUST FOLLOW        Y02076 59928902
+         LA    RD,RSREGSAV              GET REG SAVE             YM7805 59929002
+         READ  RSDECB1,SF,,(BUFADR),,MF=E                        Y02076 59929302
+         CHECK RSDECB1                                           Y02076 59929702
+         CLI   RSRETCOD+D1,ERR039       I/O ERRORS             @ZSUT222 59937532
+         BE    INOUT750                 YES                    @ZSUT222 59938532
+         BR    RETNREG                  RETURN TO CALLER         Y02076 59939532
+*********************************************************************** 59944302
+*              VSAM READ SYNAD ROUTINE                                * 59944702
+*********************************************************************** 59945102
+RPM127   EQU   *                        INSTR MUST FOLLOW        Y02076 59945202
+         MVI   RSRETCOD+D1,ERR039       ERROR CODE             @ZSUT222 59945332
+         RETURN                                                         59953102
+         EJECT                                                 @Z40RSGD 60003108
+***************************************************************@Z40RSGD 60100008
+*   DATA SET IS RAC DEFINED CHECK USERS AUTHORIZATION TO IT   *@Z40RSGD 60200008
+*   VIA RACHECK.                                              *@Z40RSGD 60300008
+*      AUTHORIZED - INDICATE IN DEBXTN AND BYPASS             *@Z40RSGD 60400008
+*                   PASSWORD CHECKING                         *@Z40RSGD 60404008
+*      NOT AUTHORIZED OR NOT DEFINED - LINK IGCMSG6C TO PUT   *@Z40RSGD 60408008
+*                   OUT ERROR MESSAGE, TAKE ERROR EXIT.       *@Z40RSGD 60412008
+*  BYPASS RACF CHECKING IF JSCBPASS IS SET.                   *@G32DSPD 60416032
+***************************************************************@Z40RSGD 60417032
+RACDS000 STM   RD,R2,RSREGSAV           SAVE REGISTERS         @Z40RSGD 60418032
+         USING PSA,0                    PSA HARD ADDRESSING    @G32DSPD 60420632
+         L     R2,PSATOLD               GET CURRENT TCB ADDR   @G32DSPD 60420932
+         USING TCB,R2                   ADDRESS THE TCB        @G32DSPD 60421232
+         L     R2,TCBJSCB               GET THE JSCB           @G32DSPD 60421532
+         USING IEZJSCB,R2               ADDRESS THE JSCB       @G32DSPD 60421832
+         L     R2,JSCBACT               GET THE ACTIVE JSCB    @G32DSPD 60422132
+         TM    JSCBSWT1,JSCBPASS        RACF BYPASS SET ?      @G32DSPD 60422432
+         BO    SKIPRAC                  YES SKIP RACF CHECKS   @G32DSPD 60422732
+         DROP  R2                                              @G32DSPD 60423032
+         MVC   RACHECK(LRACHECK),MRACHECK                      @Z40RSGD 60424008
+*   ISSUE RACHECK FOR INPUT OR OUTPUT                          @Z40RSGD 60428008
+         LA    R2,ACHKTUPD              ATTRIBUTE=OUTPUT       @Z40RSGD 60428808
+         TM    DEBOPATB,INONLY          INPUT                  @Z40RSGD 60432008
+         BNZ   RACDSOUT                 NO - OUTPUT            @Z40RSGD 60436008
+         LA    R2,ACHKTRD               ATTRIBUTE=INPUT        @Z40RSGD 60440008
+RACDSOUT RACHECK ENTITY=RSDSN,          RACHECK OUTPUT         @Z40RSGDX60449708
+               VOLSER=UCBVOLI,                                 @Z40RSGDX60449808
+               ATTR=(R2),                                      @Z40RSGDX60449908
+               MF=(E,RACHECK)                                  @Z40RSGD 60453208
+RACDSCHK EQU   *                        CHECK RACHECK COMP     @Z40RSGD 60454008
+         LTR   RF,RF                    SUCCESSFUL             @Z40RSGD 60454808
+         BNZ   RACDSERR                 NO-ERROR PROCESSING    @Z40RSGD 60455608
+         LR    R2,R0                    SAVE RDSID             @Z40RSGD 60456408
+*   MARK DEB THAT DATASET IS RAC DEFINED.                      @Z40RSGD 60456508
+         L     RF,DEBXTNP               DEB EXTENSION          @Z40RSGD 60456908
+         OI    DEBXFLG1-DEBXTN(RF),DEBXDSSI SET RACF INDICATOR @Z40RSGDX60457308
+                                        FOR DATASET            @Z40RSGD 60477308
+SKIPRAC  EQU   *                        JSCBPASS SAYS SKIP RACF@G32DSPD 60479332
+         LM    RD,R2,RSREGSAV           RESTORE REGISTERS      @Z40RSGD 60481908
+         B     INOUT500                 BYPASS PASSWORD        @Z40RSGD 60482008
+         EJECT                                                 @Z40RSGD 60482108
+***************************************************************@Z40RSGD 60482208
+*   USER WAS NOT AUTHORIZED TO DATA SET CALL IGCMSG6C AND     *@Z40RSGD 60482608
+*   TERMINATE RESTART.                                        *@Z40RSGD 60482708
+***************************************************************@Z40RSGD 60482808
+RACDSERR MVC   OPID,N05BID              CALLER=IGC0N05B        @Z40RSGD 60482908
+         STH   RF,OPRETCOD              RETURN CODE            @Z40RSGD 60483308
+         LA    RF,RSDSN                 DATA SET NAME          @Z40RSGD 60483408
+         ST    RF,OPADDDSN                                     @Z40RSGD 60483508
+         LA    RF,UCBVOLI               VOLSER                 @Z40RSGD 60486808
+         ST    RF,OPADDVOL                                     @Z40RSGD 60487608
+         LM    RD,R2,RSREGSAV           RESTORE REGS           @Z40RSGD 60489208
+         LA    RF,OPID                                         @Z40RSGD 60489308
+         ST    RF,OPPARM                                       @Z40RSGD 60489408
+         LA    R1,OPPARM                                       @Z40RSGD 60489508
+         LA    RD,RSREGSAV       LOAD SAVE AREA POINTER        @ZA29067 60489708
+         LINK  EP=IGCMSG6C,             SEND MESSAGE           @Z40RSGD 60490008
+         MVI   RSRETCOD+1,ERR254        RAC ERROR CODE         @ZSUT222 60490132
+         B     INOUT750                 ERROR EXIT             @Z40RSGD 60490832
+         EJECT                                                 @Z40RSGD 60491132
+***************************************************************@Z40RSGD 60491408
+*                                                             *@Z40RSGD 60492208
+*                             CONSTANTS                       *@Z40RSGD 60492308
+*                                                             *@Z40RSGD 60492408
+***************************************************************@Z40RSGD 60492808
+DSCBCP   EQU   *                                                 YM5515 60493208
+         DC    X'3100000040000005'      SEARCH ID =              YM5515 60493608
+         DC    X'0800000020000001'      TIC                      YM5515 60496808
+         DC    X'9200000060000008' READ COUNT                           60500002
+         DC    X'A90000004000002C' SEARCH EQ KEY                        60600018
+         DC    X'0800000020000001' TIC                                  60700018
+         DC    X'8600000000000060' READ DSCB                            60800018
+H36      DC    H'0036'             USED TO DECR TO DEB PREFIX.          60900018
+MASK1    DC    F'15'                    MASK OF LOW-ORDER 4 BITS M0187  60950021
+*                                                                     * 61000018
+*                                                                     * 61200018
+MVSUBID  MVC   0(0,WRKR6),0(WRKR5)      SUBRTN ID'S FROM OLD TO NEW     61300002
+*                                       DEB.                            61400002
+*                                                                     * 61500018
+NEXTMOD  DC    C'IGC0R05B'              DA POSITIONING           Y02076 61550002
+ERRMOD   DC    C'IGC0V05B'              ERROR MOD                YM7523 61600002
+MODID    DC    CL8'IGC0N05B'            MODULE ID              @ZSUT222 61620032
+         DS    0F                       FULLWORD BASE            YM7337 61650002
+SECMODNM DC    C'SECLOADA'              PASSWORD                 Y02049 61700402
+         DC    VL4(SECLOADA)            VCON FOR SECLOADA        YM7337 61700502
+COMMODNM DC    C'IGC0Q05B'              COMMON MOD               YM7337 61703102
+         DC    VL4(IGC0Q05B)            VCON FOR Q05B            YM7337 61705102
+SSCRSIZE DC    F'4096'                  SSCR RECORD SIZE         Y02049 61706802
+ZEROWORD DC    F'0'                     ZEROWORD MASK            Y02076 61709202
+DEBPROFF DC    H'16'                    DEB PREFIX OFFSET        Y02049 61711602
+TIOTOFFS DC    H'16'                    TIOT OFFSET TO DEVICE ENTY02049 61714002
+HIGHOBIT EQU   X'80'                    HIGH ORDER BIT CONSTANT  Y02049 61716402
+QMNGWALN DC    AL3(280)                 PARM LIST + WA LNGTH     Y02049 61718802
+SBP253   DC    AL1(253)                 SUBPOOL 253              Y02049 61721202
+SBP230   DC    AL1(230)                 SUBPOOL 230              Y02049 61723602
+WTGCODE  DC    X'000C0000'              WTG CODE                 Y02049 61726002
+DAIND    DC    X'04'                    SECLOADA DA IND          Y02049 61728402
+SSREC    DC    X'0100'                  SUBSYSTEM RECORD         Y02076 61730802
+VSAMREC  DC    X'0101'                  VSAM RECORD              Y02076 61733202
+SPIEREC  DC    X'0102'                  SPIE RECORD              Y02076 61735602
+ENDREC   DC    X'FFFF'                  END RECORD               Y02076 61738002
+ADDRBYTS EQU   7                        GETMAIN/FREEMAIN PARSM   Y02049 61740402
+N05BID   DC    H'0'                     CALLER=N05B            @Z40RSGD 61740508
+QMNWAOFT EQU   24                       QMNGR WA OFFSET          Y02049 61746208
+JFCBLNGH EQU   176                      JFCB LENGTH              Y02049 61746908
+VSAMODUL DC    C'IDA0C05B'              VSAM MODULE NAME         Y02076 61747608
+MRACHECK RACHECK CLASS=CDATASET,        RACHECK PARM LIST      @Z40RSGDX61748408
+               DSTYPE=N,                                       @Z40RSGDX61749208
+               MF=L                                            @Z40RSGD 61749308
+LRACHECK EQU   *-MRACHECK                                      @Z40RSGD 61749408
+CDATASET DC    AL1(7),C'DATASET'        CLASS = DATASET        @Z40RSGD 61749808
+*                                                                     * 61750000
+*        MAINTENANCE SPACE                                       Y01909 61800000
+*                                                                     * 61850000
+PATCH    DC    XL((*-IGC0N05B)/20)'00'   FIVE PERCENT SPACE      Y01909 61860000
+*                                                                     * 61870000
+         EJECT                                                          61872002
+         IECDSECS MAIN,PREFX,DSAB,EXPAND=YES                     YM7523 61882002
+         EJECT                                                          61884008
+         ICHACHKL                                              @Z40RSGD 61886008
+         EJECT                                                   YM7523 61889102
+         IEZDEB LIST=YES                                         YM7523 61891102
+         EJECT                                                          61891402
+         IDDVDSCB                                                YM7337 61891802
+LVDSCB   EQU   L'VDSDSCB-L'JFCBDSNM     LENGTH OF VDSCB W/O DSN  YM7337 61892202
+         EJECT                                                          61893402
+         IEFQMIOP                                                Y02076 61895702
+         EJECT                                                          61900018
+FORMAT1  DSECT                                                   Y02076 61950002
+         IECSDSL1 (1)                                            Y02076 62000002
+         EJECT                                                          62566502
+         IEFJSSIB                                                Y02076 62570202
+         IEFJSSOB (DA),CONTIG=YES                                Y02076 62574002
+         EJECT                                                          62577702
+         IEFJESCT                                                Y02076 62587702
+         EJECT                                                          62588102
+SSCR     DSECT                                                   Y02076 62588502
+SSCRID   DS    XL1                      CHECK POINT ID           Y02076 62588602
+SSCRSSID DS    XL1                      SUBSYSTEM IDENT                 62588702
+SSCRHDRL DS    XL2                      SSCR HEADER LENGTH              62588802
+SSCRFCHN DS    F                        SSCR CHAIN POINTER              62592502
+SSCRFLG1 DS    XL1                      FLAG BITS                       62594502
+         DS    XL1                      RESERVED                        62594902
+SSCRDATL DS    XL2                      DATA LENGTH                     62595302
+SSCRDCBA DS    F                        ADDRESS OF ASSOCIATED DCB       62595702
+SSCRDATA DS    0F                       SUBSYSTEM DATA                  62596102
+         EJECT                                                          62596302
+MNTTIOT  DSECT                                                          62600018
+         IEFTIOT1                                                       62700018
+         EJECT                                                          62800018
+MNTUCB   DSECT                                                          62900018
+         IEFUCBOB                                                       63000018
+         EJECT                                                          63100018
+         IHJDSTAB                                                Y02076 63150002
+         EJECT                                                          67200018
+RSDSECT  DSECT                                                          67300018
+*                                                                       67400018
+*    DATA EXTENT BLOCK                                                  67500018
+*                                                                       67600018
+RSDEB    DS    0CL48                                                    67700018
+RSDEBTCB DC    X'00000000'              TCB ADDRESS                     67800018
+RSDEBDEB DC    X'00000000'              DEB ADDRESS                     67900018
+*                                                                       68000018
+*    DATA CONTROL BLOCK                                                 68100018
+*                                                                       68200018
+RSDEBOFL DS    0CL1                                                     68300018
+RSDEBIRB DC    X'00000000'              IRB ADDRESS                     68400018
+RSDEBSYS DC    X'00000000'              1ST IOB ADDR IN SYS.PURGE CHAIN 68500018
+RSDEBUSR DC    X'00000000'              1ST IOB ADDR IN USER PRGE CHAIN 68600018
+RSDEBECB DC    X'00000000'              PARM.LIST ADDR TO PURGE ECB     68700018
+RSDEBID  DS    0CL1                                                     68800018
+RSDEBDCB DC    AL4(RSDCBREP)            DCB ADDR                        68900018
+RSDEBAPP DS    CL4                      I/O APPENDAGE VECTOR TABLE      69000018
+RSDEBMOD DS    0CL1                                                     69100018
+RSDEBUCB DS    F                        UCB ADDRESS                     69200018
+RSDEBBIN DS    H                        BIN NUMBER                      69300018
+RSDEBSCC DS    H                        CYLINDER START ADDRESS          69400018
+RSDEBSHH DS    H                        TRACK START ADDRESS             69500018
+RSDEBECC DS    H                        CYLINDER END ADDRESS            69600018
+RSDEBEHH DS    H                        TRACK END ADDRESS               69700018
+RSDEBNTR DS    H                        NO. OF TRACKS IN THIS EXTENT    69800018
+*                                                                       69900018
+*    EVENT CONTROL BLOCK                                                70000018
+*                                                                       70100018
+RSECBAD  DS    CL4                      ECB ADDRESS                     70200018
+RSDCBDEB DC    AL4(RSDEB)               DEB ADDRESS                     70300018
+*                                                                       70400018
+RSDCBREP EQU   RSDEB+8                  POINT TO RELATIVE BEGINNING DCB 70500018
+*                                                                       70600018
+*    INPUT OUTPUT BLOCK                                                 70700018
+*                                                                       70800018
+RSIOB    DS    0CL40                                                    70900018
+RSIOBFG1 DC    X'00'                    I/O FLAGS BYTE 1                71000018
+RSIOBFG2 DC    X'00'                    I/O FLAGS BYTE 2                71100018
+RSIOBSN1 DS    CL1                      FIRST SENSE BYTE                71200018
+RSIOBSN2 DS    CL1                      SECOND SENSE BYTE               71300018
+RSIOBECB DC    AL4(RSECBAD)             ECB ADDRESS                     71400018
+RSIOBCSW DS    D                        LAST CSW                        71500018
+RSIOBCPA DS    AL4(RSCCW1)              CHANNEL PROGRAM ADDRESS         71600018
+RSIOBDCB DS    AL4(RSDCBREP)            DCB ADDRESS                     71700018
+RSIOBRCP DS    CL4                      RESTART ADDRESS FOR IOS         71800018
+RSIOBINC DS    H                        INCREMENT BLOCK COUNT           71900018
+RSIOBECT DS    H                        NO. OF ERROR ENTRIES            72000018
+RSIOBDAD DS    D                        SEEK ADDRESS FOR DA             72100018
+*                                                                       72200018
+*    CHANNEL PROGRAM                                                    72300018
+*                                                                       72400018
+RSCCWLST DS    0CL24                                                    72500018
+RSCCW1   DS    D                        CCW1                            72600018
+RSCCW2   DS    D                        CCW2                            72700018
+RSCCW3   DS    D                        CCW3                            72800018
+*                                                                       72900018
+*    BUFFER SEGMENT FOR EXTERNAL BLOCKS                                 73000018
+*                                                                       73100018
+RSBUFSEG DS    0CL176                                                   73200018
+RSJFCB   EQU   RSBUFSEG                                                 73300018
+RSDSN    EQU   RSBUFSEG+24              DSN FOR SEARCH           YM7523 73310002
+RSDSCB   EQU   RSDSN+44                 DSCB READ-IN AREA        YM7523 73320002
+RSRDCNT  EQU   RSDSCB+96                READ COUNT AREA          YM7523 73330002
+         ORG   RSCCW1                                          @Z40RSGD 73334008
+*   PARAMETER LIST FOR IGCMSG6C                                @Z40RSGD 73338008
+OPPARM   DS    A                        ADDRESS PARM LIST      @Z40RSGD 73338808
+RACHECK  EQU   RSCCW1                   RACHECK PARM LIST      @Z40RSGD 73339608
+OPID     DS    H                        MODULE IDENTIFIER      @Z40RSGD 73342008
+OPRETCOD DS    H                        RETURN CODE            @Z40RSGD 73346008
+OPADDDSN DS    A                        ADDRESS DATA SET NAME  @Z40RSGD 73347608
+OPADDVOL DS    A                        ADDRESS VOLSER         @Z40RSGD 73349208
+         EJECT                                                          73350002
+         CVT   DSECT=YES,PREFIX=YES,LIST=YES                     Y02076 84450002
+CVTFIX   DSECT                                                   Y02049 84460002
+CVT      EQU   CVTMAP                                            Y02049 84500002
+         EJECT                                                          84600018
+*                                                                       84700018
+*                                                                       84800018
+*   TASK CONTROL BLOCK                                                  84900018
+*                                                                       85000018
+*                                                                       85050002
+         IKJTCB                                               Y02076    85100002
+         EJECT                                                          87300018
+         DCBD  DSORG=PS                                                 87400018
+BLKCT    EQU   DCBBLKCT-IHADCB          DISPLACEMENT TO BLKCT IN DCB    87450002
+*                                                                       87700018
+*                                                                       87900018
+*                                                                       88000018
+         EJECT                                                 @G32DSPD 88500032
+***      PSA        ***                                        @G32DSPD 89000032
+         IHAPSA                                                @G32DSPD 89500032
+         EJECT                                                 @G32DSPD 90000032
+***      JSCB       ***                                        @G32DSPD 90500032
+         IEZJSCB                                               @G32DSPD 91000032
+         EJECT                                                          91500018
+         IEEVRSWA  VER=3                AOS2 VERSION OF WA              91600000
+SECSWICH EQU   RSERAS02                 WORK SPACE GOTTEN IND    Y02049 91650002
+REG1SAVE EQU   RSERAS00                 REGISTER 1 SAVE AREA     Y02049 91660002
+RST      EQU   RSERAS01                 TIOT ADR                 Y02049 91662002
+RSJF     EQU   RSERAS03                 JFCB TTR                 Y02049 91664002
+SSCRCMPA EQU   RSERAS09                 1ST SSCR BUFFER ADR     ZA00600 91670002
+UCBWKTAB EQU   RSERAS05                 UCB WORK TABLE ADDRESS   Y02049 91680002
+UCBINFO  EQU   RSERAS08                 UCB GETMAIN INFORMATION  Y02049 91682002
+*                                       AND UCB ADDRESS COMPARE  Y02049 91690002
+QMNPRMWA EQU   RSPPEL                   SAVE ADR OF QMNGR P.L.   Y02049 91692002
+VSAMLOAD EQU   RSERAS01                 ADR EP LOC               Y02076 91694002
+VSAMODAD EQU   RSERAS03                 ADR VSAM MODULE          Y02076 91696002
+VSAMRTCD EQU   RSERAS04                 VSAM MODULE RETURN CODE  Y02076 91698002
+REG8SAVE EQU   RSERAS06                 CONTENTS REG 8           Y02049 91698102
+RSBUFADC EQU   RSERAS08                 BUFFER ADR PTR           Y02076 91698402
+RTNCDPWC EQU   RSERAS07                 CONTENTS REG 10          Y02049 91698802
+SECIOBAD EQU   RSERAS02                 ADR OF IOB SECLOADA      Y02049 91699602
+SECCCWAD EQU   RSERAS03                 ADR OF CCW'S SECLOADA    Y02076 91699702
+RSBUFADP EQU   RSERAS05                 PREV VSAM BUF ADR        Y02076 91699802
+*                                                                       91700018
+         END                                                            91800018

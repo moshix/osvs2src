@@ -1,0 +1,435 @@
+   TITLE 'IGG019BS - CHECK ROUTINE, VS-BDAM DATA SET CREATION'          00012019
+IGG019BS CSECT                                                          00013019
+*MODULE NAME = IGG019BS                                               * 00015002
+*                                                                     * 00017002
+*DESCRIPTIVE NAME = BDAM CREATE CHECK MODULE FOR VS RECORD FORMAT     * 00019002
+*                                                                     * 00019402
+*COPYRIGHT = NONE                                                     * 00019802
+*                                                                     * 00019902
+*CHANGE ACTIVITY                                                      * 00023202
+*                                                                     * 00025202
+*        VS1-1 CHANGES/DELETIONS                                        00080002
+*        VS2-1 CHANGES/DELETIONS                                        00090002
+*        VS1-2 CHANGES/DELETIONS                                        00100002
+*        VS2-2 CHANGES/DELETIONS                                        00100402
+*153000,201000,219000,222000,267000,270000,285000,291000-297000,309000, 00100802
+*312000,522000,552000-561000                                     Y02072 00100902
+*                                                                       00101019
+*STATUS CHANGE LEVEL 1                                                  00110002
+*                                                                       00111019
+*FUNCTIONS- THIS ROUTINE IS ENTERED BY THE CHECK MACRO ISSUED BY THE    00120019
+*    PROBLEM PROGRAM FOLLOWING A WRITE.                                 00130019
+*    1. IT RECEIVES CONTROL WHEN THE PROCESSING PROGRAM USES THE        00140019
+*       CHECK MACRO-INSTRUCTION.                                        00150019
+*    2. IF THE CHANNEL PROGRAM IS NOT YET EXECUTED, THE MODULE          00160019
+*       ISSUES A WAIT MACRO-INSTRUCTION.                                00170019
+*    3. IF A USER SPECIFIES WRITE-SFR, THE NEXT RECORD ADDRESS          00180019
+*       (TTR) IS SUPPLIED IN THE NEXT ADDRESS FIELD OF THE DECB.        00190019
+*    4. IF THE EXECUTION OF THE CHANNEL PROGRAM ENCOUNTERED A           00200019
+*       PERMANENT ERROR CONDITION, THE MODULE PASSES CONTROL TO         00210019
+*       THE PROCESSING PROGRAM'S SYNAD ROUTINE.  IF CONTROL IS          00220019
+*       RETURNED FROM THE SYNAD ROUTINE, OR IF THERE IS NO SYNAD        00230019
+*       ROUTINE, THE MODULE ISSUES AN DMABCOND OR EOV MACRO.            00240002
+*    5. IF THE WRITE ROUTINE ENCOUNTERED AN EOV CONDITION (AND,         00250019
+*       THEREFORE DID NOT REQUEST SCHEDULING OF THE CHANNEL PROGRAM     00260019
+*       FOR EXECUTION), THIS MODULE PASSES CONTROL TO THE SYNAD/EOV     00270019
+*       EXECUTOR (IGG0005E) BY ISSUING AN SVC 55 INSTRUCTION.  ON       00280019
+*       RETURN OF CONTROL THIS MODULE TESTS FOR COMPLETION OF THE       00290019
+*       CHANNEL PROGRAM.                                                00291019
+*                                                                       00291119
+*ENTRY POINTS- 'IGG019BS' IS THE ENTRY FROM THE CHECK MACRO EXPANSION   00292019
+*    BY THE CALLING SEQUENCE-      L    15,DCBCHECK                     00293019
+*                                  BALR 14,15                           00294019
+*                                                                       00295019
+*INPUT- INPUT TO THE CHECK MACRO IS THE ADDRESS OF THE DECB ASSIGNED TO 00296019
+*    THE WRITE TO BE CHECKED. THIS ADDRESS WILL BE LOADED INTO          00297019
+*    REGISTER 1 PRIOR TO ENTERING THIS ROUTINE.                         00298019
+*                                                                       00299019
+*OUTPUT- THE IOB USED FOR THE WRITE IS MADE AVAILABLE SO THAT IT MAY    00299119
+*    BE REUSED BY THE WRITE ROUTINE.                                    00299219
+*    IF THE EXIT TO THE USER'S ERROR ROUTINE IS TAKEN, REGISTER 0 WILL  00299319
+*    CONTAIN THE DECB ADDRESS AND REGISTER 1 THE DCB ADDRESS AND A      00299419
+*    WRITE INDICATOR.                                                   00299519
+*    IF THE USER SPECIFIED 'NEXT ADDRESS' THE RELATIVE ADDRESS (TTR)    00299619
+*    OF THE NEXT RECORD (NOT YET WRITTEN) WILL BE RETURNED              00299719
+*                                                                       00299819
+*EXTERNAL ROUTINES-                                                     00299919
+*                                                                       00300019
+*EXITS- 'USEREXIT' IS THE EXIT TO RETURN TO THE PROBLEM PROGRAM ON      00300119
+*    NORMAL COMPLETION.                                                 00300219
+*    'SYNCEXIT' IS THE EXIT TO THE USER'S SYNCHRONOUS ERROR ROUTINE.    00300319
+*    'ABEXIT' IS AN EOV EXIT WHEN THE WRITE COMPLETED IN ERROR AND NO   00300502
+*    SYNCHRONOUS ERROR ROUTINE IS SPECIFIED. ABEND 001 AND WTP RESULTS. 00300602
+*    'SYNCRET' AND 'SYNCRET1' ARE ABENDS WHICH WILL OCCUR IF THE USER   00300702
+*    RETURNS FROM HIS SYNAD ROUTINE EITHER WHEN NO SPACE ON THE         00338102
+*    VOLUMES IS AVAILABLE OR THE USER HAS HAD AN IO ERROR AND WENT TO   00348102
+*    HIS SYNAD ROUTINE FIRST. DMABCOND MACRO IS ISSUED TO TRANSFER      00358102
+*    CONTROL TO PROBLEM DETERMINATION WHICH WILL ISSUE A WTP MESSAGE    00368102
+*    AND GTRACE PERTINENT CONTROL BLOCKS BEFORE ABENDING WITH A 008.    00370102
+*                                                                       00413002
+*TABLES/WORK AREAS-                                                     00450402
+*                                                                       00487802
+*ATTRIBUTES- THIS ROUTINE IS REENTRANT AND EXECUTED ENABLED.            00525202
+*                                                                       00562602
+*                                                                       00600019
+*                         REGISTER EQUATES                              00900019
+*                                                                       01200019
+RWORK0   EQU   0                        WORK REG                        01500019
+R0       EQU   0                        DECB REG-USER SYNAD EXIT Y02072 01550002
+RPARM    EQU   1                        PARAMETER REG                   01800019
+RWORK3   EQU   1                        WORK REG                 Y02072 01850002
+R1       EQU   1                        DCB REG-USER SYNAD EXIT  Y02072 01900002
+RPARM2   EQU   2                        PARM REG FOR CONVERSION ROUT    02100019
+R2       EQU   2                        SAVE/RESTORE REG         Y02072 02150002
+RDCB     EQU   3                        DCB REG                         02400019
+RDECB    EQU   4                        DECB REG                        02700019
+RIOB     EQU   5                        IOB REG                         03000019
+RBASE    EQU   6                        BASE REG                        03300019
+RWORK1   EQU   7                        WORK REG                        03600019
+RCVT     EQU   8                        CVT REG                         03900019
+R8       EQU   8                        SAVE/RESTORE REG         Y02072 03950002
+R10      EQU   10                       SAVE/RESTORE REG         Y02072 04000002
+R11      EQU   11                       SAVE/RESTORE REG         Y02072 04050002
+R12      EQU   12                       SAVE/RESTORE REG                04210002
+SAVEREG  EQU   13                       SAVE REGISTER                   04500019
+RETURN   EQU   14                       RETURN REG                      04800019
+R14      EQU   14                       SAVE/RESTORE REG         Y02072 04850002
+RENTER   EQU   15                       ENTRY REG                       05100019
+*                                                                       05400019
+*                         CONSTANT EQUATES                              05700019
+*                                                                       06000019
+NULL     EQU   0                        ZERO                            06300019
+TWO      EQU   2                        CONSTANT = 2                    06600019
+ADDRLEN  EQU   3                        LENGTH OF AN ADDRESS            06900019
+MBBLEN   EQU   3                        LENGTH OF MBB FIELD             07200019
+CHAIN    EQU   4                        OFFSET TO IOB CHAIN             07500019
+FOUR     EQU   4                        CONSTANT                        07800019
+CCHHRLEN EQU   5                        LENGTH OF CCHHR FIELD           08100019
+VOLMTT   EQU   8                        OFFSET TO THE VOL TT IN SWA CB  08400019
+MSTRTT   EQU   10                       OFFSET TO MASTER TT IN SWA CB   08700019
+BYTELEN  EQU   8                        BITS PER BYTE                   09000019
+DECBERBT EQU   X'60'                    DECB ERROR BITS                 09600019
+AVAIL    EQU   X'7F'                    AVAILABILITY BIT                09900019
+UNITEXCP EQU   X'01'                    UNIT EXCEPTION BIT              10200019
+WRITE    EQU   X'40'                    WRITE INDICATOR IN DECB         10500019
+SYNADBIT EQU   X'01'                    SYNC ROUTINE BIT IN DCB         10800019
+EOVBIT   EQU   X'80'                    EOV BIT IN IOB                  11100019
+APRLTV   EQU   X'20'                    OFFSET TO CONVERSION ROUTINE    11400019
+R0WRITE  EQU   X'04'                    WRITE R0 BIT IN SWA             11700019
+NXTADDR  EQU   X'01'                    TYPE = 'R'                      12000019
+INCRTT   EQU   X'000101'                TO INCREMENT RELATIVE TRACK     12300019
+INCRR    EQU   X'000001'                TO INCREMENT RELATIVE RECORD    12600019
+ONE      EQU   1                        CONSTANT = 1                    12900019
+NOT      EQU   X'FF'                    CONSTANT = X'FF'                13200019
+         USING IGG019BS,RBASE                                           13500019
+         USING IOBDEF,RIOB                                              13800019
+         USING IHADCB,RDCB                                              14100019
+         USING DECBDEF,RDECB                                            14400019
+         USING SAVEAREA,SAVEREG                                  Y02072 14450002
+         USING SGWKAREA,RWORK1                                          14700019
+         USING CVT,RCVT                                                 15000019
+SAVEREGS EQU   *                        INITIALIZE REGS          Y02072 15050002
+*                                                                       15052002
+*  REGISTERS 14-10 ARE SAVED AT AN OFFSET OF 20 IN THE SAVEAREA TO      15060002
+*  MAINTAIN COMPATABILITY WITH SAM AND PROVIDE EOV WITH A SINGLE        15070002
+*  SAM/DAM INTERFACE. IT IS LIKEWISE NECESSARY, HOWEVER, TO SAVE REGS   15080002
+*  11 AND 12 BECAUSE THEY ARE CLOBBERED BY THE SYSTEM CONVERT ROUTINE.  15090002
+*                                                                       15092002
+         STM   R14,R10,SAVER14          SAVE USER REGS           Y02072 15100002
+         STM   R11,R12,SAVER11          SAVE REGS 11 AND 12 TOO  Y02072 15150002
+         LR    RBASE,RENTER             SET BASE REG                    15600019
+         LR    RDECB,RPARM              SAVE DECB ADDR                  15900019
+         L     RDCB,DECDCBAD            DCB ADDR                        16200019
+         L     RIOB,DECIOBPT            IOB ADDR                        16500019
+         SH    RIOB,PREFXLEN            SAM IOB ADDR                    16800019
+         TM    IOBLINK,EOVBIT           WAS THIS IOB SCHEDULED          17100019
+         BZ    POSTCHK                  YES--BRANCH                     17400019
+*                                       NO--SET UP FOR  EOV             17700019
+EOVGO    EQU   *                                                        18000019
+         L     RWORK1,DCBIOBA           ADDR OF LAST IOB USED           18300019
+         IC    RWORK0,CHAIN(RWORK1)     SAVE FIRST BYTE OF EOV IOB PTR  18600019
+         ST    RIOB,CHAIN(RWORK1)       LINK THIS IOB TO EOV IOB        18900019
+         STC   RWORK0,CHAIN(RWORK1)     RESTORE FIRST BYTE              19200019
+         LR    RWORK0,RIOB              IOB ADDR                        19500019
+         OI    IOBSTAT1,UNITEXCP        TURN ON UNIT EXCEPTION BIT      19800019
+         EOV   (RDCB)                   GO TO EOV                Y02072 20400002
+         LTR   RENTER,RENTER            OUT OF SPACE                    20700019
+         BZ    SPACE                    NO--BRANCH                      21000019
+         BALR  RETURN,RENTER            YES--GO TO SYNAD, EOV HAS       21300002
+*                                       LOADED USER SYNAD ADDR IN R15   21350002
+         USING *,RETURN                                                 21600019
+SYNCRET1 EQU   *                        GO TO PROB DET-NO SPACE  Y02072 21650002
+         L     RDECB,SAVER1             GET INPUT DECB ADDR      Y02072 21652002
+         L     RDCB,DECDCBAD            GET DCB ADDR AGAIN       Y02072 21654002
+         DMABCOND  209,SVC=YES,DCB=(RDCB)  BR TO PROB DETERMIN   Y02072 21700002
+*                                       TO ABEND WITH 008        Y02072 21750002
+         DROP  RETURN                                                   22500019
+*                                                                       22800019
+SPACE    EQU   *                                                        23100019
+*                                                                       23400019
+         L     RDCB,DECDCBAD            RESTORE DCB ADDR                23700019
+POSTCHK  EQU   *                                                        24000019
+         TM    DECSDECB,DECBERBT        WAS DECB POSTED WITHOUT ERROR   24300019
+         BO    TTRFDBAK                 YES--GO CALCULATE NEXT ADDR     24600019
+         BZ    CHKWAIT                  NOT POSTED--SET UP FOR WAIT     24900019
+*                                       ERROR CONDITION                 25200019
+         TM    DCBSYNAD+ADDRLEN,SYNADBIT WAS SYNAD SPECIFIED            25500019
+         BZ    SYNCEXIT                 YES                             25800019
+*                                                                       26100019
+ABEXIT   EQU   *                                                        26400019
+         LH    RWORK0,ABCODE1           PUT 001 ABEND CODE IN R0 Y02072 27100002
+         EOV   (RDCB)                   GO TO EOV TO ABEND 001   Y02072 27150002
+*                                                                       27300019
+SYNCEXIT EQU   *                                                        27600019
+*  SET UP FOR USER'S SYNCHRONOUS ERROR ROUTINE                          27900019
+*                                                                       28200019
+         LR    R0,RDECB                 PUT DECB ADDR IN R0      Y02072 28250002
+         MVI   DECDCBAD,WRITE           SET WRITE INDICATOR IN DECB     28800019
+         L     R1,DECDCBAD              PUT DCB ADDR IN R1       Y02072 28850002
+         L     RENTER,DCBSYNAD          PUT SYNAD ADDR IN R15    Y02072 28900002
+         LM    R2,R8,SAVER2             RESTORE REGS 2-8         Y02072 28950002
+         BALR  RETURN,RENTER            GO TO SYNC ERROR ROUTINE        30000019
+         USING *,RETURN                                                 30300019
+*                                                                       30600019
+SYNCRET  EQU   *                        ABEND WITH IO ERROR      Y02072 30650002
+         L     RDECB,SAVER1             GET INPUT DECB ADDR      Y02072 30652002
+         L     RDCB,DECDCBAD            GET DCB ADDR AGAIN       Y02072 30654002
+         DMABCOND  210,SVC=YES,DCB=(RDCB)  BR TO PROB DETERMIN   Y02072 30700002
+*                                       ABEND 008 WITH IO ERROR  Y02072 30750002
+         DROP  RETURN                                                   31500019
+*                                                                       31800019
+TTRFDBAK EQU   *                                                        32100019
+*                                                                       32400019
+*   THE WRITE HAS COMPLETED SUCCESSFULLY, NOW THE RELATIVE TTR OF       32700019
+*   WHERE THE NEXT RECORD WILL BE WRITTEN MUST BE CALCULATED.  THIS     33000019
+*   TTR WILL BE RELATIVE TO THE BEGINNING OF THE DATA SET, NOT THE      33300019
+*   EXTENT.                                                             33600019
+*                                                                       33900019
+         LA    RPARM2,IOBSEEK           ADDR OF ACTUAL BLK ADDR         34200019
+         L     RPARM,DCBDEBAD           ADDR OF DEB                     34500019
+         L     RCVT,CVTPTR              CVT ADDR                        34800019
+         L     RENTER,CVTPRLTV          CONVERSION ROUTINE ADDR         35100019
+         LR    RCVT,SAVEREG             SAVE REG                        35400019
+         BALR  RETURN,RENTER            BRANCH TO IECPRLTV              35700019
+         LR    SAVEREG,RCVT             RESTORE REG                     36000019
+         SRL   RWORK0,BYTELEN           RIGHT ADJUST TTR IN REGISTER    36300019
+         IC    RWORK0,IOBDNRCF+FOUR     SET R=R                         36600019
+         LR    RPARM2,RWORK0            SAVE TTR REG.                   36900019
+*                                                                       37200019
+*   IF A TRACK HAS JUST BEEN FILLED, RELATIVE TRACK MUST BE INCREMENTED 37500019
+*   IF NOT, RELATIVE RECORD MUST BE INCREMENTED.                        37800019
+*                                                                       38100019
+         LR    RWORK1,RIOB              IOB ADDR                        38400019
+         LA    RWORK1,NULL(RWORK1)                                      38700019
+         SR    RWORK3,RWORK3            CLEAR FOR IC                    39000019
+         IC    RWORK3,DCBOFFSW          OFFSET TO WRITE CCW             39300019
+         AR    RWORK1,RWORK3            WRITE CCW ADDR                  39600019
+         L     RWORK1,NULL(RWORK1)      PTR TO SWA + 10                 39900019
+         LA    RWORK1,NULL(RWORK1)                                      40200019
+         SH    RWORK1,SWAPRFXL          SWA ADDR                        40500019
+         TM    SGWKRCRD,R0WRITE         WAS R0 INCLUDED IN LAST WRITE   40800019
+         BZ    INCRMNTR                 NO--BRANCH                      41100019
+         NI    SGWKFLAG,NOT-R0WRITE     RESET WRITE/R0 BIT              41400019
+         SRL   RPARM2,BYTELEN           ZERO RELATIVE RECORD            41700019
+         SLL   RPARM2,BYTELEN           SET TO TTR R=0                  42000019
+         LA    RPARM2,INCRTT(RPARM2)    INCREMENT RELATIVE TRACK        42300019
+         B     ADDMASTR                 GO TO ADD TTR TO MASTER TTR     42600019
+INCRMNTR EQU   *                                                        42900019
+         LA    RPARM2,INCRR(RPARM2)     INCREMENT RELATIVE RECORD       43200019
+ADDMASTR EQU   *                                                        43500019
+         L     RCVT,DCBEOBW             SWA CONTROL BLOCK ADDR          43800019
+         LH    RWORK3,MSTRTT(RCVT)      MASTER TTR                      44100019
+         SLL   RWORK3,BYTELEN           SHIFT FOR 0TTR ALLIGNMENT       44400019
+         LR    RETURN,RPARM2            SAVE VOLUME 'TT'                44700019
+         AR    RPARM2,RWORK3            ADD TTR AND MASTER TT           45000019
+         TM    DECTYPE+ONE,NXTADDR      TEST IF NEXT ADDR IS SPECIFIED  45300019
+         BNO   GOSPNVLM                 NO,GOTO CHECK SPAN VOLUME       45600019
+         L     RPARM,DECNEXT            PTR TO NEXT ADDRESS FIELD       45900019
+         STC   RPARM2,TWO(RPARM)        STORE R OF TTR IN USER'S AREA   46200019
+         SRL   RPARM2,BYTELEN           DELETE LAST BYTE                46500019
+         STC   RPARM2,ONE(RPARM)        STORE T1 OF TTR IN USER'S AREA  46800019
+         SRL   RPARM2,BYTELEN           DELETE LAST BYTE                47100019
+         STC   RPARM2,NULL(RPARM)       STORE T2 OF TTR IN USER'S AREA  47400019
+*                                                                       47700019
+GOSPNVLM EQU   *                                                        48000019
+*                                                                       48300019
+*   TEST IF THIS WAS A SPANNED VOLUME RECORD                            48600019
+*        YES - GOTO EOV ROUTINE TO ALLOCATE MORE SPACE                  48900019
+*        NO  - GO BACK TO THE USER                                      49200019
+*                                                                       49500019
+         SRL   RETURN,BYTELEN           SET TO TT                       49800019
+         STH   RETURN,VOLMTT(RCVT)      STORE UPDATED MASTER TTR        50100019
+*                                                                       50400019
+         TM    SGWKFLAG,SPANVLM         TEST IF THIS IS SPANNED VOLUME  50700019
+         BO    EOVGO                    YES,GOTO TO ISSUE EOV           51000019
+*                                                                       51300019
+USEREXIT EQU   *                                                        51600019
+         NI    IOBIOBA,AVAIL            MAKE IOB AVAILABLE              51900019
+         LM    R14,R10,SAVER14          RESTORE USER REGS        Y02072 52250002
+         LM    R11,R12,SAVER11          RESTORE R11 AND R12      Y02072 52260002
+         BR    R14                      RETURN TO USER           Y02072 52300002
+*                                                                       52500019
+*                                                                       52800019
+CHKWAIT  EQU   *                                                        53100019
+         LR    RPARM,RDECB              PUT DECB ADDR IN R1 FOR WAIT    53400002
+         WAIT  ,ECB=(1)                 WAIT FOR WRITE TO COMPLETE      53700019
+         B     SPACE                    GO TO CHECK FOR ERROR           54000019
+*                                                                       54300019
+*                                                                       54600019
+         DS    0H                       ALIGNMENT                Y02072 54900002
+ABCODE1  DC    XL2'1000'                NO SYNAD RTN - IO ERROR  Y02072 55500002
+PREFXLEN DC    H'8'                     IOB PREFIX LENGTH               56400019
+SWAPRFXL DC    H'10'                    SWA PREFIX LENGTH               56700019
+PATCH    DC    XL50'0'                  PATCH AREA               Y02072 56750002
+         EJECT                                                          57000019
+**********************************************************************  57300019
+*                                                                       57600019
+*    CONTROL BLOCK DEFINITIONS FOLLOW                                   57900019
+*                                                                       58200019
+**********************************************************************  58500019
+SAVEAREA DSECT                          USER SAVEAREA            Y02072 58750002
+         DS    XL12                     UNUSED BY THIS MOD       Y02072 58760002
+SAVER11  DS    A                        REG 11 SAVED             Y02072 58762002
+SAVER12  DS    A                        REG 12 SAVED             Y02072 58764002
+SAVER14  DS    A                        REG 14 SAVED             Y02072 58770002
+SAVER15  DS    A                        REG 15 SAVED             Y02072 58780002
+SAVER0   DS    A                        REG 0 SAVED              Y02072 58790002
+SAVER1   DS    A                        REG 1 SAVED              Y02072 58792002
+SAVER2   DS    A                        REG 2 SAVED              Y02072 58794002
+SAVER3   DS    A                        REG 3 SAVED              Y02072 58796002
+SAVER4   DS    A                        REG 4 SAVED              Y02072 58798002
+SAVER5   DS    A                        REG 5 SAVED              Y02072 58798402
+SAVER6   DS    A                        REG 6 SAVED              Y02072 58798802
+SAVER7   DS    A                        REG 7 SAVED              Y02072 58799202
+SAVER8   DS    A                        REG 8 SAVED              Y02072 58799602
+SAVER9   DS    A                        REG 9 SAVED              Y02072 58799702
+SAVER10  DS    A                        REG 10 SAVED             Y02072 58849702
+*                                                                       58949702
+*                                                                       60000019
+CVT      DSECT                                                          60300019
+*                                                                       60600019
+         CVT                                                            60900019
+*                                                                       61200019
+         SPACE 2                                                        61500019
+*                                                                       61800019
+**********************************************************************  62100019
+*                                                                       62400019
+         DCBD  DSORG=(PS),DEVD=(DA)                                     62700019
+*                                                                       63000019
+*********************************************************************** 63300019
+*                                                                       63600019
+*   DSECT FOR IOB                                                       63900019
+*********************************************************************** 64200019
+*                                                                       64500019
+IOBDEF   DSECT           I/O BLOCK DEFINITION                           64800019
+IOBLINK  DS    F         IOB LINK ADDRESS                               65100019
+IOBIOBA  DS    F         IOB ADDRESS FOR EOV                            65400019
+IOBFLAG1 DS    CL1       ERROR FLAG 1                                   65700019
+IOBFLAG2 DS    CL1       ERROR FLAG 2                                   66000019
+IOBSENSE DS    CL2       I/O SENSE BITS                                 66300019
+IOBECBPT DS    F         ECB ADDRESS                                    66600019
+IOBCSW   DS    D         CSW STORED BY IOS                              66900019
+IOBSTAT1 EQU   IOBCSW+4  CSW STATUS BYTE                                67200019
+IOBSIOCC DS    0BL1      SIO CONDITION CODE                             67500019
+IOBSTART DS    F         CHANNEL PROGRAM STARTING CCW                   67800019
+IOBDCBPT DS    F         DCB ADDRESS                                    68100019
+IOBRESTR DS    F         CHANNEL PROGRAM RESTART ADDRESS                68400019
+IOBINCAM DS    CL2       BLOCK INCREMENT AMOUNT                         68700019
+IOBERRCT DS    CL2       ERROR COUNTS                                   69000019
+IOBSEEK  DS    D         SEEK ADDRESS                                   69300019
+IOBDNRCF DS    D         NEW RECORD COUNT FIELD                         69600019
+IOBR0CNT DS    D         COUNT FIELD OF R0                              69900019
+IOBR0DAT DS    D         DATA FIELD OF R0                               70200019
+IOBCCW1  DS    D         FIRST CCW OF CHANNEL PROGRAM                   70500019
+IOBCCW2  DS    D         2ND CCW OF CHANNEL PROGRAM                     70800019
+IOBCCW3  DS    D         3RD CCW OF CHANNEL PROGRAM                     71100019
+IOBCCW4  DS    D         4TH CCW OF CHANNEL PROGRAM                     71400019
+IOBCCW5  DS    D         5TH CCW OF CHANNEL PROGRAM                     71700019
+IOBCCW6  DS    D         6TH CCW OF CHANNEL PROGRAM                     72000019
+IOBCCW7  DS    D         7TH CCW OF CHANNEL PROGRAM                     72300019
+IOBCCW8  DS    D         8TH CCW OF CHANNEL PROGRAM                     72600019
+IOBCCW9  DS    D         9TH CCW OF CHANNEL PROGRAM                     72900019
+IOBCCW10 DS    D         10TH CCW OF CHANNEL PROGRAM                    73200019
+IOBCCW11 DS    D         11TH CCW OF CHANNEL PROGRAM                    73500019
+IOBCCW12 DS    D         12TH CCW OF CHANNEL PROGRAM                    73800019
+IOBCCW13 DS    D         13TH CCW OF CHANNEL PROGRAM                    74100019
+IOBCCW14 DS    D         LAST CCW OF LONGEST CHANNEL PROGRAM            74400019
+*                                                                       74700019
+OFFTOMAX EQU   IOBCSW-IOBDEF                                            75000019
+OFFTONEW EQU   IOBCSW+FOUR-IOBDEF                                       75300019
+*                                                                       75600019
+         SPACE 2                                                        75900019
+**********************************************************************  76200019
+*                                                                       76500019
+*  DSECT FOR DECB                                                       76800019
+*                                                                       77100019
+*********************************************************************** 77400019
+DECBDEF  DSECT           DATA EVENT CONTROL BLOCK                       77700019
+DECSDECB DS    F         STANDARD ECB                                   78000019
+DECTYPE  DS    CL2       TYPE AND OPTIONS                               78300019
+DECLNGTH DS    CL2       DATA LENGTH                                    78600019
+DECDCBAD DS    F         DCB ADDRESS                                    78900019
+DECAREA  DS    F         AREA ADDRESS                                   79200019
+DECIOBPT DS    F         IOB ADDRESS                                    79500019
+DECNEXT  DS    F         NEXT ADDRESS                                   79800019
+         SPACE 2                                                        80100019
+         SPACE 3                                                        81000019
+*                                                                       81300019
+*********************************************************************** 81600019
+*                                                                       81900019
+*   DSECT FOR SEGMENT WORK AREA CONTROL BLOCK - 8 BYTES                 82200019
+*                                                                       82500019
+*********************************************************************** 82800019
+*                                                                       83100019
+SWACB    DSECT                                                          83400019
+*                                                                       83700019
+SWACBPTR DS    AL4       POINTER TO THE 1ST SEG. WORK AREA              84000019
+SWACBNO  DS    H         NUMBER OF SEGMENT WORK AREAS                   84300019
+SWACBLNG DS    H         LENGTH OF A SEGMENT WORK AREA                  84600019
+SWACBTT  DS    H         TT OF THIS VOLUME RELATIVE TO THE              84900019
+*                        BEGINNING OF DATA SET                          85200019
+         DS    H         NOT USED                                       85500019
+*                                                                       85800019
+         SPACE 3                                                        86100019
+*********************************************************************** 86700019
+*                                                                       87000019
+*   DSECT FOR SEGMENT WORK AREA                                         87300019
+*                                                                       87600019
+*********************************************************************** 87900019
+*                                                                       88200019
+SGWKAREA DSECT                                                          88500019
+*                                                                       88800019
+SGWKPTR  DS    AL4       POINTER TO NEXT SEG WORK AREA                  89100019
+SGWKRCRD DS    AL4       POINTER TO RECORD AREA                         89400019
+*                                                                       89700019
+SGWKFLAG EQU   SGWKRCRD  FLAG BYTES                                     90000019
+*                                                                       90300019
+SPANVLM  EQU   X'80'     SPAN VOLUME                                    90600019
+LASTSEG  EQU   X'40'     LAST SEGMENT WAS WRITTEN                       90900019
+*                                                                       91200019
+SGWKOFF  DS    H         OFFSET OF THE CURRENT SEGMENT                  91500019
+SGWKDATA DS    0H        SEGMENT AREA                                   91800019
+*                                                                       92100019
+         SPACE 3                                                        92400019
+*********************************************************************** 93000019
+*                                                                       93300019
+*   DSECT FOR DASD DEVICE CHARACTERISTIC TABLE                          93600019
+*                                                                       93900019
+*********************************************************************** 94200019
+*                                                                       94500019
+DASDTBL  DSECT                                                          94800019
+*                                                                       95100019
+DASDCYL  DS    H         NO. OF CYLINDERS                               95400019
+DASDTRK  DS    H         NO. OF TRACKS/CYLINDER                         95700019
+DASDLNGH DS    H         TRACK LENGTH                                   96000019
+DASDINTR DS    AL1       OVERHEAD FOR INTERMEDIATE RECORD               96300019
+DASDLAST DS    AL1       OVERHEAD FOR LAST RECORD                       96600019
+DASDKEY  DS    AL1       OVERHEAD FOR KEY                               96900019
+DASDFLAG DS    AL1       FLAGS                                          97200019
+*                                                                       97500019
+BYTEMODE EQU   X'02'     MBBCCHHR IS BY BYTE (2321)                     97800019
+TOLERANC EQU   X'01'     TOLERANCE FACTOR MUST BE ADDED                 98100019
+*                                                                       98400019
+DASDTOL  DS    AL2       TOLERANCE FACTOR                               98700019
+*                                                                       99000019
+         END                                                            99600019

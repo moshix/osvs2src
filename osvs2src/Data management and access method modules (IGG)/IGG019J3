@@ -1,0 +1,812 @@
+         TITLE 'IGG019J3 - BISAM COMBINED PRIV MACRO TIME, NLSD NOT 0'  00020000
+IGG019J3 CSECT                                                          00040000
+*        RELEASE OS/VS2-02 DELETIONS                             Y02072 00042002
+*        RELEASE 19 DELETIONS                                           00046000
+*1077069200,151300                                               A25517 00046519
+*1077022604-022688,022700-022737,022740-022788,022900-022920,    A26738 00046619
+*1077023800-024400,025200-027000,028600,029600-030000            A26738 00046719
+*        RELEASE 20 DELETIONS                                           00047000
+*0713022940,022950,023041                                        A33986 00047120
+*0713022800,063600,066400,066600,066800,067000,067200,067400,    S20201 00047220
+*0713067600-068600,076600,077400,100200,100400,100600,101400,    S20201 00047420
+*0713101600,102600,103200,103400-127400,132800,133000-133800,    S20201 00047620
+*0713134000-134800,135000-150600,151000,151200-158800            S20201 00047820
+*        RELEASE 21 DELETIONS                                           00048000
+*0983                                                            A33533 00048521
+*0983103310                                                      A48540 00048900
+*                                                               SA67174 00050902
+*                                                                       00058902
+*STATUS CHANGE LEVEL 009                                                00072002
+* FUNCTION/OPERATION' PRIVILEGED MACRO-TIME ROUTINE FOR BISAM WHEN      00100000
+*        READ AND UPDATE IS USED WITH    WRITE KN AND WHEN              00120000
+*        AT LEAST ONE HIGH-LEVEL INDEX IS SEARCHED ON DEVICE.           00140000
+*        1. IF THE MACRO IS NOT A WRITE K FOLLOWING FROM A READ KU,     00160000
+*            GETMAIN FOR AN IOB AND EXTENTION AND INITIALIZE THE IOB.   00180000
+*            IF  A  WRITE K FOLLOWING FROM READ KU, FIND THE IOB        00200000
+*            ON THE UPDATE QUEUE AND REMOVE IF FROM THE QUEUE.          00220000
+*        2. IF THE MACRO IS WRITE KN, DETERMINE IF ANY OTHER MACRO IS   00240000
+*            BEING PROCESSED FOR THIS DATA SET.  IF SO, ADD THE IOB TO  00260000
+*            THE UNSCHEDULED QUEUE AND SET THE UNSCHEDULED SWITCH ON.   00280000
+*            IF NOT, SEARCH THE HIGHEST LEVEL INDEX IN CORE IF THIS     00300000
+*            IS NECESSARY, INITIALIZE THE FIRST WKN CHANNEL PROGRAM,    00320000
+*            AND SET THE START ADDRESS AND SEEK-SEARCH ADDRESS IN THE   00340000
+*            IOB.                                                       00360000
+*        3. IF THE MACRO IS READ AND UPDATE MACRO, THEN                 00380000
+*            A. IF IT IS A WRITE K FOLLOWING FROM A READ KU OR IF       00400000
+*                WRITE KN IS NOT IN PROCESS OR PENDING, THEN            00420000
+*           DETERMINE IF THE FIRST CHANNEL PROGRAM NEEDED FOR THIS      00440000
+*            MACRO IS AVAILABLE. IF SO, REMOVE THE CHANNEL PROGRAM FROM 00460000
+*            ITS QUEUE, SEARCH THE HIGHEST LEVEL INDEX IN CORE          00480000
+*            IF THIS IS NECESSARY,     INITIALIZE THE CHANNEL PROGRAM,  00500000
+*            AND SET THE START ADDRESS AND SEEK-SEARCH ADDRESS IN THE   00520000
+*            IOB.  IF NOT, ADD THE IOB TO THE UNSCHEDULED QUEUE AND SET 00540000
+*            THE UNSCHEDULED SWITCH ON.                                 00560000
+*            B. IF IT IS NOT A WRITE K FOLLWOING FROM READ KU AND       00580000
+*                WRITE KN IS PENDING, THEN ADD THE IOB TO THE UNSCHED-  00600000
+*                ULED QUEUE AND SET THE UNSCHEDULED SWITCH ON.          00620000
+* ENTRY POINTS                                                          00640000
+*        ENTRY PNT     CALLING ROUTINE                FUNCTION          00660000
+*        ---------     ---------------                --------          00680000
+*        DISQHN     NON-PRIVILEGED MACRO-TIME   ALL OF THE FUNCTIONS    00700000
+*                    ROUTINE VIA QING SVC        DESCRIBED ABOVE        00720000
+*                    (SVC 54) ROOT                                      00740000
+*                                                                       00760000
+*        DISCP45    ASYNCHRONOUS ROUTINE        SET UP CP4/CP5 AND      00780000
+*                                                REMOVE THEM FROM THEIR 00800000
+*                                                QUEUE WHERE NECESSARY  00820000
+*                                                                       00840000
+*        DISCP7     ASYNCHRONOUS ROUTINE        SET UP CP7              00860000
+*                                                                       00880000
+*        DISCPS     ASYNCHRONOUS ROUTINE        SET UP CP1 OR CP2       00900000
+*                                                                       00920000
+*        DISCPWKN   ASYNCHRONOUS ROUTINE        SET UP FIRST WKN CP     00940000
+*                                                                       00960000
+*        DISPRIV    ASYNCHRONOUS ROUTINE        THE FUNCTIONS DESCRIBED 00980000
+*                                                IN 3.A. ABOVE          01000000
+*                                                                       01020000
+* INPUT - N/A                                                           01040000
+* OUTPUT - N/A                                                          01060000
+* EXTERNAL ROUTINES - N/A                                               01080000
+* EXITS  FROM DISQHN  RETURN TO QING SVC ROOT        VIA REGISTER 13    01100000
+*        FROM DISCP45 RETURN TO ASYNCHRONOUS ROUTINE VIA REGISTER 11    01120000
+*        FROM DISCP7  RETURN TO ASYNCHRONOUS ROUTINE VIA REGISTER 11    01140000
+*        FROM DISCPS  RETURN TO ASYNCHRONOUS ROUTINE VIA REGISTER 11    01160000
+*        FROM DISCPWKN RETURN TO ASYNCHRONOUS ROUTINE VIA REGISTER 11   01180000
+*        FROM DISPRIV RETURN TO ASYNCHRONOUS ROUTINE VIA REGISTER 13    01200000
+* TABLES/WORK AREAS' DECB, DCB, IOB AND EXTENSION, DCB WA (DCW), DEB    01220000
+*        SEE DSECTS AT END OF MODULE FOR FORMAT AND DESCRIPTIONS        01240000
+* ATTRIBUTES' RE-ENTRANT. DISABLED UPON ENTRY AND EXIT. ENABLED WHILE   01260000
+*        CHANNEL PROGRAMS ARE BEING INITIALIZED.                        01280000
+* NOTES - NONE                                                          01300000
+* GENERAL REGISTERS USED AS FOLLOWS                                     01320000
+R0       EQU   0                        WORK REGISTER                   01340000
+R1       EQU   1                   *    IOB                             01360000
+R2       EQU   2                 # *    DECB                            01380000
+R3       EQU   3                   *    -----                           01400000
+R4       EQU   4                 # *    DCB                             01420000
+R5       EQU   5                   **   CHANNEL PROGRAM                 01440000
+R6       EQU   6                        WORK REGISTER                   01460000
+R7       EQU   7                        WORK REGISTER                   01480000
+R8       EQU   8                   *    DCB WA (DCW)                    01500000
+R9       EQU   9                        WORK REGISTER                   01520000
+R10      EQU   10                       WORK REGISTER                   01540000
+R11      EQU   11                  ***  RETURN ADDRESS, SUBROUTINES     01560000
+R12      EQU   12                # *    BASE REGISTER                   01580000
+R13      EQU   13                # *    RETURN ADDRESS                  01600000
+R14      EQU   14                  *    SAVE AREA ADDRESS        Y02072 01620002
+R15      EQU   15                       WORK REGISTER                   01640000
+*        # MEANS THAT THESE REGISTERS ARE SET UP BEFORE ENTRY           01660000
+*            FROM SVC ROOT, AND MAY NOT BE DISTURBED                    01680000
+*        * MEANS THAT THESE REGISTERS ARE SET UP BEFORE                 01700000
+*            ANY ENTRY FROM THE                                         01720000
+*           ASYNCHRONOUS ROUTINE, AND MAY NOT BE DISTURBED              01740000
+*       ** MEANS THAT THESE REGISTERS ARE SET UP BEFORE                 01760000
+*            THE DISCP45, DISCP7, AND DISCPS ENTRIES FROM THE           01780000
+*            ASYNCHRONOUS ROUTINE, AND MAY NOT BE DISTURBED.            01800000
+*      *** MEANS THAT THESE REGISTERS ARE SET UP BEFORE                 01820000
+*            THE DISCP45, DISCP7, DISCPS, AND DISCPWKN ENTRIES FROM THE 01840000
+*            ASYNCHRONOUS ROUTINE, AND MAY NOT BE DISTURBED.            01860000
+         USING IGG019J3,R12                                             01880000
+         USING IHADCW,R8                                                01900000
+         USING IHAIOB,R1                                                01920000
+         USING IHADCB,R4                                                01940000
+         USING IHADECB,R2                                               01960000
+         USING IGGSAVE,R14              SAVEAREA ADDRESSABILITY  Y02072 01970002
+         SPACE 3                                                        01972002
+DISQHN   B     QHNQAB1                  ADDRESS MACRO-TIME Q HANDLING   01980000
+DISCP45  B     BMTS3B2                  ADDRESS CP4-CP5 SUB-ROUTINE     02000000
+DISCP7   B     BMTS4A2                  ADDRESS CP7 SUB-ROUTINE         02020000
+DISCPS   B     BMTS1B2                  ADDRESS CP1/CP2 SUB-ROUTINE     02040000
+DISCPWKN B     WKNS5B1                  ASYNCH ENTRY TO SET UP WKN CP   02060000
+DISPRIV  B     QHNQAG1                  ASYNCH ENTRY TO SCHED R+U CP    02080000
+*              CHART QA                                                 02100000
+QHNQAB1  EQU   *                        *                               02110000
+         L     R3,IGGPDEB               VALIDATED DEB ADDR       Y02072 02120002
+         L     R8,DCBWKPT2              R8   DCB WK AREA                02140000
+         TM    DECBTYP2,X'08'           TEST WRITE KU W  UPDATE FLAG ON 02200000
+         BZ    QHNQXB30                 BRANCH TO TEST ON ERROR Q P4700 02220000
+         TM    DECBEXC2,X'01'                                           02240000
+         BO    QHNQAB5                                                  02260000
+QHNQXB30 LA    R5,DCWFIOBE              POINT TO ERROR QUEUE     A26738 02261019
+         BAL   R15,SCHQUEUE             SEE IF DECB'S IOB HERE   A26738 02262019
+         B     QHNQHB30                 IF NOT, TRY UPDATE QUEUE A26738 02263019
+         IC    R9,DCWFIOBE              SAVE ERROR QUEUE COUNT   A26738 02264019
+         BAL   R15,QHNQAC4              REMOVE FROM QUEUE        A26738 02265019
+         LA    R9,1(R9)                 ROOM FOR ONE MORE        A26738 02266019
+         STC   R9,DCWFIOBE              STORE NEW VALUE          A26738 02267019
+         B     QHNQHB8                  GO CLEAR IOB             A26738 02268019
+QHNQHB30 EQU   *                                                  MC1F  02269418
+         LA    R5,DCWFUPDI              POINT TO UPDATE QUEUE    A26738 02270119
+         BAL   R15,SCHQUEUE             SEE IF DECB'S IOB HERE   A26738 02270819
+         B     QHNQAC3                  IF NOT, DO GETMAIN       A26738 02271519
+*        IF SO, REDUCE DCWNACT AND REUSE THIS IOB.                      02272219
+         IC    R6,DCWNACT               DECREASE NUMBER OF NON-  A26738 02272919
+         BCTR  R6,R0                    WRITE KN MACRO EVENTS.    7S029 02273800
+         STC   R6,DCWNACT                                         7S029 02273900
+         BAL   R15,QHNQAC4              REMOVE FROM QUEUE        A26738 02275919
+         B     QHNQHB8                  GO CLEAR IT              A26738 02277919
+QHNQAC3  EQU   *                        *                               02278100
+         L     R1,IGGPDEB               VALIDATED DEB ADDR       Y02072 02282002
+         LA    R0,SP250LN               SIZE OF BASIC IOB        Y02072 02283002
+         USING IHADEB,R1                                         S20201 02284000
+         TM    DEBRPSID,RPS             TEST IF RPS DEVICE USED  S20201 02285000
+         BZ    QHNQAC31                 BIF NOT RPS              S20201 02286000
+         AH    R0,RPSCCW                ADD LENGTH OF RPS CCWS   S20201 02287000
+QHNQAC31 EQU   *                        *                        S20201 02288000
+         SPACE 2                                                        02288102
+         MODESET EXTKEY=DATAMGT         CHANGE TO DATA MGT KEY   Y02072 02288402
+         SPACE 2                                                        02288502
+         STM   R2,R15,IGGREGS           SAVE REGISTERS 2 -15     Y02072 02288602
+         IC    R2,IGGUKEY               USER'S PROTECT KEY       Y02072 02288702
+         DROP  R14                      END USING ON SAVE AREA   Y02072 02288802
+         LR    R9,R14                   SAVE SAVE AREA ADDR      Y02072 02288902
+         L     R4,DEBTCBAD              TCB ADDRESS              Y02072 02290402
+         USING PSA,R0                   LOW CORE ADDRESSABILITY  Y02072 02290802
+         L     R7,PSAAOLD               ASCB ADDRESS             Y02072 02291202
+         SPACE 2                                                        02291302
+         MODESET KEYADDR=KEY0,WORKREG=1 CHANGE TO KEY ZERO       Y02072 02291602
+         SPACE 2                                                        02291702
+         GETMAIN RU,LV=(0),SP=SP250,KEY=(R2),BRANCH=YES IOB CORE Y02072 02292002
+         SPACE 2                                                        02292102
+         USING IGGSAVE,R9               SAVEAREA ADDRESSABILITY  Y02072 02292202
+         MODESET KEYADDR=IGGUKEY,WORKREG=2  SET USER PROTECT KEY Y02072 02292402
+         SPACE 2                                                        02292502
+         LM    R2,R15,IGGREGS           RESTORE REGS 2 - 15      Y02072 02293202
+         DROP  R9                       END USING ON SAVEAREA    Y02072 02293302
+         USING IGGSAVE,R14              SAVEAREA ADDRESSABILITY  Y02072 02293402
+         USING IHAIOB,R1                                         S20201 02293502
+         B     QHNQHB85                 CLEAR IOB                A26738 02295002
+         SPACE 2                                                        02295402
+QHNQHB8  TM    DECBTYP2,X'A0'           READ DECB                A26738 02296502
+         BZ    QHNQHB81                 NO, BRANCH               A26738 02298002
+         TM    DECBTYP1,X'01'           DYNAMIC BUFFERING        A26738 02299502
+         BZ    QHNQHB81                 NO, BRANCH               A26738 02301002
+         MVC   DECBAREA(4),IOBCCWAD     REUSE BUFFER IF PRESENT  A26738 02302502
+         B     QHNQHB9                  CLEAR IOB                A26738 02304002
+QHNQHB81 EQU   *                                                 A26738 02305502
+         LA    R15,QHNQHB9                                       A33986 02307002
+         L     R6,IOBCCWAD              DID IT HAVE A DYN BUFF    MC1F  02308502
+QHNQHB83 LTR   R6,R6                                             A33986 02310002
+         BCR   8,R15                   NO CLEAR IOB              A33986 02311502
+         DROP  R1                       YES ,FREE DYN BUFF        MC1F  02313002
+         LR    R0,R1                    SAVE IOB ADDRESS          MC1F  02314502
+         L     R1,DCBBUFCB              SET UP BUFFER CNTL BLK    MC1F  02316002
+         USING IHABCB,R1                                          MC1F  02317502
+         MVC   0(4,R6),BCBNAVB          SET POINTER TO THIS       MC1F  02319002
+         ST    R6,BCBNAVB               BUFFER &SET UP NXT AVAL   MC1F  02320502
+*                                       BUFF                      MC1F  02322002
+         DROP  R1                                                 MC1F  02323502
+         LR    R1,R0                    RESET R1                  MC1F  02325002
+         BR    R15                       CLEAR IOB               A33986 02326502
+QHNQHB85 TM    DECBTYP2,X'A0'           IF READ AND DYN BUFF,    A26738 02328002
+         BZ    QHNQHB9                  ZERO DECBAREA.           A26738 02329502
+         TM    DECBTYP1,X'01'                                    A26738 02331002
+         BZ    QHNQHB9                                           A26738 02332502
+         XC    DECBAREA(4),DECBAREA                              A26738 02334002
+         USING IHAIOB,R1                                          MC1F  02335502
+QHNQHB9  XC    IOBFLAG1(56),IOBFLAG1    CLEAR IOB                 MC1F  02337002
+         MVI   IOBFLAG1,X'02'            GET CORE AND INITIALIZE        02338502
+         ST    R2,IOBECBAD                                              02340000
+         ST    R2,IOBBCHAD              SAVE ECB                 A33533 02350021
+         ST    R4,IOBDCBAD-1                                            02360000
+         TM    DECBTYP2,X'04'            IF WKN, BRANCH           P4700 02366000
+         BO    QHNQCB2                                            P4700 02372000
+         B     QHNQAE3                                                  02480000
+QHNQAB5  MVI   DECBEXC2,X'00'           RESET UPDATE FLAG               02500000
+         LA    R5,DCWFUPDI              POINT TO UPDATE QUEUE    A26738 02530019
+         BAL   R15,SCHQUEUE             SEE IF DECB'S IOB HERE   A26738 02560019
+         B     QHNQAD5                  BR IF NOT THERE          A26738 02590019
+         BAL   R15,QHNQAC4              REMOVE FROM QUEUE        A26738 02620019
+         B     QHNQBD1                  SET UP CP 7              A26738 02650019
+QHNQAD5  OI    DECBEXC1,X'10'           IF NOT THERE, TURN ON INVALID   02720000
+QHNQAE5  BR    R13                       REQUEST BIT AND RETURN VIA SVC 02740000
+*                                                                       02740402
+*        THIS ROUTINE SEARCHES THE IOB QUEUE POINTED TO BY REG 5        02741019
+*        FOR A MATCH WITH THE DECB IN REG 2.  IF AN IOB IS FOUND        02742019
+*        THE ROUTINE RETURNS AT REG 15 + 4. IF THE IOB IS ABSENT,       02743019
+*        A RETURN IS MADE AT REG 15 + 0.                                02744019
+*                                                                       02744402
+SCHQUEUE L     R1,0(R5)                 GET FIRST IOB            A26738 02745019
+         LA    R1,0(R1)                 CLEAR HIGH ORDER BYTE    A26738 02746019
+SCHQ2    LTR   R1,R1                    IS THIS AN IOB           A26738 02747019
+         BZ    0(R15)                   RETURN IF NOT            A26738 02748019
+         L     R6,IOBECBAD              IF IT IS, GET ITS DECB   A26738 02749019
+         LA    R6,0(R6)                 CLEAR HIGH BYTE          A26738 02750019
+         CLR   R2,R6                    IS THIS THE DECB SOUGHT  A26738 02751019
+         BE    4(R15)                   BRANCH IF IT IS          A26738 02752019
+         L     R1,IOBFCHAD              OTHERWISE, TRY THE NEXT  A26738 02753019
+         B     SCHQ2                    GO CHECK IT              A26738 02754019
+*                                                                       02755019
+QHNQAC4  L     R6,IOBBCHAD              IF FOUND, REMOVE IT FROM Q      02760000
+         LTR   R6,R6                                                    02780000
+         BZ    QHNQAC41                                                 02800000
+         MVC   IOBFCHAD-IHAIOB(4,R6),IOBFCHAD                           02820000
+         B     QHNQAC42                                                 02840000
+QHNQAC41 MVC   1(3,R5),IOBFCHAD+1       SET NEW 1ST IOB PTR      A26738 02860019
+QHNQAC42 L     R6,IOBFCHAD                                              02880000
+         LTR   R6,R6                                                    02900000
+         BZ    QHNQAC43                                                 02920000
+         MVC   IOBBCHAD-IHAIOB(4,R6),IOBBCHAD                           02940000
+         BR    R15                      RETURN                   A26738 02960019
+QHNQAC43 MVC   5(3,R5),IOBBCHAD+1       SET NEW LAST IOB PTR     A26738 02980019
+         BR    R15                      RETURN                   A26738 03000019
+QHNQAE3  TM    DCWWKNI,X'80'            AFTER IOB SET UP, TEST TO SEE   03020000
+         BO    QHNQAE4                   IF WRITE KN WAITING OR IN      03040000
+         CLI   DCWNUWKN,X'00'            PROCESS.                       03060000
+         BE    QHNQAG1                  BRANCH IF NOT                   03080000
+QHNQAE4  MVI   IOBUNSQR,X'08'            IF SO, INDICATE AWAITING W KN, 03100000
+         B     QHNQBH2                  BRANCH TO PLACE ON UNSCHED Q    03120000
+         SPACE 2                                                        03130002
+**********************************************************************  03132002
+*   ENTRY FROM ASYNCHRONOUS ROUTINE                                     03140000
+**********************************************************************  03150002
+         SPACE 2                                                        03152002
+QHNQAG1  IC    R6,DCWNACT               INCREASE NACT - WRITE KN NOT    03160000
+         LA    R6,1(R6)                  ALLOWED                        03180000
+         STC   R6,DCWNACT                                               03200000
+         TM    DECBTYP2,X'20'           IF READ KU, SET UPDATE          03220000
+         BZ    QHNQAH2                   FLAG ON                        03240000
+         OI    DECBEXC2,X'01'                                           03260000
+         B     QHNQBB2                   AND BRANCH                     03280000
+QHNQAH2  TM    DECBTYP2,X'08'           IF WRITING A BLOCKED RECORD TO  03300000
+         BZ    QHNQBB2                   A PRIME DATA TRACK, THE KEY    03320000
+         TM    DCBRECFM,X'10'            OF THE LAST RECORD NOT A       03340000
+         BZ    QHNQBB2                   PADDING RECORD MUST REPLACE    03360000
+         TM    DECBEXC1,X'02'            THE DECB KEY                   03380000
+         BO    QHNQBB2                                                  03400000
+         SR    R9,R9                    CLEAR REGISTER            10245 03410013
+         L     R5,DECBAREA                R5  ADDRESS OF REC            03420000
+         LA    R5,16(R5)                  R6  ADD FOR BXLE              03440000
+         AH    R5,DCBBLKSI                R7  COMPARAND FOR BXLE        03460000
+         LA    R6,1(0,0)                                                03480000
+QHNQAK3  LR    R7,R5                                                    03500000
+         BCTR  R7,0                                                     03520000
+         SH    R5,DCBLRECL                                              03540000
+         AH    R5,DCBRKP                                                03560000
+         IC    R9,DCBKEYLE                                              03580000
+QHNQAK32 CLI   0(R5),X'FF'                                              03600000
+         BNE   QHNQAJ3                                                  03620000
+         LA    R5,1(R5)                                                 03640000
+         BCT   R9,QHNQAK32                                              03660000
+         SH    R5,DCBRKP                                                03680000
+         IC    R9,DCBKEYLE                                              03700000
+         SR    R5,R9                                                    03720000
+QHNQAK31 CLI   0(R5),X'FF'                                              03740000
+         BNE   QHNQAJ3                                                  03760000
+         BXLE  R5,R6,QHNQAK31                                           03780000
+         SH    R5,DCBLRECL                                              03800000
+         B     QHNQAK3                                                  03820000
+QHNQAJ3  SH    R7,DCBLRECL               RECORD FOUND                   03840000
+         LA    R7,1(R7)                   R7  ADDRESS OF KEY IN REC     03860000
+         AH    R7,DCBRKP                                                03880000
+         IC    R6,DCBKEYLE                R6  KEY LENGTH - 1            03900000
+         BCTR  R6,0                                                     03920000
+         L     R5,DECBKEY                 R5  ADDRESS WHERE KEY SAVED   03940000
+         EX    R6,QHNQAJ31                                              03960000
+         B     QHNQBB2                                                  03980000
+QHNQAJ31 MVC   0(0,R5),0(R7)                                            04000000
+*              CHART QB                                                 04020000
+QHNQBB2  CLI   DCWNLSD,X'00'            BRANCH IF NO HI-LVL SRCH ON     04040000
+         BE    QHNQBC2                   DEVICE                         04060000
+         TM    DCWHIAV,X'80'            BRANCH IF HI-LVL SRCH CP NOT    04080000
+         BZ    QHNQBE3                   AVAILABLE                      04100000
+         BAL   R11,DISCPS               BRANCH TO SET UP CP1 OR 2       04120000
+         B     QHNQBG3                  ERROR RETURN                    04140000
+         B     QHNQBG4                  OK RETURN                       04160000
+QHNQBC2  L     R5,DCWFCP4               TRACK AND DATA SRCH CP.         04180000
+         LTR   R5,R5                    BRANCH IF NONE AVAILABLE        04200000
+         BZ    QHNQBE2                                                  04220000
+         OI    IOBINDCT,X'80'           INDICATE REMOVE CP FROM Q       04240000
+         BAL   R11,DISCP45              BRANCH TO SET UP CP ROUTINE     04260000
+         B     QHNQBG3                  ERROR RETURN                    04280000
+         B     QHNQBG4                  OK RETURN                       04300000
+QHNQBG3  IC    R9,DCWNACT               DECREASE NO. OF NON-WRITE KN    04320000
+         BCTR  R9,0                      MACRO EVENTS                   04340000
+         STC   R9,DCWNACT                                               04360000
+         B     QHNQBH4                  BRANCH                          04380000
+QHNQBD1  L     R5,DCWFCP7               WRITE UPDATE CP                 04400000
+         LTR   R5,R5                    BRANCH IF NONE AVAILABLE        04420000
+         BZ    QHNQBE1                                                  04440000
+         OI    IOBINDCT,X'80'           INDICATE REMOVE CP FROM Q       04460000
+         BAL   R11,DISCP7               BRANCH TO SET UP CP ROUTINE     04480000
+QHNQBG4  NI    IOBINDCT,X'BF'           SET OFF UNSCHEDULED BIT         04500000
+         ST    R2,IOBBCHAD              SAVE ECB                 A33533 04510021
+QHNQBH4  BR    R13                      RET TO ASYNCH RTN OR SVC ROOT   04520000
+QHNQBE3  IC    R6,DCWNUCPS              NO CP1 OR 2.                    04540000
+         LA    R6,1(R6)                 ADD 1 TO NUMBER UNSCHED IOBS    04560000
+         STC   R6,DCWNUCPS               AWAITING CP1 OR 2              04580000
+         MVI   IOBUNSQR,X'80'           INDICATE REASON ON Q            04600000
+         B     QHNQBH2                  BRANCH                          04620000
+QHNQBE2  IC    R6,DCWNUCP4              NO CP4-5-6.                     04640000
+         LA    R6,1(R6)                 ADD 1 TO NUMBER UNSCHED IOBS    04660000
+         STC   R6,DCWNUCP4               AWAITING CP4-5-6.              04680000
+         MVI   IOBUNSQR,X'40'           INDICATE REASON ON Q            04700000
+         B     QHNQBH2                  BRANCH                          04720000
+QHNQBE1  IC    R6,DCWNUCP7              NO CP7.                         04740000
+         LA    R6,1(R6)                 ADD 1 TO NUMBER OF UNSCHED IOBS 04760000
+         STC   R6,DCWNUCP7               AWAITING CP7                   04780000
+         MVI   IOBUNSQR,X'20'           INDICATE REASON ON Q            04800000
+QHNQBH2  L    R6,DCWLIOBU                                               04820000
+         LTR   R6,R6                                                    04840000
+         BZ    QHNQBH21                                                 04860000
+         ST   R1,IOBFCHAD-IHAIOB(R6)                                    04880000
+         B     QHNQBH22                                                 04900000
+QHNQBH21 ST    R1,DCWFIOBU                                              04920000
+QHNQBH22 ST    R6,IOBBCHAD                                              04940000
+         ST   R1,DCWLIOBU                                               04960000
+         XC    IOBFCHAD,IOBFCHAD                                        04980000
+         OI    IOBINDCT,X'40'           SET UNSCHEDULED FLAG ON         05000000
+         BR    R13                      EXIT   TO SVC ROOT OR ASYNCH    05020000
+         SPACE 2                                                        05030002
+**********************************************************************  05032002
+*              CHART QC   WRITE KN MACRO-TIME                           05040000
+**********************************************************************  05050002
+         SPACE 2                                                        05052002
+         USING IHAWKNCP,5                                               05060000
+QHNQCB2  TM    DCWWKNI,X'80'                                      P4700 05150000
+         BO    QHNQCF2                                                  05240000
+         CLI   DCWNACT,X'00'            OTHER MACROS IN PROCESS   MC0S  05246000
+         BNE   QHNQCF2                                            P4700 05252000
+         OI    DCWWKNI,X'80'            IF NOT, INDICATE WKN IN PROCESS 05260000
+         NI    IOBINDCT,X'BF'            UNSCHEDULED BIT OFF            05280000
+         ST    R2,IOBBCHAD              SAVE ECB                 A33533 05290021
+         BAL   R11,WKNS5B1               SET UP W KN CP                 05300000
+         BR    R13                       RETURN BY SVC ROOT             05320000
+QHNQCF2  IC    R6,DCWNUWKN              IS SO, ADD 1 TO NUMBER OF IOBS  05340000
+         LA    R6,1(R6)                  AWAITING WKN MODULE            05360000
+         STC   R6,DCWNUWKN                                              05380000
+         MVI   IOBUNSQR,X'10'            INDICATE REASON ON Q           05400000
+         B     QHNQBH2                   BRANCH                         05420000
+         SPACE 2                                                        05470002
+**********************************************************************  05472002
+*        CHART S1 SET UP SEARCH CHANNEL PROGRAM CP1 OR CP2-MASTER IND   05480000
+**********************************************************************  05490002
+         SPACE 2                                                        05492002
+BMTS1B2  L     R5,DCBWKPT1              R5  ADDR OF CP                  05500000
+         ST    R5,IOBCCWAD              SET CP ADDR IN IOB EXTENTION    05520000
+         TM    DCWHIAV,X'40'            TEST IS HI LVL INDEX IN CORE    05540000
+         BZ    BMTS1C2                  BRANCH IF NO                    05560000
+         BAL   R10,BMTS2B2              SET UP INDEX IN IOBDADAD        05580000
+         B     BMTS1C3                                                  05600000
+BMTS1C2  MVC   IOBDADAD(7),DCBFTHI      MOVE SEEK-SRCH ADDR FROM DCB    05620000
+         MVI   IOBDADAD+7,X'00'                                         05640000
+BMTS1C3  NI    DCWHIAV,X'7F'            SET SWITCH TO SHOW CP NOT AVAIL 05660000
+         MVC   IOBSTART(3),DCBWKPT1+1   SET UP CHANNEL PROG FOR HIGHEST 05700000
+         MVI   IOBAPP,X'03'              LEVEL SEARCH                   05720000
+         NI    IOBFLAG1,X'7F'                                           05740000
+         OI    IOBFLAG1,X'40'                                           05760000
+         LA    R6,IOBDADAD+3                                      17516 05764000
+         STH   R6,C01+2                                           17516 05768000
+         SRL   R6,16                                              17516 05772000
+         STC   R6,C01+1                                           17516 05776000
+         MVC   C1+1(3),DECBKEY+1        SET UP CP1 OR CP2               05780000
+         MVC   C4+1(3),DECBKEY+1                                        05800000
+         CLI   DCWNLSD,X'02'                                            05820000
+         BL    BMTS1J2                  IF NSLD=1, CP2 USED, ALL SET    05840000
+         MVC   C11+1(3),DECBKEY+1                                       05860000
+         MVC   C14+1(3),DECBKEY+1                                       05880000
+         BNE   BMTS1K4                  IF NSLD=2,CHAIN TO CYLINDER SRC 05900000
+         OI    C6+4,X'40'               IF GT 2, SET CC OFF, MASTER     05920000
+         B     BMTS1J2                   SRCH MUST BE REPEATED          05940000
+BMTS1K4  NI    C6+4,X'BF'                                               05960000
+BMTS1J2  EQU   *                        *                               05970000
+         B     4(R11)                   RETURN, NO ERROR                06000000
+         SPACE 2                                                        06010002
+**********************************************************************  06012002
+*              CHART S2  HIGHEST INDEX SEARCHED IN CORE                 06020000
+**********************************************************************  06030002
+         SPACE 2                                                        06032002
+BMTS2B2  SR    R7,R7                    R7   KEY LENGTH - 1             06040000
+         IC    R7,DCBKEYLE                                              06060000
+         BCTR  R7,0                                                     06080000
+         L     R6,DECBKEY               R6   ADDRESS OF KEY SOUGHT      06100000
+         L     R5,DCBMSHI               R5   ADDRESS OF KEY ON TABLE    06120000
+BMTS2B21 EX    R7,BMTS2B22              COMPARE KEY ON TABLE TO SOUGHT  06140000
+         BNL   BMTS2C2                  IF HI OR EQ, BRANCH             06160000
+         AR    R5,R7                                                    06180000
+BMTS2E2  LA    R5,11(R5)                ELSE ADD KEY LGTH + INDEX LGTH  06200000
+         B     BMTS2B21                  TO R5 FOR NXT KEY AND BRANCH   06220000
+BMTS2C2  AR    R5,R7                    HIGH FOUND                      06240000
+         TM    9(R5),X'20'              IF DUMMY-END OR INACTIVE, NO    06260000
+         BZ    BMTS2D3                   REC FND. IF DUMMY-CHAINED,     06280000
+         TM    9(R5),X'08'               SKIP THIS KEY                  06300000
+         BO    BMTS2E2                                                  06320000
+         OI    DECBEXC1,X'80'           NO REC FND. SET EXCEP CODE      06340000
+         TM    DECBTYP1,X'01'           DYNAMIC BUFFERING        A33986 06340420
+         BZ    BMTS2C4                  NO, BRANCH               A33986 06340820
+         L     R6,DECBAREA                                       A33986 06341220
+         LR    R7,R15                   SAVE REG 15             SA64081 06341302
+         BAL   R15,QHNQHB83                                      A33986 06341620
+         LR    R15,R7                   RESTORE REG 15          SA64081 06341702
+BMTS2C4  LR    R0,R1                    R0=IOB ADDR              S20201 06342020
+         L     R1,IGGPDEB               PROTECTED DEB ADDR       Y02072 06344002
+         USING IHADEB,R1                                         S20201 06346020
+         TM    DEBRPSID,RPS             TEST IF RPS DEVICE USED  S20201 06348020
+         LR    R1,R0                    R1=IOB ADDR              S20201 06350020
+         USING IHAIOB,R1                                         S20201 06352020
+         L     R5,IOBCCWAD              RESTORE POINTER TO CP   SA67174 06354002
+         L     R0,SP250IOB              GET BASIC IOB SIZE       S20201 06356020
+         BZ    FREEIOB                  BIF NOT RPS              Y02072 06360002
+         AH    R0,RPSCCW                ADD LENGTH OF RPS CCWS   S20201 06364020
+         SPACE 2                                                        06364402
+FREEIOB  MODESET EXTKEY=DATAMGT         CHANGE TO DATA MGT KEY   Y02072 06366002
+         SPACE 2                                                        06366102
+         STM   R2,R15,IGGREGS           SAVE REGISTERS 2 - 15    Y02072 06366402
+         DROP  R14                      END USING ON SAVE AREA   Y02072 06366802
+         LR    R9,R14                   SAVE AREA ADDR           Y02072 06367202
+         LR    R3,R12                   BASE ADDRESS             Y02072 06367602
+         DROP  R12                      DROP BASE REGISTER       Y02072 06367702
+         USING IGG019J3,R3              ESTABLISH ADDRESSABILITY Y02072 06367802
+         SPACE 2                                                        06368002
+         MODESET  KEYADDR=KEY0,WORKREG=11  SET PROTECTION KEY 0  Y02072 06368202
+         SPACE 2                                                        06368602
+**********************************************************************  06369102
+*    FREE LOCAL LOCK.  OBTAINED AT GLCL1 IN IGC0005D (SVC 54) OR        06372202
+*    ASYNCHRONOUS ROUTINE.                                              06373502
+**********************************************************************  06373902
+         SPACE 2                                                        06374802
+FLCL     SETLOCK RELEASE,TYPE=LOCAL,    RELEASE THE LOCAL LOCK   Y02072*06376102
+               RELATED=('OBTAINED IN IGCO54 OR ASYNCH')          Y02072 06377402
+         USING IGGSAVE,R9               SAVEAREA ADDRESSABILITY  Y02072 06378702
+         SPACE 2                                                        06379102
+         MODESET KEYADDR=IGGUKEY,WORKREG=11  CHANGE TO USER KEY  Y02072 06380002
+         SPACE 2                                                        06380302
+         FREEMAIN R,LV=(0),A=(1)                                 S20201 06380802
+         DROP  R1                                                S20201 06387202
+         POST  DECBECB                   POST COMPLETION                06393602
+         SPACE 2                                                        06396002
+         MODESET KEYADDR=KEY0,WORKREG=11 CHANGE TO KEY ZERO      Y02072 06397602
+         SPACE 2                                                        06398002
+**********************************************************************  06398402
+*    OBTAIN THE LOCAL LOCK.  IT WILL BE FREED IN IGCO54 OR              06399602
+*    AN ASYNCHRONOUS ROUTINE.                                           06399702
+**********************************************************************  06401302
+         SPACE 2                                                        06404002
+GLCL     SETLOCK OBTAIN,TYPE=LOCAL,MODE=UNCOND,  OBTAIN THE      Y02072*06405602
+               RELATED=('FREED IN IGC054 OR ASYNCH')             Y02072 06407202
+         SPACE 2                                                        06407602
+         MODESET KEYADDR=IGGUKEY,WORKREG=11 CHANGE TO USER KEY   Y02072 06408802
+         SPACE 2                                                        06409202
+         LM    R2,R15,IGGREGS           RESTORE REGS 2 -15       Y02072 06410402
+         DROP  R3,R9                    END USINGS               Y02072 06412002
+         USING IGGSAVE,R14              SAVEAREA ADDRESSABILITY  Y02072 06413602
+         USING IGG019J3,R12             BASE ADDRESS             Y02072 06415202
+         BR    R11                      ERROR RETURN                    06416802
+         USING IHAIOB,R1                                         S20201 06418402
+BMTS2D3  MVC   IOBDADAD,1(R5)           IF KEY HI OR EQ + NOT DUMMY,    06420000
+         L     R5,IOBCCWAD              RESTORE POINTER TO CP           06440000
+         BR    R10                       MOVE ADDR TO IOB & OK RETURN   06460000
+BMTS2B22 CLC   0(0,R5),0(R6)                                            06480000
+*                                                                       06500000
+*        CHART S3 SET UP CP4 AND CP5                                    06520000
+*                                                                       06530002
+         USING CP4,R5                                                   06540000
+BMTS3B2  ST    R5,IOBCCWAD              SET POINTER TO CP IN IOB EXT    06560000
+         CLI   DCWNLSD,X'00'            IF NLSD=0, TRACK IS HIGHEST LVL 06580000
+         BNE   BMTS3D4                   INDEX.                         06600000
+         TM    DCWHIAV,X'40'            UNLESS HIGH LVL IN CORE         06620000
+         BZ    BMTS3C3                  BRANCH IF IT IS NOT      S20201 06630020
+         BAL   R10,BMTS2B2              IF HI LVL IN CORE, SCH   S20201 06640020
+         B     BMTS3D4                  GO TEST FOR SHARED TRACK S20201 06650020
+BMTS3C3  EQU   *                        TRK IX IS HIGHEST LEVEL  S20201 06660020
+         MVC   IOBDADAD(SEVEN),DCBFTHI  IF TRK HIGH,SET IOB ADDR S20201 06670020
+BMTS3D4  EQU   *                        TEST FOR SHARED TRACK    S20201 06680020
+         SR    R6,R6                    MBBCCHH  FROM HI INDEX   S20201 06690020
+         AH    R6,DCBFIRSH              R MUST BE HIGHER THAN    S20201 06700020
+         BNZ   BMTS3D5                  R OF LAST INDEX REC.     S20201 06710020
+         MVC   IOBDADAD+SEVEN(ONE),DCBFIRSH+TWO THUS, R = FIRST  S20201 06717020
+*                                       REC OF                   S20201 06724020
+         B     BMTS3C2                  SHARED TRACK, IF SHARED. S20201 06731020
+*                                       R = 255 OTHERWISE.              06740020
+BMTS3D5  MVI   IOBDADAD+SEVEN,HEXFF     CHANGE R TO 255          S20201 06749020
+BMTS3C2  TM    IOBINDCT,X'80'           IS CP4-5-6 ON AVAILABLE Q{      06880000
+         BZ    BMTS3D1                  BRANCH IF NO                    06900000
+         MVC   DCWFCP4,CP45PTR  REMOVE CP FROM AVAILABLE Q       A25517 06920019
+BMTS3D1  EQU   *                        *                               06930000
+         MVC   IOBSTART,IOBCCWAD+1      INITIALIZE IOB                  06960000
+         NI    IOBFLAG1,X'7F'                                           06980000
+         OI    IOBFLAG1,X'40'                                           07000000
+         SR    R6,R6                                             S20201 07002020
+         AH    R6,DCBFIRSH              IS 1ST TRK SHARED        S20201 07004020
+         BZ    BMTS3F1                  BIF YES                  S20201 07006020
+         LA    R6,CA5                   TIC CA5 IF NOT SHARED    S20201 07008020
+         B     BMTS3F2                                           S20201 07010020
+BMTS3F1  LA    R6,CA1                   TIC CA1 IF SHARED        S20201 07012020
+BMTS3F2  EQU   *                        *                        S20201 07014020
+         ST    R6,CA03                  STORE TIC ADDR           S20201 07016020
+         MVI   CA03,TIC                 RESTORE OP CODE          S20201 07018020
+         LA    R6,IOBDADAD+3            SET UP CHANNEL PROGRAM          07020000
+         STH   R6,CA1+2                 KEY AND ID ADDRESSES            07040000
+         STH   R6,CA01+2                                          17516 07044000
+         SRL   R6,16                                              17516 07048000
+         STC   R6,CA01+1                                          17516 07052000
+         STC   R6,CA1+1                                           17516 07056000
+         MVC   CA5+1(3),DECBKEY+1                                       07100000
+         MVC   CA8+1(3),DECBKEY+1                                       07120000
+         MVC   CA21+1(3),DECBKEY+1                                      07140000
+         TM    DECBTYP1,X'02'           LENGTH - FROM DCB IF B6 OF TYPE 07160000
+         BZ    BMTS3K1                           FROM DECB OTHERWISE    07180000
+         MVC   CA23+6(2),DCBBLKSI                                       07200000
+         B     BMTS3J2                                                  07220000
+BMTS3K1  MVC   CA23+6(2),DECBLGTH                                       07240000
+BMTS3J2  L     R6,DECBAREA              DATA ADDRESS TO AREA+16         07260000
+         LA    R6,16(R6)                                                07280000
+         STH   R6,CA23+2                                                07300000
+         SRL   R6,16                                                    07320000
+         STC   R6,CA23+1                                                07340000
+         NI    CA24+FOUR,CCOFF          DISCONNECT WRT CHK CP    S20201 07350020
+         TM    DECBTYP2,X'E0'           WRITE OR READ{                  07360000
+         BZ    BMTS3G3                                                  07380000
+         MVI   CA23,X'06'               READ                            07400000
+         MVI   IOBAPP,X'00'             SET APPENDAGE CODE TO ZERO      07420000
+         TM    DCBRECFM,X'10'                                           07440000
+         BZ    BMTS3J4                  SET CA21 TO SRCH HI/EQ IF BLKED 07460000
+         MVI   CA21,X'69'                                               07480000
+         B     BMTS3J4                                                  07500000
+BMTS3G3  MVI   CA23,X'05'               WRITE                           07520000
+         MVI   IOBAPP,X'01'                                             07540000
+         TM    DCBRECFM,X'10'           SET CA21 TO SRCH = IF BLKED     07560000
+         BZ    BMTS3J4                                                  07580000
+         MVI   CA21,X'29'                                               07600000
+BMTS3J4  TM    DCBOPTCD,X'80'           IF WRITE CHECK DESIRED,         07620000
+         BZ    BMTS5E2                   SET UP ADDITIONAL COMMANDS     07640000
+ANYREAD  EQU   X'E0'                    TEST FOR READ            S20201 07642020
+ONES     EQU   1                        MASK FOR BO              S20201 07644020
+MIXED    EQU   4                        MASK FOR BM              S20201 07646020
+         TM    DECBTYP2,ANYREAD         NO WRT CHK IF READ       S20201 07648020
+         BC    ONES+MIXED,BMTS3J8       BIF READ                 S20201 07650020
+         OI    CA24+FOUR,CC             CONNECT WRT CHK CP       S20201 07652020
+         MVC   CA24D+1(3),CA1+1         CA24D ADDRESS FROM CA1          07680000
+         MVC   CA24C+6(2),CA23+6        CA24C COUNT FROM CA23           07700000
+         MVC   CA24F+1(7),CA23+1        CA24F ADDR AND COUNT FROM CA23  07720000
+BMTS3J8  MVI   CA25+SEVEN,ZERO          CLEAR R                  S20201 07724020
+         MVC   CA25+THREE(FOUR),IOBSEEK+THREE INIT CCHH          S20201 07728020
+         OC    CA25+FIVE(THREE),DCBFIRSH INIT HHR                S20201 07732020
+         B     BMTS5E4                  GO SET OFF SYS MASK      S20201 07736020
+BMTS5E2  EQU   *                        *                        S20201 07739020
+         USING CP4+(SZ5W-SZ5),R5                                 S20201 07742020
+         MVI   CA25+SEVEN,ZERO          CLEAR R                  S20201 07745020
+         MVC   CA25+THREE(FOUR),IOBSEEK+THREE INIT CCHH          S20201 07748020
+         OC    CA25+FIVE(THREE),DCBFIRSH INIT HHR                S20201 07751020
+BMTS5E4  EQU   *                        *                               07753000
+         B     4(R11)                   RETURN, NO ERROR                07760000
+*                                                                       07770002
+*        CHART S4   SET UP CP7                                          07780000
+*                                                                       07790002
+         USING CP7,R5                                                   07800000
+BMTS4A2  TM    IOBINDCT,X'80'           REMOVE FROM Q IF COMING FROM    07820000
+         BZ    BMTS4B2                  MACRO                           07840000
+         MVC   DCWFCP7,CA45+4                                           07860000
+BMTS4B2  ST    R5,IOBCCWAD              INITIALIZE IOB                  07880000
+         MVC   IOBSTART(3),IOBCCWAD+1                                   07900000
+         NI    IOBFLAG1,X'7F'                                           07920000
+         OI    IOBFLAG1,X'40'                                           07940000
+         MVI   IOBAPP,X'02'              SET APPENDAGE CODE CODE TO 2   07960000
+         LA    R6,IOBDADAD+3            SET UP CP7 - ADDRESS OF ID      07980000
+         STH   R6,CA44+2                                                08000000
+         SRL   R6,16                                                    08020000
+         STC   R6,CA44+1                                                08040000
+         L     R6,DECBAREA              ADDRESS OF AREA IN R6           08060000
+         SR    R7,R7                    CLEAR R7 FOR DATA LENGTH        08080000
+         TM    DECBEXC1,X'02'                                           08100000
+         BZ    BMTS4F3                  TEST FOR OVERFLOW REC           08120000
+         LA    R6,6(R6)                 OVRFLOW - ADD 6 TO AREA ADDRESS 08140000
+         LA    R7,10(R7)                ADD 10 TO AREA LENGTH           08160000
+         TM    DECBTYP1,X'02'           IF NO OVERRIDE ON LENGTH, ADD   08180000
+         BZ    BMTS4G2                   DCB RECORD SIZE TO LENGTH      08200000
+         AH    R7,DCBLRECL                                              08220000
+         B     BMTS4J2                                                  08240000
+BMTS4F3  LA    R6,16(R6)                PRIME REC-ADD 16 TO AREA ADDR   08260000
+         TM    DECBTYP1,X'02'           IF NO OVERRIDE ON LENGTH, TAKE  08280000
+         BZ    BMTS4G2                   FROM DCB BLOCK SIZE            08300000
+         AH    R7,DCBBLKSI                                              08320000
+         B     BMTS4J2                                                  08340000
+BMTS4G2  AH    R7,DECBLGTH              LNGTH OVRRIDE,ADD DECB LENGTH   08360000
+BMTS4J2  STH   R6,CA46+2                IN ANY CASE, MOVE COMPUTED      08380000
+         SRL   R6,16                     LENGTH AND ADDRESS TO CP7      08400000
+         STC   R6,CA46+1                 CCW CA46                       08420000
+         STH   R7,CA46+6                                                08440000
+         TM    DCBOPTCD,X'80'           WRITE CHECK DESIRED{            08460000
+         BZ    BMTS4K4                  BRANCH IF NO                    08480000
+         MVI   IOBCOUNT,10              SET ERROR COUNTER TO 10         08500000
+         MVC   CA46A+1(3),CA44+1        CA46A ADDRESS FROM CA44         08520000
+         MVC   CA46C+6(2),CA46+6        CA46C COUNT FROM CA46           08540000
+BMTS4K4  BR    R11                      RETURN                          08560000
+*                                                                       08570002
+*                             SET UP FIRST CHANNEL PROGRAM              08580000
+*                                                                       08582002
+WKNS5B1  EQU   *                        *                               08590000
+         NI    DCWWKNI,X'EF'            SET ADD-TO-END INDICATOR OFF    08620000
+         TM    DCWHIAV,X'40'            ON IF HI LEVEL INDEX IN CORE    08640000
+         BO    WKNS5B3                  SEARCH HI LEVEL INDEX IN CORE   08660000
+         MVC   IOBDADAD(7),DCBFTHI      SET SEEK ADDRESS TO MBBCCHHX    08680000
+         MVI   IOBDADAD+7,X'00'         R IS ZERO                       08700000
+WKNS5D1  CLI   DCWNLSD,X'00'            ZERO IF TRACK INDEX IS HIGHEST  08720000
+         BE    WKNS5E1                  SET UP CP 8                     08740000
+         MVI   IOBAPP,X'07'             SET APPENDAGE CODE TO 7         08760000
+         L     R5,DCBWKPT1              PUT CP1/CP2 ADDRESS IN REG 5    08780000
+         USING CP1,R5                                                   08800000
+         ST    R5,IOBCCWAD              CCW 0 RELATIVE ADDRESS          08820000
+         LA    R6,C01                   START OF CP1              17516 08840000
+         ST    R6,IOBSTART-1                                            08860000
+         MVI   IOBFLAG1,X'42'           B1 ON-  YES CC                  08880000
+         LA    R6,IOBDADAD+3                                      17516 08884000
+         STH   R6,C01+2                                           17516 08888000
+         SRL   R6,16                                              17516 08892000
+         STC   R6,C01+1                                           17516 08896000
+         MVC   C1+1(3),DECBKEY+1        ADDR OF KEY TO CP1 AND CP2,C30  08900000
+         MVC   C4+1(3),DECBKEY+1        ADDR OF KEY TO CP1 AND CP2,C33  08920000
+         CLI   DCWNLSD,X'02'            ONE IF NO MASTER INDEX          08940000
+         BL    WKNS5G2                  NO MASTER - USE CP2             08960000
+         MVC   C11+1(3),DECBKEY+1       ADDR OF KEY TO CP1              08980000
+         MVC   C14+1(3),DECBKEY+1       ADDR OF KEY TO CP1              09000000
+         BE    WKNS5F2                  TWO IF ONLY ONE MASTER          09020000
+         NI    C6+4,X'BF'               TWO OR MORE MASTERS - NO CHAIN  09040000
+         B     WKNS5G2                  TO EXIT                         09060000
+WKNS5F2  OI    C6+4,X'40'               ONLY ONE MASTER - CHAIN         09080000
+WKNS5G2  EQU   *                        *                               09090000
+         BR    11                       RETURN FROM SUBROUTINE          09120000
+WKNS5E1  MVI   IOBAPP,X'08'             SET APPENDAGE CODE TO 8         09140000
+         L     R5,DCBWKPT3              R5   POINTER TO CP8             09160000
+         USING IHAWKNCP,R5                                              09180000
+         ST    R5,IOBCCWAD              CCW 0 RELATIVE ADDRESS          09200000
+         LA    R6,CB1                   START OF CP8                    09220000
+         ST    R6,IOBSTART-1                                            09240000
+         MVI   IOBFLAG1,X'42'           B1 ON- YES CC                   09260000
+         LA    R6,IOBDADAD+3                                            09280000
+         STH   R6,CB1+2                                                 09300000
+         SRL   R6,16                                                    09320000
+         STC   R6,CB1+1                 SEEK-SEARCH ADDRESS AT CB1      09340000
+         MVC   CB5+1(3),DECBKEY+1       ADDR OF KEY TO CP8              09360000
+         MVC   CB19+1(3),DECBKEY+1                                      09380000
+         MVC   CB23+THREE(FIVE),IOBDADAD+THREE                   S20201 09385020
+*                                      CCHH OF FIRST TRACK, R=0         09390020
+         OC    CB23+FIVE(THREE),DCBFIRSH SET HHR TO FIRSH        S20201 09395020
+         B     WKNS5G2                                                  09400000
+WKNS5B3  SR    R6,R6                    CLEAR WORK REGISTER             09420000
+         IC    R6,DCBKEYLE              KEY LENGTH IN LOW ORDER BYTE    09440000
+         BCTR  R6,0                     COMPARE KEY LENGTH BYTES        09460000
+         L     R7,DECBKEY               POINTER TO STORAGE ARGUMENT     09480000
+         L     R10,DCBMSHI              POINTER TO INDEX ARGUMENT       09500000
+WKNS5B31 EX    R6,WKNS5B34              MODIFY COMPARE LENGTH           09520000
+         BNL   WKNS5C3                  FIRST HI OR EQUAL               09540000
+         AR    R10,R6                   INCREMENT IS KEYLE-1            09560000
+WKNS5B32 LA    R10,11(0,R10)            PLUS 11 MORE (= KEYLE+10)       09580000
+         B     WKNS5B31                 TRY AGAIN                       09600000
+WKNS5B34 CLC   0(0,R10),0(R7)           LENGTH, INDEX ARG, STORAGE ARG  09620000
+WKNS5C3  AR    R10,R6                   NOW POINT TO FLAG BYTE MINUS 9  09640000
+         TM    9(R10),X'28'             TEST IF DUMMY CHAINED           09660000
+         BO    WKNS5B32                 SKIP ENTRY - TRY AGAIN          09680000
+         TM    9(R10),X'20'             TEST IF INACTIVE OR DUMMY END   09700000
+         BO    WKNS5C5                       ADD TO END OF DATA SET     09720000
+         MVC   IOBDADAD(7),1(R10)       SET SEEK ADDRESS TO MBBCCHHX    09740000
+         MVI   IOBDADAD+7,X'00'         R IS ZERO                       09760000
+         B     WKNS5D1                  CONTINUE                        09780000
+*                                                                       09790002
+*              SET UP CP15                                              09800000
+*                                                                       09810002
+WKNS5C5  MVC   IOBDADAD(3),DCBLPDA      MBB FROM LPDA                   09820000
+         MVC   IOBDADAD+3(4),DCBLETI    CCHH FROM LETI                  09840000
+         OC    IOBDADAD+6(1),DCBFIRSH+3                                 09860000
+         XC    IOBDADAD+6(1),DCBFIRSH+3                                 09880000
+         MVI   IOBDADAD+7,X'00'         ZERO R                          09900000
+         MVI   IOBAPP,X'0E'             SET APPENDAGE CODE TO 14        09920000
+         L     R5,DCBWKPT3              PUT CP8 ADDRESS IN REG 5        09940000
+         ST    R5,IOBCCWAD              CCW 0 RELATIVE ADDRESS          09960000
+         TM    DCBOPTCD,X'80'                WRITE CHECK?               09980000
+         BZ    WKNS5C51                      NO                         10000000
+         LA    R5,WC(R0,R5)             ALLOW FOR WRITE CHK CCWS S20201 10020020
+WKNS5C51 LA    R5,CI1-WC                START OF CP15            S20201 10030020
+         USING CP15,R5                                           S20201 10040020
+         ST    R5,IOBSTART-ONE                                   S20201 10060020
+         MVI   IOBFLAG1,X'42'           B1 ON - YES CC                  10080000
+         NI    IOBFLAG1,X'7F'           BO OFF - NO DC                  10100000
+         OI    IOBFLAG1,X'40'           B1 ON - YES CC                  10120000
+         MVC   CI5+TWO(FIVE),DCBLETI    COUNT ADDR               S20201 10130020
+         MVC   CI5(TWO),DCBLPDA+ONE     SET UP BB FOR HEAD SEEK  S20201 10140020
+         LA    R6,IOBDADAD+THREE                                 S20201 10160020
+         STH   R6,CI1+2                                                 10180000
+         SRL   R6,16                                                    10200000
+         STC   R6,CI1+1                 SEEK-SEARCH ADDRESS AT CI1      10220000
+         B     WKNS5G2                  EXIT                            10240000
+*                                                                       10242020
+KEY0     DC    X'00'                    CHANGE TO KEY ZERO       Y02072 10242402
+ZERO     EQU   X'00'                    0                        S20201 10244020
+ONE      EQU   X'01'                    1                        S20201 10246020
+TWO      EQU   X'02'                    2                        S20201 10248020
+THREE    EQU   X'03'                    3                        S20201 10250020
+FOUR     EQU   X'04'                    4                        S20201 10252020
+FIVE     EQU   X'05'                    5                        S20201 10254020
+SEVEN    EQU   X'07'                    7                        S20201 10256020
+EIGHT    EQU   X'08'                    8                        S20201 10258020
+RPSCCW   DC    H'16'                    LENGTH OF RPSCCW'S       S20201 10260020
+CCOFF    EQU   X'BF'                    TURN OFF CC              S20201 10262020
+RPS      EQU   X'E0'                    RPS MASK-BIT 0=P,1=I,2=O S20201 10264020
+HEXFF    EQU   X'FF'                    NULL MASK                S20201 10266020
+         DS    0F                                                S20201 10268020
+SP250IOB DC    AL1(250),AL3(56)         SUBPOOL AND LEN OF IOB   Y02072 10268402
+SP250LN  EQU   56                       BASIC IOB = 56 BYTES IN  Y02072 10270002
+SP250    EQU   250                      SP 250                   Y02072 10272002
+         DS    0F                       ALIGN FOR PATCH AREA     Y02072 10272102
+*                                                                       10272402
+PATCH    DC    XL((*-IGG019J3)/20)'00'  ZEROED PATCH AREA        Y02072 10272802
+*                                                                       10273202
+         EJECT                                                          10274020
+*              MODULE WORK AREAS                                        10280000
+WKNS5MSK DC    X'FF'                    TO SET ON SYSTEM MASK           10300000
+IHABCB   DSECT                                                  , MC1F  10303018
+BCBFIOB  DS    A                                                  MC1F  10306018
+BCBLIOB  DS    A                                                  MC1F  10309018
+BCBNAVB  DS    A                                                  MC1F  10312018
+BCBSIZE  DS    A                                                  MC1F  10315018
+IHAWKNCP IGGWKNCP   OPTCD=W                                      S20201 10323020
+WC       EQU   LCH3C+LCH8C+LCH13C+LCH18C+LCH22C+LCB54C WC CCWS   A48540 10331000
+*                                                                       12760000
+*              DATA EVENT CONTROL BLOCK                                 12780000
+IHADECB  DSECT                                                          12800000
+         DS    0F                                                       12820000
+DECBECB  DS    CL4                      EVENT CONTROL BLOCK (ECB)       12840000
+DECBTYP1 DS    BL1                      TYPE B6 - 1 IF LENGTH IS S      12860000
+*                                            B7 - 1 IF AREA IS S        12880000
+DECBTYP2 DS    BL1                           B0 - 1 IF READ K           12900000
+*                                            B1 - 1 IF READ KX          12920000
+*                                            B2 - 1 IF READ KU          12940000
+*                                            B4 - 1 IF WRITE K          12960000
+*                                            B5 - 1 IF WRITE KN         12980000
+DECBLGTH DS    CL2                      LENGTH OF BLOCK                 13000000
+DECBDCBA DS    A                        POINTER TO DCB                  13020000
+DECBAREA DS    A                        ADDRESS OF AREA                 13040000
+DECBLOGR DS    A                        POINTER TO LOGICAL RECORD       13060000
+DECBKEY  DS    A                        POINTER TO KEY                  13080000
+DECBEXC1 DS    BL1                      EXCPTN CD B0-RECORD NOT FOUND   13100000
+*                                                 B1-RECORD LGTH CHK    13120000
+*                                                 B3-INVALID REQUEST    13140000
+*                                                 B4-UNCORRECTABLE IO   13160000
+*                                                 B5-UNREACHABLE BLOCK  13180000
+*                                                 B6-OVERFLOW RECORD    13200000
+*                                                 B7-DUPLICATE REC      13220000
+DECBEXC2 DS    BL1                                B7-READ KU            13240000
+         SPACE 3                                                        13250002
+*    SAVE AREA FOR ASYNCHRONOUS AND PRIV. ROUTINES.                     13252002
+IGGSAVE  DSECT                                                          13254002
+IGGRETRN DS    A                        RETURN ADDRESS           Y02072 13256002
+IGGPDEB  DS    A                        VALIDATED DEB ADDR       Y02072 13258002
+IGGUKEY  DS    X                        USER PROTECT KEY         Y02072 13258402
+         DS    XL3                      RESERVED                 Y02072 13258802
+IGGREGS  DS    16F                      REGISTER SAVE AREA       Y02072 13259202
+IGGSIZE  EQU   *-IGGSAVE                SIZE OF SAVE AREA        Y02072 13259602
+         SPACE 3                                                        13259702
+         DCBD  DSORG=(IS)                                               13260000
+IHAIOB   IGGIOBD                                                        13270020
+IOBSEEK  EQU   IOBDADAD                                          S20201 13280020
+IHADCW   IGGBISAM                                                       13340020
+IHADEB   IGGDEBD                                                        13420020
+*                                                                       15080000
+IHACP47  IGGCP47   OPTCD=W                                       S20201 15090020
+CP45PTR   EQU  CA02+4                                            S20201 15100020
+         EJECT                                                          15150002
+         IHAPSA                                                         15200002
+         EJECT                                                          15250002
+CVT      DSECT                                                          15300002
+         CVT                                                            15350002
+         END                                                            15900000

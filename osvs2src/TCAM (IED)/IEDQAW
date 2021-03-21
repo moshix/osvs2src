@@ -1,0 +1,428 @@
+DQAW     TITLE 'IEDQAW - TCAM TRANSLATION ROUTINE.'                     00200010
+IEDQAW   CSECT                                                          00400020
+*C598000,626000                                                  S22029 00430010
+*D618000-622000                                                  S22029 00460010
+*A400000,489200,734000                                           A42388 00500021
+*A 418600-419200                                                 S22025 00520022
+*C 485000-486000,650000-652000,654000-658000,686000-692000       S22025 00540022
+*C484000-488000,714000-716000                                    S22025 00545022
+*A544000,724000                                                  M2313  00550021
+*D 662000,670000-672000,694000-700000                            S22025 00560022
+*C500000,502000,002000                                           S21903 00570010
+*                                                                       00580022
+*                                                                       00600020
+*********************************************************************** 00800020
+*                                                                     * 01000020
+*STATUS -- CHANGE LEVEL                                               * 01200020
+*                                                                     * 01400020
+*FUNCTION -- INITIALIZES THE TRANSLATE TABLE ADDRESS AND TRANSLATES   * 01600020
+*   DATA IN THE BUFFER.                                               * 01800020
+*                                                                     * 02000020
+*   IF ENTRY TO THE ROUTINE IS FROM EXPANSION OF THE CODE MACRO,      * 02200020
+*   THE TRANSLATE TABLE MUST BE FOUND.  IF THE TABLE ADDRESS IS IN    * 02400020
+*   THE PARAMETER LIST,  IT IS LOADED FROM THERE.  IF IT IS IN THE    * 02600020
+*   DCB,  THE ADDRESS OF THE DCB IS ACCESSED FROM THE LCB             * 02800020
+*   (LCBDCBPT) AND THE ADDRESS OF THE TABLE IS LOADED FROM THE DCB    * 03000020
+*   (DCBTRANS).                                                       * 03200020
+*                                                                     * 03400020
+*   THE FORMAT OF THE TRANSLATE TABLE IS (1) A ONE-WORD FIELD         * 03600020
+*   CONSISTING OF A STATUS BYTE PLUS THE ADDRESS OF THE OUTPUT        * 03800020
+*   TRANSLATE TABLE; (2) THE INPUT TRANSLATE TABLE (256 BYTES);       * 04000020
+*   AND (3) THE OUTPUT TRANSLATE TABLE (256 BYTES).  THE LCB STATUS   * 04200020
+*   FIELD (LCBSTATE) IS TESTED TO DETERMINE IF THE LINE IS SENDING    * 04400020
+*   OR RECEIVING.  IF RECEIVING,  THE ADDRESS OF THE INPUT TRANS-     * 04600020
+*   LATE TABLE IS SET;  IF SENDING,  THE ADDRESS OF THE OUTPUT        * 04800020
+*   TRANSLATE TABLE.  THE ADDRESS IS THEN STORED INTO THE SCB         * 05000020
+*   (SCBTRANS) AND THE OFFSET TO THE ADDRESS OF THE TRANSLATE         * 05200020
+*   ROUTINE IN THE MESSAGE HANDLER VCON TABLE IS STORED INTO THE      * 05400020
+*   SCB (SCBAWOFF) AS WELL.                                           * 05600020
+*                                                                     * 05800020
+*   IF ENTRY TO THE ROUTINE IS FROM EXPANSION OF A DELIMITER MACRO    * 06000020
+*   (INBUF,  INMSG,  OUTBUF OR OUTMSG) VIA THE TRANSLATION TEST       * 06200020
+*   ROUTINE OR FROM THE START MH ROUTINE,  SCBTRANS WILL HAVE BEEN    * 06400020
+*   INITIALIZED,  AND THE ADDRESS OF THE TRANSLATE TABLE IS LOADED    * 06600020
+*   FROM THAT FIELD.                                                  * 06800020
+*                                                                     * 07000020
+*   IF ENTRY IS FROM EXPANSION OF THE INMSG OR OUTMSG MACRO VIA THE   * 07200020
+*   TRANSLATION TEST ROUTINE,  A 'TRANSLATED' FLAG IS SET IN THE      * 07400020
+*   BUFFER RECB TIC FIELD (PRFTIC+3).                                 * 07600020
+*                                                                     * 07800020
+*   THE BUFFER PREFIX DATA SIZE FIELD (PRFSIZE) IS LOADED AND THE     * 08000020
+*   LCB RESERVE CHARACTER COUNT (LCBISZE) IS SUBTRACTED FROM IT.      * 08200020
+*   (RESERVE CHARACTERS ARE NOT TRANSLATED.)  THE RESERVE CHARACTER   * 08400020
+*   COUNT IS PASSED TO THE ADDRESS FINDER ROUTINE WITH REGISTER 1     * 08600020
+*   SET TO ZERO TO REQUEST END-OF-UNIT UPDATING.  THE ADDRESS         * 08800020
+*   RETURNED IS THE STARTING ADDRESS FOR THE FIRST TRANSLATION.       * 09000020
+*   THE END-OF-UNIT ADDRESS RETURNED IS DECREMENTED BY THE STARTING   * 09200020
+*   ADDRESS TO GET THE LENGTH OF DATA IN THE FIRST UNIT.  THIS        * 09400020
+*   LENGTH IS COMPARED WITH THE TOTAL LENGTH OF DATA.  IF THE TOTAL   * 09600020
+*   LENGTH IS EQUAL OR SMALLER,  DATA ENDS IN THE FIRST UNIT.  A      * 09800020
+*   BRANCH IS TAKEN TO LABEL TRANS2,  WHERE FINAL TRANSLATION IS      * 10000020
+*   PERFORMED USING THE TOTAL LENGTH OF DATA AS THE LENGTH AND        * 10200020
+*   RETURN IS MADE TO THE CALLER.                                     * 10400020
+*                                                                     * 10600020
+*   IF DATA DOES NOT END IN THE FIRST UNIT,  THE TOTAL LENGTH OF      * 10800020
+*   DATA IS DECREMENTED BY THE LENGTH OF DATA IN THE UNIT AND THE     * 11000020
+*   WHOLE UNIT IS TRANSLATED.                                         * 11200020
+*                                                                     * 11400020
+*   THE ADDRESS OF THE NEXT UNIT IS ACCESSED FROM THE TIC FIELD OF    * 11600020
+*   THE PREVIOUS UNIT AND THE STARTING ADDRESS IS SET AT THE START    * 11800020
+*   OF DATA (PAST THE RECB) IN THE UNIT.  THE TOTAL LENGTH OF DATA    * 12000020
+*   REMAINING IS COMPARED WITH THE KEY LENGTH (AVTKEYLE).  IF THE     * 12200020
+*   TOTAL LENGTH IS EQUAL OR SMALLER,  DATA ENDS IN THIS UNIT.  THE   * 12400020
+*   FINAL TRANSLATION IS PERFORMED AND RETURN IS MADE TO THE          * 12600020
+*   CALLER.                                                           * 12800020
+*                                                                     * 13000020
+*   IF DATA DOES NOT END IN THIS UNIT,  THE TOTAL LENGTH IS DECRE-    * 13200020
+*   MENTED BY THE KEY LENGTH AND THE WHOLE UNIT IS TRANSLATED.  THE   * 13400020
+*   ROUTINE GETS THE ADDRESS OF THE NEXT UNIT AND PROCEEDS AS         * 13600020
+*   ABOVE.                                                            * 13800020
+*                                                                     * 14000020
+*ENTRY POINTS --                                                      * 14200020
+*       'IEDQAW' TO TRANSLATE A BUFFER.  CALLING SEQUENCE FROM        * 14400020
+*   USER INTERFACE,  TRANSLATION TEST ROUTINE OR START MH ROUTINE     * 14600020
+*   IS:                                                               * 14800020
+*                                                                     * 15000020
+*        L     R12,AVTMSGS-1            GET ADDR OF VCON TABLE        * 15200020
+*        IC    R15,AVTEZERO(,R1)        GET INDEX TO ROUTINE ADDR     * 15400020
+*        L     R12,AVTEZERO(R12,R15)    GET ROUTINE ADDRESS           * 15600020
+*        BR    R12                      EXIT TO ROUTINE               * 15800020
+*                                                                     * 16000020
+*INPUT --                                                             * 16200020
+*   REGISTER 1 - THE ADDRESS OF A PARAMETER LIST.  PARAMETER LIST     * 16400020
+*   FORMAT IS:                                                        * 16600020
+*                                                                     * 16800020
+*        *********************************                            * 17000020
+*        *       * PARAM *       *       *                            * 17200020
+*        * INDEX * LIST  *       *STATUS *                            * 17400020
+*        *       * LNGTH *       *       *                            * 17600020
+*        *********************************                            * 17800020
+*        *          ADDRESS OF           *                            * 18000020
+*        *        TRANSLATE TABLE        *                            * 18200020
+*        *          (OPTIONAL)           *                            * 18400020
+*        *********************************                            * 18600020
+*                                                                     * 18800020
+*   STATUS BITS:                                                      * 19000020
+*                                                                     * 19200020
+*   BIT 0      ON   TRANSLATE TABLE ADDRESS IN DCB                    * 19400020
+*              OFF  TRANSLATE TABLE ADDRESS IN PARAMETER LIST         * 19600020
+*                                                                     * 19800020
+*   BIT 1      ON   NON-STANDARD TABLE                                * 20000020
+*              OFF  STANDARD TABLE                                    * 20200020
+*                                                                     * 20400020
+*   BITS 2,3   00   ENTRY FROM CODE MACRO                             * 20600020
+*              01   ENTRY FROM INMSG OR OUTMSG MACRO                  * 20800020
+*              10   ENTRY FROM INBUF OR OUTBUF MACRO                  * 21000020
+*                                                                     * 21200020
+*   REGISTER 3 - ADDRESS OF THE SCB.                                  * 21400020
+*                                                                     * 21600020
+*   REGISTER 4 - ADDRESS OF THE LCB.                                  * 21800020
+*                                                                     * 22000020
+*   REGISTER 6 - ADDRESS OF THE BUFFER.                               * 22200020
+*                                                                     * 22400020
+*   REGISTER 9 - ADDRESS OF THE AVT.                                  * 22600020
+*                                                                     * 22800020
+*   REGISTER 12 - ENTRY POINT ADDRESS AND BASE REGISTER.              * 23000020
+*                                                                     * 23200020
+*   SCB TRANSLATE TABLE ADDRESS FIELD (SCBTRANS) - IF ENTRY IS FROM   * 23400020
+*   START MH ROUTINE OR TRANSLATION TEST ROUTINE,  THE ADDRESS OF     * 23600020
+*   THE TRANSLATE TABLE.                                              * 23800020
+*                                                                     * 24000020
+*   SCB TRANSLATION ROUTINE INDEX (SCBAWOFF) - IF ENTRY IS FROM       * 24200020
+*   START MH ROUTINE OR TRANSLATION TEST ROUTINE,  THE OFFSET IN      * 24400020
+*   THE MESSAGE HANDLER VCON TABLE TO THE ADDRESS OF THE TRANSLA-     * 24600020
+*   TION ROUTINE.                                                     * 24800020
+*                                                                     * 25000020
+*OUTPUT --                                                            * 25200020
+*   BUFFER WITH ALL DATA TRANSLATED.                                  * 25400020
+*                                                                     * 25600020
+*   SCB TRANSLATE TABLE ADDRESS FIELD (SCBTRANS) - IF ENTRY IS FROM   * 25800020
+*   EXPANSION OF A CODE MACRO,  THE ADDRESS OF THE TRANSLATE TABLE.   * 26000020
+*                                                                     * 26200020
+*   SCB TRANSLATION ROUTINE INDEX (SCBAWOFF) - IF ENTRY IS FROM       * 26400020
+*   EXPANSION OF A CODE MACRO,  THE OFFSET IN THE MESSAGE HANDLER     * 26600020
+*   VCON TABLE TO THE ADDRESS OF THE TRANSLATION ROUTINE.             * 26800020
+*                                                                     * 27000020
+*EXTERNAL REFERENCES --                                               * 27200020
+*                                                                     * 27600020
+*    'IEDQA3' - TRANSLATE LIST MODULE TO DETERMINE PROPER TRANSLATE     27800020
+*               TABLE TO BE USED.                                       28000020
+*                                                                     * 28600020
+*   AVT - ADDRESS VECTOR TABLE.                                       * 28800020
+*                                                                     * 29000020
+*   DCB - DATA CONTROL BLOCK.                                         * 29200020
+*                                                                     * 29400020
+*   LCB - LINE CONTROL BLOCK.                                         * 29600020
+*                                                                     * 29800020
+*   SCB - STATION CONTROL BLOCK.                                      * 30000020
+*                                                                     * 30200020
+*   CURRENT BUFFER.                                                   * 30400020
+*                                                                     * 30600020
+*   TRANSLATION TABLE.                                                * 30800020
+*                                                                     * 31000020
+*EXITS,  NORMAL -- ENTRY IS FROM THE EXPANSION OF A CODE MACRO.       * 31200020
+*   DATA IN THE BUFFER IS TRANSLATED.  THE SCB TRANSLATE TABLE        * 31400020
+*   ADDRESS FIELD (SCBTRANS) CONTAINS THE ADDRESS OF THE TRANSLATE    * 31600020
+*   TABLE.  THE SCB TRANSLATION ROUTINE INDEX (SCBAWOFF) CONTAINS     * 31800020
+*   THE OFFSET IN THE MESSAGE HANDLER VCON TABLE TO THE ADDRESS OF    * 32000020
+*   THE TRANSLATION ROUTINE.  A 'TRANSLATED' BIT IS SET IN THE        * 32200020
+*   BUFFER RECB TIC FIELD (PRFTIC+3).                                 * 32400020
+*                                                                     * 32600020
+*   ENTRY IS FROM THE START MH ROUTINE OR FROM THE EXPANSION OF AN    * 32800020
+*   INBUF OR OUTBUF MACRO VIA THE TRANSLATION  TEST ROUTINE.  DATA    * 33000020
+*   IN THE BUFFER IS TRANSLATED.  A 'TRANSLATED' BIT IS SET IN THE    * 33200020
+*   BUFFER RECB TIC FIELD (PRFTIC+3).                                 * 33400020
+*                                                                     * 33600020
+*   ENTRY IS FROM THE EXPANSION OF AN INMSG OR OUTMSG MACRO VIA THE   * 33800020
+*   TRANSLATION TEST ROUTINE.  DATA IN THE BUFFER IS TRANSLATED.      * 34000020
+*                                                                     * 34200020
+*EXITS,  ERROR -- N/A.                                                * 34400020
+*                                                                     * 34600020
+*TABLES/WORK AREAS -- N/A.                                            * 34800020
+*                                                                     * 35000020
+*ATTRIBUTES -- SERIALLY REUSABLE,  REFRESHABLE,  ENABLED,             * 35200020
+*   RESIDENT,  PROBLEM PROGRAM MODE.                                  * 35400020
+*                                                                     * 35600020
+*NOTES -- THE OPERATION OF THIS MODULE DOES NOT DEPEND UPON AN        * 35800020
+*   INTERNAL REPRESENTATION OF THE EXTERNAL CHARACTER SET.            * 36000020
+*                                                                     * 36200020
+*********************************************************************** 36400020
+         EJECT                                                          36600020
+********* REGISTER EQUATES *********                                    36800020
+         SPACE                                                          37000020
+R0       EQU   0                                                        37200020
+RKEY     EQU   0                        KEYLENGTH                       37400020
+         SPACE                                                          37600020
+R1       EQU   1                        PARAMETER LIST                  37800020
+         SPACE                                                          38000020
+RWORK    EQU   2                        WORK                            38200020
+RRH      EQU   2                        RH BASE REGISTER       @YM07019 38300010
+         SPACE                                                          38400020
+RSCB     EQU   3                        ADDRESS OF SCB                  38600020
+         SPACE                                                          38800020
+RLCB     EQU   4                        BASE OF LCB                     39000020
+RUNIT    EQU   4                        ADDRESS OF CURRENT UNIT         39200020
+         SPACE                                                          39400020
+RSCAN    EQU   5                        ADDR OF START OF TRANSLATIO     39600020
+         SPACE                                                          39800020
+RPREFIX  EQU   6                        BASE OF BUFFER                  40000020
+R7       EQU   7                        TEMPORARY STORAGE        A42388 40100021
+         SPACE                                                          40200020
+RTBL     EQU   8                        ADDRESS OF TRANSLATE TABLE      40400020
+         SPACE                                                          40600020
+RAVT     EQU   9                        BASE OF AVT                     40800020
+         SPACE                                                          41000020
+RDCB     EQU   10                       BASE OF DCB                     41200020
+RSIZE    EQU   10                       SIZE OF DATA                    41400020
+         SPACE                                                          41600020
+REX      EQU   11                       EXECUTE REGISTER                41800020
+         SPACE 1                                                 S22025 41860022
+REOUAD   EQU   11                       ADDR OF CURRENT EOU      S22025 41920022
+         SPACE                                                          42000020
+RBASE    EQU   12                       BASE OF ROUTINE                 42200020
+         SPACE                                                          42400020
+R13      EQU   13                       SAVE AREA                       42600020
+R14      EQU   14                                                       42800020
+R15      EQU   15                       ENTRY AND RETURN CODE           43000020
+         SPACE                                                          43200020
+*********PARAMETER LIST OFFSET *********                                43400020
+         SPACE                                                          43600020
+STATOFF  EQU   3                        OFFSET TO STATUS BYTE           43800020
+TABOFF   EQU   4                        OFFSET TO TRANS TABLE ADDR      43900020
+         SPACE                                                          44000020
+BUF      EQU   X'20'                    ENTRY FROM INBUF/OUTBUF         44200020
+LISTFLAG EQU   X'80'                    TRANSLATE LIST FLAG             44500020
+         SPACE                                                          44800020
+********* MISCELLANEOUS EQUATES *********                               45000020
+         SPACE                                                          45200020
+ONE      EQU   1                        DUMMY LENGTH FOR EXECUTED       45400020
+*                                         MOVE INSTRUCTION              45600020
+FOUR     EQU   4                        OFFSET TO INPUT TRANS TABLE     46200020
+FMHLNG   EQU   0                        OFFSET TO LENGTH OF    @YM07019 46300010
+*                                       FORMATTED HEADER IN    @YM07019 46400010
+*                                       FORMATTED HEADER       @YM07019 46500010
+         EJECT                                                          46600020
+         USING IEDQAVTD,RAVT            ESTABLISH ADDRESSABILITY        46800020
+         USING IEDQSCB,RSCB                                             47000020
+         USING IEDQAW,RBASE             ESTABLISH ADDRESSABILITY        47200020
+         USING IEDQPRF,RPREFIX          ESTABLISH ADDRESSABILITY        47400020
+         USING IEDQLCB,RLCB             ESTABLISH ADDRESSABILITY        47600020
+*                                                                       47800020
+IEDQAW01 EQU   *                                                        48000020
+IEDQAW   IEDHJN TRANSLAT                MODULE ID                S22025 48200022
+         SR    R0,R0                    IS THIS A                       48840020
+         CH    R0,PRFSIZE                 ZERO-LENGTH BUFFER            48880020
+         BE    EXIT                     YES, EXIT IMMEDIATELY           48920020
+         TM    LCBSTAT1,LCBSENDN        IS SEND BIT ON?          A42388 48925021
+         BZ    CONTINUE                 IF NOT SENDING, CONTINUE A42388 48930021
+         L     R7,SCBDESTQ-1            LOAD QCB ADDRESS         A42388 48935021
+         TM    QCBFLAG-IEDQQCB(R7),QCBPROC PROCESS ENTRY BIT ON? A42388 48940021
+         BO    EXIT                     YES, EXIT FROM ROUTINE   A42388 48945021
+CONTINUE EQU   *                                                 A42388 48950021
+         SPACE                                                          48960020
+         TM    SCBSTATE,SCBCODE         IS ENTRY FROM STARTMH           49000020
+         BO    SELTABLE                 YES, GO SELECT TABLE            49200020
+         SPACE                                                          49400020
+         TM    STATOFF(R1),BUF          IS CODE MACRO IN HEADER         49600020
+         BO    SELTABLE                 NO, GO SELECT TABLE             49800020
+         SPACE                                                          49900020
+         TM    LCBTSOB,LCBTSBUF         IS THIS A TSO BUFFER    S21903  50000010
+         BO    SETCODE                  YES,SAVE CODE PARM LIST S21903  50200010
+         SPACE                                                          50400020
+         CLC   PRFSCAN,PRFSIZE          WILL NEXT BUFFER HIT CODE       50600020
+         BH    SELTABLE                 YES, GO SELECT TABLE            50800020
+         SPACE                                                          50900020
+SETCODE  EQU   *                                                        51000020
+         OI    SCBSTATE,SCBCODE         NO, SET TO TRANSLATE ALL        51400020
+         IC    R0,SCBTRANS-1              SUBSEQUENT BUFFERS            51600020
+         ST    R1,SCBTRANS-1            SAVE CODE PARAMETER LIST        51800020
+         STC   R0,SCBTRANS-1              IN SCB                        52000020
+         SPACE                                                          52200020
+SELTABLE EQU   *                                                        52400020
+         TM    STATOFF(R1),AVTE80       IS TABLE IN DCB                 52600020
+         BO    DCBINFO                  YES, GET ITS ADDRESS            52800020
+*                                                                       53000020
+         L     RTBL,TABOFF(,R1)         PICK UP TABLE ADDRESS           53200020
+         B     TRANCHK                  GO GET PROPER TABLE             53400020
+         SPACE                                                          53600020
+DCBINFO  EQU   *                                                        53800020
+         L     RDCB,LCBDCBPT            PICK UP ADDRESS OF DCB          54000020
+         USING IHADCB,RDCB              ESTABLISH ADDRESSABILITY        54200020
+         L     RTBL,DCBTRANS-1          PICK UP ADDR OF TABLE           54400020
+         CLI   PRFPRI,PRIAPBFR          RECV APPL PROG MH        M2313  54470021
+         BE    EXIT                     BRANCH IF YES SINCE THEREM2313  54540021
+*                                       IS NO TRANSLATE TABLE    M2313  54610021
+         SPACE                                                          54700020
+TRANCHK  EQU   *                                                        55000020
+         TM    AVTEZERO(RTBL),LISTFLAG  IS THIS A LIST                  55100020
+         BZ    RTTBL                    NO, GO SELECT TABLE             55200020
+         SPACE                                                          55300020
+         LR    R0,RBASE                 SAVE BASE(IEDQA3 RESTORES)      55600020
+         L     RBASE,AVTA3TL            ADDR OF LIST MODULE             55800020
+         BALR  R14,RBASE                LINKAGE                         56000020
+         SPACE                                                          56100020
+         B     EXIT                     +0 RETURN FROM LIST             56200020
+         B     TRANS                    +4 RETURN FROM LIST             56400020
+*        B     RTTBL                    +8 RETURN FROM LIST             56500020
+         EJECT                                                          56600020
+RTTBL    EQU   *                                                        56700020
+         L     RWORK,AVTEZERO(,RTBL)    PICK UP 1ST WORD OF TABLE       57000020
+         LTR   RWORK,RWORK              IS IT ZEROES                    57200020
+         BZ    EXIT                     YES, EBCDIC, EXIT NOW           57400020
+         SPACE                                                          57600020
+         TM    LCBSTAT1,LCBSENDN        IS LINE RECEIVING               57800020
+         BNO   INTBL                    YES, GET INPUT TABLE ADDR       58000020
+         SPACE                                                          58200020
+         LR    RTBL,RWORK               POINT TO OUTPUT TABLE           58400020
+         B     TRANS                    GO TRANSLATE                    58600020
+         SPACE                                                          58800020
+INTBL    EQU   *                                                        59000020
+         LA    RTBL,FOUR(,RTBL)         POINT TO INPUT TABLE            59200020
+         TM    PRFSTAT1,PRFCNCLN        IS CANCEL BIT ON                59400020
+         BNO   TRANS                    NO, START AT 1ST DATA BYTE      59600020
+         SPACE                                                          59700020
+         TM    PRFSTAT1,PRFTSMSG       TIME SHARING MESSAGE      S22029 59800010
+         BO    TRANS                    YES. START AT 1ST DATA BYTE TSO 60000020
+         SPACE                                                          60200020
+         LH    RSCAN,PRFSCAN            SET TO START                    60400020
+         N     RSCAN,AVTCLRHI             TRANSLATE AT EOB              60600020
+         B     SETSIZE                  PROCEED TO GET DATA LENGTH      60800020
+         SPACE                                                          61000020
+TRANS    EQU   *                                                        61200020
+         SR    RSCAN,RSCAN              (CLEAR FOR INSERT)              61400020
+         IC    RSCAN,LCBISZE            GET NO. OF IDLES                61600020
+         SPACE                                                          62400020
+         LA    RSCAN,AVTTXTSZ(,RSCAN)  GET TEXT PREFIX SIZE      S22029 62600010
+         TM    PRFSTAT1,PRFNHDRN        IS IT HEADER PREFIX             62800020
+         BO    SNAPROC                  NO, COUNT IS RIGHT     @YM07019 63000010
+         SPACE                                                          63200020
+         LA    RSCAN,AVTHDRSZ-AVTTXTSZ(,RSCAN) YES, ADD EXTRA           63400020
+         SPACE                                                          63600020
+SNAPROC  EQU   *                                               @YM07019 63608010
+         CLI   LCBFLAG1,LCBPLCB         PLCB                   @YM07019 63616010
+         BNE   SETSIZE                  BR NO                  @YM07019 63624010
+         TM    LCBSTAT5,LCBLUNIT        LU                     @YM07019 63632010
+         BNO   SETSIZE                  BR NO                  @YM07019 63640010
+         LA    RRH,PRF1LEN              LEN OF NEGATIVE PRF    @YM07019 63648010
+         LNR   RRH,RRH                  MAKE IT MINUS          @YM07019 63656010
+         AR    RRH,RPREFIX              SET RH BASE REG        @YM07019 63664010
+         USING IEDRH,RRH                RH ADDRESSABILITY      @YM07019 63672010
+         TM    TRHBYTE0,TRHDFC+TRHNC    DFC,NC,OR SC           @YM07019 63680010
+         BNZ   EXIT                     BR YES                 @YM07019 63688010
+         TM    TRHBYTE0,TRHSDI          SENSE INCLUDED         @YM07019 63696010
+         BNO   CHECKFI                  BR NO                  @YM07019 63704010
+*                                       BUMP PAST SENSE        @YM07019 63712010
+         LA    RSCAN,L'SNSSYSTM+L'SNSUSER(,RSCAN)              @YM07019 63720010
+         B     SETSIZE                  GO GET DATA LENGTH     @YM07019 63728010
+CHECKFI  EQU   *                                               @YM07019 63736010
+         TM    TRHBYTE0,TRHFI           FORMATTED HEADER       @YM07019 63744010
+         BNO   SETSIZE                  BR NO                  @YM07019 63752010
+*                                       GET ADDR OF FMH        @YM07019 63760010
+         LA    RWORK,AVTUMALN(RSCAN,RPREFIX)                   @YM07019 63768010
+         SR    RSIZE,RSIZE              CLEAR REG              @YM07019 63776010
+         IC    RSIZE,FMHLNG(,RWORK)     LENGTH OF FMH          @YM07019 63784010
+         AR    RSCAN,RSIZE              BUMP PAST FMH          @YM07019 63792010
+SETSIZE  EQU   *                                                        63800020
+         LH    RSIZE,PRFSIZE            GET SIZE OF BUFFER              64000020
+         N     RSIZE,AVTCLRHI                                           64200020
+         SR    RSIZE,RSCAN              SUBTRACT DATA NOT               64400020
+*                                         TO BE TRANSLATED              64600020
+         BZ    EXIT                     BR NO DATA TO TRANSLATE  S22025 64800022
+         LR    RWORK,RPREFIX            LOAD PREFIX IN REG       S22025 65000022
+         LH    REX,AVTKEYLE             LOAD KEY LENGTH IN REG   S22025 65200022
+         B     ENTERLOP                 GET ADDR OF SCAN POINTER S22025 65400022
+ADDRLOOP EQU   *                                                 S22025 65460022
+         L     RWORK,PRFTIC-IEDQPRF(,RWORK) POINT TO NEXT UNIT   S22025 65520022
+         SR    RSCAN,REX                SUBT NO OF BYTES PASSED  S22025 65580022
+ENTERLOP EQU   *                                                 S22025 65640022
+         CR    RSCAN,REX                IS ITEM IN THIS UNIT     S22025 65700022
+         BNL   ADDRLOOP                 NO, TEST NEXT UNIT       S22025 65760022
+         SR    REX,RSCAN                GET DATA COUNT IN UNIT   S22025 65820022
+         LA    RSCAN,AVTUMALN(RSCAN,RWORK)    YES, UNIT ADDR     S22025 65880022
+TRANS1   EQU   *                                                 S22025 65940022
+         SPACE                                                          66000020
+         CR    RSIZE,REX                DOES DATA END IN THIS UNIT      66400020
+         BNH   TRANS2                   YES, TRANSLATE & EXIT           66600020
+         SPACE                                                          66800020
+         SPACE                                                          67400020
+         SR    RSIZE,REX                COMPUTE DATA LEFT               67800020
+         BCTR  REX,AVTEZERO             DECREMENT FOR EXECUTE           68000020
+         EX    REX,CODEX                TRANSLATE DATA                  68200020
+         SPACE                                                          68400020
+         L     RWORK,PRFTIC-IEDQPRF(,RWORK)  POINT TO NEXT UNIT  S22025 68600022
+         LA    RSCAN,AVTUMALN(,RWORK)   GET START OF DATA ADDR   S22025 68800022
+         LH    REX,AVTKEYLE            GGET UNIT LENGTH          S22025 69000022
+         B     TRANS1                   RETURN TO TRANSLATE NEXT S22025 69600022
+         SPACE                                                          70200020
+TRANS2   EQU   *                                                        70400020
+         BCTR  RSIZE,AVTEZERO           DECREMENT FOR EXECUTE           70600020
+         EX    RSIZE,CODEX              TRANSLATE DATA                  70800020
+         SPACE                                                          71000020
+EXIT     EQU   *                                                        71200020
+         L     RBASE,AVTUI              GET RET INTERFACE ADDR   S22025 71400022
+         B     FOUR(RBASE)              RETURN TO CALLER         S22025 71600022
+         SPACE                                                          71800020
+********* EXECUTED INSTRUCTION *********                                72000020
+         SPACE                                                          72200020
+CODEX    TR    AVTEZERO(ONE,RSCAN),AVTEZERO(RTBL)                       72400020
+         EJECT                                                          72460021
+         TPRIOR                                                  M2313  72520021
+         EJECT                                                          72600020
+********* DSECTS *********                                              73000020
+         SPACE                                                          73200020
+         TAVTD                                                          73400020
+         TQCBD                                                          73450021
+         EJECT                                                          73500020
+         DCBD  DSORG=TX                                                 73600020
+         EJECT                                                          73700020
+         TLCBD                                                          73800020
+         EJECT                                                          73900020
+         TPRFD                                                          74000020
+         EJECT                                                          74200010
+         TRHD                                                  @YM07019 74250010
+         EJECT                                                          74300020
+         TSCBD                                                          74400020
+         EJECT                                                          74600010
+         TSNSD                                                 @YM07019 74660010
+         EJECT                                                          74720010
+      END                                                               74800020

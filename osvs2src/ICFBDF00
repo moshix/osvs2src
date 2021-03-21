@@ -1,0 +1,1894 @@
+ICFBDF00 TITLE 'MCH APPENDAGE && DUMP ROUTINE FOR PWF'                  00100002
+ICFBDE00 CSECT 0                                                        00150002
+* MODULE NAME...                                                        00200002
+*        ICFBDF00                                                       00250002
+*                                                                       00300002
+* FUNCTIONS...                                                          00350002
+*         ICFBDF00 SERVES AS PART OF THE SOFTWARE SUPPORT FOR           00400002
+*         THE POWER WARNING FEATURE. IT HAS THREE MAJOR SECTIONS:       00450002
+*         THE APPENDAGE ROUTINE, THE USER ROUTINE, AND THE DUMP         00500002
+*         ROUTINE. THE FUNCTIONS OF EACH ARE LISTED BELOW.              00550002
+*          A. APPENDAGE ROUTINE                                         00600002
+*             1. RECEIVE CONTROL FROM MCH VIA CALL                      00650002
+*             2. DETERMINE WHETHER FUNCTION IS IMPLEMENTED.             00700002
+*             3. DETERMINE WHETHER CONDITIONS WARRANT AN                00750002
+*                IMMEDIATE DUMP.                                        00800002
+*             4. DETERMINE IF THIS IS A TRANSIENT WARNING.              00850002
+*             5. IF DUMP CONDITIONS DON'T EXIST, TO RETURN              00900002
+*                TO THE MCH IN AN APPROPRIATE MANNER.                   00950002
+*             6. IF DUMP CONDITIONS DO EXIST, TO GIVE CONTROL TO A      01000002
+*                USER ROUTINE WHICH IS PHYSICALLY PART OF               01050002
+*                THIS MODULE.                                           01100002
+*             7. TO EXAMINE USER RETURN CODE, AND RETURN TO             01150002
+*                MCH IF NECESSARY.                                      01200002
+*             8. TO CLEAR PATHS TO THE DUMP DEVICES BY STOPPING         01250002
+*                ALL I/O ACTIVITY ON EACH CHANNEL ON A PATH TO A        01300002
+*                DUMP DEVICE.                                           01350002
+*             9. TO GIVE CONTROL TO THE DUMP ROUTINE.                   01400002
+*                                                                       01450002
+*          B. USER ROUTINE                                              01500002
+*             1. TO PROVIDE THE USER WITH A MEANS OF DOING              01550002
+*                SOME HOUSE CLEANING BEFORE DUMPING, OR OF AVOIDING     01600002
+*                DUMPING MEMORY.                                        01650002
+*                                                                       01700002
+*          C. DUMP ROUTINE                                              01750002
+*             1. TO CREATE AN IMAGE OF STORAGE ON AN EXTERNAL           01800002
+*                DIRECT ACCESS DEVICE.                                  01850002
+*                ( SEE COMMENTS ON PAGE PRECEEDING LOCATION             01900002
+*                LABELLED ICFBDE99)                                     01950002
+*                                                                       02000002
+*                                                                       02050002
+* ATTRIBUTES...                                                         02100002
+*        PERMANENTLY RESIDENT, SERIALLY REUSABLE, SUPERVISOR            02150002
+*         MODE, AND USES PRIVILEGED INSTRUCTIONS.                       02200002
+*                                                                       02250002
+*                                                                       02300002
+* ENTRY POINTS...                                                       02350002
+*         ICFBDE00--ENTERED EITHER FROM MAIN LINE OF MCH BY             02400002
+*                   A CALL, OR FROM THE UNEXPECTED ERROR                02450002
+*                   HANDLER (SHUT) BY CALL.                             02500002
+*                                                                       02550002
+* EXITS...                                                              02600002
+*                                                                       02650002
+*       EXITS TO DISABLED WAIT STATE (CODE 26)...                       02700002
+*         1. SUCCUSSFULCOMPLETION OF DUMP.                              02750002
+*                                                                       02800002
+*         EXITS TO DISABLED WAIT STATE (CODE 27)...                     02850002
+*         1. MISSING INTERRUPT DURING I/O CLEAR ROUTINE IN THE          02900002
+*            APPENDAGE.                                                 02950002
+*         2. FAILURE TO COMPLETE DUMP ONCE DUMP WAS ENTERED.            03000002
+*                                                                       03050002
+*       EXIT TO THE MCH...                                              03100002
+*       1. FUNCTION WAS NOT INITIALIZED (VIA BR 14).                    03150002
+*       2. FUNCTION INOPERATIVE (VIA BR 14).                            03200002
+*         3. TRANSIENT WARNING                                          03250002
+*         4. USER RETURNED CODE OF 4                                    03300002
+*                                                                       03350002
+*                                                                       03400002
+* INPUTS...                                                             03450002
+*         A. FOR ENTRY VIA ICFBDE00                                     03500002
+*          1. R0  HAS ENTRY CODE (0 FOR NORMAL ENTRY, 4 FROM SHUT)      03550002
+*            2. R14 POINTS TO RETURN POINT                              03600002
+*            3. R15 POINTS TO MY ENTRY POINT                            03650002
+*            4. EC MODE                                                 03700002
+*            5. MCIC (LOC XE8)                                          03750002
+*                                                                       03800002
+*                                                                       03850002
+* OUTPUTS...                                                            03900002
+*         1. FOR RETURN TO MCH, ENVIRONMENT IS RESTORED EXCEPT          03950002
+*            FOR SOME NONESSENTIAL LOGOUT FIELDS.                       04000002
+*          A. R15 = 0 IMPLIES CR14B7 SHOULD BE SET 0                    04050002
+*          B. R15 = 4 IMPLIES CR14B7 SHOULD BE SET 1                    04100002
+*         2. FOR USER ROUTINE, R15IS ITS ENTRY POINT, R14 IS            04150002
+*            ITS RETURN ADDRESS, AND R13 POINTS TO A REGISTER           04200002
+*            SAVE AREA.                                                 04250002
+*         3. FOR DUMP ROUTINE, R13 HAS WORK AREA POINTER, R15           04300002
+*            ITS ENTRY POINT, CR0BIT0=0,CR2=FFFFFFFF,CR14=              04350002
+*            00000000, AND PSW IS DISABLED, SUPERVISOR MODE,            04400002
+*            AND KEY ZERO.                                              04450002
+*         4. MAINTAIN A FOOTPRINT TABLE, TRACKING CONTROL FLOW          04500002
+*            THROUGH THE APPENDAGE.                                     04550002
+*                                                                       04600002
+*                                                                       04650002
+* TABLES AND WORK AREAS                                                 04700002
+*       PWF WORK AREA - MAPPED BY ICFWORK                               04750002
+*                                                                       04800002
+*                                                                       04850002
+* REGISTER CONVENTIONS                                                  04900002
+*          R9-- PWF WORK AREA POINTER                                   04950002
+*          R10-- CVT BASE                                               05000002
+*          R12-- ICFBDF00 BASE                                          05050002
+*          R13-- SAVE AREA POINTER                                      05100002
+*          R14-- RETURN ADDRESS                                         05150002
+*          R15-- ENTRY ADDRESS (IF THROUGH ICFBDE00)                    05200002
+*                                                                       05250002
+*                                                                       05260003
+* STATUS...                                                             05270003
+*         APARS FIXED @ZA00508, @ZA00509, @ZA00510                      05280003
+*                                                                       05290003
+         EJECT                                                          05300002
+CR1      EQU   1                                                        05350002
+CR0      EQU   0                                                        05400002
+CR2      EQU   2                                                        05450002
+CR14     EQU   14                                                       05500002
+CR15     EQU   15                                                       05550002
+         SPACE 2                                                        05600002
+R0       EQU   0                                                        05650002
+R1       EQU   1                                                        05700002
+R2       EQU   2                                                        05750002
+R3       EQU   3                                                        05800002
+R4       EQU   4                                                        05850002
+R5       EQU   5                                                        05900002
+R6       EQU   6                                                        05950002
+R7       EQU   7                                                        06000002
+R8       EQU   8                                                        06050002
+R9       EQU   9                                                        06100002
+R10      EQU   10                                                       06150002
+R11      EQU   11                                                       06200002
+R12      EQU   12                                                       06250002
+R13      EQU   13                                                       06300002
+R14      EQU   14                                                       06350002
+R15      EQU   15                                                       06400002
+W0       EQU   0                                                        06450002
+W1       EQU   1                                                        06500002
+W2       EQU   2                                                        06550002
+W3       EQU   3                                                        06600002
+W4       EQU   4                                                        06650002
+W5       EQU   5                                                        06700002
+W6       EQU   6                                                        06750002
+W7       EQU   7                                                        06800002
+W8       EQU   8                                                        06850002
+         EJECT                                                          06900002
+*        DECIMAL EQUATES                                                06950002
+D0       EQU   0                                                        07000002
+D1       EQU   1                                                        07050002
+D2       EQU   2                                                        07100002
+D3       EQU   3                                                        07150002
+D4       EQU   4                                                        07200002
+D5       EQU   5                                                        07250002
+D6       EQU   6                                                        07300002
+D7       EQU   7                                                        07350002
+D8       EQU   8                                                        07400002
+D9       EQU   9                                                        07450002
+D10      EQU   10                                                       07500002
+D12      EQU   12                                                       07550002
+D13      EQU   13                                                       07600002
+D16      EQU   16                                                       07650002
+D20      EQU   20                                                       07700002
+D24      EQU   24                                                       07750002
+D23      EQU   23                                                       07800002
+D26      EQU   26                                                       07850002
+D27      EQU   27                                                       07900002
+D28      EQU   28                                                       07950002
+D232     EQU   232                                                      08000002
+D244     EQU   244                 MCHAPNDG COMMON PTR DISPLACEMENT     08050002
+D256     EQU   256                                                      08100002
+D380     EQU   380                 CVT DISP OF WORK AREA PTR IN VS1     08150002
+D488     EQU   488                                                      08200002
+         EJECT                                                          08250002
+*        HEXADECIMAL EQUATES                                            08300002
+X00      EQU   X'00'                                                    08350002
+X01      EQU   X'01'                                                    08400002
+X02      EQU   X'02'                                                    08450002
+X04      EQU   X'04'                                                    08500002
+X08      EQU   X'08'                                                    08550002
+X0C      EQU   X'0C'                                                    08600002
+X0F      EQU   X'0F'                                                    08650002
+X10      EQU   X'10'               CVTPTR ADDR                          08700002
+X20      EQU   X'20'                                                    08750002
+X22      EQU   X'22'                                                    08800002
+X26      EQU   X'26'                                                    08850002
+X27      EQU   X'27'                                                    08900002
+X30      EQU   X'30'               MC OPSW LOC                          08950002
+X3F      EQU   X'3F'                                                    09000002
+X40      EQU   X'40'                                                    09050002
+X50      EQU   X'50'                                                    09100002
+X68      EQU   X'68'               PGM NPSW LOC                         09150002
+X70      EQU   X'70'               MC NPSW LOC                          09200002
+X72      EQU   X'72'                                                    09250002
+X78      EQU   X'78'                                                    09300002
+X7F      EQU   X'7F'                                                    09350002
+X80      EQU   X'80'                                                    09400002
+X88      EQU   X'88'                                                    09450002
+X90      EQU   X'90'                                                    09500002
+X98      EQU   X'98'                                                    09550002
+XAF      EQU   X'AF'                                                    09600002
+XBF      EQU   X'BF'                                                    09650002
+XC0      EQU   X'C0'                                                    09700002
+XD8      EQU   X'D8'               DISP OF CTLREGS IN MCHINLOG SV AREA  09750002
+XE8      EQU   X'E8'               MCIC LOCATION                        09800002
+XFD      EQU   X'FD'                                                    09850002
+XFE      EQU   X'FE'                                                    09900002
+XFF      EQU   X'FF'                                                    09950002
+X100     EQU   X'100'                                                   10000002
+X180     EQU   X'180'              DISP OF GPR SAVE AREA IN PSA         10050002
+X1C0     EQU   X'1C0'              DISP OF CR SAVE AREA IN PSA          10100002
+XA02     EQU   X'A02'                                                   10150002
+XBFF     EQU   X'BFF'                                                   10200002
+         EJECT                                                          10250002
+*        MISCELLANEOUS EQUATES                                          10300002
+CAW      EQU   X'48'                                                    10350002
+CSW      EQU   X'40'                                                    10400002
+EXOPSW   EQU   X'18'         EXTERNAL OLD PSW                           10450002
+MCOPSW   EQU   X'30'                                                    10500002
+IOOPSW   EQU   X'38'                                                    10550002
+EXNPSW   EQU   X'58'         EXTERNAL NEW PSW                           10600002
+PGNPSW   EQU   X'68'                                                    10650002
+MCNPSW   EQU   X'70'                                                    10700002
+IONPSW   EQU   X'78'                                                    10750002
+MCIC     EQU   X'E8'                                                    10800002
+SENSE    EQU   X'01'         EQUATE FOR SIGP SENSE CODE                 10850002
+PRGRST   EQU   X'08'         EQUATE FOR SIGP PROGRAM RESET CODE         10900002
+RESTART  EQU   X'06'         EQUATE FOR SIGP RESTART CODE               10950002
+RC0      EQU   0                   NORMAL RETURN, TRANSIENT WARNING     11000002
+RC4      EQU   4                   HARD CHECK W/ NO CONCURRENT WARNING  11050002
+RC8      EQU   8                                                        11100002
+RC12     EQU   12                                                       11150002
+RC16     EQU   16                  FUNCTION INOPERATIVE                 11200002
+         EJECT                                                          11250002
+ICFBDE00 CSECT 0                                                        11300002
+ICFTDE00 EQU   ICFBDE00                                                 11350002
+         ENTRY ICFEND                                                   11400002
+         ENTRY ICFEXT50,ICFEXT99                                        11450002
+         SPACE 3                                                        11500002
+         TS    ICFEFLAG-ICFBDE00(R15)  TEST ENTRY FLAG                  11550002
+         BCR   D4,R15        IF SET, LOOP; R15 PTS TO ICFBDE00          11600002
+         TM    ICFMFLGA-ICFBDE00(R15),ICF2CPUT  TEST FOR 2ND CPU THRU   11650002
+         BNO   ICF1CPUI-ICFBDE00(R15)  IF SET, INIT 2ND CPU             11700002
+         SPACE                                                          11750002
+*        FROM HERE, ONLY THE 2ND CPU EXECUTES THE FOLLOWING CODE.       11800002
+         SPACE                                                          11850002
+         OI    ICFMFLGA-ICFBDE00(R15),ICF2CPUA  SET SECOND CPU ACTIVE   11900002
+         LPSW  ICF2CPSW-ICFBDE00(R15)  DISABLE FOR MCI'S                11950002
+ICF2CMCO EQU   *                                                        12000002
+         STM   R0,R15,ICF2CGRS-ICFBDE00(R15)  SAVE 2ND CPU'S REGISTERS  12050002
+         LR    R12,R15       SET UP BASE REG                            12100002
+         USING ICFBDE00,R12                                             12150002
+         STCTL CR0,CR15,ICF2CCRS  SAVE SECOND CPU'S CTLRS               12200002
+         MVC   ICFCR02F(D4),ICFCR0MK   MOVE IN CR0 MASK                 12250002
+         NC    ICFCR02F(D4),ICF2CCRS   'AND' IT WITH CPU2'S CR0         12300002
+         OI    ICFCR02F+D2,X80    TURN ON MALFUNCTION ALERT MASK        12350002
+         LCTL  CR0,CR0,ICFCR02F   INIT. CR0                             12400002
+         MVC   ICF2CEOP(D8),EXOPSW     SAVE 2ND EXOPSW                  12450002
+         MVC   ICF2CENP(D8),EXNPSW     SAVE 2ND EXNPSW                  12500002
+         MVC   EXNPSW(D8),ICFEXPSW     SET UP 2ND EXNPSW                12550002
+         STOSM ICFMWORK,X01  ENABLE FOR EXTERNALS                       12600002
+         B     ICFDMPLL      GO TO DUMP LOCK LOOP                       12650002
+         EJECT                                                          12700002
+ICF1CPUI EQU   *                                                        12750002
+         STM   R0,R15,ICFRDISP(R15) SAVE HIS REGS WHERE THEY WON'T      12800002
+*                                  FOUL UP ANYTHING IN WARNA OR MCH     12850002
+         LR    R12,R15             COPY MY BASE REG                     12900002
+         USING ICFTDE00,R12        NOW CHANGE BASE                      12950002
+         OI    ICFMFLGA,ICF2CPUT  SET SECOND CPU SIGNAL                 13000002
+         MVI   ICFEFLAG,X00  RELEASE SECOND CPU                         13050002
+         LA    R3,ICFSHENV         COPY SAVE AREA PTR                   13100002
+         SPACE 3                                                        13150002
+         L     R10,X10             LOAD CVT PTR                         13200002
+         USING ICFCVTOR,R10                                             13250002
+         USING ICFWORKA,R9                                              13300002
+         SR    R15,R15             INIT RETURN CODE            @ZA00508 13310003
+         TM    CVTVOLF2,CVTVOLI2   TEST FOR FUNCTION NOT INITIALIZED    13350002
+         BO    ICFWNOFF            RETURN TO MCH WITH R15 = 0  @ZA00508 13400003
+         L     R9,CVTVOLF2         GET WORK AREA PTR FOR VS2 & MVT      13450002
+         DROP  R10                                                      13500002
+         SPACE 3                                                        13550002
+         LRA   R9,D0(R9)     GET REAL ADDR OF ICFWORK                   13600002
+         BNZ   ICFWAT27                                                 13650002
+         ST    R9,ICFREALW   SAVE REAL ADDR OF ICFWORK                  13700002
+         EJECT                                                          13750002
+* SET UP MP FLAGS                                                       13800002
+         USING CSD,W8                                                   13850002
+         L     W8,ICFADR3    GET REAL ADDR OF CSD                       13900002
+         TM    CSDFLAGS,CSDMP     TEST FOR MP SYSTEM                    13950002
+         DROP  W8                                                       14000002
+         BNO   ICFNOMP                                                  14050002
+         OI    ICFMFLGA,ICFMPSYS  SET MP SYSTEM FLAG                    14100002
+ICFNOMP  EQU   *                                                        14150002
+         SPACE 3                                                        14200002
+         XC    ICFTRMCA(D4),ICFTRMCA  ZAP FOOTPRINT TABLE               14250002
+         OI    ICFTRMCA,X80   SET FUNCTION ENTERED BIT                  14300002
+         SPACE 3                                                        14350002
+         LTR   R0,R0         TEST FOR 0 ENTRY CODE                      14400002
+         BNZ   ICFNTC4S      IF NOT, SKIP CR14 TEST                     14450002
+         TM    X1C0+CR14*D4,X01 TEST CR14 STORED AT INTERRUPT           14500002
+*                               FOR BIT 7 OFF.                          14550002
+         BNO   ICFINOPR       IF NOT ENABLED FOR WARNING,QUIT           14600002
+*        THIS CAN HAPPEN ON SOME MACHINES WHEN THE WARNING              14650002
+*        BIT COMES ON AS THE RESULT OF ANOTHER INTERRUPT.               14700002
+         SPACE 3                                                        14750002
+ICFNTC4S EQU   *                                                        14800002
+         LA    R13,ICFSAVE         GET SAVE AREA PTR                    14850002
+         ST    R3,D4(R13)          SAVE BACKWARD SAVE PTR               14900002
+         TM    ICFFLAGA,X80        TEST FOR FUNCTION INOPERATIVE        14950002
+         BZ    ICFENABL            CONTINUE IF NOT DISABLED             15000002
+         OI    ICFTRMCA,X40   FUNCTION INOP BIT IS SET                  15050002
+         B     ICFINOPR            IF NOT OPERATIVE,RETURN TO PROG      15100002
+         EJECT                                                          15150002
+*        COMPLETE SAVING ENVIRONMENT,ENABLE FOR MCI,RETURN ON TRANSIENT 15200002
+ICFENABL EQU   *                                                        15250002
+         OI    ICFTRMCA,X20  TURN ON FUNCTION IS OPERATIVE              15300002
+         SPACE                                                          15350002
+         MVC   ICF1CEOP(D8),EXOPSW     SAVE MCH'S EXTRN OPSW            15400002
+         MVC   ICF1CENP(D8),EXNPSW     SAVE MCH'S EXTRN NPSW            15450002
+         MVC   EXNPSW(D8),ICFEXPSW     SET UP MY EXTERNAL NPSW          15500002
+         SPACE                                                          15550002
+         STCTL CR0,CR0,ICFCR01S   SAVE CR0                              15600002
+         MVC   ICFCR0FX(D4),ICFCR0MK   SET UP CR0 MASK                  15650002
+         NC    ICFCR0FX(D4),ICFCR01S   'AND' IT W/ CR0                  15700002
+         OI    ICFCR0FX+D2,X80    TURN ON MALFUNCTION ALERT MASK        15750002
+         LCTL  CR0,CR0,ICFCR0FX   SET UP CTLR0                          15800002
+         SPACE                                                          15850002
+         L     W8,ICFMCPSW   LD MC DISABLED PSW                         15900002
+         ST    W8,ICFIOPSW   CLEAR FIRST WORD OF NEW PSW                15950002
+         LA    W8,ICFIMCOF   GET SET FOR NEW PSW ADDR FIELD             16000002
+         ST    W8,ICFIOPSW+D4          SAVE IT                          16050002
+         LPSW  ICFIOPSW      NOW DISABLE FOR MCI'S                      16100002
+ICFIMCOF EQU   *                                                        16150002
+         EJECT                                                          16200002
+*  SET UP MC PSWS AND CR14                                              16250002
+         SPACE                                                          16300002
+         MVC   ICFMCOPS(D8),MCOPSW     SAVE MC OPSW                     16350002
+         MVC   ICFSNMCP(D8),MCNPSW     SAVE MC NPSW                     16400002
+         MVC   MCNPSW(D8),ICFMCPSW     SET UP MC NPSW                   16450002
+         SPACE                                                          16500002
+         STCTL CR14,CR14,ICFCR0FX      GET CTLR14                       16550002
+         OI    ICFCR0FX,X01  TURN ON WARNING MASK                       16600002
+         LCTL  CR14,CR14,ICFCR0FX      RESET CR14 W/ WARNING ON         16650002
+         SPACE 3                                                        16700002
+         LR    W8,R0         COPY ENTRY CODE                            16750002
+         B     ICFENBTL(W8)  INDEX ENTRY BRANCH TABLE                   16800002
+ICFENBTL EQU   *                                                        16850002
+         B     ICFNRMEN      R0=0, GO TO NORMAL ENTRY PROCESSING        16900002
+         B     ICFSHTEN      R0=4, GO TO SHUT ENTRY PROCESSING          16950002
+         SPACE 3                                                        17000002
+ICFNRMEN EQU   *                                                        17050002
+         STCK  ICFTOD00            SAVE TOD CLOCK                       17100002
+         MVC   ICFCTST(D8),ICFTOD00 COPY START TIME                     17150002
+         BNZ   ICFCOMIT            COMMIT TO DUMP ON CLOCK FAILURE      17200002
+         OI    ICFTRMCA,X10   1ST CLOCK OK                              17250002
+         TM    MCIC,XC0            TEST FOR SYS OR INSTR PROC DAMAGE    17300002
+         BNZ   ICFCOMIT            IF ONE OR BOTH IS ON, COMMIT TO      17350002
+*                                  DUMP BECAUSE OF CONCURRENT HARD MC   17400002
+         TM    ICFFLAGA,X40        TEST FOR DUMP IMMEDIATE              17450002
+         BO    ICFCOMIT                                                 17500002
+         OI    ICFTRMCA,X08   DUMP IMMEDIATE IS OFF                     17550002
+         EJECT                                                          17600002
+*        CALCULATE STOP TIME                                            17650002
+         LA    W6,D1               LOAD CARRYBINCREMENT                 17700002
+         L     W7,ICFTOD00         LOAD H.O. HALF OF START TIME         17750002
+         L     W8,ICFTOD00+D4      LOAD L.O. HALF OF START TIME         17800002
+         AL    W8,ICFTME01+D4      ADD L.O. HALF OF INTERVAL            17850002
+         BC    D12,ICFNOCRY        TEST FOR NO CARRY                    17900002
+         AR    W7,W6               INCREMENT H.O. PART ON CARRY         17950002
+ICFNOCRY EQU   *                                                        18000002
+         A     W7,ICFTME01         ADD H.O. PART OF INTERVAL            18050002
+         ST    W7,ICFTOD99         SAVE H.O. PART OF STOP TIME          18100002
+         ST    W8,ICFTOD99+D4      SAVE L.O. PART OF STOP TIME          18150002
+         SPACE 3                                                        18200002
+ICFMCKLP EQU   *                                                        18250002
+         LPSW  ICFTSTWN            TEST FOR HARD MACHINE CHECK          18300002
+ICFNOMCK EQU   *                                                        18350002
+         LPSW  ICFMCOFF            TEMP. POWER FLUCTUATION, SO RETURN   18400002
+*                                  AND MASK OFF MC'S                    18450002
+ICFNOMC1 EQU   *             NOTE- THIS STATEMENT MUST FOLLOW LPSW      18500002
+         OI    ICFTRMCA,X02   TRANSIENT WARNING                         18550002
+         LA    R15,X04       SET RETURN CODE                            18600002
+         B     ICFNORMR      GO TO NORMAL RETURN                        18650002
+         SPACE 3                                                        18700002
+ICFUSRTN EQU   *                                                        18750002
+         OI    ICFTRMCA+D1,X08         USER RETURN CODE = 4             18800002
+         OI    ICFFLAGA,X20  SET USER RC = 4 BIT IN FLAGA               18850002
+         XR    R15,R15       SET RETURN CODE                            18900002
+         B     ICFNORMR      GO TO NORMAL RETURN                        18950002
+ICFSHRTN EQU   *                                                        19000002
+         XR    R15,R15       SET RETURN CODE FOR RETURN TO SHUT         19050002
+ICFSHRT1 EQU   *                                                        19100002
+         OI    ICFTRMCA+D1,X04         SET RETURN TO SHUT BIT           19150002
+         B     ICFNORMR      GO TO NORMAL RETURN                        19200002
+         EJECT                                                          19250002
+ICFMCKON EQU   *                                                        19300002
+         STCK  ICFTOD01            GET CURRENT TIME                     19350002
+         BNZ   ICFCOMIT            TEST FOR CLOCK FAILURE +             19400002
+*                                  COMMIT IF BAD                        19450002
+         CLC   ICFTOD01(D8),ICFTOD99  COMPARE CLOCK TO END              19500002
+         BNL   ICFCOMI1       COMMIT TO DUMP IF END                     19550002
+         TM    XE8+D1(R0),X80      TEST FOR MCIC WARNING (BIT 8)        19600002
+         BO    ICFTCNCR            ON WARNING, GO TO CONCURRENCY TEST   19650002
+         B     ICFCOMIT            IF NO WARNING, MUST HAVE BEEN A      19700002
+*                                  HARD ERROR SO COMMIT TO DUMP         19750002
+         EJECT                                                          19800002
+ICFNORMR EQU   *                                                        19850002
+         MVC   MCOPSW(D8),ICFMCOPS     RESET MC OLD PSW                 19900002
+         MVC   MCNPSW(D8),ICFSNMCP     RESET MC NEW PSW                 19950002
+         STNSM ICFMWORK,XFE  TURN OFF EXTERNALS                         20000002
+         MVC   EXOPSW(D8),ICF1CEOP     RESET EXT OPSW                   20050002
+         MVC   EXNPSW(D8),ICF1CENP     RESET EXT NPSW                   20100002
+         LCTL  CR0,CR0,ICFCR01S   RESET CR0                             20150002
+         B     ICFRTNCN      GO CONTINUE RETURN                         20200002
+         SPACE                                                          20250002
+ICFINOPR EQU   *                                                        20300002
+         XR    R15,R15       ZERO RETURN CODE                           20350002
+         SPACE                                                          20400002
+ICFRTNCN EQU   *                                                        20450002
+         OI    ICFTRMCA,X01  RETURN TO MCH                              20500002
+ICFWNOFF EQU   *                                               @ZA00508 20550003
+* 2 LINES OF CODE DELETED HERE                                 @ZA00509 20600003
+         TS    ICFEFLAG      HAS SECOND CPU ENTERED?                    20650002
+         BC    D8,ICFNMPRN   IF ZERO,RESET FLAGS AND RETURN             20700002
+         SPACE                                                          20750002
+ICFWTCIL EQU   *                                                        20800002
+         TM    ICFMFLGA,ICFCPUIL  IS SECOND CPU IN LOOP?                20850002
+         BNO   ICFWTCIL      IF NOT, WAIT TIL IT IS                     20900002
+         STM   R0,R15,ICFRSTSG    SAVE GPRS                             20950002
+         STCTL CR0,CR15,ICFRSTSC  SAVE CONTORL REGS                     21000002
+         XC    ICFSTPSW(D4),ICFSTPSW   CLEAR FLAGS                      21050002
+         LA    W8,ICF2CRTN                                              21100002
+         ST    W8,ICFSTPSW+D4     SET UP SHTAP PSW                      21150002
+         MVI   ICFDMPLK,X00  RELEASE OTHER CPU                          21200002
+         SPACE                                                          21250002
+ICFLOKW1 EQU   *                                                        21300002
+         TM    ICFDMPLK,XFF  HAS OTHER CPU RELEASED?                    21350002
+         BNO   ICFLOKW1      IF NOT, WAIT TIL IT DOES                   21400002
+         SPACE                                                          21450002
+ICFNMPRN EQU   *                                                        21500002
+         XR    W8,W8                                                    21550002
+         STC   W8,ICFMFLGS   RESET FLAGS                                21600002
+         STH   W8,ICFMFLGS+D2     RESET FLAGS                           21650002
+         LCTL  CR0,CR0,ICFCR01S   RESTORE CR0                           21700002
+         STCTL CR14,CR14,ICFCR0FX      TURN OFF WARNING MASK            21750002
+         NI    ICFCR0FX,XFE                                             21800002
+         LCTL  CR14,CR14,ICFCR0FX                                       21850002
+         MVC   ICFIOPSW(D4),ICFTSTWN   SET UP PSW TO ENABLE FOR MC'S    21900002
+         LA    W8,ICFRENAB   SET UP ADDR OF ENABLE PSW                  21950002
+         ST    W8,ICFIOPSW+D4          SAVE IT                          22000002
+         LPSW  ICFIOPSW      LOAD ENABLE PSW                            22050002
+ICFRENAB EQU   *                                                        22100002
+         LM    R0,R14,ICFRDISP(R12)    RESTORE REGS                     22150002
+         BR    R14           RETURN                                     22200002
+         EJECT                                                          22250002
+ICF2CRTN EQU   *                                                        22300002
+*                                                                       22350002
+*        NOTE R15 CONTAINS RETURN CODE                                  22400002
+*                                                                       22450002
+         LCTL  CR0,CR15,ICF2CCRS  RESTORE CTLRS                         22500002
+         MVC   EXOPSW(D8),ICF2CEOP     RESET EXT OPSW                   22550002
+         MVC   EXNPSW(D8),ICF2CENP     RESET EXT NPSW                   22600002
+         MVC   ICFSTPSW(D4),ICFTSTWN   PSW SET FOR EC,^DAT,AND MC'S     22650002
+         LA    W8,ICF2CENB                                              22700002
+         ST    W8,ICFSTPSW+D4                                           22750002
+         LPSW  ICFSTPSW                                                 22800002
+ICF2CENB EQU   *                                                        22850002
+         LM    R0,R14,ICF2CGRS                                          22900002
+         BR    R14           RETURN TO MCH                              22950002
+         EJECT                                                          23000002
+*        TEST FOR CONCURRENT HARD MACHINE CHECK                         23050002
+ICFTCNCR EQU   *                                                        23100002
+         TM    MCIC,XC0            TEST FOR SYS OR INSTR PROC DAMAGE    23150002
+         BC    D5,ICFCOMIT         BRANCH ON NOT ZERO                   23200002
+         B     ICFMCKLP            IF NO OTHER HARD MC, DO IT AGAIN     23250002
+         EJECT                                                          23300002
+ICFSHTEN EQU   *                                                        23350002
+         OI    ICFTRMCA,X04         SET ENTRY VIA SHUT FLAG             23400002
+         LA    R15,X04       SET RETURN CODE                            23450002
+         TM    ICFFLAGA,X20  TEST FOR USER RC = 4                       23500002
+         BO    ICFSHRTN      IF ON, RETURN W/ RC=0                      23550002
+         XR    W8,W8         CLEAR REG                                  23600002
+         ST    W8,MCNPSW     DISABLE MCNPSW                             23650002
+         ST    W8,ICFDOUBL   DISABLE DISABLE PSW                        23700002
+         LA    W8,ICFSHTST                                              23750002
+         ST    W8,ICFIOPSW+D4                                           23800002
+         LA    W8,ICFSHWON                                              23850002
+         ST    W8,MCNPSW+D4                                             23900002
+         LA    W8,ICFSHRT1                                              23950002
+         ST    W8,ICFDOUBL+D4  POINT DIABLE PSW TO SKIP RC RESET        24000002
+         MVC   ICFIOPSW(D4),ICFTSTWN   ENABLE FOR MC'S                  24050002
+         STCK  ICFTOD00      SAVE TIME                                  24100002
+         MVC   ICFCTST(D8),ICFTOD00  COPY IT                            24150002
+         LPSW  ICFIOPSW      TEST FOR WARNING                           24200002
+ICFSHTST EQU   *                                                        24250002
+         LPSW  ICFDOUBL      NO WARNING,SO DISABLE & RETURN             24300002
+         EJECT                                                          24350002
+*!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! 24400002
+*        PROVIDE A USER EXIT AND DETERMINE                              24450002
+*        THE AVAILABLE PATH TO THE DUMP DATA SET                        24500002
+*        WE ARE NOW COMMITED TO DUMP, SO MCH ENVIRONMENT IS             24550002
+ICFCOMI1 EQU   *                                                        24600002
+         OI    ICFTRMCA+D1,X80     COMMIT TO DUMP DUE TO HARD WARNING   24650002
+*        NO LONGER A PROBLEM                                            24700002
+ICFCOMIT EQU   *                                                        24750002
+         L     R15,ICFEXT50        LOAD ADDR OF USER EXIT               24800002
+*        !!!!!  WARNING  !!!!!                                          24850002
+*        ALL I/O ACTIVITY IS IMMEDIATELY HALTED IN THE FOLLOWING        24900002
+*        CODE, SO MAKE SURE THE USER ROUTINE'S I/O IS ALL FINISHED      24950002
+*        BEFORE MAKING A RETURN !!!!!!!                                 25000002
+*!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! 25050002
+         OI    ICFTRMCA+D1,X40     SET USER ROUTINE ENTERED BIT         25100002
+         BALR  R14,R15             LINK TO USER ROUTINE                 25150002
+         EJECT                                                          25200002
+*        USER 'EXIT RETURNS HERE                                        25250002
+         B     ICFUSRRC(R15)       INDEX THE BRANCH WITH THE USER RC    25300002
+ICFUSRRC EQU   *                                                        25350002
+         B     ICFDMPCN            IF 0 CONTINUE WITH DUMP              25400002
+         B     ICFUSRTN            GO RETURN TO MCH                     25450002
+         SPACE 3                                                        25500002
+ICFDMPCN EQU   *                                                        25550002
+         OI    ICFTRMCA+D1,X20  USER RC = 0                             25600002
+ICFSHWON EQU   *                                                        25650002
+         OI    ICFMFLGA,ICFCTDST  SIGNAL COMMIT TO DUMP                 25700002
+         USING CSD,W8                                                   25750002
+         L     W8,ICFADR3    SET UP CSD BASE                            25800002
+         TM    CSDFLAGS,CSDMP     TEST FOR MP SYSTEM                    25850002
+         BNO   ICFNOTMP      GO HANDLE 2ND CPU NOT AVAILABLE CASE       25900002
+         TM    ICFMFLGA,ICFCPUIL  TEST FOR CPU IN DUMP LOCK LOOP        25950002
+         BO    ICF2CAVL      IF SO, GO TO 2ND CPU AVAIL CASE            26000002
+         SPACE 3                                                        26050002
+*  IF SECOND CPU ISN'T IN LOOP, MUST RESTART IT.                        26100002
+*        STAP  ICFCPUAD      STORE PHYS ADR OF PROCESSOR                26150002
+         DC    X'B212'       'STAP' OP CODE                             26200002
+         DC    S(ICFCPUAD)   ADDRESS                                    26250002
+         XI    ICFCPUAD+D1,X01    FORM OTHER CPU'S ADDR                 26300002
+         L     W6,ICFWCPUA   PUT IN REG                                 26350002
+         L     W7,ICFCPUMK   GET CPU MASK CONSTANT                      26400002
+         SRL   W7,D0(W6)     FORM MASK FOR OTHER CPU                    26450002
+         N     W7,CSDCPUAL   HAND' W/ CPU ACTIVE FIELD                  26500002
+         BZ    ICFNOTMP      IF ZERO, IT ISN'T AVAILABLE                26550002
+         DROP  W8                                                       26600002
+         LR    W8,W6         COPY OTHER CPU'S ADDR                      26650002
+         XR    W7,W7         CLEAR STATUS REG                           26700002
+         EJECT                                                          26750002
+*        SIGP  W7,W8,SENSE   ISSUE SIGP SENSE TO OTHER CPU (X01)        26800002
+         DC    X'AE78'       'SIGP' OP CODE,R1,R3                       26850002
+         DC    S(SENSE)      ADDRESS (SIGP COMMAND CODE)                26900002
+         BNZ   ICFNOTMP      QUIT ON NON-ZERO RELEASE FROM SENSE        26950002
+         SPACE                                                          27000002
+*        SIGP  W7,W8,PRGRST  ISSUE SIGP PROGRAM RESET (X08)             27050002
+         DC    X'AE78'       'SIGP' OP CODE, R1, R3                     27100002
+         DC    S(PRGRST)     ADDRESS (SIGP COMMAND CODE)                27150002
+         BNZ   ICFNOTMP      QUIT ON NON-ZERO RELEASE                   27200002
+ICFTRSTC EQU   *                                                        27250002
+         SPACE                                                          27300002
+*        SIGP  W7,W8,SENSE   ISSUE SENSE TO DETERMINE COMPLETION (X01)  27350002
+         DC    X'AE78'       'SIGP' OP CODE, R1, R3                     27400002
+         DC    S(SENSE)      ADDRESS (SIGP COMMAND CODE)                27450002
+         BC    D2,ICFTRSTC   CC=2,BUSY,GOT TEST AGAIN                   27500002
+         BC    D9,ICFNOTMP   CC=0,3,UNEXPECTED, SO QUIT                 27550002
+         SPACE                                                          27600002
+*  CC=1, STATUS RETURNED, CHECK FURTHER                                 27650002
+         LA    W6,X40        SET BIT 25 IN W6                           27700002
+         CLR   W7,W6         TEST FOR BIT 25 (STOPPED) ON ALONE         27750002
+         BNE   ICFNOTMP      IF NOT STOPPED, QUIT                       27800002
+         USING PCCA,W6                                                  27850002
+         L     W6,ICFADR2    GET REAL PCCAVT ORIGIN                     27900002
+         SLL   W8,D2         ALIGN FOR FULL WORDS                       27950002
+         L     W6,D0(W6,W8)  GET VIRTUAL PCCA ORIGIN FOR OTHER CPU      28000002
+         SRL   W8,D2         REALIGN AS BEFORE                          28050002
+         LRA   W6,D0(W6)     TRANSLATE IT                               28100002
+         BNZ   ICFWAT27      IF TRANSLATION FAILS, GO TO WAIT 27        28150002
+         L     W5,PCCAPSAR   GET REAL ADDR OF OTHER PCPU'S PSA          28200002
+         DROP  W6                                                       28250002
+         XC    D0(D4,W5),D0(W5)   CLEAR FLAGS IN HIS RESTART PSW        28300002
+         LA    W6,ICFDMPL1   GET ADDR OF DUMP LOCK LOOP                 28350002
+         ST    W6,D4(W5)     STORE IT IN HIS RESTART NPSW               28400002
+         SPACE                                                          28450002
+*        SIGP  W7,W8,RESTART ISSUE SIGP RESTART (X06)                   28500002
+         DC    X'AE78'       'SIGP' OP CODE, R1,R3                      28550002
+         DC    S(RESTART)    ADDRESS (SIGP COMMAND CODE)                28600002
+         BNZ   ICFNOTMP      IF NOT ACCEPTED, QUIT                      28650002
+ICFRSTLP EQU   *                                                        28700002
+         SPACE                                                          28750002
+*        SIGP  W7,W8,SENSE   ISSUE SIGP SENSE (X01)                     28800002
+         DC    X'AE78'       'SIGP' OP CODE, R1, R3                     28850002
+         DC    S(SENSE)      ADDRESS (SIGP COMMAND CODE)                28900002
+         BC    D2,ICFRSTLP   IF BUSY, WAIT TIL COMPLETED                28950002
+         BC    D5,ICFNOTMP   IF CC=1,3,QUIT                             29000002
+*  IF CC=0,MUST HAVE COMPLETED, SO WAIT FOR IT TO ENTER LOCK LOOP       29050002
+ICFWFETL EQU   *                                                        29100002
+         TM    ICFMFLGA,ICFCPUIL  TEST FOR OTHER CPU IN LOOP            29150002
+         BNO   ICFWFETL      IF NOT, WAIT FOR ENTRY TO LOOP             29200002
+ICF2CAVL EQU   *                                                        29250002
+         OI    ICFMFLGA,ICFMPSYS  SET MP SYSTEM FLAG                    29300002
+         B     ICFGTBCM      IF SO, GO TO BC MODE                       29350002
+         EJECT                                                          29400002
+ICFNOTMP EQU   *                                                        29450002
+         NI    ICFMFLGA,XFF-ICFMPSYS   TURN OFF MPSYS FLAG,IE,SIGNAL    29500002
+*                            OTHER CPU NOT AVAILABLE                    29550002
+ICFGTBCM EQU   *                                                        29600002
+         XR    W8,W8         CLEAR WORK REG                             29650002
+         ST    W8,ICFIOPSW   SET UP BC MODE, DISABLED PSW               29700002
+         LA    W8,ICFBCDMP   SET UP PSW ADDR                            29750002
+         ST    W8,ICFIOPSW+D4          STORE ADDR                       29800002
+         LPSW  ICFIOPSW      GO TO BC MODE, DISABLED                    29850002
+ICFBCDMP EQU   *             THIS LABEL MUST FOLLOW LPSW                29900002
+         SPACE 3                                                        29950002
+         USING ICFCVTOR,R10                                             30000002
+         MVC   ICFLRDAT(D4),CVTDATE  SAVE DATE FOR DUMP ROUTINE         30050002
+         DROP  R10                                                      30100002
+         L     W7,ICFTOD00         LD H.O. PART OF TIME OF INTERRUPT    30150002
+         XR    W6,W6               CLEAR REMAINDER REG                  30200002
+         SLDL  W6,D13              MULT BY 8192                         30250002
+         D     W6,K15625           1 CLOCK UNIT = 1.04 SEC= 16384/15625 30300002
+         SLL   W7,D1               MULT QUOTIENT BY 2(2*8192=16384)     30350002
+*                                  THIS IS DONE FOR PROPER ROUNDING     30400002
+         XR    W6,W6               CLEAR REMAINDER                      30450002
+         D     W6,K86400           DIV BY SEC PER DAY TO GET DAYS       30500002
+*                                  W6 IS REMAINDER & HAS NUMBER         30550002
+*                                  OF SECONDS IN THIS DAY FOR HH.MM.SS  30600002
+         LR    W7,W6               SET UP DIVIDEND                      30650002
+         XR    W6,W6               CLEAR REMAINDER                      30700002
+         D     W6,K60              GET NUMBER OF MINUTES IN THIS DAY    30750002
+*                                  W6 HAS SECONDS LEFT OVER             30800002
+         LR    W5,W6               COPY SECONDS                         30850002
+         XR    W6,W6               CLEAR REMAINDER                      30900002
+         D     W6,K60              GET NUMBER OF HOURS IN THIS DAY      30950002
+         MH    R6,HK100            MULT NO. OF MIN. BY 100              31000002
+         AR    W5,W6               ADD TO SECONDS                       31050002
+         MH    W7,HK10T4           MULT NO. OF HOURS BY 10000           31100002
+         AR    W5,W7               ADD TO SEC AND MIN                   31150002
+         CVD   W5,ICFDOUBL         MAKE TIME PACKED DEC.                31200002
+         L     W5,ICFDOUBL+D4      LOAD LOW ORDER HALF                  31250002
+         SRL   W5,D4               CLEAR DECIMAL SIGN                   31300002
+         SLL   W5,D8               ALIGN  IN FIELD                      31350002
+         ST    W5,ICFLRTIM         SAVE FOR DUMP ROUTINE                31400002
+         EJECT                                                          31450002
+*        SET UP FOR WARNA DATASET                                       31500002
+*        CONTROL FLAG FOR WARNA OR WARNB IS ICFPTLPF                    31550002
+ICFPTCL1 EQU   *                                                        31600002
+         OI    ICFPTLPF,X80  SET ON FIRST EXTENT FLAG                   31650002
+         L     W1,ICFWAUCB   SET UP UCB ADDR REG                        31700002
+         LA    W7,ICFWADEV   SET UP DEVICE ADDR PTR REG                 31750002
+         LA    W2,ICFTRMCA+D2     SET UP FOOTPRINT TABLE PTR            31800002
+         LA    W0,D10        SET UP CHANNEL LOGOUT COUNT                31850002
+ICFPTCLR EQU   *                                                        31900002
+*  FOR IOSGEN,                                                          31950002
+*  W1 TPS TO UCB                                                        32000002
+*  W8 PTS TO IOSGEN MAP AREA                                            32050002
+*  R14 IS LINK REG                                                      32100002
+*  R13 PTS TO 16 WORD SAVE AREA                                         32150002
+         LPSW  ICFDNPSW      IOSGEN MUST BE IN DAT MODE TO WORK         32200002
+ICFDATON EQU   *                                                        32250002
+         USING ICFCVTOR,R10                                             32300002
+         L     R10,X10                                                  32350002
+         L     R9,CVTVOLF2             GET LOGICAL ADDR OF ICFWORK      32400002
+         DROP R10                                                       32450002
+         LA    W8,ICFIOMAP   SET UP IOSGEN MAP PTR                      32500002
+         LA    R14,ICFMAPMK  SET UP LINK REG                            32550002
+         LA    R13,ICFIOMAP+D8    SET UP SAVE AREA PTR                  32600002
+         EJECT                                                          32650002
+         IOSGEN  MAP,TABLE=(W8),UCB=(W1),VAR=1                          32700002
+         EJECT                                                          32750002
+ICFMAPMK EQU   *                                                        32800002
+*        HERE IOSGEN MAP IS CONVERTED TO ANOTHER FORMAT                 32850002
+*             ****************************************************      32900002
+*             * 4 BIT      * 4 BIT      * 4 BIT      * 4 BIT      *     32950002
+*             * ONLINE/    * CHANNEL    * CONTROL    * DEVICE     *     33000002
+*             * OFFLINE    * ADDRESS    * UNIT       * ADDRESS    *     33050002
+*             * INDICATOR  *            * ADDRESS    *            *     33100002
+*             ****************************************************      33150002
+*              WHERE 0000 = ONLINE (PATH AVAILABLE)                     33200002
+*                    0001 = LAST ENTRY IN MAP                           33250002
+*                    0010 = OFFLINE (PATH NOT AVAILABLE)                33300002
+         LPSW  ICFDFPSW      GO BACK TO BC MODE                         33350002
+ICFDATOF EQU   *                                                        33400002
+         L     R9,ICFREALW             GET REAL ADDR OF WORK AREA       33450002
+         LA    R13,ICFSAVE   RELOAD SAVE AREA PTR                       33500002
+         MVC   ICF0CMAP(D2),ICFIOMAP   CPY PRIME PTH ADDR TO CPU0'S MAP 33550002
+         MVC   ICF0CMAP+D2(D2),ICFIOMAP+D4  COPY 2ND PATH ADDR          33600002
+         MVC   ICF1CMAP(D4),ICF0CMAP   COPY INTO CPU1'S MAP             33650002
+         LA    W4,D2         SET UP INDEX                               33700002
+         XR    W6,W6                                                    33750002
+         XR    W3,W3                                                    33800002
+ICFMPFIN EQU   *                                                        33850002
+         IC    W6,ICFIOMAP(W4)    GET PRIMARY AVAIL. FLAG               33900002
+         IC    W3,ICFIOMAP+D4(W4)      GET 2ND AVAIL FLAG               33950002
+         AR    W3,W3         WEIGH 2ND PATH BY 2                        34000002
+         AR    W6,W3         COMPUTE INDEX                              34050002
+         SLL   W6,D2         ALIGN FOR FULL WORDS                       34100002
+         L     W5,ICFMMASK(W6)    INDEX MASK TABLE                      34150002
+         LA    W3,D3         GET COMPARAND                              34200002
+         CR    W4,W3         TEST WHETHER CPU1 IS DONE                  34250002
+         BE    ICFMAPCP      YES, DONE                                  34300002
+         O     W5,ICF0CMAP   NO, 'OR' FLAGS IN CPU0'S MAP               34350002
+         ST    W5,ICF0CMAP   STORE IT                                   34400002
+         LR    W4,W3         SET UP INDEX FOR CPU 1                     34450002
+         B     ICFMPFIN      GO FINISH                                  34500002
+ICFMAPCP EQU   *                                                        34550002
+         O     W5,ICF1CMAP   'OR' FLAGS IN CPU1'S MAP                   34600002
+         ST    W5,ICF1CMAP   STORE IT                                   34650002
+         EJECT                                                          34700002
+*  MAPS ARE NOW COMPLETE, SO SET UP FOR PATH CLEAR                      34750002
+         XR    W3,W3                                                    34800002
+         XR    W4,W4                                                    34850002
+         NI    ICFMFLGA,XFF-ICFBCACC-ICFWDAC0-ICFWDAC1  RESET FLAGS     34900002
+         IC    W3,ICFIOMAP+D2     GET FIRST CPU0 FLAF BYTE              34950002
+         IC    W4,ICFIOMAP+D6     GET 2ND CPU0 FLAG BIT                 35000002
+         OR    W3,W4         IS WARN DATASET ACCESSIBLE FORM CPU0?      35050002
+         BZ    ICFWDUT0      IF NOT, SKIP SETTING FLAG                  35100002
+         OI    ICFMFLGA,ICFWDAC0  SET WARN DS ACC. FROM CPU 0 FLAG      35150002
+ICFWDUT0 EQU   *                                                        35200002
+         LR    W5,W3         COPY REG                                   35250002
+         IC    W3,ICFIOMAP+D3     GET FIRST FLAG BYTE FOR CPU1          35300002
+         IC    W4,ICFIOMAP+D7     GET SECOND FLAG BYTE FOR CPU1         35350002
+         OR    W3,W4         IS WARN DS ACC. FORM CPU1?                 35400002
+         BZ    ICFWDUT1      IF NOT, SKIP SETTING FLAG                  35450002
+         OI    ICFMFLGA,ICFWDAC1  SET WARN DS ACC. FROM CPU 1 FLAG      35500002
+ICFWDUT1 EQU   *                                                        35550002
+         NR    W3,W5         IS WARN DS ACC. FROM BOTH SIDES?           35600002
+         BZ    ICFWDUTB      IF NOT, SKIP SETTING FLAG                  35650002
+         OI    ICFMFLGA,ICFBCACC  SET WARN DS ACC. FROM BOTH SIDES BIT  35700002
+         EJECT                                                          35750002
+ICFWDUTB EQU   *                                                        35800002
+         TM    ICFMFLGA,ICFMPSYS  TEST FOR MP SYSTEM                    35850002
+         BO    ICFMPCAV      IF SO, GO HANDLE MP CASE AVAIL.            35900002
+         LA    W8,ICF0CMAP   SET UP MAP ADR FOR PHYS CPU 0              35950002
+         TM    ICFMFLGA,ICFWDAC0  TEST FOR PCPU0 AVAIL                  36000002
+         BO    ICFDEVLP      YES, GO CLEAR                              36050002
+         LA    W8,ICF1CMAP   SET UP MAP FOR PCPU1                       36100002
+         TM    ICFMFLGA,ICFWDAC1  TEST FOR CPU 1 AVAIL.                 36150002
+         BO    ICFDEVLP      YES, GO CLEAR                              36200002
+         B     ICFZAPAD      NO, QUIT THIS EXTENT                       36250002
+ICFMPCAV EQU   *                                                        36300002
+*        STAP  ICFCPUAD      GET PCPU ADDR                              36350002
+         DC    X'B212'       'STAP' OP CODE                             36400002
+         DC    S(ICFCPUAD)   ADDRESS                                    36450002
+         L     W6,ICFWCPUA   PUT IT IN REG                              36500002
+         LTR   W6,W6         AM I ON 0 OR 1?                            36550002
+         BNZ   ICFTAVC1      IF 1, GO SET UP CHECK FOR CPU1             36600002
+         LA    W8,ICF0CMAP   PT W8 TO PCPU0 MAP                         36650002
+         TM    ICFMFLGA,ICFWDAC0  IS WARN DS ACC. FORM THIS CPU?        36700002
+         BO    ICFDEVLP      IF SO, GO CLEAR IT                         36750002
+         LA    W8,ICF1CMAP   PT W8 TO PCPU1 MAP                         36800002
+         TM    ICFMFLGA,ICFWDAC1  IS IT AVAIL FROM OTHER CPU?           36850002
+         BNO   ICFZAPAD      IF NOT, ZAP THIS EXTENT                    36900002
+ICFSUSTC EQU   *                                                        36950002
+         XC    ICFSTPSW(D4),ICFSTPSW   CLEAR FLAG FIELD OF SHTAP PSW    37000002
+         LA    W6,ICFDEVLP   GET DEV LOOP ADDR                          37050002
+         ST W6,ICFSTPSW+D4   PUT IT IN SHTAP PSW                        37100002
+         TM    ICFMFLGA,ICFCPUIL  IS OTHER CPU IN LOCK?                 37150002
+         BNO   ICFZAPAD      IF NOT, ZAP THIS EXTENT                    37200002
+         B     ICFSHTAP      IF SO, SHOILDER TAP IT                     37250002
+ICFTAVC1 EQU   *                                                        37300002
+         LA    W8,ICF1CMAP   PT W8 TO PCPU1 MAP                         37350002
+         TM    ICFMFLGA,ICFWDAC1  IS WARN DS AVAIL FORM PCPU1?          37400002
+         BO    ICFDEVLP      IF SO, GO CLEAR IT                         37450002
+         LA    W8,ICF0CMAP   PT W8 TO PCPU0 MAP                         37500002
+         TM    ICFMFLGA,ICFWDAC0  IS WARN DS AVAIL FORM PCPU0?          37550002
+         BNO   ICFZAPAD      IF NOT, QUIT THIS EXTENT                   37600002
+         B     ICFSUSTC      IF SO, GO SET UP SHTAP FOR CLEAR           37650002
+         EJECT                                                          37700002
+*        PATH CLEARING AND PATH CHECKING ROUTINE                        37750002
+*        W8 PTS TO IOSGEN MAP                                           37800002
+*        W7 PTS TO ICFWXDEV (X= A OR B)                                 37850002
+*        W1 PTS TO ONE OF THE UCBS FOR THE PATH UNDER CONSIDERATION     37900002
+*        W2 PTS TO BYTE IN FOOTPRINT TABLE                              37950002
+*        W0 HAS CHANNEL LOGOUT COUNT                                    38000002
+         SPACE 3                                                        38050002
+*        SET UP CLEARING LOOP                                           38100002
+ICFDEVLP EQU   *                                                        38150002
+         OI    D0(W2),X80          IOS DONE, NOW CLEAR PATH             38200002
+         LR    W6,W8          COPY IOSGEN MAP ORG                       38250002
+ICFPTHOT EQU   *                                                        38300002
+         TM    D0(W6),X20     TEST FOR PATH OFFLINE                     38350002
+         BO    ICFTLSPT       IF SO, GO TO TEST LAST PATH               38400002
+         OI    D0(W2),X40          AT LEAST 1 PATH AVAIL FROM IOS       38450002
+         IC    W5,D0(W6)      GET FLAG AND CHANNEL NUMBER BYTE          38500002
+         SLL   W5,D28         SHIFT OUT FLAG DIGIT                      38550002
+         SRL   W5,D20         SET UP C00 ADDRESS                        38600002
+         TCH   D0(W5)         DETERMINE STATE OF CHANNEL                38650002
+         BC    D8,ICFHCTDV    CC=0,AVAILABLE,ISSUE HDV                  38700002
+         BC    D4,ICFINTPD    CC=1,INTERRUPT PENDING,GO ENABLE          38750002
+         BC    D2,ICFBRTIP    CC=2,BURST IN PROG,HIO                    38800002
+         BC    D1,ICFPTHUA    CC=3,NOT OPER.,SET OFFLINE BIT            38850002
+         SPACE 3                                                        38900002
+ICFPTHUA EQU   *                                                        38950002
+         LA    W0,D10        RESET CHANNEL LOGOUT COUNT                 39000002
+         OI    D0(W6),X20      SET PATH NOT AVAIL (OFFLINE)             39050002
+*                             IN IOSGEN MAP                             39100002
+ICFTLSPT EQU   *                                                        39150002
+         TM    D0(W6),X10      TEST FOR LAST PATH IN MAP                39200002
+         BO    ICFPTHCK       IF SO, GO CONFIRM A PATH                  39250002
+         LA    W6,D2(W6)      IF NOT, GET NEST MAP ENTRY                39300002
+         B     ICFPTHOT       GO TEST PATH AND CLEAR IT                 39350002
+         EJECT                                                          39400002
+ICFBRTIP EQU   *                                                        39450002
+*        W5 CONTAINS"CXX" ADDR                                          39500002
+*        W6 PTS TO MAP ENTRY                                            39550002
+*        W7 PTS TO "CUD" LOCATION                                       39600002
+*        W8 PTS TO IOSGEN MAP                                           39650002
+*        W1 POINTS TO UCB OF ONE OF THE PATHS                           39700002
+         SPACE 3                                                        39750002
+         HIO   D0(W5)         STOP CHANNEL BURST OPERATION              39800002
+         BC    D8,ICFINTPD    CC=0,INT.PENDING,GO ENABLE                39850002
+         BC    D4,ICFHCSWC    CC=1,CSW STORED,GO CHECK IT               39900002
+         BC    D2,ICFHITCH    CC=2,BURST OP STOPPED, GO TEST AGAIN      39950002
+         BC    D1,ICFADSKP    CC=3,NOT OPER,SKIP THIS ADDR              40000002
+         SPACE 3                                                        40050002
+ICFHCSWC EQU   *                                                        40100002
+         TM    CSW,X04        TEST FOR LOGOUT PENDING                   40150002
+         BNO   ICFHCTDV       IF NOT, GO ISSUE HALT DEVICE              40200002
+         TM    CSW+D5,X04     TEST FOR CONCURRENT CHAN CNTL CHECK       40250002
+         BNO   ICFHCTDV       IF NOT, GO ISSUE HDV                      40300002
+         BCT   W0,ICFINTPD         GO ENABLE FOR LOGOUT PENDING         40350002
+         B     ICFPTHUA            IF >10 LOGOUTS ON THIS CHANNEL,      40400002
+*                                  FLAG PATH AS UNAVAILABLE             40450002
+         SPACE 3                                                        40500002
+ICFHITCH EQU   *                                                        40550002
+         TCH   D0(W5)         DETERMINE CHANNEL STATE                   40600002
+         BC    D8,ICFHCTDV    CC=00,AVAIL,ISSUE HDV                     40650002
+         BC    D4,ICFINTPD    CC=1,INT PENDING,GO ENABLE                40700002
+         BC    D2,ICFBRTIP    CC=2,BURST MODE,ISSUE HIO                 40750002
+         BC    D1,ICFADSKP    CC=3,NOT OPER,SKIP THIS ADDR              40800002
+         EJECT                                                          40850002
+ICFINTPD EQU   *                                                        40900002
+         LR    W4,W5          COPY 'CXX' ADDR                           40950002
+         SLL   W4,D2               ALIGN CHANNEL ADDR FOR FULL WORDS    41000002
+         SRL   W4,D8          EXTRACT CHANNEL ADDR                      41050002
+         LA    W4,ICFCHTBL(W4)     FORM CHANNEL MASK ADDR               41100002
+         LCTL  CR2,CR2,D0(W4)      SET CHANNEL MASK IN CTLR2            41150002
+         LA    W3,ICFCHTBL+D6*D4 FORM ADDR OF CHAN 6 MASK               41200002
+         CLR   W4,W3          COMPARE CHAN SELECTED W/ 6                41250002
+         BL    ICFCHLT6       IF <6,GO ELSEWHERE                        41300002
+         LR    W4,W3          IF =>6,COPY MASK ADDR                     41350002
+ICFCHLT6 EQU   *                                                        41400002
+         MVC   ICFIOPSW(D4),D0(W4) SET UP SYS MASK                      41450002
+         LA    W3,X27                                                   41500002
+         ST    W3,ICFIOPSW+D4 SET WAIT STATE CODE                       41550002
+         OI    ICFIOPSW+D1,X02     SET WAIT BIT                         41600002
+         XC    IONPSW(D4),IONPSW   ZAP I/O NPSW                         41650002
+         LA    W3,ICFHCTDV                                              41700002
+         ST    W3,IONPSW+D4   POINT I/O NPSW TO HDV                     41750002
+         LPSW  ICFIOPSW       ENABLE SELECTED CHANNEL                   41800002
+         SPACE 3                                                        41850002
+ICFHCTDV EQU   *                                                        41900002
+         TIO   D0(W5)              DETERMINE DEVICE STATE               41950002
+         BC    D8,ICFADSKP         CC=0,AVAIL,GO DO NEXT ADDR           42000002
+         BC    D4,ICFFTCSC         CC=1,CSW STORED, TEST FOR UC         42050002
+         BC    D2,ICFBRTIP         CC=2,BUSY, ISSUE HIO                 42100002
+         BC    D1,ICFADSKP         CC=3,NOT OPER, GO DO NEXT ADDR       42150002
+ICFFTCSC EQU   *                                                        42200002
+         TM    CSW+D4,X02          TEST FOR UC                          42250002
+         BO    ICFTIOSN      IF SO, GO SENSE IT                         42300002
+*                                  IF NOT, GO ON WITH HCT SEQ           42350002
+*  FIX FOR CONTIGENT CONNECTION PROBLEM                                 42400002
+*  UNIT CAUSING CONTIGENT CONNECTION MAY PRESENT CU END-BUSY STATUS     42450002
+*  (X30)ON A TIO, SO TEST AGAIN FOR UNIT CHECK                          42500002
+         TM    CSW+D4,X30    CU END-BUSY?                               42550002
+         BO    ICFHCTDV      IF SO, CHECK FOR UNIT CHECK                42600002
+         HDV   D0(W5)         STOP DEVICE REQUESTS                      42650002
+*        CLRIO D0(W5)         CLEAR STATUS                              42700002
+         DC    X'9D015000'                                              42750002
+         TIO   D0(W5)         DETERMINE DEVICE STATE                    42800002
+         BC    D8,ICFADSKP    CC=0,AVAIL,GO DO NEXT ADDR                42850002
+         BC    D4,ICFTCSWC    CC=1,CSW STORED,CHECK IT                  42900002
+         BC    D2,ICFBRTIP    CC=2,BUSY,ISSUE HIO                       42950002
+         BC    D1,ICFADSKP    CC=3,NOT OPER,GO DO NEXT ADDR             43000002
+         EJECT                                                          43050002
+ICFTIOSN EQU   *                                                        43100002
+*                                                                       43150002
+*        W5 HAS THE DEVICE ADDR (CUD)                                   43200002
+   SPACE                                                                43250002
+*        SET UP CCW & CAW                                               43300002
+         SPACE                                                          43350002
+         LA    W4,ICFSENSA         LOAD ADDR OF SENSE SAVE AREA         43400002
+         ST    W4,ICFSNCCW         STORE IT IN THE SENSE CCW            43450002
+         LA    W4,X04                                                   43500002
+         STC   W4,ICFSNCCW         SAVE THE SENCE COMD CODE IN THE CCW  43550002
+         LA    W4,D24                                                   43600002
+         ST    W4,ICFSNCCW+D4      SET UP LENGTH & FLAGS IN CCW         43650002
+         LA    W4,ICFSNCCW                                              43700002
+         ST    W4,CAW              PUT CCW ADDR IN CH ADDR WORD         43750002
+         SPACE                                                          43800002
+*        SET U P I/O NPSW                                               43850002
+         SPACE                                                          43900002
+         XC    IONPSW(D4),IONPSW       ZAP IO NEW PSW                   43950002
+         LA    W4,ICFTSNCD                                              44000002
+         ST    W4,IONPSW+D4        POINT I/O NPSW TO CHECK CE/DE        44050002
+         SPACE                                                          44100002
+*        COPY DEVICE ADDR                                               44150002
+         SPACE                                                          44200002
+         LR    W4,W5                                                    44250002
+         SPACE                                                          44300002
+*        ISSUE  SENIO & ENABLE                                          44350002
+         SPACE                                                          44400002
+         XC    ICFIOPSW(D8),ICFIOPSW   ZAP ICFIOPSW                     44450002
+         SRL   W4,D8               ISOLATE CHANNEL ADDR                 44500002
+         SLL   W4,D2               ALIGN FOR FULL WORDS                 44550002
+         LA    W4,ICFCHTBL(W4)     GET ADDR OF CR2 CHAN MASK            44600002
+         LCTL  CR2,CR2,D0(W4)      LOAD THE CHAN MASK                   44650002
+         STH   W5,IOOPSW+D2  STORE 'CUD' ADR FOR COMPARE                44700002
+         CLI   IOOPSW+D2,D6        TEST FOR CHAN < OR => 6              44750002
+         BL    ICFTSCL6            IF LT 6, SKIP NEXT INSTRUCTION       44800002
+         LA    W4,ICFCHTBL+D6*D4   SET UP W4 FOR SYS MASK => 6          44850002
+ICFTSCL6 EQU   *                                                        44900002
+         MVC   ICFIOPSW(D1),D0(W4)  SET UP SYSTEM MASK IN PSW           44950002
+         MVI   ICFIOPSW+D1,X02     SET THE WAIT BIT                     45000002
+         LA    W4,X27                                                   45050002
+         ST    W4,ICFIOPSW+D4      SET WAIT STATE CODE                  45100002
+         EJECT                                                          45150002
+         SPACE                                                          45200002
+         SIO   D0(W5)              ISSUE SENSE I/O                      45250002
+         SPACE                                                          45300002
+         BC    D7,ICFADSKP         CC=1,2, OR 3,SKIP THIS ADDR          45350002
+*                                  OTHERWISE ENABLE                     45400002
+ICFTSNCE EQU   *                                                        45450002
+         LPSW  ICFIOPSW            ENABLE & WAIT FOR CE/DE              45500002
+         SPACE                                                          45550002
+*        NOW T EST FOR CE/DE                                            45600002
+         SPACE                                                          45650002
+ICFTSNCD       EQU           *                                          45700002
+         CH    W5,IOOPSW+D2  WAS INTERRUPT FROM SENSED DEVICE?          45750002
+         BNE   ICFTSNCE      IF NOT,WAIT FOR COMPLETION                 45800002
+         B     ICFADSKP      IF SO, GO TO NEXT ADDRESS                  45850002
+         EJECT                                                          45900002
+ICFTCSWC EQU   *                                                        45950002
+         TM    CSW,X04        TEST FOR LOGOUT PENDING                   46000002
+         BNO   ICFADSKP       IF NOT SKIP THIS ADDR                     46050002
+         TM    CSW+D5,X04     TEST FOR CHAN CNTL CHECK                  46100002
+         BNO   ICFADSKP       IF NOT SKIP THIS ADDR                     46150002
+         BCT   W0,ICFINTPD         GO ENABLE FOR INTERRUPTS             46200002
+         B     ICFPTHUA            IF >10 LOGOUTS ON THIS CHANNEL,      46250002
+*                                  GO FLAG THIS PATH AS UNAVAILABLE     46300002
+         SPACE 3                                                        46350002
+ICFADSKP EQU   *                                                        46400002
+         LA    W5,D1(W5)      INCR DEV ADDR                             46450002
+         LR    W4,W5          COPY NEW DEV ADDR                         46500002
+         SLL   W4,D24         GET RID OF "C" PART                       46550002
+         LTR   W4,W4          CHECK FOR "UD" = 0                        46600002
+         BNZ   ICFHCTDV            IF NOT DONE, GO HDV                  46650002
+         OI    D0(W2),X20          AT LEAST 1 PATH CLEARED              46700002
+         B     ICFTLSPT            IF 0,CHANNEL'S DONE,DO NXT PATH      46750002
+         EJECT                                                          46800002
+ICFPTHCK EQU   *                                                        46850002
+*        W7 PTS TO "CUD" ADDR                                           46900002
+*        W8 PTS TO IOSGEN MAP ORG                                       46950002
+*        W1 PTS TO UCB OF ONE OF THE PATHS                              47000002
+         SPACE 3                                                        47050002
+         OI    D0(W2),X10          SET PATH CHECK ENTERED               47100002
+         TM    D0(W8),X20     TEST PATH AVAILABILITY                    47150002
+         BNO   ICFCHCNT       IF AVAILABLE, CONTINUE                    47200002
+ICFINMPT EQU   *                                                        47250002
+         TM    D0(W8),X10     TEST FOR LAST PATH DONE                   47300002
+         BNO   ICFMAPBP      IF NOT LAST PATH, GO BUMP AMP PTR          47350002
+         TM    ICFMFLGA,ICFBCACC  ACCESSIBLE FROM OTHER CPU?            47400002
+         BO    ICFCOCPU      IF SO, GO CLEAR IT FROM OTHER SIDE         47450002
+         B     ICFZAPAD      IF NOT, QUIT THIS EXTENT                   47500002
+ICFMAPBP EQU   *                                                        47550002
+         LA    W8,D2(W8)      BUMP MAP PTR                              47600002
+         B     ICFPTHCK       KEEP CHECKING                             47650002
+ICFCHCNT EQU   *                                                        47700002
+         OI    D0(W2),X08          AT LEAST 1 PATH AVAIL AFTER CLEAR    47750002
+         IC    W5,D0(W8)      GET FLAGS AND CHAN ADDR                   47800002
+         SLL   W5,D28         GET RID OF FLAGS                          47850002
+         SRL   W5,D26         ALIGN FOR FULL WORDS                      47900002
+         LA    W5,ICFCHTBL(W5) INDEX CHANNEL TABLE                      47950002
+         LCTL  CR2,CR2,D0(W5) SET UP CTL2 CHAN MASK                     48000002
+         XC    IONPSW(D8),IONPSW ZAP I/O NPSW                           48050002
+         LA    W4,ICFCHTCH                                              48100002
+         ST    W4,IONPSW+D4   PT I/O NPSW TO TEST AGAIN FOR INT         48150002
+         LA    W4,ICFCHTBL+D4*D6 LOAD CHAN 6 MASK ADDR                  48200002
+         CR    W5,W4          IS CHAN NO. <6 OR =>6?                    48250002
+         BL    ICFCCHL6       GOSET SYS MASK FOR CH <6                  48300002
+         LR    W5,W4          PT W5 TO PROPER SYS MASK FOR =>6          48350002
+ICFCCHL6 EQU   *                                                        48400002
+         XC    ICFIOPSW(D8),ICFIOPSW ZAP PSW FIELD                      48450002
+         MVC   ICFIOPSW(D1),D0(W5) MOVE IN SYSTEM MASK                  48500002
+         LA    W4,ICFCHTCH                                              48550002
+         ST    W4,ICFIOPSW+D4 PT PSW TO TEST CHANNEL                    48600002
+         LH    W4,D0(W8)      LOAD DEVICE "CUD"                         48650002
+         SLL   W4,D20                                                   48700002
+         SRL   W4,D20         CLEAR OUT FLAGS                           48750002
+ICFCHTCH EQU   *                                                        48800002
+         TCH   D0(W4)         CHECK FOR ANY MORE INT PEND               48850002
+         BC    D8,ICFSENIO    CC=0,AVAIL,ISSUE SIO                      48900002
+         BC    D3,ICFINMPT    CC=2 OR 3,TRY ANOTHER PATH                48950002
+         LPSW  ICFIOPSW       CC=1,INTERRUPT PEND,CLEAR IT              49000002
+         EJECT                                                          49050002
+ICFSENIO EQU   *                                                        49100002
+*        W5 PTS TO PROPER SYSTEM MASK                                   49150002
+*        CTLR2 HAS PROPER CHANNEL ENABLED                               49200002
+         SPACE 3                                                        49250002
+*        SET UP SENSE CCW AND CAW                                       49300002
+         LA    W4,ICFSENSA    LOAD ADDR OF SENSE SAVE AREA              49350002
+         ST    W4,ICFSNCCW    STORE IT IN SENSE CCW                     49400002
+         LA    W4,X04         SET UP SENSE COMMAND CODE                 49450002
+         STC   W4,ICFSNCCW    STORE COMMAND CODE                        49500002
+         LA    W4,D24                                                   49550002
+         ST    W4,ICFSNCCW+D4      SET UP FLAGS & COUNT FOR SENIO CCW   49600002
+         LA    W4,ICFSNCCW    LOAD SENSE CCW ADDR                       49650002
+         ST    W4,CAW         STORE IT IN CHN ADDR WORD                 49700002
+*        SET UP I/O NPSW                                                49750002
+         XC    IONPSW(D8),IONPSW ZAP IO NPSW                            49800002
+         LA    W4,ICFCEDE                                               49850002
+         ST    W4,IONPSW+D4   POINT IT TO CE/DE ROUTINE                 49900002
+         XC    ICFIOPSW(D8),ICFIOPSW ZAP PSW                            49950002
+         MVC   ICFIOPSW(D1),D0(W5)  SET UP NEW SYSTEM MASK              50000002
+         LA    W4,X27                                                   50050002
+         ST    W4,ICFIOPSW+D4 SET UP WAIT STATE CODE                    50100002
+         MVI   ICFIOPSW+D1,X02 SET WAIT BIT                             50150002
+*        SET UP DEVICE ADDR                                             50200002
+         LH    W4,D0(W8)           LOAD FLAGS AND CUD ADDR              50250002
+         SLL   W4,D20                                                   50300002
+         SRL   W4,D20              CLEAR FLAGS                          50350002
+         SPACE                                                          50400002
+         TIO   D0(W4)        IS PATH CLEAR?                             50450002
+         BC    D3,ICFINMPT   IF BUSY OR NOT OP., TRY ANOTHER PATH       50500002
+         BC    D8,ICFCHEXT   CC=0,OK AND GO ON                          50550002
+         SPACE                                                          50600002
+         TM    CSW+D4,X02    UNIT CHECK STATUS?                         50650002
+         BNO   ICFINMPT      IF NOT, TRY ANOTHER PATH                   50700002
+ICFCHSEN EQU   *                                                        50750002
+         SIO   D0(W4)        ISSUE SENSE                                50800002
+         BC    D7,ICFINMPT   TRY ANOTHER PATH IF NOT ACCEPTED           50850002
+ICFSNCC0 EQU   *                                                        50900002
+         OI    D0(W2),X04          CC=0 ON SENSE I/O                    50950002
+         LPSW  ICFIOPSW       ENABLE FOR THE INTERRUPT                  51000002
+ICFCEDE  EQU   *                                                        51050002
+         TM    CSW+D4,X0C        TEST FOR CHANNEL END/DEVICE END        51100002
+         BNO   ICFZAPAD            IF NOT CE/DE,GO ZAP THIS ADDR        51150002
+         OI    D0(W2),X02          SET CE/DE FOR SIO                    51200002
+         B     ICFINMPT      IF BOTH CE/DE, TRY ANOTHER PATH            51250002
+         EJECT                                                          51300002
+ICFCOCPU EQU   *                                                        51350002
+*  CHECK OTHER CPU ROUTINE                                              51400002
+*  ENTERED WHEN A BUSY IS FOUND WHEN CHECKING A DATASET AND AVAIL ON    51450002
+*  OTHER CPU IS INDICATED                                               51500002
+*        STAP  ICFCPUAD      GET PCPU ADDR                              51550002
+         DC    X'B212'       'STAP' OP CODE                             51600002
+         DC    S(ICFCPUAD)   ADDRESS                                    51650002
+         LA    W8,ICF0CMAP   PT W8 TO PCPU0 MAP                         51700002
+         L W6,ICFWCPUA       PUT PCPU ADDR IN REG                       51750002
+         LTR   W6,W6         TEST FOR CPU 0                             51800002
+         BNZ   ICFCNC01      IF NOT ZERO, WE'LL GO THERE                51850002
+         LA    W8,ICF1CMAP   IF 0,WE'LL GO TO PCPU1                     51900002
+ICFCNC01 EQU   *                                                        51950002
+         TM    ICFMFLGA,ICFCPUIL  IS OTHER CPU IN LOOP?                 52000002
+         BNO   ICFZAPAD      IF NOT, QUIT THIS EXTENT                   52050002
+         NI    ICFMFLGA,XFF-ICFBCACC   TURN OFF  AVAIL TO BOTH CPU FLAG 52100002
+         XC    ICFSTPSW(D4),ICFSTPSW   CLEAR FLAGS OF SHTAP PSW         52150002
+         LA    W6,ICFDEVLP   GET BRANCH ADDR                            52200002
+         ST    W6,ICFSTPSW+D4     SET UP SHTAP PSW                      52250002
+         B     ICFSHTAP      IF SO, GO SHOULDER TAP                     52300002
+         EJECT                                                          52350002
+ICFZAPAD EQU   *                                                        52400002
+         TM    ICFPTLPF,X80  ARE WE ON FIRST EXTENT?                    52450002
+         BNO   ICFWAT27      IF NOT, FIRST TIME MUST HAVE FAILED ALSO,  52500002
+*                            SO SIGNAL DUMP FAILED                      52550002
+         XR    W4,W4         ZAP DEV ADDR REG                           52600002
+         STNSM ICFMWORK,X00  TURN OFF SYSTEM MASK                       52650002
+ICFCHEXT EQU   *                                                        52700002
+         STH   W4,D2(W7)     STORE DEV ADDR OF OPEN PATH                52750002
+         OI    D0(W2),X01    WARNX PROCESSING COMPLETE                  52800002
+         B     ICFDCTLR      GO TO DUMP CONTROL ROUTINE                 52850002
+         EJECT                                                          52900002
+ICFDCTLR EQU   *                                                        52950002
+         USING CSD,W8                                                   53000002
+         L     W8,ICFADR3    SET UP REAL BASE FOR CSD                   53050002
+         TM    CSDFLAGS,CSDMP     IS THIS SUPPOSED TO BE AN MP SYSTEM?  53100002
+         DROP  W8                                                       53150002
+         BNO   ICFDCUP1      IF NOT, GO TO UP CODE                      53200002
+*        STPX  ICFPXREG      STORE PREFIX REG IN COMMON AREA            53250002
+         DC    X'B211'       'STPX' OP CODE                             53300002
+         DC    S(ICFPXREG)   ADDRESS                                    53350002
+         B     ICFDCMU1      GO TO COMMON SECTION                       53400002
+ICFDCUP1 EQU   *                                                        53450002
+         MVC   ICFPXREG(D4),ICFALL0S   FOR UP SET PREFIX REG TO 0       53500002
+ICFDCMU1 EQU   *                                                        53550002
+         STM   R0,R15,ICFRSTSG    SAVE GPRS FOR RETURN FROM DUMP        53600002
+         STCTL CR0,CR15,ICFRSTSC  SAVE CTLRS ALSO                       53650002
+         LCTL  CR0,CR0,ICFALL0S   DISABLE CR0                           53700002
+         LCTL  CR2,CR2,ICFALL1S ENABLE ALL CHANNELS IN CR2              53750002
+         XC    ICFCR0FX(D4),ICFCR0FX                                    53800002
+         MVI   ICFCR0FX,X80                                             53850002
+         LCTL  CR14,CR14,ICFCR0FX ENABLE CR14 FOR CHECK STOP ONLY       53900002
+         LR    R13,R9        SET UP COMMON BASE FOR DUMP                53950002
+         STNSM ICFMWORK,X'00'     MAKE SURE PSW IS DISABLED             54000002
+         OI    ICFTRMCA+D1,X10    SET 'IN DUMP' BIT                     54050002
+         L     R15,ICFEXT99  LOAD DST ADDR IN DUMP ROUTINE              54100002
+         LA    R14,ICFDMPRN  SET UP RETURN ADDR                         54150002
+         BR    R15 GO TO DUMP ROUTINE                                   54200002
+         EJECT                                                          54250002
+ICFDMPRN EQU   *                                                        54300002
+*  AT THIS POINT, DUMP GIVES ME ADDR OF ICFDMPRN IN REG 12 AND RETURN   54350002
+*  ADDR IN REG 14. HE HAS SAVED ALL HIS OWN REGS AND CTLRS AND WILL     54400002
+*  RESTORE THEM WHEN I RETURN. ALSO, I GET AN ENTRY CODE IN R15.        54450002
+         LA    W6,ICFDMPRN-ICFBDE00    GET DISP OF ICFDMPRN             54500002
+         SR    R12,W6        COMPUTE ADDR OF ICFBDE00                   54550002
+         LM    R0,R13,ICFRSTSG    RESTORE GPRS                          54600002
+*                            DON'T RESTORE 14  OR 15 AS THEY HAVE RTN   54650002
+*                            ADDR AND ENTRY CODE                        54700002
+         LCTL  CR0,CR15,ICFRSTSC  RESTORE CTLRS                         54750002
+         LTR   R15,R15       TEST FOR ZERO RTN CODE                     54800002
+         BZ    ICFWAT26      IF 0, DUMP WAS SUCCESSFUL                  54850002
+         TM    ICFPTLPF,X80  IF NOT 0, CHECK FOR WARN B DONE            54900002
+         BNO   ICFWAT27      IF ^0 AND WARN B DONE,DUMP HAS FAILED      54950002
+         NI    ICFPTLPF,X7F  TURN OF 'ON WARNA' FLAG                    55000002
+         ST    R14,ICFEXT99  POINT NEXT DUMP ENTRY CORRECTLY            55050002
+         L     W1,ICFWBUCB   SET UP UCB ADDR                            55100002
+         LA    W2,ICFTRMCA+D3     SET UP FOOTPRINT TABLE PTR            55150002
+         LA    W7,ICFWBDEV   SET UP DEV ADDR PTR                        55200002
+         LA    W8,ICFIOMAP   SET IOSGEN MAP PTR                         55250002
+         LA    W0,D10        SET UP LOGOUT COUNTER                      55300002
+         B     ICFPTCLR      GO CLEAR PATH FOR WARN B                   55350002
+         EJECT                                                          55400002
+ICFMAHDL EQU   *                                                        55450002
+*  MALFUNCTION ALERT HANDLER                                            55500002
+         LPSW  ICFWAIT7      OTHER CPU CHECKSTOPPED IN PWF CODE SO      55550002
+*                            CAN'T RECOVER                              55600002
+         EJECT                                                          55650002
+*                                                                       55700002
+*        SHOULDER TAPPING ROUTINE                                       55750002
+*                                                                       55800002
+*  ICFSTPSW HAS PSW POINTING TO DESIRED LOCATION                        55850002
+*  ICFRSTSG IS A 16 WORD SAVE AREA FOR GPRS                             55900002
+*  ICFRSTSC IS 16 WORD SAVE AREA FOR CONTROL REGS                       55950002
+*                                                                       56000002
+ICFSHTAP EQU   *                                                        56050002
+         STM   R0,R15,ICFRSTSG    SAVE GPRS                             56100002
+         STCTL CR0,CR15,ICFRSTSC  SAVE CTLRS                            56150002
+         MVI   ICFDMPLK,X00  RESET TS FLAG                              56200002
+         STOSM ICFMWORK,X01  ENABLE FOR EXTERNALS                       56250002
+ICFLOKWT EQU   *                                                        56300002
+         TM    ICFDMPLK,XFF  TEST FOR OTHER CPU AT INTERLOCK            56350002
+         BNO   ICFLOKWT      IF NOT, WAIT TIL IT GETS THRU              56400002
+         B     ICFDMPLL      GO TO DUMP LOCK LOOP                       56450002
+         EJECT                                                          56500002
+*                                                                       56550002
+*        DUMP LOCK LOOP ROUTINE                                         56600002
+*                                                                       56650002
+*  CPU SPIN LOOP FOR MP SYSTEMS                                         56700002
+ICFDMPL1 EQU   *             LOCK ENTRY POINT ON RESTART                56750002
+         LA    R12,ICFDMPL1-ICFBDE00   LOAD DISPLACEMENT                56800002
+         S     R12,D4        SUBTRACT ENTRY POINT (FROM RESTART PSW)    56850002
+         LCR   R12,R12       FORM EP-DISP=ICFBDE00                      56900002
+         STCTL CR0,CR15,ICF2CCRS  SAVE SECOND CPU'S CTLRS               56950002
+         MVC   ICFCR02F(D4),ICFCR0MK   MOVE IN CR0 MASK                 57000002
+         NC    ICFCR02F(D4),ICF2CCRS   'AND' IT WITH CPU2'S CR0         57050002
+         OI    ICFCR02F+D2,X80    TURN ON MALFUNCTION ALERT MASK        57100002
+         LCTL  CR0,CR0,ICFCR02F   INIT. CR0                             57150002
+         STOSM ICFMWORK,X01  ENABLE FOR EXTERNALS                       57200002
+*  NOW ENTER MAIN LOOP                                                  57250002
+ICFDMPLL EQU   *                                                        57300002
+*        R12 (BASE)MUST POINT TO ICFBDE00 AT THIS POINT                 57350002
+         OI    ICFMFLGA,ICFCPUIL  TURN ON CPU IN LOCK FLAG              57400002
+ICFLTSAG EQU   *                                                        57450002
+         TS    ICFDMPLK      TEST LOCK                                  57500002
+         BC    D4,ICFLTSAG   IF CC=1,WAIT IN LOOP                       57550002
+         NI    ICFMFLGA,XFF-ICFCPUIL   TURN OFF IN LOCK FLAG            57600002
+         STNSM ICFMWORK,X00  TURN OFF EXTERNAL INTERRUPTS               57650002
+         LM    R0,R15,ICFRSTSG    RESTORE SAVED GPRS                    57700002
+         LCTL  CR0,CR15,ICFRSTSC  RESTORE SAVED CTLRS                   57750002
+         LPSW  ICFSTPSW      GO TO BRANCH POINT                         57800002
+         EJECT                                                          57850002
+*                                                                       57900002
+*  ICFWAT26 AND 27 ROUTINES                                             57950002
+*                                                                       58000002
+ICFWAT26 EQU   *                                                        58050002
+         XC    ICFWAIT(D8),ICFWAIT     CLEAR PSW                        58100002
+         MVI   ICFWAIT+D7,X26     SET WAIT STATE CODE                   58150002
+         B     ICFWAITC      GO TO WAIT COMMON CODE                     58200002
+ICFWAT27 EQU   *                                                        58250002
+         XC    ICFWAIT(D8),ICFWAIT     CLEAR WAIT PSW                   58300002
+         MVI   ICFWAIT+D7,X27     SET UNSUCESSFUL WAIT CODE             58350002
+ICFWAITC EQU   *                                                        58400002
+         MVI   ICFWAIT+D1,X02     SET WAIT BIT                          58450002
+         TM    ICFMFLGA,ICFMPSYS  TEST FOR MP SYSTEM                    58500002
+         BO    ICFWATMP      IF MP, GO HANDLE IT                        58550002
+         LPSW  ICFWAIT       TERMINATE THE UP SYSTEM                    58600002
+ICFWATMP EQU   *                                                        58650002
+*        STAP  ICFCPUAD      GET ADDR OF THIS PCPU                      58700002
+         DC    X'B212'       'STAP' OP CODE                             58750002
+         DC    S(ICFCPUAD)   ADDRESS                                    58800002
+         XI    ICFCPUAD+D1,X01    GET ADDR OF OTHER CPU                 58850002
+         USING PCCA,W2                                                  58900002
+         L     W2,ICFWCPUA   GET CPU ADDRESS                            58950002
+         SLL   W2,D2         ALIGN FOR FULL WORDS                       59000002
+         A     W2,ICFADR2    ADD ORIGIN OF PCCAVT                       59050002
+         L     W2,D0(W2)     GET LADDR OF OTHER CPU'S PCCA              59100002
+         LRA   W2,D0(W2)     TRANSLATE IT                               59150002
+         BZ    ICFLSTOK      IF 0, LAST TRANSLATE WAS OK                59200002
+         LPSW  ICFWAIT       OTHERWISE, STOP JUST THIS CPU              59250002
+ICFLSTOK EQU   *                                                        59300002
+         L     W2,PCCAPSAR   GET REAL ADDR OF HIS PSA                   59350002
+         DROP W2                                                        59400002
+         MVC   D0(D8,W2),ICFWAIT  SET UP RESTART PSW                    59450002
+         XR    W2,W2         CLEAR STATUS REG                           59500002
+         L     W3,ICFWCPUA   PUT OTHER CPU'S PADDR IN REG               59550002
+*        SIGP  W2,W3,PRGRST  ISSUE SIGP PROGRAM RESET (X08)             59600002
+         DC    X'AE23'       'SIGP' OP CODE, R1, R3                     59650002
+         DC    S(PRGRST)     ADDRESS (SIGP COMMAND CODE)                59700002
+ICFWATLP EQU   *                                                        59750002
+*        SIGP  W2,W3,RESTART ISSUE SIGP RESTART (X06)                   59800002
+         DC    X'AE23'       'SIGP' OP CODE, R1, R3                     59850002
+         DC    S(RESTART)    ADDRESS (SIGP COMMAND CODE)                59900002
+         BNZ   ICFWATLP      WAIT TIL ACCEPTED                          59950002
+         LPSW  ICFWAIT       FINISHED!                                  60000002
+         EJECT                                                          60050002
+*        PROGRAM DC'S                                                   60100002
+         DS    0F                                                       60150002
+ICFMFLGS DC    X'00FF0000'   FULL WORD FOR MP LOCKS AND FLAGS           60200002
+ICFEFLAG EQU   ICFMFLGS      ENTRY LOCK                                 60250002
+ICFDMPLK EQU   ICFMFLGS+D1   MAIN DUMP WAITING LOCK; INIT TO XFF        60300002
+ICFMFLGA EQU   ICFMFLGS+D2   MVM  FLAG A BYTE                           60350002
+ICF2CPUT EQU   X'01'         BIT 7 IS 2ND CPU THRU FLAG                 60400002
+ICFCTDST EQU   X'02'         BIT 6 IS COMMIT TO DUMP SIGNALLED          60450002
+ICFCPUIL EQU   X'04'         BIT 5 IS SECOND CPU IN DUMP LOCK LOOP      60500002
+ICF2CPUA EQU   X'08'         BIT 4 IS 2ND CPU IN BDF CODE               60550002
+ICFMPSYS EQU   X'10'         BIT 3 IS MP SYSTEM FLAG                    60600002
+ICFBCACC EQU   X'20'         BIT 2 IS DEVICE ACCESSIBLE FROM OTHER CPU  60650002
+ICFWDAC1 EQU   X'40'         BIT 1 IS WARN DS AVAIL FROM PCPU1          60700002
+ICFWDAC0 EQU   X'80'         BIT 0 IS WARN DS AVAIL FROM PCPU0          60750002
+ICFMWORK EQU   ICFMFLGS+D3   WORK BYTE FOR STOSM AND STNSM              60800002
+ICFPTLPF DC    X'00'               PATH LOOP FLAG                       60850002
+         DS 0D                                                          60900002
+ICFMCPSW DC    X'00080000'   MODULE MC NPSW (EC MODE,^DAT,^MC)          60950002
+         DC    A(ICFMCKON)                                              61000002
+ICFTSTWN DC    X'000C0000'   PSW ENABLED FOR HARD MC'S                  61050002
+         DC    A(ICFNOMCK)                                              61100002
+ICFMCOFF DC    X'00080000'   PSW FOR CASE OF TRANSIENT                  61150002
+         DC    A(ICFNOMCK+D4)                                           61200002
+ICFWAIT7 DC    X'0002000000000027'     WAIT 27 PSW                      61250002
+ICFDNPSW DC    X'04080000'   DAT MODE ON PSW                            61300002
+         DC    A(ICFDATON)                                              61350002
+ICFDFPSW DC    F'0'          DAT MODE OFF PSW                           61400002
+         DC    A(ICFDATOF)                                              61450002
+ICFEXPSW DC    F'0'          EXTERNAL NPSW FOR MALFUNCTION ALERTS       61500002
+         DC    A(ICFMAHDL)                                              61550002
+ICF2CPSW DC    F'0'          2ND CPU PSW DISABLING MC'S                 61600002
+         DC    A(ICF2CMCO)                                              61650002
+ICF1CEOP DC    D'0'          1ST CPU EXOPSW S.A.                        61700002
+ICF1CENP DC    D'0'          1ST CPU EXNPSW S.A.                        61750002
+ICF2CEOP DC    D'0'          2ND CPU EXOPSW S.A.                        61800002
+ICF2CENP DC    D'0'          2ND CPU EXNPSW S.A.                        61850002
+ICFWAIT  DC    D'0'          TERMINATION PSW                            61900002
+ICFSTPSW DC    D'0'          SHOULDER TAP PSW                           61950002
+ICFIOPSW DC    D'0'                DOUBLE WORD FOR PSW FOR I/O          62000002
+ICFSNCCW DC    D'0'                DOUBLE WORD FOR SENIO CCW            62050002
+ICFDOUBL DC    D'0'                DOUBLE WORD WORK AREA                62100002
+ICFCHTBL DC    X'80000000'         CTLR2 MASKS (CHANNEL TABLE)          62150002
+         DC    X'40000000'                                              62200002
+         DC    X'20000000'                                              62250002
+         DC    X'10000000'                                              62300002
+         DC    X'08000000'                                              62350002
+         DC    X'04000000'                                              62400002
+         DC    X'02000000'                                              62450002
+         DC    X'01000000'                                              62500002
+         DC    X'00800000'                                              62550002
+         DC    X'00400000'                                              62600002
+         DC    X'00200000'                                              62650002
+         DC    X'00100000'                                              62700002
+         EJECT                                                          62750002
+ICFMMASK DC    X'20003000'   MAP CONVERSION MASKS - BOTH PATHS OFFLINE  62800002
+         DC    X'00003000'   PRIMARY ONLINE- SECONDARY OFFLINE          62850002
+         DC    X'20001000'   PRIMARY OFFLINE - SECONDARY ONLINE         62900002
+         DC    X'00001000'   BOTH PATHS ONLINE                          62950002
+ICF0CMAP DC    F'0'          MAP FOR PCPU0                              63000002
+ICF1CMAP DC    F'0'          MAP FOR PCPU1                              63050002
+ICFWCPUA DC    F'0'          FULL WORD FOR CPU ADDR                     63100002
+ICFCPUAD  EQU  ICFWCPUA+D2                                              63150002
+ICFREALW DC    F'0'          REAL ADDR OF PWF WORK AREA                 63200002
+ICF2CGRS DC    16F'0'        2ND CPU'S GPR S.A.                         63250002
+ICF2CCRS DC    16F'0'        2ND CPU'S CTLR S.A.                        63300002
+ICFRSTSG DC    16F'0'        16 WORD SAVE AREA FOR SHTAP GPRS           63350002
+ICFRSTSC DC    16F'0'        16 WORD SAVE AREA FOR SHTAP CTLRS          63400002
+ICFCPUMK DC    X'80000000'   CONST FOR FORMING CPU MASK                 63450002
+ICFCR01S DC    F'0'          SAVE AREA FOR 1ST CPU'S CR0                63500002
+ICFCR02F DC    F'0'          SECOND CPU WORK AREA                       63550002
+ICFCR0MK DC    X'00F80000'   MASK OFF ALL BUT PAGE & SEGMENT LENGTHS    63600002
+ICFSHENV DC    16F'0'              16 WORD SAVE AREA FOR MCH REGS       63650002
+ICFRDISP EQU   ICFSHENV-ICFTDE00   DISPLACEMENT FOR SAVING MCH REGS     63700002
+ICFALL0S DC    F'0'                FULL WORD OF ZEROS                   63750002
+ICFALL1S DC    X'FFFFFFFF'         ALL 1'S FOR CTLR2 RESET              63800002
+ICFCR0FX DC    F'0'                STORAGE FOR FIXING CTL REGS          63850002
+ICFEXT50 DC    A(ICFBDE50)         USER EXIT ADCON                      63900002
+ICFEXT99 DC    A(ICFBDE99)         NORMAL DUMP EXIT VCON                63950002
+K86400   DC    F'86400'            NUMBER OF SEC PER DAY                64000002
+K15625   DC    F'15625'                                                 64050002
+K60      DC    F'60'                                                    64100002
+HK100    DC    H'100'                                                   64150002
+HK10T4   DC    H'10000'                                                 64200002
+         DS    0H                                                       64250002
+         DC    100X'77'            100 BYTE CE PATCH AREA               64300002
+ICFSENSA DC    24X'00'             24 BYTE SAVE AREA FOR SENIO          64350002
+         TITLE 'ICFBDF00 - POWER WARNING FEATURE - DUMP'                64400002
+*********************************************************************** 64450002
+*********************************************************************** 64500002
+*                                                                     * 64550002
+*                                                                     * 64600002
+*  THIS ROUTINE DUMPS STORAGE ON DISK. IT TOLERATES ONE TRACK ERROR   * 64650002
+*PER CYLINDER.                                                        * 64700002
+*                                                                     * 64750002
+*  ROUTINE WILL SWITCH TO ALTERNATE DEVICE IF--                       * 64800002
+*   1.TWO TRACK ERRORS ON ONE CYLINDER.                               * 64850002
+*   2.CHANNEL ERRORS (NOT DATA READ OR WRITE).                        * 64900002
+*   3.DEVICE NOT AVAILABLE.                                           * 64950002
+*                                                                     * 65000002
+*  STORAGE IS SCANNED FOR SIZE, CONFIGURATION, AND UNCORRECTABLE      * 65050002
+*ERRORS. VALIDATION IS ATTEMPTED (LIMIT 3 ATTEMPTS PER ERROR) BY      * 65100002
+*WRITING ZEROES OR ONES IN THE QUADWORD INVOLVED. ACTUAL WRITE TO     * 65150002
+*DISK IS EXECUTED WITH MACHINE CHECK MASK OFF.                        * 65200002
+*                                                                     * 65250002
+*  TERMINATIONS-PSW WAIT, IC=026, SUCCESSFUL DUMP.                    * 65300002
+*               PSW WAIT, IC=027,  ALTERNATE DEVICE ALSO FAILED.      * 65350002
+*                                                                     * 65400002
+*  LINKAGE--PRESET BY MCK HANDLER APPENDAGE ROUTINE                   * 65450002
+*           REGISTER 15, ENTRY AND BASE REGISTER (ICFBDE00)           * 65500002
+*           REGISTER 13, TABLE POINTER (ICFWORKA).                    * 65550002
+*                                                                     * 65600002
+*********************************************************************** 65650002
+         SPACE 3                                                        65700002
+         EJECT                                                          65750002
+         SPACE 2                                                        65800002
+*** INITIALIZATION ***                                                  65850002
+         SPACE 1                                                        65900002
+* SET PSWS, CCWS, ETC.--ROUTINE IS MOVEABLE                             65950002
+ICFBDE99 EQU   *                                                        66000002
+         USING ICFBDE00,R15                                             66050002
+         USING ICFBDE99,R15                                             66100002
+         USING ICFWORKA,RTAB       POINTS TO ICFWORK                    66150002
+         MVC   ICFNEWPG(Q8),ICFBUM SET PROG PSW                         66200002
+* RTAB IS PRELOADED BY MCK HANDLER APPENDAGE ROUTINE                    66250002
+         ST    R14,ICFDRTAD  SAVE RETURN ADDR                           66300002
+         LA    RFP,ICFTRDMP        GET FOOTPRINT TABLE ADDRESS          66350002
+         XC    Q0(Q4,RFP),Q0(RFP)  CLEAR AREA FOR USE                   66400002
+*** FOOTPRINT TABLE-HALF WORD-ICFTRDMP-BIT 0 DUMP ROUTINE STARTED ***   66450002
+         OI    Q0(RFP),Q80        SET                                   66500002
+         LA    RM,ICFPGIN         SET NEW PGM PSW                       66550002
+         ST    RM,ICFPGADR                                              66600002
+         LA    RM,ICFMCKIN        SET NEW MACHINE CHECK PSW             66650002
+         ST    RM,ICFMCADR                                              66700002
+         LA    RM,ICFSCAN         PSW-ENABLE MACHINE CHECKS             66750002
+         ST    RM,ICFMEN+4                                              66800002
+         LA    RM,ICFESCAN        PSW--DISABLE MACH CKS                 66850002
+         ST    RM,ICFMDIS+4                                             66900002
+         LA    RM,ICFSPCH         SP KEYS UCB ADR                       66950002
+         STCM  RM,M7,ICFPSEK+1    SEEK CCW                              67000002
+         LA    RM,Q2(RM)                                                67050002
+         STCM  RM,M7,ICFPSER+1    SERCH CCW                             67100002
+         LA    RM,ICFPSER                                               67150002
+         STCM  RM,M7,ICFPTIC+1    TIC TO SERCH                          67200002
+         LA    RM,ICFSPCH1        2ND SEEK                              67250002
+         STCM  RM,M7,ICFPSEK1+1                                         67300002
+         LA    RM,Q2(RM)                                                67350002
+         STCM  RM,M7,ICFPSER1+1   2ND SERCH                             67400002
+         LA    RM,ICFPSER1                                              67450002
+         STCM  RM,M7,ICFPTIC1+1   2ND TIC                               67500002
+         LA    RM,ICF16F          CCW TO ERASE CNTL TRACK               67550002
+         STCM  RM,M7,ICFT1CCW+1                                         67600002
+         LA    R4,ICFWRD00   ADR OF FIRST WRITE CCW                     67650002
+         ST    R4,ICFSV4     SAVE ADR                                   67700002
+         MVC   ICFCCSV(Q8),Q0(R4)  SAVE CCW                             67750002
+         EJECT                                                          67800002
+*** INIT CONTINUE ***                                                   67850002
+         SPACE 1                                                        67900002
+         LA    RM,ICFCNTRK        SET CNTL CCW                          67950002
+         STCM  RM,M7,ICFTWCCW+1   ADR FOR WRITE CCW                     68000002
+         STCM  RM,M7,ICFTRCCW+1   ADR FOR READ CCW                      68050002
+         LA    RM,ICFSDATA        SET SENSE CCW                         68100002
+         STCM  RM,M7,ICFSCCW+1                                          68150002
+         XC    ICFPFLAG(L'ICFPFLAG),ICFPFLAG  CLEAR PROGRAM FLAGS       68200002
+         LA    RM,ICFSERCH        SEARCH ID ADR                         68250002
+         STCM  RM,M7,ICFRDTIC+1   STORE IN READ TIC                     68300002
+         L     RUNIT,ICFWADEV     FIRST UNIT ADDRESS                    68350002
+         LA    RCH,ICFWACHR       STARTING CYLINDER                     68400002
+         MVC   ICFDMPWA(Q160),ICFCHR00  SAVE UCBS                       68450002
+ICFINIT2 EQU   *                                                        68500002
+         MVI   ICFQFLAG,Q0        CLEAR TRK ERR FLAG                    68550002
+         TM    ICFRFLAG,Q80       TEST FIRST OR SECOND ATTEMPT          68600002
+         BZ    ICFINIT3           NOT SET-FIRST ATTEMPT                 68650002
+         L     R4,ICFSV4     GET ADR OF FIRST WRITE CCW                 68700002
+         MVC   Q0(Q8,R4),ICFCCSV       RESTORE CCW                      68750002
+         L     RUNIT,ICFWBDEV     ALTERNATE DEVICE ADDRESS              68800002
+         LA    RCH,ICFWBCHR       ALTERNATE CYLINDER ADR                68850002
+         LA    RFP,ICFTRDMP+2     FOOTPRINT TABLE SECONDARY DEVICE      68900002
+* FOOTPRINT TABLE FOR SECONDARY IS HALFWORD-ICFTRDMP+2                  68950002
+         OI    Q0(RFP),Q80        START SECONDARY ATTEMPT               69000002
+ICFINIT3 EQU   *                                                        69050002
+         ST    RCH,ICFSVCYL       SAVE STARTING ADR                     69100002
+         STCM  RCH,M7,ICFRSEEK+1  SET SEEK FOR CNTL READ                69150002
+         LA    RCH,Q2(RCH)        SET ID ADR                            69200002
+         STCM  RCH,M7,ICFSERCH+1                                        69250002
+*** FOOTPRINT BIT 1-INITIALIZATION COMPLETE ***                         69300002
+         OI    Q0(RFP),Q40                                              69350002
+         BAL   RBL,ICFTIO         TEST AVAILABILITY                     69400002
+         NOP   *                                                        69450002
+         NOP   *                  SKIP ERRORS                           69500002
+         MVC   ICFRCCW(Q8),ICFTRCCW    SET READ CCW                     69550002
+         LA    RCW,ICFRSEEK       SET TO READ CNTL                      69600002
+         BAL   RBL,ICFSIO         GO READ                               69650002
+         NOP   *                                                        69700002
+         MVC   ICFRCCW(Q8),ICFT1CCW  ERASE CNTL TRACK                   69750002
+         LA    RCW,ICFRSEEK                                             69800002
+         BAL   RBL,ICFSIO                                               69850002
+         NOP   *                  SKIP ERRORS                           69900002
+*** FOOTPRINT BIT 2-CONTROL TRACK READ AND ERASED ***                   69950002
+         OI    Q0(RFP),Q20                                              70000002
+         EJECT                                                          70050002
+*** SCAN STOR, SIZE, CONFIGURATION, ERRORS ***                          70100002
+         SPACE 1                                                        70150002
+         LM    R1,R3,ICFNDEX          SCAN STORAGE FOR SIZE,            70200002
+         LM    R6,R7,ICFNDEX2         CONFIGURATION AND ERRORS          70250002
+         MVI   ICFZFLAG,Q0            CLEAR PGM CK FLAG                 70300002
+         MVC   ICFFADR(Q4),ICFN16     PRESET FAIL ADR FOR MISCOMPARE    70350002
+         LA    R4,ICFCTB11            STARTING ADDRESS BLOCK            70400002
+         LA    R5,ICFCTB13            END ADR BLOCK                     70450002
+         MVC   ICFNEWPG(Q16),ICFPSWS SET NEW PSWS                       70500002
+         LPSW  ICFMEN                 ENABLE MACHINE CHECKS             70550002
+ICFSCAN  EQU   *                                                        70600002
+         ST    R1,Q0(R4)              STORE ADR IN BLOCK                70650002
+         LA    RZ,ICFSCAN1        RETURN ADR                            70700002
+ICFSCAN1 EQU   *                                                        70750002
+         OC    Q0(Q16,R1),Q0(R1)      READ STORAGE UNTIL PGM CK         70800002
+         BXLE  R1,R2,ICFSCAN1                                           70850002
+         B     ICFPGIN1              MAX STORAGE                        70900002
+ICFSCAN2 EQU   *                                                        70950002
+         TS    Q0(R4)                FLAG LAST BLOCK USED               71000002
+         LPSW  ICFMDIS               END OF SCAN                        71050002
+ICFPGIN  EQU   *                     PROGRAM INTERRUPT HANDLER          71100002
+         CLI   ICFTYPIN,Q5           INVALID ADDRESS?                   71150002
+         BE    ICFPGIN1              YES-EXPECTED                       71200002
+         LPSW  ICFBUM                NO-OTHER--TERMINATE                71250002
+ICFPGIN1 EQU   *                                                        71300002
+         TS    ICFZFLAG              FIRST PCK THIS BLOCK               71350002
+         BM    ICFPGIN2              NO                                 71400002
+         S     R1,ICFQ1                                                 71450002
+         ST    R1,Q0(R5)             YES-ENDING ADDRESS                 71500002
+         A     R1,ICFQ1                                                 71550002
+         LA    R4,Q16(R4)            NEXT BLOCK                         71600002
+         LA    R5,Q16(R5)                                               71650002
+         LA    RZ,ICFPGIN3        RETURN ADR                            71700002
+ICFPGIN2 EQU   *                                                        71750002
+         BXH   R1,R6,ICFSCAN2     INCREMENT BY 256K OR END              71800002
+         OC    Q0(Q16,R1),Q0(R1)  TRY 256K HIGHER                       71850002
+ICFPGIN3 EQU   *                                                        71900002
+         MVI   ICFZFLAG,Q0        NO INTERRUPT, GO READ SOME MORE       71950002
+         B     ICFSCAN                                                  72000002
+         EJECT                                                          72050002
+* * * MACHINE CHECKS * * *                                              72100002
+         SPACE 1                                                        72150002
+ICFMCKIN EQU   *                                                        72200002
+         TM    ICFMCIC,Q80        UNCORRECTABLE STOR ERR?               72250002
+         BZ    ICFMCKIS           NO                                    72300002
+         NC    ICFSFAIL(Q4),ICFN16 ALIGN QUADWORD BOUNDARY              72350002
+         C     R1,ICFSFAIL        FAIL ADR SAME?                        72400002
+         BNE   ICFMCKIS           NO                                    72450002
+*** FOOTPRINT BIT 9-1 OR MORE UNCORRECT STORAGE ERRORS VALIDATED ***    72500002
+         OI    Q1(RFP),Q40                                              72550002
+         MVC   ICFVALX(Q16),ICFVAL RIPPLE VALIDATE PATTERN              72600002
+         MVC   ICFVAL(Q48),ICF16F                                       72650002
+         MVC   Q0(Q16,R1),ICFVAL  TRY VALIDATE-WRITE ONES OR ZEROES     72700002
+         C     R1,ICFFADR         IS THIS REPEAT THIS ADR?              72750002
+         BE    ICFMCKI            YES-IS IT SECOND  <<                  72800002
+         MVI   ICFQFLAG,Q0                                              72850002
+         ST    R1,ICFFADR         NO-SAVE ERROR ADR                     72900002
+         B     ICFMCKIR           AND TRY AGAIN                         72950002
+ICFMCKI  EQU   *                                                        73000002
+         TS    ICFQFLAG                                                 73050002
+         BZ    ICFMCKIR                                                 73100002
+         AR    R1,R2              NEXT ADR                              73150002
+ICFMCKIR EQU   *                                                        73200002
+         ST    RZ,ICFMC4          SET RETURN ADR                        73250002
+ICFMCKIS EQU   *                                                        73300002
+         LPSW  ICFMCOLD           RETURN, RE-ENABLE MACH CKS            73350002
+ICFESCAN EQU   *                                                        73400002
+*** FOOTPRINT BIT 3-STORAGE SCAN COMPLETE ***                           73450002
+         OI    Q0(RFP),Q16                                              73500002
+         MVC   ICFNEWPG(Q8),ICFBUM  SET PROG PSW                        73550002
+         EJECT                                                          73600002
+* * * THIS SECTION DOES DUMP * * *                                      73650002
+*USING REGS R1,R2,R3 INDEX UCBS, RCH CYLINDER NUMBER                    73700002
+*USING REGS R5,R6,R7 INDEX STORAGE ADRS, R4 CCW POINTER                 73750002
+         L      RCH,ICFSVCYL       FIRST CYLINDER--CNTL TRACK           73800002
+         L      RCH,Q0(RCH)                                             73850002
+         ST     RCH,ICFSPCH        SET CYL IN SP UCBS                   73900002
+         ST     RCH,ICFSPCH1                                            73950002
+         LA     RM,ICFCTB11                                             74000002
+         MVI    ICFQFLAG,Q0        CLEAR ERROR FLAG                     74050002
+         MVC   ICFCHR00(Q160),ICFDMPWA  RESTORE UCBS                    74100002
+ICFRSCAN EQU    *                                                       74150002
+         TM     Q0(RM),Q80         LAST BLOCK?                          74200002
+         BNZ    ICFEWR1            YES--GO WRITE CNTL TRACK             74250002
+         L      R5,Q0(RM)          FIRST ADDRESS                        74300002
+         L      R6,ICFTRSIZ        BYTES PER TRACK                      74350002
+         L      R7,Q8(RM)          END OF STORAGE                       74400002
+         LA     R2,Q8              INCREMENT UCBS BY 8                  74450002
+         LA     R3,Q160            8X20 TRACKS                          74500002
+         LA     R1,ICFCHR00        ADR FIRST UCB                        74550002
+         AR     R3,R1                                                   74600002
+         LA     RCH,Q1(RCH)        INCREASE CYL BY 1                    74650002
+         STH    RCH,Q4(RM)         SET CYL FIRST BLOCK                  74700002
+         XC    D6(D2,RM),D6(RM)   ZERO TRACK FIRST BLOCK                74750002
+         B      ICFWSET1                                                74800002
+ICFWSET  EQU    *                                                       74850002
+         LA     RCH,Q1(RCH)        INCREASE CYL BY 1                    74900002
+         STH    RCH,Q12(RM)        SET CYL LAST BLOCK                   74950002
+ICFWSET1 EQU    *                                                       75000002
+         LA     R1,ICFCHR00        FIRST UCB                            75050002
+ICFWSET2 EQU    *                                                       75100002
+         ST     RCH,Q0(R1)         SET CYL ADR IN 20 UCBS               75150002
+         BXLE   R1,R2,ICFWSET2                                          75200002
+         LA     R4,ICFWRD00        FIRST CCW                            75250002
+         SR     RZ,RZ              TRACK COUNTER                        75300002
+         B      ICFWSET4                                                75350002
+ICFWSET3 EQU    *                                                       75400002
+         LA     R4,Q32(R4)                                              75450002
+         EJECT                                                          75500002
+***DUMP CONTINUE ***                                                    75550002
+         SPACE 2                                                        75600002
+ICFWSET4 EQU    *                                                       75650002
+         STCM   R5,M7,Q1(R4)       SET ADR IN WRITECCCW                 75700002
+         STH    RZ,Q14(RM)         COUNT TRACKS                         75750002
+         A      RZ,ICFQ1                                                75800002
+         BXH    R5,R6,ICFEBLK      END OF STORAGE BLOCK                 75850002
+         TM     Q4(R4),Q40         LAST CCW AND TRACK                   75900002
+         BO     ICFWSET3           NO-SETNEXT CCW                       75950002
+         MVC    ICFCCSV(Q8),Q0(R4) SAVE LAST USED CCW                   76000002
+         ST    R4,ICFSV4     SAVE ADR OF LAST CCW USED                  76050002
+         LA     RCW,ICFSEK00       YES-WRITE CYLINDER                   76100002
+         BAL    RBL,ICFSIO                                              76150002
+         BAL    RBL,ICFWOK         WRITE WAS OK                         76200002
+         BAL    RBL,ICFWNOK        WRITE IN ERROR                       76250002
+*** FOOTPRINT BIT 4-1 OR MORE CYLINDERS WRITTEN ***                     76300002
+         OI     Q0(RFP),Q8                                              76350002
+         B      ICFWSET            NEXT CYLINDER                        76400002
+         SPACE 1                                                        76450002
+ICFEBLK  EQU    *                  END STORAGE BLOCK                    76500002
+         SR     R5,R7              GET STORAGE OVERRUN                  76550002
+         S     R5,ICFQ1                                                 76600002
+         SR     R6,R5              COMPUTE NEW COUNT                    76650002
+         MVC    ICFCCSV(Q8),Q0(R4) SAVE CCW                             76700002
+         ST    R4,ICFSV4     SAVECCW ADR                                76750002
+         STH    R6,Q6(R4)          SET COUNT IN CCW                     76800002
+         MVI    Q4(R4),Q20         TURN OFF COMMAND CHAIN               76850002
+         LA     RCW,ICFSEK00       WRITE LAST(PARTIAL)CYLINDER          76900002
+         BAL    RBL,ICFSIO                                              76950002
+         BAL    RBL,ICFWOK        WRITE OK                              77000002
+         BAL    RBL,ICFWNOK       NOT OK                                77050002
+         MVC    Q0(Q8,R4),ICFCCSV  RESTORE LAST CCW                     77100002
+         LA     RM,Q16(RM)         NEXT STORAGE BLOCK                   77150002
+         B      ICFRSCAN                                                77200002
+         EJECT                                                          77250002
+* * * WRITE CONTROL TRACK * * *                                         77300002
+         SPACE 2                                                        77350002
+ICFEWR1  EQU    *                  WRITE CONTROL TRACK                  77400002
+*** FOOTPRINT BIT 5-DATA WRITE COMPLETE ***                             77450002
+         OI     Q0(RFP),Q4                                              77500002
+         OI     ICFCTFLA,Q80      SET FLAG FOR SUCCESS                  77550002
+         MVC   ICFCTDAT(D8),ICFLRDAT  PUT DATE & TIME IN CTRL TRACK     77600002
+         MVC   ICFCTPXR(D4),ICFPXREG PUT CONTENTS OF PREFIX REG IN      77650002
+*                                  CONTROL TRACK                        77700002
+ICFEWR1A EQU    *                                                       77750002
+         L      R1,ICFSVCYL     GET CNTL TRACK LOCATION                 77800002
+         L      R3,ICFTPC       GET NUMBER OF TRACKS                    77850002
+         S      R3,ICFQ3        LESS 3                                  77900002
+ICFEWR2  EQU    *                                                       77950002
+         MVC    ICFRCCW(Q8),ICFTWCCW CHANGE READ CCW TO WRITE           78000002
+         STCK   ICFCTED            ENDING TIME                          78050002
+         LA     RCW,ICFRSEEK       WRITE CONTROL TRACK                  78100002
+         BAL    RBL,ICFSIO                                              78150002
+         B      ICFENRD            FINISHED                             78200002
+* * * ERROR WHILE WRITTING CNTL TRACK * * *                             78250002
+         MVC    ICFRCCW(Q8),ICFT1CCW  ERASE CNTL TRACK                  78300002
+         LA     RCW,ICFRSEEK         BY WRITING 4 FF'S                  78350002
+         BAL    RBL,ICFSIO           AND ZEROES                         78400002
+         NOP    *                  IGNORE ERRORS                        78450002
+         L      R2,Q4(R1)          GET HEAD NUMBER                      78500002
+         A      R2,ICF10000        UPDATE HEAD BY 1                     78550002
+         ST     R2,Q4(R1)          SAVE                                 78600002
+         BCT    R3,ICFEWR2         TRY WRITING AGAIN                    78650002
+*** FOOTPRINT BIT 14-FAILED TO WRITE CONTROL TRACK ***                  78700002
+         OI    Q1(RFP),Q2                                               78750002
+         B      ICFBOMB            NO MORE TRACKS-QUIT                  78800002
+        SPACE 1                                                         78850002
+* * * ALL WRITE DATA TRACKS RETURN HERE * * *                           78900002
+         SPACE 1                                                        78950002
+ICFWOK   EQU   *            * * * WRITE WAS OK * * *                    79000002
+         STM   RBL,RCH,ICFRBLSV   SAVE REGS                             79050002
+         LA    RCH,ICFCTCF        CYLINDER FLAGS                        79100002
+ICFWOK1  EQU   *                                                        79150002
+         TM    Q0(RCH),QC         TEST IF FLAG BEEN USED                79200002
+         BZ    ICFWOK2            NO                                    79250002
+         LA    RCH,Q1(RCH)        LOOK AT NEXT ONE                      79300002
+         B     ICFWOK1                                                  79350002
+ICFWOK2  EQU   *                                                        79400002
+         OI    Q0(RCH),Q40        SET FLAG USED                         79450002
+         LM    RBL,RCH,ICFRBLSV   RESTORE REGS                          79500002
+         B     Q4(RBL)            RETURN                                79550002
+         EJECT                                                          79600002
+ICFWNOK  EQU   *   * * * ERROR HANDLER * * * WRITE NO GOOD              79650002
+*** FOOTPRINT BIT 10-RETRYING WRITE USING SPARE TRACK ***               79700002
+         OI    Q1(RFP),Q20                                              79750002
+         STM   RBL,RCH,ICFRBLSV   SAVE REGS                             79800002
+         L     R1,ICFSVCSW        GET CCW ADR                           79850002
+ICFWNOK1 EQU   *                                                        79900002
+         S     R1,ICFQ8            LOOK AT FAILING CCW                  79950002
+         CLI   Q0(R1),M7           ADJUST TO POINT AT SEEK              80000002
+         BNE   ICFWNOK1                                                 80050002
+         L     R1,Q0(R1)           GET UCB ADR                          80100002
+         LA    RCH,ICFCTCF         CYL FLAG                             80150002
+ICFWNOK2 EQU   *                                                        80200002
+         TM    Q0(RCH),QC          LOOK FOR UNUSED CYL FLAG             80250002
+         BZ    ICFWNOK3            FOUND                                80300002
+         LA    RCH,Q1(RCH)        NOT FOUND, LOOK MORE                  80350002
+         B     ICFWNOK2                                                 80400002
+ICFWNOK3 EQU   *                                                        80450002
+         MVC   Q0(Q1,RCH),Q5(R1) STORE TRACK IN ERROR                   80500002
+         OI    Q0(RCH),Q80       FLAG IT BAD                            80550002
+         OI    ICFCTFLA,Q4       SET DUMP FLAG AS BAD TRACK             80600002
+         STH   RZ,Q14(RM)         STORE LAST TRACK USED                 80650002
+         LA    RCH,ICFCHR19+8    ADR OF LAST UCB+8                      80700002
+         SR    RCH,R1            COMPUTE NUMBER OF BYTES TOMOVE         80750002
+         EX    RCH,ICFMOVE       MOVE UCBS TO SKIP ONE TRACK            80800002
+         LA    RCW,ICFSEK00      REWRITE CYL                            80850002
+         BAL   RBL,ICFSIO                                               80900002
+         B     ICFW2OK          SECOND WRITE OK                         80950002
+         TS    ICFQFLAG         NOT OK-FLAG 2 BAD TRACKS                81000002
+ICFW2OK  EQU   *                                                        81050002
+         NI    Q1(RFP),QC         CLEAR CURRENT FOOTPRINT               81100002
+         MVC   ICFCHR00(Q160),ICFDMPWA  RESTORE UCBS                    81150002
+         LM    RBL,RCH,ICFRBLSV   RESTORE REGS                          81200002
+         TM    ICFQFLAG,Q80       TWO ERRORS                            81250002
+         BZR   RBL                NO                                    81300002
+*** FOOTPRINT BIT 13-TWO TRACK ERRORS ON 1 CYLINDER ***                 81350002
+         OI    Q1(RFP),Q4                                               81400002
+         MVC   Q0(Q8,R4),ICFCCSV  YES--RESTORE CCW                      81450002
+         MVI   ICFCTFLA,Q8      SETFLAG PARTIAL                         81500002
+         B     ICFEWR1A         GO WRITE CNTL                           81550002
+ICFMOVE  MVC   Q0(Q0,R1),Q8(R1) MOVE UCBS * *EXECUTE* *                 81600002
+         EJECT                                                          81650002
+***DUMP STOR PROT KEYS ***                                              81700002
+         SPACE 1                                                        81750002
+ICFENRD  EQU    *                  CNTL TRACK WAS WRITTEN               81800002
+*** FOOTPRINT BIT 6-CONTROL TRACK WRITTEN ***                           81850002
+         OI     Q0(RFP),Q2                                              81900002
+         TM     ICFQFLAG,Q8        TWO TRACK ERROR                      81950002
+         BO     ICFBOMB            TES-GO TO SECONDARY                  82000002
+         OI     ICFSIO2+1,C'0'     SET SUCCESSFUL END SWITCH            82050002
+         L      R2,Q4(R1)          GET HEAD NUMBER                      82100002
+         A      R2,ICF10000     BUMP HEAD BY 1                          82150002
+         ST     R2,ICFSPCH+4       SET IN UCB                           82200002
+         A      R2,ICF10000     NEXT HEAD                               82250002
+         ST     R2,ICFSPCH1+4      2ND UCB                              82300002
+         L      R1,ICFCTB13    GET END STORAGE                          82350002
+         A     R1,ICFQ1                                                 82400002
+ICFSP    EQU    *                                                       82450002
+         S      R1,ICF4K       SUBTRACT 4096                            82500002
+         STCM   R1,M7,ICFPCCW1+1 SET SECOND WR CCW                      82550002
+         S      R1,ICF4K       SUB 4096                                 82600002
+         STCM   R1,M7,ICFPCCW+1  SET FIRST CCW                          82650002
+         NOP    ICFSP1         SWITCH IF SP OVERLAPS PROG               82700002
+         OI     *-3,C'0'                                                82750002
+         LR     R3,R1                                                   82800002
+         S      R3,ICF4K                                                82850002
+         CR     R3,R15         IS SP OVERLAP PROG                       82900002
+         BNL    ICFSP1         NO                                       82950002
+         LR     R1,R15         YES--PUT SP AREA BELOW PROG              83000002
+         B      ICFSP                                                   83050002
+ICFSP1   EQU    *                                                       83100002
+         LA     R2,Q1                                                   83150002
+         LA     RM,ICFCTB11     GET FIRST ADDRESS                       83200002
+ICFSP2   EQU    *                                                       83250002
+         TM     Q0(RM),Q80       LAST BLOCK?                            83300002
+         BNZ    ICFSP4           YES                                    83350002
+         L      R5,Q0(RM)        FIRST ADR                              83400002
+         L      R6,ICF2K         INCREMENT 2 K                          83450002
+         L      R7,Q8(RM)        LAST ADR                               83500002
+ICFSP3   EQU    *                                                       83550002
+         ISK    RZ,R5            READ KEY                               83600002
+         STC    RZ,Q0(R1)        STORE                                  83650002
+         AR     R1,R2            UPDATE STORE ADR                       83700002
+         BXLE   R5,R6,ICFSP3     NEXT KEY                               83750002
+         LA     RM,Q16(RM)       NEXT BLOCK                             83800002
+         B      ICFSP2                                                  83850002
+ICFSP4   EQU    *                                                       83900002
+         TS     Q0(R1)         END SP KEYS                              83950002
+         LA     RCW,ICFPSEK                                             84000002
+* * * GO SIO--WRITE SP KEYS * * *                                       84050002
+         EJECT                                                          84100002
+* * * START I/O ROUTINE * * *                                           84150002
+         SPACE 1                                                        84200002
+ICFSIO   EQU   *                  EXPECTS CAW IN RCW                    84250002
+*** FOOTPRINT BIT 11-IN I/O SUBROUTINE ***                              84300002
+         OI    Q1(RFP),Q16                                              84350002
+         MVI   ICFSFLAG,Q0        CLEAR SENSE FLAG                      84400002
+ICFSIO0  EQU   *                 UNIT ADR IN RUNIT                      84450002
+         ST    RCW,ICFCAW        CCW ADR IN CAW                         84500002
+ICFSIO1  EQU   *                                                        84550002
+         SIO   Q0(RUNIT)         ISSUE START I/O-UNIT ADR IN RUNIT      84600002
+ICFSIO2  EQU   *     AFTER CNTL TRACK WRITTEN SUCESSFUL END             84650002
+         NOP   ICFPGEND     NEXT I/O OP                                 84700002
+         BC    BUSY,ICFSIO1      CC=2, BUSY GO LOOP SIO                 84750002
+         BC    STAT,ICFSSIO      CC=4, STATUS STORED GO CKECK           84800002
+         BC    NOTAV,ICFBOMBX    CC=3, NOT AVAILABLE TERMINATE          84850002
+ICFTIO   EQU   *                                                        84900002
+         OI    Q1(RFP),Q16                                              84950002
+         TIO   Q0(RUNIT)         ISSUE TEST I/O                         85000002
+         BC    BUSY,ICFTIO       BUSY, LOOP                             85050002
+         BC    STAT,ICFSTIO       STATUS STORED GO CHECK                85100002
+         BC    NOTAV,ICFBOMBX     NOT AVAILABLE                         85150002
+         NI    Q1(RFP),QE         CLEAR CURRENT FOOTPRINT               85200002
+         BR    RBL                CLEAR--RETURN                         85250002
+ICFSSIO  EQU   *                                                        85300002
+         TM    ICFCSW+4,Q40       TEST FOR STATUS MODIFIER              85350002
+         BO    ICFSIO1            CONTROL UNIT BUSY                     85400002
+ICFSTIO  EQU   *                                                        85450002
+         TM    ICFSFLAG,QFF  IS SENSE FOR UNIT CHECK IN PROGRESS?       85500002
+         BO    ICFBOMB       IF SO, TRY OTHER EXTENT                    85550002
+*  IF THIS WAS A SENSE,CSW+D4 SHOULD SHOW CE/DE,BUT EVEN IF IT          85600002
+*  WASN'T, MUST SEE IF ANOTHER EXTENT IS AVAILABLE.                     85650002
+         L     RCW,Q63F           ANY ENDING STATUS?                    85700002
+         N     RCW,ICFCSW+4                                             85750002
+         BZ    ICFTIO             NO-LOOP                               85800002
+         TM    ICFCSW+5,Q3F       ANY CHANNEL ERRORS?                   85850002
+         BNZ   ICFBOMBX           YES-GO TERMONATE                      85900002
+         TM    ICFCSW+4,Q2        UNIT CHECK?                           85950002
+         BZ    ICFTIO             NO-CLEAR AND RETURN                   86000002
+* * * UNIT CHECK * * *                                                  86050002
+*** FOOTPRINT BIT 8-1 OR MORE UNIT CHECKS OCCURRED ***                  86100002
+         OI    Q1(RFP),Q80                                              86150002
+         TS    ICFSFLAG           FIRST OR SECOND UNIT CHECK            86200002
+         BM    ICFBOMB                                                  86250002
+*** FOOTPRINT BIT 12-DOING SENSE OP ***                                 86300002
+         OI    Q1(RFP),Q8                                               86350002
+         MVC   ICFSVCSW(L'ICFSVCSW),ICFCSW  SAVE OLD CSW                86400002
+         LA    RBL,Q4(RBL)        SET ERROR RETURN                      86450002
+         LA    RCW,ICFSCCW        SET FOR SENSE                         86500002
+         B     ICFSIO0            GO PERFORM SENSE                      86550002
+         EJECT                                                          86600002
+ICFBOMBX EQU   *                                                        86650002
+*** FOOTPRINT BIT 15-CHANNEL CKS. OR DEVICE NOT OPERATIVE ***           86700002
+         OI    Q1(RFP),Q1                                               86750002
+ICFBOMB  EQU   *      * * * THIS EXTENT HAS HAD IT * * *                86800002
+         TS    ICFRFLAG           SET FLAG                              86850002
+         STM   R0,R15,ICFBOMSG    SAVE REGS FOR NEXT ENTRY              86900002
+         STCTL CR0,CR15,ICFBOMSC  SAVE CTLRS FOR NEXT ENTRY             86950002
+         L     R12,ICFDRTAD  LOAD BRANCH ADDR                           87000002
+         LA    R14,ICFBDE98  LOAD RETURN ADDR                           87050002
+         LA    R15,D4        LOAD RC OF 4                               87100002
+         BR    R12           RETURN TO MCH APPENDAGE                    87150002
+ICFBDE98 EQU   *                                                        87200002
+*  AT THIS ENTRY, R15 CONTAINS ADDR OF ICFBDE98                         87250002
+         LA    R6,ICFBDE98-ICFBDE99    GET DISPLACEMENT OF ICFBDE98     87300002
+         SR    R15,R6        FORM ICFBDE98-(ICFBDE98-ICFBDE99)=ICFBDE99 87350002
+*  NOW BASE IS SET UP                                                   87400002
+         LM    R0,R15,ICFBOMSG    RESTORE REGS                          87450002
+         LCTL  CR0,CR15,ICFBOMSC  RESTORE CTLRS                         87500002
+         B     ICFINIT2      GO HANDLE SECOND EXTENT                    87550002
+         SPACE 1                                                        87600002
+ICFPGEND EQU   *                                                        87650002
+*** FOOTPRINT BIT 7-SP KEYS READ, WRITTEN, DUMP COMPLETE ***            87700002
+         OI    Q0(RFP),Q1                                               87750002
+         L     R12,ICFDRTAD  GET APPENDAGE RETURN ADDR                  87800002
+         XR    R15,R15       SET RETURN CODE                            87850002
+         BR    R12           RETURN TO APPENDAGE FOR TERMINATION        87900002
+         SPACE 2                                                        87950002
+* * * DOUBLE WORD CONSTANTS * * *                                       88000002
+*     '*' CONSTANTS MUST BE CONTIGUOS                                   88050002
+         SPACE 1                                                        88100002
+ICFRSEEK CCW   7,0,X'60',6       *SEEK FOR READ, WRITE, ERASE           88150002
+ICFSERCH CCW   X'31',0,X'60',5   *SEARCH ID EQUAL                       88200002
+ICFRDTIC CCW   8,0,X'60',0       *TIC                                   88250002
+ICFRCCW  CCW   6,0,X'20',512     *CCW FOR CONTROL TRACK                 88300002
+ICFSCCW  CCW   4,0,X'20',24       SENSE                                 88350002
+ICFT1CCW CCW   5,0,X'20',4        ERASE CCW--WRITE 4 'FF'S              88400002
+ICFTRCCW CCW   6,0,X'20',512      READ CCW                              88450002
+ICFTWCCW CCW   5,0,X'20',512      WRITE CCW                             88500002
+ICFPSEK  CCW   7,0,96,6          *SEEK FOR SP KEYS                      88550002
+ICFPSER  CCW   49,0,96,5         *SERCH ID                              88600002
+ICFPTIC  CCW   8,0,96,0          *TIC TO SERCH                          88650002
+ICFPCCW  CCW   5,0,96,4096       *WRITE 4096 SP KEYS                    88700002
+ICFPSEK1 CCW   7,0,96,6          *2ND SEEK SP                           88750002
+ICFPSER1 CCW   49,0,96,5        *SERCH ID                               88800002
+ICFPTIC1 CCW   8,0,96,0         *TIC TO SERCH                           88850002
+ICFPCCW1 CCW   5,0,32,4096      *WRITE 2ND 4096 SP KEYS                 88900002
+ICFSPCH  DC    X'0000CCCC00000100' *UCB FOR SP KEYS                     88950002
+ICFSPCH1 DC    X'0000CCCC00000100' *2ND UCB                             89000002
+ICFTOD   DC    1D'0'              STARTING TIME                         89050002
+ICFCCSV  DC    1D'0'               CCW SAVER                            89100002
+ICFRBLSV DC    1D'0'               REG SAVER                            89150002
+ICFVAL   DC    2D'0'              *STORAGE VALIDATION PATTERN           89200002
+ICF16F   DC    16X'FF'            *2ND PATTERN                          89250002
+ICFEPAT0 DC    2XL8'0002000000004000' *3RD PATTERN                      89300002
+ICFVALX  DC    2D'0'                 *PATTERN RIPPLER                   89350002
+ICFSVCSW DC    1D'0'                  CSW SAVER                         89400002
+ICFBUM   DC    X'0002000000000027'  WAIT-CODE INVALID DUMP              89450002
+ICFDMPDN DC    X'0002000000000026' WAIT-CODE VALID DUMP                 89500002
+ICFMEN   DC    X'0004000000000000'  ENABLE MACHINE CHECKS               89550002
+ICFMDIS  DC    X'0000000000000000'  DISABLE MACH CKS                    89600002
+         EJECT                                                          89650002
+* * * FULL WORD CONSTANTS * * *                                         89700002
+         SPACE 1                                                        89750002
+ICFPSWS  DC    X'00040000'       *PROGRAM NEW                           89800002
+ICFPGADR DC    F'0'              *ADDRESS                               89850002
+         DC    F'0'              *MACHINE NEW                           89900002
+ICFMCADR DC    F'0'              *ADDRESS                               89950002
+ICFQ1    DC    F'1'                                                     90000002
+ICFQ3    DC    F'3'                                                     90050002
+ICFQ8    DC    F'8'                                                     90100002
+ICF2K    DC    F'2048'                                                  90150002
+ICF4K    DC    F'4096'                                                  90200002
+ICFNDEX  DC    F'0'  *                                                  90250002
+         DC    F'16'  *                                                 90300002
+         DC    X'00FFFFFF'  *                                           90350002
+ICFNDEX2 DC    F'262144'  *                                             90400002
+         DC    X'00FFFFFF'  *                                           90450002
+ICFN16   DC    X'00FFFFF0'                                              90500002
+ICFSVCYL DC    F'0'                                                     90550002
+ICFFADR  DC    F'0'                                                     90600002
+ICFSV4   DC    F'0'                                                     90650002
+Q63F     DC    X'063F0000'       END STATUS CONSTANT                    90700002
+ICF10000 DC    X'00010000'        HEAD INCREMENTER                      90750002
+ICFBOMSG DC    16F'0'        16 WORD GPR SAVE AREA                      90800002
+ICFBOMSC DC    16F'0'        16 WORD CTLR SAVE AREA                     90850002
+ICFDRTAD DC    F'0'          RETURN ADDR FOR APPENDAGE                  90900002
+ICFPFLAG DC    F'0'              PROGRAM FLAGS                          90950002
+ICFRFLAG EQU   ICFPFLAG           1ST EXTENT FAIL FLAG                  91000002
+ICFSFLAG EQU   ICFPFLAG+1         UNIT CHECK FLAG                       91050002
+ICFZFLAG EQU   ICFPFLAG+2         PROGRAM CHECK FLAG                    91100002
+ICFQFLAG EQU   ICFPFLAG+3         TWO TRACKS ERROR FLAG                 91150002
+ICFSDATA DC    24X'0'                                                   91200002
+* * * PATCH AREA * * *                                                  91250002
+ICFPATCH DS    25F                                                      91300002
+ICFBDE50 EQU   *                                                        91350002
+*        INSERT USER ROUTINE HERE                                       91400002
+         XR    R15,R15           ZAP RETURN CODE                        91450002
+         BR    R14               RETURN                                 91500002
+         EJECT                                                          91550002
+* * * EQUATES * * *                                                     91600002
+RFP      EQU   14                                                       91650002
+RTAB     EQU   13                TABLE POINTER-DSECT BASE               91700002
+RUNIT    EQU   12                UNIT ADDRESS                           91750002
+RCH      EQU   11                CYLINDER REFERENCE                     91800002
+RBL      EQU   10                BRANCH AND LINK                        91850002
+RCW      EQU   9                 CCW ADDRESS                            91900002
+RM       EQU   8                  MISC USE                              91950002
+RZ       EQU   0                                                        92000002
+NOTAV    EQU   1                  CC=3                                  92050002
+BUSY     EQU   2                  CC=2                                  92100002
+STAT     EQU   4                  CC=1                                  92150002
+Q16      EQU   16                                                       92200002
+ICFNEWPG EQU   X'68'                                                    92250002
+M7       EQU   7                                                        92300002
+Q2       EQU   2                                                        92350002
+Q1       EQU   1                                                        92400002
+Q0       EQU   0                                                        92450002
+Q40      EQU   X'40'                                                    92500002
+Q3F      EQU   X'3F'                                                    92550002
+Q4       EQU   4                                                        92600002
+ICFCAW   EQU   72                  CAW ADDRESS                          92650002
+ICFCSW   EQU   64                  CSW                                  92700002
+ICFMCIC  EQU   X'EA'               THIRD BYTE OF MCIC          @ZA00510 92750003
+Q80      EQU   X'80'                                                    92800002
+ICFSFAIL EQU   248                                                      92850002
+Q48      EQU   48                                                       92900002
+ICFMC4   EQU   X'34'                                                    92950002
+ICFTYPIN EQU   43                                                       93000002
+Q8       EQU   8                                                        93050002
+Q160     EQU   160                                                      93100002
+Q6       EQU   6                                                        93150002
+Q20      EQU   X'20'                                                    93200002
+Q32      EQU   32                                                       93250002
+Q5       EQU   5                                                        93300002
+Q12      EQU   12                                                       93350002
+QFF      EQU   X'FF'                                                    93400002
+Q14      EQU   14                                                       93450002
+QC       EQU   X'C0'                                                    93500002
+QE       EQU   X'E0'                                                    93550002
+ICFMCOLD EQU   48                                                       93600002
+ICFEND   EQU   *                                                        93650002
+         EJECT                                                          93700002
+         ICFWORK                                                        93750002
+         EJECT                                                          93800002
+ICFCVTOR DSECT                                                          93850002
+         CVT                                                            93900002
+         EJECT                                                          93950002
+         IHACSD                                                         94000002
+         EJECT                                                          94050002
+         IHAPCCA                                                        94100002
+         EJECT                                                          94150002
+         IEFUCBOB                                                       94200002
+         IECDLCH                                                        94250002
+         EJECT                                                          94300002
+         IECDCAT                                                        94350002
+         EJECT                                                          94400002
+ICFBDE00 CSECT               RESUME CONTROL SECTION                     94450002
+          END                                                           94500002

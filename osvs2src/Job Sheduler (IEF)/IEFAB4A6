@@ -1,0 +1,1423 @@
+         TITLE 'IEFAB4A6 - DATA SET RELEASE                            *00001000
+                        '                                               00002000
+IEFAB4A6 CSECT ,                                                01S0001 00003000
+@MAINENT DS    0H                                               01S0001 00004000
+         USING *,@15                                            01S0001 00005000
+         B     @PROLOG                                          01S0001 00006000
+         DC    AL1(16)                                          01S0001 00007000
+         DC    C'IEFAB4A6  73.325'                              01S0001 00008000
+         DROP  @15                                                      00009000
+@PROLOG  STM   @14,@12,12(@13)                                  01S0001 00010000
+         BALR  @12,0                                            01S0001 00011000
+@PSTART  DS    0H                                               01S0001 00012000
+         USING @PSTART,@12                                      01S0001 00013000
+         L     @00,@SIZDATD                                     01S0001 00014000
+         MODESET EXTKEY=SCHED,SAVEKEY=(2)                               00015000
+         GSPACE  R,LV=(0)                                               00016000
+         LR    @11,@01                                          01S0001 00017000
+         USING @DATD,@11                                        01S0001 00018000
+         ST    @13,@SA00001+4                                   01S0001 00019000
+         STC   @02,@OLDKEY                                      01S0001 00020000
+         MODESET KEYADDR=(2)                                            00021000
+         LM    @00,@02,20(@13)                                  01S0001 00022000
+         ST    @11,8(,@13)                                      01S0001 00023000
+         LR    @13,@11                                          01S0001 00024000
+         MODESET EXTKEY=ZERO                                            00025000
+         MVC   @PC00001(24),0(@01)                              01S0001 00026000
+         MODESET EXTKEY=SCHED                                           00027000
+*RETCODE = ZERO;                       /* INIT RETURN CODE.          */ 00028000
+         SLR   @10,@10                                          01S0022 00029000
+         LR    RETCODE,@10                                      01S0022 00030000
+*IF NODSRLST = ON THEN                 /* DSR LIST NON-EXISTENT?     */ 00031000
+         L     @07,@PC00001                                     01S0023 00032000
+         TM    NODSRLST(@07),B'10000000'                        01S0023 00033000
+         BNO   @RF00023                                         01S0023 00034000
+*  DO;                                                          01S0024 00035000
+*/********************************************************************/ 00036000
+*/*                                                                  */ 00037000
+*/* SEGMENT NAME - READDSNQ                                          */ 00038000
+*/*                                                                  */ 00039000
+*/* DESCRIPTIVE NAME - READ DATA SET ENQUEUE TABLE                   */ 00040000
+*/*                                                                  */ 00041000
+*/* FUNCTION -                                                       */ 00042000
+*/*                                                                  */ 00043000
+*/*   THIS ROUTINE USES THE SWA MANAGER INTERFACE ROUTINE TO READ IN */ 00044000
+*/*   ALL THE BLOCKS OF THE DATA SET ENQUEUE TABLE AND CHAIN THEM    */ 00045000
+*/*   TOGETHER VIA IN-CORE POINTERS.  THE ROUTINE ALSO COUNTS ALL    */ 00046000
+*/*   THE ENTRIES IN THE TABLE WHICH WILL BE RELEASED.  THIS TOTAL   */ 00047000
+*/*   IS USED TO COMPUTE AND OBTAIN THE AMOUNT OF CORE NEEDED FOR    */ 00048000
+*/*   THE DEQ PARAMETER LIST.                                        */ 00049000
+*/*                                                                  */ 00050000
+*/*   OPERATION -                                                    */ 00051000
+*/*                                                                  */ 00052000
+*/*     THE INTERFACE TO THE SWA MANAGER IS INITIALIZED TO REQUEST   */ 00053000
+*/*     CREATION OF A NEW EPA FOR EACH BLOCK READ IN, AND THE READ-  */ 00054000
+*/*     ING OF ONE BLOCK AT A TIME.  THE INPUT SVA OF THE FIRST      */ 00055000
+*/*     DSENQ TABLE BLOCK IS USED FOR THE FIRST READ.  FOR ALL       */ 00056000
+*/*     SUCCEEDING BLOCKS, THE SVA IS OBTAINED FROM THE PREVIOUS     */ 00057000
+*/*     BLOCK READ IN.  THE IN-CORE POINTER TO THE FIRST BLOCK IS    */ 00058000
+*/*     RETURNED BY THE SWA MANAGER INTERFACE ROUTINE IN AN AREA TO  */ 00059000
+*/*     BE USED LATER TO POINT TO THE BEGINNING OF THE CHAIN OF      */ 00060000
+*/*     BLOCKS.  ALL SUCCESSIVE IN-CORE POINTERS ARE RETURNED IN THE */ 00061000
+*/*     FORWARD CHAIN POINTER OF THE PREVIOUS RECORD READ IN,        */ 00062000
+*/*     CREATING A CHAIN OF IN-CORE BLOCKS.                          */ 00063000
+*/*                                                                  */ 00064000
+*/*     THE POINTER TO EACH NEW EPA IS RETURNED BY THE SWA MANAGER.  */ 00065000
+*/*     THE POINTER TO THE FIRST EPA IS SAVED TO BE USED WHEN        */ 00066000
+*/*     WRITING ALL THE RECORDS AND FREEING ALL THE EPA'S.  THE      */ 00067000
+*/*     POINTER TO THE LATEST EPA CREATED IS PASSED TO THE SWA       */ 00068000
+*/*     MANAGER INTERFACE ROUTINE TO BE USED IN CHAINING THE EPA'S   */ 00069000
+*/*     TOGETHER.                                                    */ 00070000
+*/*                                                                  */ 00071000
+*/*     AS EACH BLOCK IS READ IN, ALL ITS DATA SET ENTRIES ARE EX-   */ 00072000
+*/*     AMINED.  EACH ENTRY HAVING THE SAME STEP NUMBER AS THE       */ 00073000
+*/*     CURRENT STEP WILL BE DEQ'D.  FOR EACH SUCH DATA SET ENTRY,   */ 00074000
+*/*     THE AMOUNT OF CORE NEEDED FOR THE DEQ PARAMETER LIST IS      */ 00075000
+*/*     INCREASED BY THE LENGTH OF A DEQ PARAMETER LIST ENTRY.       */ 00076000
+*/*                                                                  */ 00077000
+*/*     WHEN ALL BLOCKS OF THE DATA SET ENQUEUE TABLE HAVE BEEN READ */ 00078000
+*/*     IN, THE FORWARD POINTER IN THE LAST BLOCK IS SET TO ZERO TO  */ 00079000
+*/*     INDICATE THE END OF THE CHAIN OF DATA SET ENQUEUE TABLE      */ 00080000
+*/*     BLOCKS.  AN ATTEMPT IS THEN MADE TO OBTAIN THE CORE NEEDED   */ 00081000
+*/*     FOR THE DEQ PARAMETER LIST.  IF THE ATTEMPT IS UNSUCCESSFUL, */ 00082000
+*/*     A REASON CODE OF '2' IS SET, INDICATING THAT DATA SET        */ 00083000
+*/*     RELEASE WASN'T PERFORMED.                                    */ 00084000
+*/*                                                                  */ 00085000
+*/* ENTRY - IN-LINE SEGMENT                                          */ 00086000
+*/*                                                                  */ 00087000
+*/*   PURPOSE - SEE FUNCTION                                         */ 00088000
+*/*   INPUT -                                                        */ 00089000
+*/*     DSNQTABL - DATA SET ENQUEUE TABLE BLOCKS                     */ 00090000
+*/*       DSNQNSVA - SVA OF NEXT TABLE BLOCK                         */ 00091000
+*/*       DSNQFREE - UNUSED BYTES IN THIS BLOCK                      */ 00092000
+*/*       DSNQENTS - DSN ENTRIES                                     */ 00093000
+*/*       DSNQNTRY - A SINGLE DSN ENTRY                              */ 00094000
+*/*         DSNQSTEP - NUMBER OF STEP IN WHICH LAST REFERENCE TO     */ 00095000
+*/*                    THIS DSN IS MADE                              */ 00096000
+*/*         DSNQDSNL - DSN LENGTH                                    */ 00097000
+*/*         DSNQDSN  - DSN                                           */ 00098000
+*/*     NQTABSVA - SVA OF FIRST DSENQ TABLE BLOCK                    */ 00099000
+*/*                                                                  */ 00100000
+*/* EXIT -                                                           */ 00101000
+*/*                                                                  */ 00102000
+*/*   CONDITION - CORE FOR DEQ PARAMETER LIST SUCCESSFULLY OBTAINED  */ 00103000
+*/*     OUTPUT -                                                     */ 00104000
+*/*       DSNQTABL - READ INTO CORE, BLOCKS CHAINED TOGETHER         */ 00105000
+*/*         DSNQNEXT - IN-CORE POINTER TO NEXT BLOCK                 */ 00106000
+*/*       DEQLSTSZ - AMOUNT OF CORE OBTAINED FOR DEQ PARAMETER LIST  */ 00107000
+*/*       FRSTEPAP - POINTER TO FIRST EPA.                           */ 00108000
+*/*       FRSTBLKP - POINTER TO FIRST DSENQ TABLE BLOCK              */ 00109000
+*/*     RETURN CODE -                                                */ 00110000
+*/*       RETCODE = ZERO                                             */ 00111000
+*/*                                                                  */ 00112000
+*/*   CONDITION - CORE NOT AVAILABLE FOR DEQ PARAMETER LIST          */ 00113000
+*/*     OUTPUT - NONE                                                */ 00114000
+*/*     RETURN CODE -                                                */ 00115000
+*/*       RETCODE - GETMAIN RETURN CODE                              */ 00116000
+*/*       RSNCODE - 2                                                */ 00117000
+*/*                                                                  */ 00118000
+*/*   CONDITION - NO NAMES TO DEQ                                    */ 00119000
+*/*     OUTPUT -                                                     */ 00120000
+*/*       DEQLSTSZ - ZERO                                            */ 00121000
+*/*     RETURN CODE -                                                */ 00122000
+*/*       RETCODE - SAME AS ON ENTRY                                 */ 00123000
+*/*                                                                  */ 00124000
+*/********************************************************************/ 00125000
+*SWACTLS = SWACTLS && SWACTLS;         /* CLEAR SWA CNTRL SWITCHES.  */ 00126000
+         SLR   @07,@07                                          02S0025 00127000
+         ICM   @07,3,SWACTLS                                    02S0025 00128000
+         LR    @15,@07                                          02S0025 00129000
+         XR    @15,@07                                          02S0025 00130000
+         STH   @15,SWACTLS                                      02S0025 00131000
+*SWREAD = ON;                          /* REQUEST READ.              */ 00132000
+*SWNEW = ON;                           /* HAVE AN EPA CREATED.       */ 00133000
+         OI    SWREAD,B'00101000'                               02S0027 00134000
+*NUMBLKS = ONE;                        /* READ ONE BLK AT A TIME.    */ 00135000
+         MVC   NUMBLKS(4),@CF00049                              02S0028 00136000
+*SVALISTP = ADDR(NQTABSVA);            /* READ 1ST DSENQ TBL BLK.    */ 00137000
+         L     @07,@PC00001+16                                  02S0029 00138000
+         ST    @07,SVALISTP                                     02S0029 00139000
+*SVABLSTP = ADDR(FRSTBLKP);            /* SAVE PTR TO FIRST BLK.     */ 00140000
+         LA    @07,FRSTBLKP                                     02S0030 00141000
+         ST    @07,SVABLSTP                                     02S0030 00142000
+*FIRSTSW = ON;                         /* SET FIRST-TIME SWITCH.     */ 00143000
+         OI    FIRSTSW,B'00010000'                              02S0031 00144000
+*DEQLSTSZ = ZERO;                      /* INIT AMOUNT OF CORE TO GET    00145000
+*                                         FOR DEQ P-LIST TO NONE.    */ 00146000
+         SLR   @07,@07                                          02S0032 00147000
+         LR    DEQLSTSZ,@07                                     02S0032 00148000
+*DO WHILE SVALISTP -> NEXTSVA ^= ZERO; /* READ ENTIRE DSENQ TABLE.   */ 00149000
+         B     @DE00033                                         02S0033 00150000
+@DL00033 DS    0H                                               02S0034 00151000
+*  CALL IEFAB4F7                       /* READ 1 DSENQ TBL BLK.      */ 00152000
+*       (SWACTLS,LEPACHNP,LEPACHNP,SVALISTP,SVABLSTP,DUMMY,NUMBLKS);    00153000
+         LA    @07,SWACTLS                                      02S0034 00154000
+         ST    @07,@AL00001                                     02S0034 00155000
+         LA    @07,LEPACHNP                                     02S0034 00156000
+         ST    @07,@AL00001+4                                   02S0034 00157000
+         LA    @07,LEPACHNP                                     02S0034 00158000
+         ST    @07,@AL00001+8                                   02S0034 00159000
+         LA    @07,SVALISTP                                     02S0034 00160000
+         ST    @07,@AL00001+12                                  02S0034 00161000
+         LA    @07,SVABLSTP                                     02S0034 00162000
+         ST    @07,@AL00001+16                                  02S0034 00163000
+         LA    @07,@CF00110                                     02S0034 00164000
+         ST    @07,@AL00001+20                                  02S0034 00165000
+         LA    @07,NUMBLKS                                      02S0034 00166000
+         ST    @07,@AL00001+24                                  02S0034 00167000
+         L     @15,@CV00130                                     02S0034 00168000
+         LA    @01,@AL00001                                     02S0034 00169000
+         BALR  @14,@15                                          02S0034 00170000
+*  IF FIRSTSW = ON THEN                /* FIRST BLK JUST READ?       */ 00171000
+         TM    FIRSTSW,B'00010000'                              02S0035 00172000
+         BNO   @RF00035                                         02S0035 00173000
+*    DO;                                                        02S0036 00174000
+*      FIRSTSW = OFF;                  /* SET FIRST-TIME SW OFF.     */ 00175000
+         NI    FIRSTSW,B'11101111'                              02S0037 00176000
+*      SWCHN = ON;                     /* CHAIN REMAINING EPA'S.     */ 00177000
+         OI    SWCHN,B'10000000'                                02S0038 00178000
+*      FRSTEPAP = LEPACHNP;            /* SAVE PTR TO FIRST EPA.     */ 00179000
+         MVC   FRSTEPAP(4),LEPACHNP                             02S0039 00180000
+*      DSNQPTR = FRSTBLKP;             /* SET DSENQ TBL BLK BASE.    */ 00181000
+         MVC   DSNQPTR(4),FRSTBLKP                              02S0040 00182000
+*    END;                                                       02S0041 00183000
+*  ELSE                                                         02S0042 00184000
+*    DSNQPTR = DSNQNEXT;               /* GET PTR TO BLK JUST READ      00185000
+*                                         FROM PREVIOUS BLK'S FWD       00186000
+*                                         PTR, WHERE SWA MGR PUT IT. */ 00187000
+         B     @RC00035                                         02S0042 00188000
+@RF00035 L     @07,DSNQPTR                                      02S0042 00189000
+         L     @07,DSNQNEXT(,@07)                               02S0042 00190000
+         ST    @07,DSNQPTR                                      02S0042 00191000
+*  DSNQENTP = ADDR(DSNQENTS);          /* POINT TO FIRST DSN ENTRY.  */ 00192000
+@RC00035 L     @07,DSNQPTR                                      02S0043 00193000
+         LA    DSNQENTP,DSNQENTS(,@07)                          02S0043 00194000
+*  BYTECTR = LENGTH(DSNQENTS) - DSNQFREE; /* GET ENTRIES' TOTAL LNTH.*/ 00195000
+         LA    BYTECTR,162                                      02S0044 00196000
+         SH    BYTECTR,DSNQFREE(,@07)                           02S0044 00197000
+*  DO WHILE BYTECTR > ZERO;            /* PROCESS ONE BLK'S ENTRIES. */ 00198000
+         B     @DE00045                                         02S0045 00199000
+@DL00045 DS    0H                                               02S0046 00200000
+*    IF DSNQSTEP = STEPNUM THEN        /* DEQ THIS ENTRY'S DSN?      */ 00201000
+         L     @07,@PC00001+8                                   02S0046 00202000
+         CLC   DSNQSTEP(1,DSNQENTP),STEPNUM(@07)                02S0046 00203000
+         BNE   @RF00046                                         02S0046 00204000
+*      DEQLSTSZ = DEQLSTSZ +           /* INCREASE CORE NEEDED.      */ 00205000
+*        LENGTH(DEQENTRY);             /* ADD LNTH OF A P-LIST ENTRY.*/ 00206000
+         AH    DEQLSTSZ,@CH00180                                02S0047 00207000
+*    BYTECTR = BYTECTR - (LENGTH(DSNQSTEP) +      /*LENGTH OF  DSNQSTEP 00208000
+* FIELD  */               LENGTH(DSNQFLG1) +      /*LENGTH OF  DSNQFLG1 00209000
+* FIELD  */               LENGTH(DSNQDSNL) +      /*LENGTH OF  DSNQDSNL 00210000
+* FIELD  */               DSNQDSNL);/*                          02S0048 00211000
+*                                         DECREASE AMNT OF BLK TO GO.*/ 00212000
+@RF00046 LA    @07,3                                            02S0048 00213000
+         SLR   @15,@15                                          02S0048 00214000
+         IC    @15,DSNQDSNL(,DSNQENTP)                          02S0048 00215000
+         ALR   @07,@15                                          02S0048 00216000
+         SLR   BYTECTR,@07                                      02S0048 00217000
+*    DSNQENTP = DSNQENTP + (LENGTH(DSNQSTEP) +      /*LENGTH OF  DSNQST 00218000
+*P  FIELD  */               LENGTH(DSNQFLG1) +      /*LENGTH OF  DSNQFL 00219000
+*1  FIELD  */               LENGTH(DSNQDSNL) +      /*LENGTH OF  DSNQDS 00220000
+*L  FIELD  */               DSNQDSNL);/*                        02S0049 00221000
+*                                         POINT TO NEXT DSN ENTRY.   */ 00222000
+         ALR   DSNQENTP,@07                                     02S0049 00223000
+*  END;                                                         02S0050 00224000
+@DE00045 LTR   BYTECTR,BYTECTR                                  02S0050 00225000
+         BP    @DL00045                                         02S0050 00226000
+*  SVALISTP = ADDR(DSNQNSVA);          /* POINT TO SVA OF NEXT BLK.  */ 00227000
+         L     @07,DSNQPTR                                      02S0051 00228000
+         LA    @15,DSNQNSVA(,@07)                               02S0051 00229000
+         ST    @15,SVALISTP                                     02S0051 00230000
+*  SVABLSTP = ADDR(DSNQNEXT);          /* RETURN AREA FOR NEXT BLK'S    00231000
+*                                         IN-CORE PTR.               */ 00232000
+         LA    @07,DSNQNEXT(,@07)                               02S0052 00233000
+         ST    @07,SVABLSTP                                     02S0052 00234000
+*END;                                                           02S0053 00235000
+@DE00033 L     @07,SVALISTP                                     02S0053 00236000
+         ICM   @15,7,NEXTSVA(@07)                               02S0053 00237000
+         BNZ   @DL00033                                         02S0053 00238000
+*DSNQNEXT = ZERO;                      /* CLEAR FWD PTR IN LAST BLK. */ 00239000
+         SLR   @07,@07                                          02S0054 00240000
+         L     @01,DSNQPTR                                      02S0054 00241000
+         ST    @07,DSNQNEXT(,@01)                               02S0054 00242000
+*IF DEQLSTSZ > ZERO THEN               /* ANY DSNS TO DEQ?           */ 00243000
+         CR    DEQLSTSZ,@07                                     02S0055 00244000
+         BNH   @RF00055                                         02S0055 00245000
+*  DO;                                                          02S0056 00246000
+*    DEQLSTSZ = DEQLSTSZ + FOUR;       /* ADD SIZE OF TCB ADDR.      */ 00247000
+         AH    DEQLSTSZ,@CH00104                                02S0057 00248000
+*     /* ?GETSTORG (SPID,DEQLSTSZ,DEQLISTP);*/                  02S0058 00249000
+*       /* DEFINITIONS OF GETMAIN PARMS */                      02S0058 00250000
+*       DCL                                                     02S0058 00251000
+*         GTSTR0   FIXED(31) REG(0),/*GTMN PARM REG*/           02S0058 00252000
+*         GTSTR1   FIXED(31) REG(1),/*GTMN PARM REG*/           02S0058 00253000
+*         GTSTR2   PTR(31)   REG(2),/*GTMN PARM REG*/           02S0058 00254000
+*         GTSTR15  FIXED(31) REG(15),/*GTMN RET COD*/           02S0058 00255000
+*         GTSTRTCD FIXED(31); /* GETMAIN RTN CODE  */           02S0058 00256000
+*       DCL                                                     02S0059 00257000
+*         GTSTR3   FIXED(31) REG(3),/* CLEARING REG*/           02S0059 00258000
+*         GTSTR4   FIXED(31) REG(4),/* CLEARING REG*/           02S0059 00259000
+*         GTSTR5   FIXED(31) REG(5),/* CLEARING REG*/           02S0059 00260000
+*         GTSTR6   FIXED(31) REG(6),/* CLEARING REG*/           02S0059 00261000
+*         GTSTR7   FIXED(31) REG(7),/* CLEARING REG*/           02S0059 00262000
+*         GTSTR8   FIXED(31) REG(8),/* CLEARING REG*/           02S0059 00263000
+*         GTSTZERO FIXED(31) INIT(0),                           02S0059 00264000
+*         GTST253  FIXED(31) CONSTANT(253);                     02S0059 00265000
+*       RFY (GTSTR0,GTSTR1,GTSTR2) RSTD; /*SAVE RGS*/           02S0060 00266000
+*       GTSTR0 = DEQLSTSZ; /* SET AMOUNT*/                      02S0061 00267000
+         LR    GTSTR0,DEQLSTSZ                                  02S0061 00268000
+*       GTSTR2 = SPID; /* SET SUBPOOL*/                         02S0062 00269000
+         LA    GTSTR2,230                                       02S0062 00270000
+*       GENERATE CODE;                                          02S0063 00271000
+         GETMAIN RC,LV=(0),SP=(2)  DO GETMAIN                           00272000
+*       GTSTRTCD = GTSTR15; /* SAVE GETMAIN RET COD*/           02S0064 00273000
+         ST    GTSTR15,GTSTRTCD                                 02S0064 00274000
+*       DEQLISTP = GTSTR1; /* ADDR OF GOTN STORG*/              02S0065 00275000
+         ST    GTSTR1,DEQLISTP                                  02S0065 00276000
+*       RFY (GTSTR0,GTSTR1,GTSTR2) UNRSTD; /*RLSE */            02S0066 00277000
+*       IF GTSTRTCD = 0 THEN /*GETMAIN SUCCESSFUL? */           02S0067 00278000
+         L     @15,GTSTRTCD                                     02S0067 00279000
+         LTR   @15,@15                                          02S0067 00280000
+         BNZ   @RF00067                                         02S0067 00281000
+*         DO;               /* YES, CLEAR STORAGE.*/            02S0068 00282000
+*           RFY (GTSTR2,GTSTR4,GTSTR5,GTSTR6,                   02S0069 00283000
+*                              GTSTR7,GTSTR8) RSTD;             02S0069 00284000
+*           GTSTR4 = DEQLISTP; /*STORG PTR*/                    02S0070 00285000
+         L     @09,DEQLISTP                                     02S0070 00286000
+         LR    GTSTR4,@09                                       02S0070 00287000
+*           GTSTR5 = DEQLSTSZ; /*STORG AMNT*/                   02S0071 00288000
+         LR    GTSTR5,DEQLSTSZ                                  02S0071 00289000
+*           GTSTR7 = '00000000'X; /*PAD CHAR & LNTH*/           02S0072 00290000
+         SLR   GTSTR7,GTSTR7                                    02S0072 00291000
+*           IF SPID = GTST253 THEN                              02S0073 00292000
+         B     @RF00073                                         02S0073 00293000
+*          GEN                                                  02S0074 00294000
+*       (MODESET KEYADDR=GTSTZERO,SAVEKEY=(2),WORKREG=8);       02S0074 00295000
+         MODESET KEYADDR=GTSTZERO,SAVEKEY=(2),WORKREG=8                 00296000
+*           GEN REFS(GTSTR4,GTSTR6);                            02S0075 00297000
+@RF00073 DS    0H                                               02S0075 00298000
+              MVCL  GTSTR4,GTSTR6 CLEAR GOTTEN STORG                    00299000
+*           IF SPID = GTST253 THEN                              02S0076 00300000
+         B     @RF00076                                         02S0076 00301000
+*             GEN (MODESET KEYADDR=(2));                        02S0077 00302000
+         MODESET KEYADDR=(2)                                            00303000
+*           RFY (GTSTR2,GTSTR4,GTSTR5,GTSTR6,                   02S0078 00304000
+*                              GTSTR7,GTSTR8) UNRSTD;           02S0078 00305000
+@RF00076 DS    0H                                               02S0079 00306000
+*         END;       /* STORAGE CLEARING COMPLETED */           02S0079 00307000
+*       ELSE                                                    02S0080 00308000
+*       DEQLISTP= 0;   /* CLEAR RETURN ADDR. */                 02S0080 00309000
+         B     @RC00067                                         02S0080 00310000
+@RF00067 SLR   @15,@15                                          02S0080 00311000
+         ST    @15,DEQLISTP                                     02S0080 00312000
+*       GTSTR15 = GTSTRTCD;    /* GTMN RETURN CODE */           02S0081 00313000
+@RC00067 L     GTSTR15,GTSTRTCD                                 02S0081 00314000
+*                                      /* RESTORE LIST PRINT STATUS  */ 00315000
+*/* GET CORE FOR DEQ P-LIST.  */                                02S0082 00316000
+*    RETCODE = REG15;                  /* SAVE GETMAIN RET CODE.     */ 00317000
+         LR    RETCODE,REG15                                    02S0082 00318000
+*    IF RETCODE ^= ZERO THEN           /* GETMAIN UNSUCCESSFUL?      */ 00319000
+         LTR   RETCODE,RETCODE                                  02S0083 00320000
+         BZ    @RF00083                                         02S0083 00321000
+*      RSNCODE = DSRELRSC;             /* SAY DS RELEASE FAILED.     */ 00322000
+         L     @07,@PC00001+20                                  02S0084 00323000
+         MVC   RSNCODE(2,@07),@CH00108                          02S0084 00324000
+*  END;                                                         02S0085 00325000
+*ELSE;                                 /* NO NAMES TO DEQ.           */ 00326000
+@RF00055 DS    0H                                               02S0087 00327000
+*    IF RETCODE = ZERO &               /* GETMAIN SUCCESSFUL?        */ 00328000
+*       DEQLSTSZ > ZERO THEN           /* ANYTHING TO DEQ?           */ 00329000
+@RC00055 SLR   @07,@07                                          01S0087 00330000
+         CR    RETCODE,@07                                      01S0087 00331000
+         BNE   @RF00087                                         01S0087 00332000
+         CR    DEQLSTSZ,@07                                     01S0087 00333000
+         BNH   @RF00087                                         01S0087 00334000
+*      DO;                                                      01S0088 00335000
+*/********************************************************************/ 00336000
+*/*                                                                  */ 00337000
+*/* SEGMENT NAME - DEQDSNS                                           */ 00338000
+*/*                                                                  */ 00339000
+*/* DESCRIPTIVE NAME - DEQ DATA SET NAMES                            */ 00340000
+*/*                                                                  */ 00341000
+*/* FUNCTION -                                                       */ 00342000
+*/*   THIS ROUTINE USES THE IN-CORE DSENQ TABLE TO BUILD A DEQ       */ 00343000
+*/*   PARAMETER LIST AND DEQ THE DATA SET NAMES TO BE RELEASED IN    */ 00344000
+*/*   THIS STEP.  IT ALSO FREES THE CORE OBTAINED FOR THE DEQ        */ 00345000
+*/*   PARAMETER LIST AND HAS THE DSENQ TABLE BLOCKS WRITTEN BACK TO  */ 00346000
+*/*   SWA.  ENTRIES IN THE DSENQ TABLE WHICH HAD THEIR DSNS DEQ'D    */ 00347000
+*/*   ARE COMPRESSED OUT OF THE TABLE.                               */ 00348000
+*/*                                                                  */ 00349000
+*/*   OPERATION -                                                    */ 00350000
+*/*                                                                  */ 00351000
+*/*     THE INPUT TCB ADDRESS IS PUT INTO THE DEQ PARAMETER LIST.  A */ 00352000
+*/*     LOOP THRU THE DSENQ TABLE ENTRIES IS THEN MADE.  WHENEVER AN */ 00353000
+*/*     ENTRY HAVING THE SAME STEP NUMBER AS THE INPUT STEP NUMBER   */ 00354000
+*/*     IS FOUND, AN ENTRY FOR ITS DSN IS MADE IN THE DEQ PARAMETER  */ 00355000
+*/*     LIST.  SINCE THE END-OF-LIST INDICATOR IS ON IN THE SKELETON */ 00356000
+*/*     ENTRY USED TO INITIALIZE EACH ENTRY, IT IS TURNED OFF IN     */ 00357000
+*/*     EACH ENTRY MADE IN THE LOOP, THEN TURNED BACK ON IN THE LAST */ 00358000
+*/*     ENTRY, OUTSIDE THE LOOP.                                     */ 00359000
+*/*                                                                  */ 00360000
+*/*     THE DEQ IS THEN ISSUED FOR THE ENTIRE LIST.  THE POINTER TO  */ 00361000
+*/*     THE PARAMETER LIST MUST POINT TO THE FIRST ENTRY, WHICH MUST */ 00362000
+*/*     BE IMMEDIATELY PRECEDED BY THE TCB ADDRESS.  AFTER ISSUING   */ 00363000
+*/*     THE DEQ, THE PARAMETER LIST IS FREED.                        */ 00364000
+*/*                                                                  */ 00365000
+*/*     ANOTHER LOOP THRU THE DSENQ TABLE IS MADE, THIS TIME TO      */ 00366000
+*/*     COMPRESS THE ENTRIES WHICH HAVE BEEN DEQUEUED.  WHENEVER AN  */ 00367000
+*/*     ENTRY WITH THE CURRENT STEP NUMBER IS FOUND, THE NUMBER OF   */ 00368000
+*/*     UNUSED BYTES IN THAT BLOCK IS DECREASED BY THE NUMBER OF     */ 00369000
+*/*     BYTES IN THAT ENTRY.  IF THAT ENTRY IS THE LAST ENTRY IN ITS */ 00370000
+*/*     BLOCK, THIS ACTION EFFECTIVELY COMPRESSES THE ENTRY OUT OF   */ 00371000
+*/*     THE BLOCK.  IF THE ENTRY IS NOT THE LAST ONE IN ITS BLOCK,   */ 00372000
+*/*     THE REMAINING ENTRY/IES IS/ARE MOVED UP TO OVERLAY IT.       */ 00373000
+*/*                                                                  */ 00374000
+*/*     AFTER COMPRESSING THE TABLE'S BLOCK/S, THE SWA MANAGER       */ 00375000
+*/*     INTERFACE ROUTINE IS INVOKED TO WRITE THE BLOCK/S BACK TO    */ 00376000
+*/*     SWA AND FREE THE EPA/S.                                      */ 00377000
+*/*                                                                  */ 00378000
+*/* ENTRY - IN-LINE SEGMENT                                          */ 00379000
+*/*                                                                  */ 00380000
+*/*   PURPOSE - SEE FUNCTION                                         */ 00381000
+*/*   INPUT -                                                        */ 00382000
+*/*     DSNQTABL - DATA SET ENQUEUE TABLE                            */ 00383000
+*/*       DSNQNEXT - IN-CORE POINTER TO NEXT TABLE BLOCK             */ 00384000
+*/*       DSNQFREE - NUMBER OF UNUSED BYTES IN THIS BLOCK            */ 00385000
+*/*       DSNQENTS - DSN ENTRIES                                     */ 00386000
+*/*       DSNQNTRY - A SINGLE DSN ENTRY                              */ 00387000
+*/*         DSNQSTEP - STEP NO. OF LAST REFERENCE TO DSN             */ 00388000
+*/*         DSNQDSNL - DSN LENGTH                                    */ 00389000
+*/*         DSNQDSN  - DSN                                           */ 00390000
+*/*     FRSTBLKP - IN-CORE POINTER TO FIRST DSENQ TABLE BLOCK        */ 00391000
+*/*     DEQTCBP  - POINTER TO INIT'S TCB                             */ 00392000
+*/*     DEQLSTSZ - SIZE OF DEQ P-LIST CORE                           */ 00393000
+*/*     DEQLISTP - POINTER TO DEQ P-LIST CORE                        */ 00394000
+*/*     FRSTEPAP - POINTER TO FIRST EPA                              */ 00395000
+*/*                                                                  */ 00396000
+*/* EXIT -                                                           */ 00397000
+*/*                                                                  */ 00398000
+*/*   CONDITION - DSNS DEQUEUED                                      */ 00399000
+*/*   OUTPUT -                                                       */ 00400000
+*/*     DSNQTABL  - DSENQ TABLE WRITTEN BACK TO SWA                  */ 00401000
+*/*       DSNQFREE - NO. OF UNUSED BYTES IN EACH BLOCK INCREASED BY  */ 00402000
+*/*         THE LENGTH/S OF COMPRESSED ENTRY/IES                     */ 00403000
+*/*       DSNQENTS - ENTRIES HAVING HAD THEIR DSNS DEQ'D HAVE BEEN   */ 00404000
+*/*         COMPRESSED OUT OF THE BLOCK                              */ 00405000
+*/*   RETURN CODE -                                                  */ 00406000
+*/*     RETCODE - SAME AS ON ENTRY                                   */ 00407000
+*/*     RSNCODE - SAME AS ON ENTRY                                   */ 00408000
+*/*                                                                  */ 00409000
+*/********************************************************************/ 00410000
+*DSNQPTR = FRSTBLKP;                   /* POINT TO 1ST DSENQ TBL BLK.*/ 00411000
+         MVC   DSNQPTR(4),FRSTBLKP                              02S0089 00412000
+*DEQTCBA = DEQTCBP;                    /* PUT TCB ADDR IN DEQ P-LIST.*/ 00413000
+         L     @15,@PC00001+12                                  02S0090 00414000
+         L     @01,DEQLISTP                                     02S0090 00415000
+         MVC   DEQTCBA(4,@01),DEQTCBP(@15)                      02S0090 00416000
+*DQLSTCTR = ZERO;                      /* INIT P-LIST ENTRY SUBSCRIPT*/ 00417000
+         ST    @07,DQLSTCTR                                     02S0091 00418000
+*DO WHILE DSNQPTR ^= ZERO;             /* PROCESS ENTIRE DSENQ TABLE.*/ 00419000
+         B     @DE00092                                         02S0092 00420000
+@DL00092 DS    0H                                               02S0093 00421000
+*  BYTECTR = LENGTH(DSNQENTS) - DSNQFREE; /* LNTH OF ENTRIES IN BLK  */ 00422000
+         L     @07,DSNQPTR                                      02S0093 00423000
+         LA    BYTECTR,162                                      02S0093 00424000
+         SH    BYTECTR,DSNQFREE(,@07)                           02S0093 00425000
+*  DSNQENTP = ADDR(DSNQENTS);          /* ADDR OF FIRST ENTRY        */ 00426000
+         LA    DSNQENTP,DSNQENTS(,@07)                          02S0094 00427000
+*  DO WHILE BYTECTR > ZERO;            /* PROCESS BLK'S ENTRIES.     */ 00428000
+         B     @DE00095                                         02S0095 00429000
+@DL00095 DS    0H                                               02S0096 00430000
+*    IF DSNQSTEP = STEPNUM THEN        /* DEQ THIS ENTRY'S DSN?      */ 00431000
+         L     @07,@PC00001+8                                   02S0096 00432000
+         CLC   DSNQSTEP(1,DSNQENTP),STEPNUM(@07)                02S0096 00433000
+         BNE   @RF00096                                         02S0096 00434000
+*      DO;                                                      02S0097 00435000
+*        DQLSTCTR = DQLSTCTR + ONE;    /* CURRENT P-LIST SUBSCRIPT   */ 00436000
+         LA    @07,1                                            02S0098 00437000
+         AL    @07,DQLSTCTR                                     02S0098 00438000
+         ST    @07,DQLSTCTR                                     02S0098 00439000
+*        DEQENTRY(DQLSTCTR) =          /* GET P-LIST ENTRY SKELETON. */ 00440000
+*          DQLIST(ONE:DQLSTLEN);                                02S0099 00441000
+         L     @15,DEQLISTP                                     02S0099 00442000
+         MH    @07,@CH00180                                     02S0099 00443000
+         ST    @07,@TF00001                                     02S0099 00444000
+         ALR   @07,@15                                          02S0099 00445000
+         AL    @07,@CF00189                                     02S0099 00446000
+         MVI   DEQENTRY-3(@07),C' '                             02S0099 00447000
+         MVC   DEQENTRY-2(10,@07),DEQENTRY-3(@07)               02S0099 00448000
+         L     @14,DQLSTLEN                                     02S0099 00449000
+         BCTR  @14,0                                            02S0099 00450000
+         EX    @14,@SM00190                                     02S0099 00451000
+*        DEQEND(DQLSTCTR) = OFF;       /* SET END-OF-LIST SWITCH OFF.*/ 00452000
+         LR    @07,@15                                          02S0100 00453000
+         AL    @07,@TF00001                                     02S0100 00454000
+         AL    @07,@CF00189                                     02S0100 00455000
+         NI    DEQEND-4(@07),B'01111111'                        02S0100 00456000
+*        DEQMINLN(DQLSTCTR) = DSNQDSNL; /* GET DSN LENGTH.           */ 00457000
+         SLR   @07,@07                                          02S0101 00458000
+         IC    @07,DSNQDSNL(,DSNQENTP)                          02S0101 00459000
+         L     @14,@TF00001                                     02S0101 00460000
+         AL    @14,@CF00193                                     02S0101 00461000
+         STC   @07,DEQMINLN-5(@14,@15)                          02S0101 00462000
+*        DEQMINA(DQLSTCTR) = ADDR(DSNQDSN); /* GET DSN PTR.          */ 00463000
+         LA    @07,DSNQDSN(,DSNQENTP)                           02S0102 00464000
+         L     @14,@TF00001                                     02S0102 00465000
+         ST    @07,DEQMINA-12(@14,@15)                          02S0102 00466000
+*      END;                                                     02S0103 00467000
+*    BYTECTR = BYTECTR - (LENGTH(DSNQSTEP) +      /*LENGTH OF  DSNQSTEP 00468000
+* FIELD  */               LENGTH(DSNQFLG1) +      /*LENGTH OF  DSNQFLG1 00469000
+* FIELD  */               LENGTH(DSNQDSNL) +      /*LENGTH OF  DSNQDSNL 00470000
+* FIELD  */               DSNQDSNL);/*                          02S0104 00471000
+*                                         DECREASE AMOUNT TO PROCESS.*/ 00472000
+@RF00096 LA    @07,3                                            02S0104 00473000
+         SLR   @15,@15                                          02S0104 00474000
+         IC    @15,DSNQDSNL(,DSNQENTP)                          02S0104 00475000
+         ALR   @07,@15                                          02S0104 00476000
+         SLR   BYTECTR,@07                                      02S0104 00477000
+*    DSNQENTP = DSNQENTP + (LENGTH(DSNQSTEP) +      /*LENGTH OF  DSNQST 00478000
+*P  FIELD  */               LENGTH(DSNQFLG1) +      /*LENGTH OF  DSNQFL 00479000
+*1  FIELD  */               LENGTH(DSNQDSNL) +      /*LENGTH OF  DSNQDS 00480000
+*L  FIELD  */               DSNQDSNL);/*                        02S0105 00481000
+*                                         POINT TO NEXT DSN ENTRY.   */ 00482000
+         ALR   DSNQENTP,@07                                     02S0105 00483000
+*  END;                                /* END LOOP THRU 1 BLOCK.     */ 00484000
+@DE00095 LTR   BYTECTR,BYTECTR                                  02S0106 00485000
+         BP    @DL00095                                         02S0106 00486000
+*  DSNQPTR = DSNQNEXT;                 /* POINT TO NEXT BLOCK.       */ 00487000
+         L     @07,DSNQPTR                                      02S0107 00488000
+         L     @07,DSNQNEXT(,@07)                               02S0107 00489000
+         ST    @07,DSNQPTR                                      02S0107 00490000
+*END;                                  /* END LOOP THRU ENTIRE TABLE.*/ 00491000
+@DE00092 ICM   @07,15,DSNQPTR                                   02S0108 00492000
+         BNZ   @DL00092                                         02S0108 00493000
+*DEQEND(DQLSTCTR) = ON;                /* SET END-OF-LIST SW IN LAST    00494000
+*                                         P-LIST ENTRY.              */ 00495000
+         L     @07,DEQLISTP                                     02S0109 00496000
+         L     @15,DQLSTCTR                                     02S0109 00497000
+         MH    @15,@CH00180                                     02S0109 00498000
+         ALR   @15,@07                                          02S0109 00499000
+         AL    @15,@CF00189                                     02S0109 00500000
+         OI    DEQEND-4(@15),B'10000000'                        02S0109 00501000
+*RFY (REG0,REG1) RSTD;                 /* PROTECT REGS               */ 00502000
+*REG1 = DEQLISTP + FOUR;               /* SET DEQ P-LIST PTR LIKE DEQ   00503000
+*                                         WANTS IT(POINTS TO WORD       00504000
+*                                         AFTER TCB ADDR)            */ 00505000
+         AH    @07,@CH00104                                     02S0111 00506000
+         LR    REG1,@07                                         02S0111 00507000
+*GEN (DEQ MF=(E,(1)));                 /* DEQ DSNS.                  */ 00508000
+         DEQ MF=(E,(1))                                                 00509000
+*REG0 = DEQLSTSZ;                      /* SIZE TO FREE               */ 00510000
+         LR    REG0,DEQLSTSZ                                    02S0113 00511000
+*REG0 = REG0 | SUBPL230;               /* FREE FROM SUBPOOL 230.     */ 00512000
+         O     REG0,@CF00120                                    02S0114 00513000
+*REG1 = DEQLISTP;                      /* ADDR OF CORE TO FREE.      */ 00514000
+         L     REG1,DEQLISTP                                    02S0115 00515000
+*GEN (FREEMAIN R,LV=(0),A=(1));        /* FREE P-LIST CORE           */ 00516000
+         FREEMAIN R,LV=(0),A=(1)                                        00517000
+*RFY (REG0,REG1) UNRSTD;               /* RELEASE REGS               */ 00518000
+*DSNQPTR = FRSTBLKP;                   /* PTR TO 1ST DSENQ TBL BLK   */ 00519000
+         MVC   DSNQPTR(4),FRSTBLKP                              02S0118 00520000
+*DO WHILE DSNQPTR ^= ZERO;             /* COMPRESS TABLE BLOCKS      */ 00521000
+         B     @DE00119                                         02S0119 00522000
+@DL00119 DS    0H                                               02S0120 00523000
+*  BYTECTR = LENGTH(DSNQENTS) - DSNQFREE; /* LNTH OF ENTRIES IN BLK  */ 00524000
+         L     @10,DSNQPTR                                      02S0120 00525000
+         LA    BYTECTR,162                                      02S0120 00526000
+         SH    BYTECTR,DSNQFREE(,@10)                           02S0120 00527000
+*  DSNQENTP = ADDR(DSNQENTS);          /* PTR TO 1ST ENTRY IN BLK    */ 00528000
+         LA    DSNQENTP,DSNQENTS(,@10)                          02S0121 00529000
+*  DO WHILE BYTECTR > ZERO;            /* PROCESS ONE BLK'S ENTRIES. */ 00530000
+         B     @DE00122                                         02S0122 00531000
+@DL00122 DS    0H                                               02S0123 00532000
+*    BYTECTR = BYTECTR - (LENGTH(DSNQSTEP) +      /*LENGTH OF  DSNQSTEP 00533000
+* FIELD  */               LENGTH(DSNQFLG1) +      /*LENGTH OF  DSNQFLG1 00534000
+* FIELD  */               LENGTH(DSNQDSNL) +      /*LENGTH OF  DSNQDSNL 00535000
+* FIELD  */               DSNQDSNL);/*                          02S0123 00536000
+*                                         DECREMENT WORKING LENGTH.  */ 00537000
+         LA    @10,3                                            02S0123 00538000
+         SLR   @07,@07                                          02S0123 00539000
+         IC    @07,DSNQDSNL(,DSNQENTP)                          02S0123 00540000
+         ALR   @10,@07                                          02S0123 00541000
+         SLR   BYTECTR,@10                                      02S0123 00542000
+*    IF DSNQSTEP = STEPNUM THEN        /* WAS THIS ENTRY'S DSN DEQ'D?*/ 00543000
+         L     @07,@PC00001+8                                   02S0124 00544000
+         CLC   DSNQSTEP(1,DSNQENTP),STEPNUM(@07)                02S0124 00545000
+         BNE   @RF00124                                         02S0124 00546000
+*      DO;                                                      02S0125 00547000
+*        DSNQFREE = DSNQFREE + (LENGTH(DSNQSTEP) +      /*LENGTH OF  DS 00548000
+*QSTEP  FIELD  */               LENGTH(DSNQFLG1) +      /*LENGTH OF  DS 00549000
+*QFLG1  FIELD  */               LENGTH(DSNQDSNL) +      /*LENGTH OF  DS 00550000
+*QDSNL  FIELD  */               DSNQDSNL);/*                    02S0126 00551000
+*                                           INCREASE BLK'S FREE SPACE*/ 00552000
+         L     @07,DSNQPTR                                      02S0126 00553000
+         LH    @04,DSNQFREE(,@07)                               02S0126 00554000
+         ALR   @04,@10                                          02S0126 00555000
+         STH   @04,DSNQFREE(,@07)                               02S0126 00556000
+*        TEMPTR = DSNQENTP;            /* PREVENT PLS 256-BYTE MOVE  */ 00557000
+         LR    TEMPTR,DSNQENTP                                  02S0127 00558000
+*        IF BYTECTR > ZERO THEN        /* MORE ENTRIES IN BLOCK?     */ 00559000
+         LTR   BYTECTR,BYTECTR                                  02S0128 00560000
+         BNP   @RF00128                                         02S0128 00561000
+*          TEMPTR -> DMYTOENT(ONE:BYTECTR) = /* OVERLAY CUR ENTRY.  */  00562000
+*          (DSNQENTP + (LENGTH(DSNQSTEP) +      /*LENGTH OF  DSNQSTEP   00563000
+*IELD  */               LENGTH(DSNQFLG1) +      /*LENGTH OF  DSNQFLG1   00564000
+*IELD  */               LENGTH(DSNQDSNL) +      /*LENGTH OF  DSNQDSNL   00565000
+*IELD  */               DSNQDSNL)) ->/*                         02S0129 00566000
+*                                         USE REMAINING ENTRIES.     */ 00567000
+*          DMYFRENT(ONE:BYTECTR);                               02S0129 00568000
+         LR    @07,BYTECTR                                      02S0129 00569000
+         BCTR  @07,0                                            02S0129 00570000
+         ALR   @10,DSNQENTP                                     02S0129 00571000
+         EX    @07,@SM00194                                     02S0129 00572000
+*      END;                                                     02S0130 00573000
+*    ELSE                              /* ENTRY NOT COMPRESSED       */ 00574000
+*      DSNQENTP = DSNQENTP + (LENGTH(DSNQSTEP) +      /*LENGTH OF  DSNQ 00575000
+*TEP  FIELD  */               LENGTH(DSNQFLG1) +      /*LENGTH OF  DSNQ 00576000
+*LG1  FIELD  */               LENGTH(DSNQDSNL) +      /*LENGTH OF  DSNQ 00577000
+*SNL  FIELD  */               DSNQDSNL);/*                      02S0131 00578000
+*                                         GET NEXT ENTRY(OR BLK END) */ 00579000
+         B     @RC00124                                         02S0131 00580000
+@RF00124 LA    @10,3                                            02S0131 00581000
+         SLR   @07,@07                                          02S0131 00582000
+         IC    @07,DSNQDSNL(,DSNQENTP)                          02S0131 00583000
+         ALR   @10,@07                                          02S0131 00584000
+         ALR   DSNQENTP,@10                                     02S0131 00585000
+*  END;                                /* END OF LOOP THRU BLK       */ 00586000
+@RC00124 DS    0H                                               02S0132 00587000
+@DE00122 LTR   BYTECTR,BYTECTR                                  02S0132 00588000
+         BP    @DL00122                                         02S0132 00589000
+*  DSNQPTR = DSNQNEXT;                 /* GET PTR TO NEXT BLK.       */ 00590000
+         L     @10,DSNQPTR                                      02S0133 00591000
+         L     @10,DSNQNEXT(,@10)                               02S0133 00592000
+         ST    @10,DSNQPTR                                      02S0133 00593000
+*END;                                  /* END OF LOOP THRU TABLE     */ 00594000
+@DE00119 ICM   @10,15,DSNQPTR                                   02S0134 00595000
+         BNZ   @DL00119                                         02S0134 00596000
+*SWACTLS = SWACTLS && SWACTLS;         /* CLEAR SWA CONTROL SWITCHES.*/ 00597000
+         SLR   @10,@10                                          02S0135 00598000
+         ICM   @10,3,SWACTLS                                    02S0135 00599000
+         LR    @07,@10                                          02S0135 00600000
+         XR    @07,@10                                          02S0135 00601000
+         STH   @07,SWACTLS                                      02S0135 00602000
+*SWOLD = ON;                           /* EPAS ALREADY EXIST.        */ 00603000
+*SWFREE = ON;                          /* FREE THE EPAS.             */ 00604000
+*SWWRT = ON;                           /* WRITE RECORDS.             */ 00605000
+         OI    SWOLD,B'00010101'                                02S0138 00606000
+*CALL IEFAB4F7                         /* WRITE DSENQ TBL BLOCKS.    */ 00607000
+*     (SWACTLS,FRSTEPAP,DUMMY,DUMMY,DUMMY,DUMMY,DUMMY);         02S0139 00608000
+         MVC   @AL00001+8(20),@AL00139                          02S0139 00609000
+         LA    @10,SWACTLS                                      02S0139 00610000
+         ST    @10,@AL00001                                     02S0139 00611000
+         LA    @10,FRSTEPAP                                     02S0139 00612000
+         ST    @10,@AL00001+4                                   02S0139 00613000
+         L     @15,@CV00130                                     02S0139 00614000
+         LA    @01,@AL00001                                     02S0139 00615000
+         BALR  @14,@15                                          02S0139 00616000
+*      END;                                                     01S0140 00617000
+*  END;                                                         01S0141 00618000
+@RF00087 DS    0H                                               01S0142 00619000
+*IF NODSRLST = OFF THEN                /* DS RELEASE LIST EXIST?     */ 00620000
+@RF00023 L     @10,@PC00001                                     01S0142 00621000
+         TM    NODSRLST(@10),B'10000000'                        01S0142 00622000
+         BNZ   @RF00142                                         01S0142 00623000
+*  DO;                                                          01S0143 00624000
+*/********************************************************************/ 00625000
+*/*                                                                  */ 00626000
+*/* SEGMENT NAME - A4A6INIT                                          */ 00627000
+*/*                                                                  */ 00628000
+*/* DESCRIPTIVE NAME - INITIALIZATION FOR IEFAB4A6                   */ 00629000
+*/*                                                                  */ 00630000
+*/* FUNCTION                                                         */ 00631000
+*/*                                                                  */ 00632000
+*/*   THIS ROUTINE GETS CORE FOR THE DEQ PARAMETER                   */ 00633000
+*/*   LIST AND, IF THE GETMAIN IS SUCCESSFUL, READS THE FIRST DSENQ  */ 00634000
+*/*   TABLE RECORD.                                                  */ 00635000
+*/*                                                                  */ 00636000
+*/*   OPERATION -                                                    */ 00637000
+*/*                                                                  */ 00638000
+*/*     THE NUMBER OF ENTRIES IN THE CALLER'S DATA SET RELEASE LIST  */ 00639000
+*/*     IS USED TO CALCULATE THE AMOUNT OF CORE TO GET FOR THE DEQ   */ 00640000
+*/*     PARM LIST.  IF THE CORE IS SUCCESSFULLY OBTAINED, THE SWA    */ 00641000
+*/*     MANAGER INTERFACE ROUTINE, IEFAB4F7, IS USED TO READ THE     */ 00642000
+*/*     FIRST RECORD OF THE DSENQ TABLE.  THE INPUT TO THE SWA MAN-  */ 00643000
+*/*     AGER IS THEN SET SO THAT THE REMAINING RECORDS WILL HAVE     */ 00644000
+*/*     THEIR RESPECTIVE EPA'S CHAINED TOGETHER.                     */ 00645000
+*/*                                                                  */ 00646000
+*/*     IF CORE CANNOT BE OBTAINED FOR THE DEQ PARM LIST, THE        */ 00647000
+*/*     GETMAIN RETURN CODE IS PASSED TO THE CALLER, AS WELL AS A    */ 00648000
+*/*     REASON CODE INDICATING FAILURE IN DATA SET RELEASE PROCESSING*/ 00649000
+*/*                                                                  */ 00650000
+*/* ENTRY - IN-LINE SEGMENT                                          */ 00651000
+*/*                                                                  */ 00652000
+*/*   PURPOSE - GET CORE FOR DEQ PARM LIST; SET UP SWA MANAGER       */ 00653000
+*/*     INTERFACE; READ FIRST RECORD OF THE DSENQ TABLE; INITIALIZE  */ 00654000
+*/*     VARIABLES FOR MAIN PROCESSING LOOP.                          */ 00655000
+*/*   INPUT -                                                        */ 00656000
+*/*     DSRLST - INPUT DATA SET RELEASE LIST                         */ 00657000
+*/*       DSRLNO - NUMBER OF ENTRIES IN LIST                         */ 00658000
+*/*     NQTABSVA - SVA OF FIRST DSENQ TABLE RECORD                   */ 00659000
+*/*                                                                  */ 00660000
+*/* EXIT -                                                           */ 00661000
+*/*                                                                  */ 00662000
+*/*   CONDITION - GETMAIN SUCCESSFUL                                 */ 00663000
+*/*     OUTPUT -                                                     */ 00664000
+*/*       FIRST DSENQ TABLE RECORD READ INTO CORE                    */ 00665000
+*/*       DSNQPTR - POINTS TO FIRST DSENQ TBL RECORD                 */ 00666000
+*/*       FRSTEPAP - POINTS TO FIRST EPA                             */ 00667000
+*/*       NUMRCDS - CONTAINS NUMBER OF RECORDS READ.                 */ 00668000
+*/*       DQLSTCTR - CONTAINS ZERO, INDICATING NO ENTRIES HAVE BEEN  */ 00669000
+*/*         MADE IN THE DEQ PARM LIST.                               */ 00670000
+*/*     RETURN CODE -                                                */ 00671000
+*/*       RETCODE = ZERO                                             */ 00672000
+*/*                                                                  */ 00673000
+*/*   CONDITION - GETMAIN UNSUCCESSFUL                               */ 00674000
+*/*     OUTPUT -                                                     */ 00675000
+*/*       RSNCODE - 2 (DATA SET RELEASE FAILURE)                     */ 00676000
+*/*     RETURN CODE -                                                */ 00677000
+*/*       RETCODE - RETURN CODE FROM GETMAIN                         */ 00678000
+*/*                                                                  */ 00679000
+*/********************************************************************/ 00680000
+*DSRLPTR = DSRLP;                      /* GET D.S. RELEASE LIST BASE */ 00681000
+         L     @15,@PC00001+4                                   02S0144 00682000
+         L     DSRLPTR,DSRLP(,@15)                              02S0144 00683000
+*DEQLSTSZ = (LENGTH(DEQENTRY) * DSRLNO) + FOUR; /* SIZE OF DEQ P-LIST*/ 00684000
+         L     DEQLSTSZ,DSRLNO(,DSRLPTR)                        02S0145 00685000
+         MH    DEQLSTSZ,@CH00180                                02S0145 00686000
+         AH    DEQLSTSZ,@CH00104                                02S0145 00687000
+* /* ?GETSTORG (SPID,DEQLSTSZ,DEQLISTP);*/                      02S0146 00688000
+*   RFY (GTSTR0,GTSTR1,GTSTR2) RSTD; /*SAVE RGS*/               02S0146 00689000
+*   GTSTR0 = DEQLSTSZ; /* SET AMOUNT*/                          02S0147 00690000
+         LR    GTSTR0,DEQLSTSZ                                  02S0147 00691000
+*   GTSTR2 = SPID; /* SET SUBPOOL*/                             02S0148 00692000
+         LA    GTSTR2,230                                       02S0148 00693000
+*   GENERATE CODE;                                              02S0149 00694000
+     GETMAIN RC,LV=(0),SP=(2)  DO GETMAIN                               00695000
+*   GTSTRTCD = GTSTR15; /* SAVE GETMAIN RET COD*/               02S0150 00696000
+         ST    GTSTR15,GTSTRTCD                                 02S0150 00697000
+*   DEQLISTP = GTSTR1; /* ADDR OF GOTN STORG*/                  02S0151 00698000
+         ST    GTSTR1,DEQLISTP                                  02S0151 00699000
+*   RFY (GTSTR0,GTSTR1,GTSTR2) UNRSTD; /*RLSE */                02S0152 00700000
+*   IF GTSTRTCD = 0 THEN /*GETMAIN SUCCESSFUL? */               02S0153 00701000
+         L     @08,GTSTRTCD                                     02S0153 00702000
+         LTR   @08,@08                                          02S0153 00703000
+         BNZ   @RF00153                                         02S0153 00704000
+*     DO;               /* YES, CLEAR STORAGE.*/                02S0154 00705000
+*       RFY (GTSTR2,GTSTR4,GTSTR5,GTSTR6,                       02S0155 00706000
+*                          GTSTR7,GTSTR8) RSTD;                 02S0155 00707000
+*       GTSTR4 = DEQLISTP; /*STORG PTR*/                        02S0156 00708000
+         L     @03,DEQLISTP                                     02S0156 00709000
+         LR    GTSTR4,@03                                       02S0156 00710000
+*       GTSTR5 = DEQLSTSZ; /*STORG AMNT*/                       02S0157 00711000
+         LR    GTSTR5,DEQLSTSZ                                  02S0157 00712000
+*       GTSTR7 = '00000000'X; /*PAD CHAR & LNTH*/               02S0158 00713000
+         SLR   GTSTR7,GTSTR7                                    02S0158 00714000
+*       IF SPID = GTST253 THEN                                  02S0159 00715000
+         B     @RF00159                                         02S0159 00716000
+*      GEN                                                      02S0160 00717000
+*   (MODESET KEYADDR=GTSTZERO,SAVEKEY=(2),WORKREG=8);           02S0160 00718000
+         MODESET KEYADDR=GTSTZERO,SAVEKEY=(2),WORKREG=8                 00719000
+*       GEN REFS(GTSTR4,GTSTR6);                                02S0161 00720000
+@RF00159 DS    0H                                               02S0161 00721000
+          MVCL  GTSTR4,GTSTR6 CLEAR GOTTEN STORG                        00722000
+*       IF SPID = GTST253 THEN                                  02S0162 00723000
+         B     @RF00162                                         02S0162 00724000
+*         GEN (MODESET KEYADDR=(2));                            02S0163 00725000
+         MODESET KEYADDR=(2)                                            00726000
+*       RFY (GTSTR2,GTSTR4,GTSTR5,GTSTR6,                       02S0164 00727000
+*                          GTSTR7,GTSTR8) UNRSTD;               02S0164 00728000
+@RF00162 DS    0H                                               02S0165 00729000
+*     END;       /* STORAGE CLEARING COMPLETED */               02S0165 00730000
+*   ELSE                                                        02S0166 00731000
+*   DEQLISTP= 0;   /* CLEAR RETURN ADDR. */                     02S0166 00732000
+         B     @RC00153                                         02S0166 00733000
+@RF00153 SLR   @08,@08                                          02S0166 00734000
+         ST    @08,DEQLISTP                                     02S0166 00735000
+*   GTSTR15 = GTSTRTCD;    /* GTMN RETURN CODE */               02S0167 00736000
+@RC00153 L     GTSTR15,GTSTRTCD                                 02S0167 00737000
+*                                      /* RESTORE LIST PRINT STATUS  */ 00738000
+*   /* GET CORE FOR DEQ P-LIST.   */                            02S0168 00739000
+*RETCODE = REG15;                      /* SAVE GETMAIN RET CODE      */ 00740000
+         LR    RETCODE,REG15                                    02S0168 00741000
+*IF RETCODE =ZERO THEN                 /* GETMAIN SUCCESSFUL?        */ 00742000
+         LTR   RETCODE,RETCODE                                  02S0169 00743000
+         BNZ   @RF00169                                         02S0169 00744000
+*  DO;                                                          02S0170 00745000
+*    SWACTLS = SWACTLS && SWACTLS;     /* INIT SWITCHES.             */ 00746000
+         SLR   @08,@08                                          02S0171 00747000
+         ICM   @08,3,SWACTLS                                    02S0171 00748000
+         LR    @07,@08                                          02S0171 00749000
+         XR    @07,@08                                          02S0171 00750000
+         STH   @07,SWACTLS                                      02S0171 00751000
+*    SWREAD = ON;                      /* READ RECORD.               */ 00752000
+*    SWNEW = ON;                       /* CREATE EPA.                */ 00753000
+         OI    SWREAD,B'00101000'                               02S0173 00754000
+*    NUMBLKS = ONE;                    /* READ ONE BLK.              */ 00755000
+         MVC   NUMBLKS(4),@CF00049                              02S0174 00756000
+*    SVALISTP = ADDR(NQTABSVA);        /* POINT TO SVA OF 1ST RECORD */ 00757000
+         L     @08,@PC00001+16                                  02S0175 00758000
+         ST    @08,SVALISTP                                     02S0175 00759000
+*    SVABLSTP = ADDR(DSNQPTR);         /* RETURN AREA FOR IN-CORE PTR*/ 00760000
+         LA    @08,DSNQPTR                                      02S0176 00761000
+         ST    @08,SVABLSTP                                     02S0176 00762000
+*    CALL IEFAB4F7                     /* HAVE SWA MGR READ A RECORD.*/ 00763000
+*      (SWACTLS,LEPACHNP,DUMMY,SVALISTP,SVABLSTP,DUMMY,NUMBLKS);        00764000
+         LA    @08,SWACTLS                                      02S0177 00765000
+         ST    @08,@AL00001                                     02S0177 00766000
+         LA    @08,LEPACHNP                                     02S0177 00767000
+         ST    @08,@AL00001+4                                   02S0177 00768000
+         LA    @08,@CF00110                                     02S0177 00769000
+         ST    @08,@AL00001+8                                   02S0177 00770000
+         LA    @08,SVALISTP                                     02S0177 00771000
+         ST    @08,@AL00001+12                                  02S0177 00772000
+         LA    @08,SVABLSTP                                     02S0177 00773000
+         ST    @08,@AL00001+16                                  02S0177 00774000
+         LA    @08,@CF00110                                     02S0177 00775000
+         ST    @08,@AL00001+20                                  02S0177 00776000
+         LA    @08,NUMBLKS                                      02S0177 00777000
+         ST    @08,@AL00001+24                                  02S0177 00778000
+         L     @15,@CV00130                                     02S0177 00779000
+         LA    @01,@AL00001                                     02S0177 00780000
+         BALR  @14,@15                                          02S0177 00781000
+*DCL L1 FIXED(31);                           /********* SCAF *********/ 00782000
+*L1 = (DSRLNO * 8) +4;                       /********** SCAF ********/ 00783000
+         L     L1,DSRLNO(,DSRLPTR)                              02S0179 00784000
+         SLA   L1,3                                             02S0179 00785000
+         AH    L1,@CH00104                                      02S0179 00786000
+*    FRSTEPAP = LEPACHNP;              /* SAVE PTR TO FIRST EPA.     */ 00787000
+         MVC   FRSTEPAP(4),LEPACHNP                             02S0180 00788000
+*    SWCHN = ON;                       /* CHAIN REMAINING EPA'S.     */ 00789000
+         OI    SWCHN,B'10000000'                                02S0181 00790000
+*    DQLSTCTR = ZERO;                  /* INIT NO OF NAMES BEING DEQD*/ 00791000
+         SLR   @08,@08                                          02S0182 00792000
+         ST    @08,DQLSTCTR                                     02S0182 00793000
+*  END;                                                         02S0183 00794000
+*ELSE                                  /* CORE NOT AVAILABLE         */ 00795000
+*  RSNCODE = DSRELRSC;                 /* 'DATA SET RELEASE FAILED'     00796000
+*                                         REASON CODE                */ 00797000
+         B     @RC00169                                         02S0184 00798000
+@RF00169 L     @08,@PC00001+20                                  02S0184 00799000
+         MVC   RSNCODE(2,@08),@CH00108                          02S0184 00800000
+*    IF RETCODE = ZERO THEN            /* CORE GOTTEN SUCCESSFULLY?  */ 00801000
+@RC00169 LTR   RETCODE,RETCODE                                  01S0185 00802000
+         BNZ   @RF00185                                         01S0185 00803000
+*      DO;                                                      01S0186 00804000
+*        ELGNMCTR = DSRLNO;            /* SET MAX NO. OF NAMES TO DEQ*/ 00805000
+         L     ELGNMCTR,DSRLNO(,DSRLPTR)                        01S0187 00806000
+*        STOPSW = OFF;                 /* INIT SCAN LOOP CONTROL.    */ 00807000
+         NI    STOPSW,B'11011111'                               01S0188 00808000
+*        DO WHILE(STOPSW = OFF);       /* SCAN TO END OF TABLE       */ 00809000
+         B     @DE00189                                         01S0189 00810000
+@DL00189 DS    0H                                               01S0190 00811000
+*          DSNQENTP = ADDR(DSNQENTS);  /* POINT TO RECORD'S ENTRIES. */ 00812000
+         L     @08,DSNQPTR                                      01S0190 00813000
+         LA    DSNQENTP,DSNQENTS(,@08)                          01S0190 00814000
+*          BYTECTR = LENGTH(DSNQENTS) - DSNQFREE; /* LNTH OF ENTRIES */ 00815000
+         LA    BYTECTR,162                                      01S0191 00816000
+         SH    BYTECTR,DSNQFREE(,@08)                           01S0191 00817000
+*          DO WHILE(ELGNMCTR > ZERO &  /* UNLESS INPUT LIST EXHAUSTED*/ 00818000
+*            BYTECTR > ZERO);          /* SEARCH ONE RECORD'S ENTRIES*/ 00819000
+         B     @DE00192                                         01S0192 00820000
+@DL00192 DS    0H                                               01S0193 00821000
+*/********************************************************************/ 00822000
+*/*                                                                  */ 00823000
+*/* SEGMENT NAME - DEQLBILD                                          */ 00824000
+*/*                                                                  */ 00825000
+*/* DESCRIPTIVE NAME - DEQ PARM LIST BUILD ROUTINE                   */ 00826000
+*/*                                                                  */ 00827000
+*/* FUNCTION -                                                       */ 00828000
+*/*                                                                  */ 00829000
+*/*   THIS ROUTINE DETERMINES WHETHER THE DSN IN THE CURRENT DSENQ   */ 00830000
+*/*   TABLE ENTRY MAY BE RELEASED.  IF SO, THE NO. OF ENTRIES IN THE */ 00831000
+*/*   DATA SET RELEASE LIST IS DECREMENTED FOR EACH OCCURRENCE OF THE*/ 00832000
+*/*   NAME.  AN ENTRY IS MADE IN THE DEQ PARM LIST FOR THE DSN,      */ 00833000
+*/*   AND THE DSN ENTRY IS DELETED FROM THE DSENQ TABLE.             */ 00834000
+*/*                                                                  */ 00835000
+*/*   OPERATION -                                                    */ 00836000
+*/*                                                                  */ 00837000
+*/*     THE DATA SET RELEASE LIST IS SEARCHED FOR A DSN MATCHING     */ 00838000
+*/*     THAT OF THE CURRENT DSENQ TABLE ENTRY.  WHEN A MATCHING ENTRY*/ 00839000
+*/*     IS FOUND, THE NUMBER OF DSN'S LEFT TO PROCESS IN THE LIST IS */ 00840000
+*/*     DECREMENTED BY ONE.  THE REST OF THE LIST IS THEN SEARCHED   */ 00841000
+*/*     AND THE NUMBER DECREMENTED FOR EACH SUCCESSIVE OCCURRENCE OF */ 00842000
+*/*     THE NAME.                                                    */ 00843000
+*/*                                                                  */ 00844000
+*/*     IF THE DSENQ TABLE ENTRY'S STEP NO. EQUALS THE INPUT STEP NO.*/ 00845000
+*/*     THE DSENQ TABLE ENTRY IS REMOVED FROM THE TABLE BY INCREAS-  */ 00846000
+*/*     ING THE NUMBER OF UNUSED BYTES IN THE RECORD AND BY OVER-    */ 00847000
+*/*     LAYING THE CURRENT ENTRY WITH THE REMAINING ENTRIES, IF      */ 00848000
+*/*     THERE ARE ANY.                                               */ 00849000
+*/*                                                                  */ 00850000
+*/*     AN ENTRY IS THEN BUILT IN THE DEQ PARM LIST, USING THE FIRST */ 00851000
+*/*     MATCHING DATA SET RELEASE LIST ENTRY TO OBTAIN A PTR TO THE  */ 00852000
+*/*     DSN AND THE LENGTH OF THE DSN.                               */ 00853000
+*/*                                                                  */ 00854000
+*/* ENTRY - IN-LINE SEGMENT                                          */ 00855000
+*/*                                                                  */ 00856000
+*/*   PURPOSE - SEE FUNCTION                                         */ 00857000
+*/*   INPUT -                                                        */ 00858000
+*/*     DSNQTABL - DSENQ TABLE                                       */ 00859000
+*/*       DSNQFREE - NO. OF FREE BYTES IN A RECORD                   */ 00860000
+*/*       DSNQNTRY - DSENQ TABLE ENTRY                               */ 00861000
+*/*         DSNQSTEP - STEP NO. OF A DATA SET'S LAST USE             */ 00862000
+*/*         DSNQDSNL - DATA SET NAME LENGTH                          */ 00863000
+*/*         DSNQDSN - DATA SET NAME                                  */ 00864000
+*/*     DSRLST - DATA SET RELEASE LIST                               */ 00865000
+*/*       DSRLNO - NUMBER OF ENTRIES IN LIST                         */ 00866000
+*/*       DSRLENT - LIST ENTRY                                       */ 00867000
+*/*         DSRDSNP - DATA SET NAME POINTER                          */ 00868000
+*/*         DSRDSNLN - DATA SET NAME LENGTH                          */ 00869000
+*/*     DQLSTCTR - SUBSCRIPT OF PREVIOUS DEQ PARM LIST ENTRY         */ 00870000
+*/*     BYTECTR - NUMBER OF BYTES LEFT TO PROCESS IN TABLE RECORD    */ 00871000
+*/*     STEPNUM - CURRENT STEP NUMBER                                */ 00872000
+*/*                                                                  */ 00873000
+*/* EXIT -                                                           */ 00874000
+*/*                                                                  */ 00875000
+*/*   CONDITION - NO DSN MATCH FOUND IN LIST                         */ 00876000
+*/*     OUTPUT -                                                     */ 00877000
+*/*       DEQNAMSW - OFF, INDICATING DSN NOT BEING DEQ'D             */ 00878000
+*/*     RETURN CODE - NONE                                           */ 00879000
+*/*                                                                  */ 00880000
+*/*   CONDITION - DSN MATCH FOUND, DSN NOT BEING DEQ'D               */ 00881000
+*/*     OUTPUT -                                                     */ 00882000
+*/*       DEQNAMSW - OFF, INDICATING DSN NOT BEING DEQ'D             */ 00883000
+*/*       ELGNMCTR - DECREMENTED BY ONE FOR EACH MATCHING LIST ENTRY */ 00884000
+*/*                                                                  */ 00885000
+*/*   CONDITION - DSN TO BE DEQ'D                                    */ 00886000
+*/*     OUTPUT -                                                     */ 00887000
+*/*       DEQNAMSW - ON, INDICATING NAME BEING DEQ'D                 */ 00888000
+*/*       ELGNMCTR - DECREMENTED BY ONE FOR EACH MATCHING LIST ENTRY */ 00889000
+*/*       DEQPLIST - DEQ PARM LIST                                   */ 00890000
+*/*         DEQENTRY - PARM LIST ENTRY                               */ 00891000
+*/*           DEQEND - OFF, INDICATING THIS ENTRY NOT END OF LIST    */ 00892000
+*/*           DEQMINLN - DSN LENGTH                                  */ 00893000
+*/*           DEQMINA - DSN PTR                                      */ 00894000
+*/*       DSNQTABL - DSENQ TABLE                                     */ 00895000
+*/*         DSNQFREE - NO. OF FREE BYTES IN RECORD                   */ 00896000
+*/*         DSNQENTS - DSN ENTRIES(ENTRY FOR DSN BEING DEQ'D REMOVED)*/ 00897000
+*/*       DQLSTCTR - INDEX TO ENTRY JUST BUILT IN DEQ PARM LIST      */ 00898000
+*/*     RETURN CODE - NONE                                           */ 00899000
+*/*                                                                  */ 00900000
+*/********************************************************************/ 00901000
+*DEQNAMSW = OFF;                       /* ASSUME NAME NOT TO BE DEQD.*/ 00902000
+*MATCHSW = OFF;                        /* ASSUME NO DSN MATCH.       */ 00903000
+         NI    DEQNAMSW,B'00111111'                             02S0194 00904000
+*DO DSENTCTR = ONE TO DSRLNO           /* SEARCH INPUT LIST          */ 00905000
+*  WHILE MATCHSW = OFF;                /* UNTIL DSN MATCH FOUND      */ 00906000
+         LA    DSENTCTR,1                                       02S0195 00907000
+         B     @DE00195                                         02S0195 00908000
+@DL00195 TM    MATCHSW,B'10000000'                              02S0195 00909000
+         BNZ   @DC00195                                         02S0195 00910000
+*  IF DSNQDSNL = DSRDSNLN(DSENTCTR) &  /* DSN LENGTHS EQUAL?         */ 00911000
+*    DSNQDSN(ONE:DSNQDSNL) =           /* DSN'S EQUAL?               */ 00912000
+*    DSRDSNP(DSENTCTR) -> LISTDSN(ONE:DSNQDSNL) THEN            02S0196 00913000
+         SLR   @08,@08                                          02S0196 00914000
+         IC    @08,DSNQDSNL(,DSNQENTP)                          02S0196 00915000
+         LR    @05,DSENTCTR                                     02S0196 00916000
+         SLA   @05,3                                            02S0196 00917000
+         CH    @08,DSRDSNLN-8(@05,DSRLPTR)                      02S0196 00918000
+         BNE   @RF00196                                         02S0196 00919000
+         AL    @05,@CF00197                                     02S0196 00920000
+         L     @05,DSRDSNP-4(@05,DSRLPTR)                       02S0196 00921000
+         BCTR  @08,0                                            02S0196 00922000
+         EX    @08,@SC00198                                     02S0196 00923000
+         BNE   @RF00196                                         02S0196 00924000
+*    DO;                                                        02S0197 00925000
+*      MATCHSW=ON;                     /* DSN MATCH FOUND.           */ 00926000
+         OI    MATCHSW,B'10000000'                              02S0198 00927000
+*      ELGNMCTR = ELGNMCTR - ONE;      /* DECREMENT NO. OF NAMES        00928000
+*                                         LEFT IN INPUT LIST         */ 00929000
+         BCTR  ELGNMCTR,0                                       02S0199 00930000
+*      DO LISTCTR = DSENTCTR + ONE TO DSRLNO; /* SEARCH REST OF LIST    00931000
+*                                         FOR DUPLICATE DSN'S.       */ 00932000
+         LA    LISTCTR,1                                        02S0200 00933000
+         ALR   LISTCTR,DSENTCTR                                 02S0200 00934000
+         B     @DE00200                                         02S0200 00935000
+@DL00200 DS    0H                                               02S0201 00936000
+*        IF DSNQDSNL = DSRDSNLN(LISTCTR) & /* DSN LENGTHS EQUAL?     */ 00937000
+*          (DSNQDSN(ONE:DSNQDSNL) =    /* DSN'S EQUAL?               */ 00938000
+*           DSRDSNP(LISTCTR) -> LISTDSN(ONE:DSNQDSNL)) THEN     02S0201 00939000
+         SLR   @08,@08                                          02S0201 00940000
+         IC    @08,DSNQDSNL(,DSNQENTP)                          02S0201 00941000
+         LR    @15,LISTCTR                                      02S0201 00942000
+         SLA   @15,3                                            02S0201 00943000
+         CH    @08,DSRDSNLN-8(@15,DSRLPTR)                      02S0201 00944000
+         BNE   @RF00201                                         02S0201 00945000
+         AL    @15,@CF00197                                     02S0201 00946000
+         L     @01,DSRDSNP-4(@15,DSRLPTR)                       02S0201 00947000
+         BCTR  @08,0                                            02S0201 00948000
+         EX    @08,@SC00200                                     02S0201 00949000
+         BNE   @RF00201                                         02S0201 00950000
+*          ELGNMCTR = ELGNMCTR - ONE; /* DECREMENT FOR EACH     02S0202 00951000
+*                                         DUPLICATE IN LIST.         */ 00952000
+         BCTR  ELGNMCTR,0                                       02S0202 00953000
+*      END;                                                     02S0203 00954000
+@RF00201 AH    LISTCTR,@CH00049                                 02S0203 00955000
+@DE00200 C     LISTCTR,DSRLNO(,DSRLPTR)                         02S0203 00956000
+         BNH   @DL00200                                         02S0203 00957000
+*      IF DSNQSTEP = STEPNUM THEN      /* DSN TO BE DEQ'D?           */ 00958000
+         L     @08,@PC00001+8                                   02S0204 00959000
+         CLC   DSNQSTEP(1,DSNQENTP),STEPNUM(@08)                02S0204 00960000
+         BNE   @RF00204                                         02S0204 00961000
+*        DO;                                                    02S0205 00962000
+*          DEQNAMSW = ON;              /* DSN BEING DEQ'D.           */ 00963000
+         OI    DEQNAMSW,B'01000000'                             02S0206 00964000
+*          DSNQFREE = DSNQFREE + (LENGTH(DSNQSTEP) +      /*LENGTH OF   00965000
+*SNQSTEP  FIELD  */               LENGTH(DSNQFLG1) +      /*LENGTH OF   00966000
+*SNQFLG1  FIELD  */               LENGTH(DSNQDSNL) +      /*LENGTH OF   00967000
+*SNQDSNL  FIELD  */               DSNQDSNL);/*                  02S0207 00968000
+*                                             ADD CURRENT ENTRY LNTH    00969000
+*                                         TO FREE SPACE IN RECORD.   */ 00970000
+         L     @08,DSNQPTR                                      02S0207 00971000
+         LA    @15,3                                            02S0207 00972000
+         SLR   @14,@14                                          02S0207 00973000
+         IC    @14,DSNQDSNL(,DSNQENTP)                          02S0207 00974000
+         ALR   @15,@14                                          02S0207 00975000
+         LH    @14,DSNQFREE(,@08)                               02S0207 00976000
+         ALR   @14,@15                                          02S0207 00977000
+         STH   @14,DSNQFREE(,@08)                               02S0207 00978000
+*          BYTECTR = BYTECTR - (LENGTH(DSNQSTEP) +      /*LENGTH OF  DS 00979000
+*QSTEP  FIELD  */               LENGTH(DSNQFLG1) +      /*LENGTH OF  DS 00980000
+*QFLG1  FIELD  */               LENGTH(DSNQDSNL) +      /*LENGTH OF  DS 00981000
+*QDSNL  FIELD  */               DSNQDSNL);/*                    02S0208 00982000
+*                                           DECREASE AMNT OF RECORD     00983000
+*                                      LEFT TO PROCESS               */ 00984000
+         SLR   BYTECTR,@15                                      02S0208 00985000
+*          TEMPTR = DSNQENTP;          /* PREVENT PLS 256-BYTE MOVE  */ 00986000
+         LR    TEMPTR,DSNQENTP                                  02S0209 00987000
+*          IF BYTECTR > ZERO THEN      /* MORE ENTRIES IN THIS RCD?  */ 00988000
+         LTR   BYTECTR,BYTECTR                                  02S0210 00989000
+         BNP   @RF00210                                         02S0210 00990000
+*            TEMPTR -> DMYTOENT(ONE:BYTECTR) = /*YES, ERASE CURRENT     00991000
+*                                        ENTRY                       */ 00992000
+*            EVAL(DSNQENTP + (LENGTH(DSNQSTEP) +      /*LENGTH OF  DSNQ 00993000
+*TEP  FIELD  */               LENGTH(DSNQFLG1) +      /*LENGTH OF  DSNQ 00994000
+*LG1  FIELD  */               LENGTH(DSNQDSNL) +      /*LENGTH OF  DSNQ 00995000
+*SNL  FIELD  */               DSNQDSNL)) -> DMYFRENT(ONE:BYTECTR);      00996000
+         LR    @08,BYTECTR                                      02S0211 00997000
+         BCTR  @08,0                                            02S0211 00998000
+         ALR   @15,DSNQENTP                                     02S0211 00999000
+         EX    @08,@SM00203                                     02S0211 01000000
+*          DQLSTCTR = DQLSTCTR + ONE;  /* MAKE P-LIST INDEX CURRENT  */ 01001000
+@RF00210 LA    @08,1                                            02S0212 01002000
+         AL    @08,DQLSTCTR                                     02S0212 01003000
+         ST    @08,DQLSTCTR                                     02S0212 01004000
+*          DEQENTRY(DQLSTCTR) = DQLIST(ONE:DQLSTLEN);/* SET DEQ PLIST   01005000
+*                                         SKELETON.                  */ 01006000
+         L     @05,DEQLISTP                                     02S0213 01007000
+         MH    @08,@CH00180                                     02S0213 01008000
+         ST    @08,@TF00001                                     02S0213 01009000
+         ALR   @08,@05                                          02S0213 01010000
+         AL    @08,@CF00189                                     02S0213 01011000
+         MVI   DEQENTRY-3(@08),C' '                             02S0213 01012000
+         MVC   DEQENTRY-2(10,@08),DEQENTRY-3(@08)               02S0213 01013000
+         L     @15,DQLSTLEN                                     02S0213 01014000
+         BCTR  @15,0                                            02S0213 01015000
+         EX    @15,@SM00205                                     02S0213 01016000
+*          DEQEND(DQLSTCTR) = OFF;     /* TURN OFF END OF LIST INDCTR*/ 01017000
+         LR    @08,@05                                          02S0214 01018000
+         AL    @08,@TF00001                                     02S0214 01019000
+         AL    @08,@CF00189                                     02S0214 01020000
+         NI    DEQEND-4(@08),B'01111111'                        02S0214 01021000
+*          DEQMINLN(DQLSTCTR) = DSRDSNLN(DSENTCTR);/* DSN LENGTH     */ 01022000
+         LR    @08,DSENTCTR                                     02S0215 01023000
+         SLA   @08,3                                            02S0215 01024000
+         LH    @15,DSRDSNLN-8(@08,DSRLPTR)                      02S0215 01025000
+         L     @14,@TF00001                                     02S0215 01026000
+         AL    @14,@CF00193                                     02S0215 01027000
+         STC   @15,DEQMINLN-5(@14,@05)                          02S0215 01028000
+*          DEQMINA(DQLSTCTR) = DSRDSNP(DSENTCTR);  /* DSN POINTER    */ 01029000
+         AL    @08,@CF00197                                     02S0216 01030000
+         L     @08,DSRDSNP-4(@08,DSRLPTR)                       02S0216 01031000
+         L     @01,@TF00001                                     02S0216 01032000
+         ST    @08,DEQMINA-12(@01,@05)                          02S0216 01033000
+*        END;                                                   02S0217 01034000
+*      ELSE;                           /* STEP NUMBERS NOT EQUAL     */ 01035000
+@RF00204 DS    0H                                               02S0219 01036000
+*    END;                                                       02S0219 01037000
+*  ELSE;                               /* DSN'S NOT EQUAL.           */ 01038000
+@RF00196 DS    0H                                               02S0221 01039000
+*END;                                  /* END SEARCH OF INPUT LIST.  */ 01040000
+         AH    DSENTCTR,@CH00049                                02S0221 01041000
+@DE00195 C     DSENTCTR,DSRLNO(,DSRLPTR)                        02S0221 01042000
+         BNH   @DL00195                                         02S0221 01043000
+@DC00195 DS    0H                                               02S0222 01044000
+*IF DEQNAMSW = OFF THEN                /* DSN ENTRY STILL IN TABLE?  */ 01045000
+         TM    DEQNAMSW,B'01000000'                             02S0222 01046000
+         BNZ   @RF00222                                         02S0222 01047000
+*  DO;                                                          02S0223 01048000
+*    BYTECTR = BYTECTR- (LENGTH(DSNQSTEP) +      /*LENGTH OF  DSNQSTEP  01049000
+*FIELD  */               LENGTH(DSNQFLG1) +      /*LENGTH OF  DSNQFLG1  01050000
+*FIELD  */               LENGTH(DSNQDSNL) +      /*LENGTH OF  DSNQDSNL  01051000
+*FIELD  */               DSNQDSNL);/*                           02S0224 01052000
+*                                         DECREASE AMNT OF RECORD       01053000
+*                                         LEFT TO PROCESS            */ 01054000
+         LA    @08,3                                            02S0224 01055000
+         SLR   @07,@07                                          02S0224 01056000
+         IC    @07,DSNQDSNL(,DSNQENTP)                          02S0224 01057000
+         ALR   @08,@07                                          02S0224 01058000
+         SLR   BYTECTR,@08                                      02S0224 01059000
+*    DSNQENTP = DSNQENTP + (LENGTH(DSNQSTEP) +      /*LENGTH OF  DSNQST 01060000
+*P  FIELD  */               LENGTH(DSNQFLG1) +      /*LENGTH OF  DSNQFL 01061000
+*1  FIELD  */               LENGTH(DSNQDSNL) +      /*LENGTH OF  DSNQDS 01062000
+*L  FIELD  */               DSNQDSNL);/*                        02S0225 01063000
+*                                         GET PAST CURRENT      02S0225 01064000
+*                                         ENTRY.                     */ 01065000
+         ALR   DSNQENTP,@08                                     02S0225 01066000
+*  END;                                                         02S0226 01067000
+*          END;                        /* END LOOP THRU ONE RECORD.  */ 01068000
+@RF00222 DS    0H                                               01S0227 01069000
+@DE00192 SLR   @08,@08                                          01S0227 01070000
+         CR    ELGNMCTR,@08                                     01S0227 01071000
+         BNH   @DC00192                                         01S0227 01072000
+         CR    BYTECTR,@08                                      01S0227 01073000
+         BH    @DL00192                                         01S0227 01074000
+@DC00192 DS    0H                                               01S0228 01075000
+*          IF DSNQNSVA ^= ZERO &       /* MORE RECORDS IN TABLE?     */ 01076000
+*            ELGNMCTR > ZERO THEN      /* INPUT LIST EXHAUSTED?      */ 01077000
+         SLR   @08,@08                                          01S0228 01078000
+         L     @07,DSNQPTR                                      01S0228 01079000
+         SLR   @05,@05                                          01S0228 01080000
+         ICM   @05,7,DSNQNSVA(@07)                              01S0228 01081000
+         CR    @08,@05                                          01S0228 01082000
+         BE    @RF00228                                         01S0228 01083000
+         CR    ELGNMCTR,@08                                     01S0228 01084000
+         BNH   @RF00228                                         01S0228 01085000
+*            DO;                                                01S0229 01086000
+*              SVALISTP = ADDR(DSNQNSVA); /* GET SVA OF NEXT RECORD. */ 01087000
+         LA    @08,DSNQNSVA(,@07)                               01S0230 01088000
+         ST    @08,SVALISTP                                     01S0230 01089000
+*              CALL IEFAB4F7           /* READ NEXT DSENQ TBL RECORD */ 01090000
+*                (SWACTLS,DUMMY,LEPACHNP,SVALISTP,SVABLSTP,DUMMY,       01091000
+*                 NUMBLKS);                                     01S0231 01092000
+         LA    @08,SWACTLS                                      01S0231 01093000
+         ST    @08,@AL00001                                     01S0231 01094000
+         LA    @08,@CF00110                                     01S0231 01095000
+         ST    @08,@AL00001+4                                   01S0231 01096000
+         LA    @08,LEPACHNP                                     01S0231 01097000
+         ST    @08,@AL00001+8                                   01S0231 01098000
+         LA    @08,SVALISTP                                     01S0231 01099000
+         ST    @08,@AL00001+12                                  01S0231 01100000
+         LA    @08,SVABLSTP                                     01S0231 01101000
+         ST    @08,@AL00001+16                                  01S0231 01102000
+         LA    @08,@CF00110                                     01S0231 01103000
+         ST    @08,@AL00001+20                                  01S0231 01104000
+         LA    @08,NUMBLKS                                      01S0231 01105000
+         ST    @08,@AL00001+24                                  01S0231 01106000
+         L     @15,@CV00130                                     01S0231 01107000
+         LA    @01,@AL00001                                     01S0231 01108000
+         BALR  @14,@15                                          01S0231 01109000
+*            END;                                               01S0232 01110000
+*          ELSE                        /* END OF TABLE               */ 01111000
+*            STOPSW = ON;              /* SET TABLE-SCAN LOOP EXIT.  */ 01112000
+         B     @RC00228                                         01S0233 01113000
+@RF00228 OI    STOPSW,B'00100000'                               01S0233 01114000
+*        END;                          /* END TABLE-SCAN LOOP.       */ 01115000
+@RC00228 DS    0H                                               01S0234 01116000
+@DE00189 TM    STOPSW,B'00100000'                               01S0234 01117000
+         BZ    @DL00189                                         01S0234 01118000
+*/********************************************************************/ 01119000
+*/*                                                                  */ 01120000
+*/* SEGMENT NAME - A4A6CLNP                                          */ 01121000
+*/*                                                                  */ 01122000
+*/* DESCRIPTIVE NAME - CLEAN-UP FOR IEFAB4A6                         */ 01123000
+*/*                                                                  */ 01124000
+*/* FUNCTION -                                                       */ 01125000
+*/*                                                                  */ 01126000
+*/*   THIS ROUTINE COMPLETES THE DEQ PARM LIST AND ISSUES THE        */ 01127000
+*/*   DEQ, IF THERE ARE ANY NAMES TO BE DEQ'D.  THIS ROUTINE ALSO    */ 01128000
+*/*   FREES THE CORE OBTAINED FOR THE DEQ PARM LIST AND CALLS        */ 01129000
+*/*   THE SWA MANAGER TO WRITE THE DSENQ TABLE BACK TO SWA AND FREE  */ 01130000
+*/*   THE EPA'S.                                                     */ 01131000
+*/*                                                                  */ 01132000
+*/*   OPERATION -                                                    */ 01133000
+*/*                                                                  */ 01134000
+*/*     IF THE NUMBER OF DSN'S IN THE DEQ PARM LIST IS GREATER       */ 01135000
+*/*     THAN ZERO, THE END-OF-LIST INDICATOR IS TURNED ON IN THE     */ 01136000
+*/*     LAST ENTRY, THE INIT'S TCB ADDR IS PLACED IN THE LIST, AND   */ 01137000
+*/*     THE DEQ IS ISSUED.  THE CORE OBTAINED FOR THE DEQ PARM LIST  */ 01138000
+*/*     IS THEN FREED, AND THE SWA MANAGER INTERFACE ROUTINE,        */ 01139000
+*/*     IEFAB4F7, IS CALLED TO WRITE THE DSENQ TABLE BACK TO SWA AND */ 01140000
+*/*     TO FREE THE EPA'S                                            */ 01141000
+*/*                                                                  */ 01142000
+*/* ENTRY - IN-LINE SEGMENT                                          */ 01143000
+*/*                                                                  */ 01144000
+*/*   PURPOSE - SEE FUNCTION                                         */ 01145000
+*/*   INPUT -                                                        */ 01146000
+*/*     DQLSTCTR - NO. OF DSN'S IN DEQ PARM LIST                     */ 01147000
+*/*     DEQTCBP - PTR TO INIT'S TCB                                  */ 01148000
+*/*     DEQLSTSZ - AMNT OF CORE OBTAINED FOR DEQ PARM LIST           */ 01149000
+*/*     DEQLISTP - PTR TO DEQ PARM LIST CORE                         */ 01150000
+*/*     FRSTEPAP - PTR TO FIRST EPA                                  */ 01151000
+*/*     NUMRCDS - NUMBER OF DSENQ TABLE RECORDS READ IN              */ 01152000
+*/*                                                                  */ 01153000
+*/* EXIT -                                                           */ 01154000
+*/*                                                                  */ 01155000
+*/*   CONDITION - PROCESSING COMPLETE                                */ 01156000
+*/*     OUTPUT -                                                     */ 01157000
+*/*       DEQ ISSUED IF NECESSARY                                    */ 01158000
+*/*       DEQ PARM LIST CORE FREED                                   */ 01159000
+*/*       DSENQ TABLE RECORDS WRITTEN TO SWA                         */ 01160000
+*/*       EPA'S FREED                                                */ 01161000
+*/*     RETURN CODE - NONE                                           */ 01162000
+*/*                                                                  */ 01163000
+*/********************************************************************/ 01164000
+*IF DQLSTCTR > ZERO THEN               /* ANY ENTRIES IN DEQ P-LIST? */ 01165000
+         L     @07,DQLSTCTR                                     02S0235 01166000
+         LTR   @07,@07                                          02S0235 01167000
+         BNP   @RF00235                                         02S0235 01168000
+*  DO;                                                          02S0236 01169000
+*    DEQEND(DQLSTCTR) = ON;            /* END-OF-LIST INDICATOR IN      01170000
+*                                         LAST P-LIST ENTRY.         */ 01171000
+         L     @15,DEQLISTP                                     02S0237 01172000
+         MH    @07,@CH00180                                     02S0237 01173000
+         ALR   @07,@15                                          02S0237 01174000
+         AL    @07,@CF00189                                     02S0237 01175000
+         OI    DEQEND-4(@07),B'10000000'                        02S0237 01176000
+*    DEQTCBA = DEQTCBP;                /* SET TCB ADDR IN P-LIST.    */ 01177000
+         L     @07,@PC00001+12                                  02S0238 01178000
+         MVC   DEQTCBA(4,@15),DEQTCBP(@07)                      02S0238 01179000
+*    RFY (REG0,REG1) RSTD;             /* PRESERVE REGS.             */ 01180000
+*    REG1 = DEQLISTP + FOUR;           /* POINT TO DEQ P-LIST.       */ 01181000
+         AH    @15,@CH00104                                     02S0240 01182000
+         LR    REG1,@15                                         02S0240 01183000
+*    GEN (DEQ MF=(E,(1)));             /* DEQ OFF DSN'S              */ 01184000
+         DEQ MF=(E,(1))                                                 01185000
+*  END;                                                         02S0242 01186000
+*REG0 = DEQLSTSZ;                      /* SIZE OF DEQ P-LIST CORE.   */ 01187000
+@RF00235 LR    REG0,DEQLSTSZ                                    02S0243 01188000
+*REG0 = REG0 | SUBPL230;               /* FREE FROM SUBPOOL 230.     */ 01189000
+         O     REG0,@CF00120                                    02S0244 01190000
+*REG1 = DEQLISTP;                      /* PTR TO DEQ P-LIST CORE     */ 01191000
+         L     REG1,DEQLISTP                                    02S0245 01192000
+*GEN (FREEMAIN R,LV=(0),A=(1));        /* FREE DEQ P-LIST CORE       */ 01193000
+         FREEMAIN R,LV=(0),A=(1)                                        01194000
+*RFY (REG0,REG1) UNRSTD;                                        02S0247 01195000
+*SWACTLS = SWACTLS && SWACTLS;         /* CLEAR SWITCHES             */ 01196000
+         SLR   @10,@10                                          02S0248 01197000
+         ICM   @10,3,SWACTLS                                    02S0248 01198000
+         LR    @07,@10                                          02S0248 01199000
+         XR    @07,@10                                          02S0248 01200000
+         STH   @07,SWACTLS                                      02S0248 01201000
+*SWWRT = ON;                           /* WRITE BLOCKS               */ 01202000
+*SWFREE = ON;                          /* FREE EPA'S                 */ 01203000
+*SWOLD = ON;                           /* EPA'S ARE OLD.             */ 01204000
+         OI    SWWRT,B'00010101'                                02S0251 01205000
+*CALL IEFAB4F7                         /* WRITE DSENQ TBL,FREE EPA'S */ 01206000
+*  (SWACTLS,FRSTEPAP,DUMMY,DUMMY,DUMMY,DUMMY,DUMMY);            02S0252 01207000
+         MVC   @AL00001+8(20),@AL00252                          02S0252 01208000
+         LA    @10,SWACTLS                                      02S0252 01209000
+         ST    @10,@AL00001                                     02S0252 01210000
+         LA    @10,FRSTEPAP                                     02S0252 01211000
+         ST    @10,@AL00001+4                                   02S0252 01212000
+         L     @15,@CV00130                                     02S0252 01213000
+         LA    @01,@AL00001                                     02S0252 01214000
+         BALR  @14,@15                                          02S0252 01215000
+*      END;                                                     01S0253 01216000
+*    ELSE;                             /*GETMAIN UNSUCCESSFUL        */ 01217000
+@RF00185 DS    0H                                               01S0255 01218000
+*  END;                                                         01S0255 01219000
+*ELSE;                                 /* DS REL LIST NON-EXISTENT   */ 01220000
+@RF00142 DS    0H                                               01S0257 01221000
+*RETURN CODE(RETCODE);                                          01S0257 01222000
+         IC    @02,@OLDKEY                                      01S0257 01223000
+         L     @13,4(,@13)                                      01S0257 01224000
+         L     @00,@SIZDATD                                     01S0257 01225000
+         LR    @01,@11                                          01S0257 01226000
+         FSPACE   R,LV=(0),A=(1)                                        01227000
+         MODESET KEYADDR=(2)                                            01228000
+         LR    @15,@06                                          01S0257 01229000
+         L     @14,12(,@13)                                     01S0257 01230000
+         LM    @00,@12,20(@13)                                  01S0257 01231000
+         BR    @14                                              01S0257 01232000
+*END IEFAB4A6                                                   01S0258 01233000
+*/* THE FOLLOWING INCLUDE STATEMENTS WERE FOUND IN THIS PROGRAM.      * 01234000
+*/*%INCLUDE SYSLIB  (A4A6SPEC)                                        * 01235000
+*/*%INCLUDE SYSLIB  (A4A6DATA)                                        * 01236000
+*/*%INCLUDE SYSLIB  (IEFZB436)                                        * 01237000
+*/*%INCLUDE SYSLIB  (IEFZB902)                                        * 01238000
+*/*%INCLUDE SYSLIB  (READDSNQ)                                        * 01239000
+*/*%INCLUDE SYSLIB  (RDDSSPEC)                                        * 01240000
+*/*%INCLUDE SYSLIB  (DEQDSNS )                                        * 01241000
+*/*%INCLUDE SYSLIB  (DEQSPEC )                                        * 01242000
+*/*%INCLUDE SYSLIB  (A4A6INIT)                                        * 01243000
+*/*%INCLUDE SYSLIB  (A6INSPEC)                                        * 01244000
+*/*%INCLUDE SYSLIB  (DEQLBILD)                                        * 01245000
+*/*%INCLUDE SYSLIB  (DQLBSPEC)                                        * 01246000
+*/*%INCLUDE SYSLIB  (A4A6CLNP)                                        * 01247000
+*/*%INCLUDE SYSLIB  (A6CLSPEC)                                        * 01248000
+*;                                                              01S0258 01249000
+@DATA    DS    0H                                                       01250000
+@CH00108 DC    H'2'                                                     01251000
+@CH00104 DC    H'4'                                                     01252000
+@CH00180 DC    H'12'                                                    01253000
+@SM00190 MVC   DEQENTRY-4(0,@07),DQLIST                                 01254000
+@SM00194 MVC   DMYTOENT(0,TEMPTR),DMYFRENT(@10)                         01255000
+@SC00198 CLC   DSNQDSN(0,DSNQENTP),LISTDSN(@05)                         01256000
+@SC00200 CLC   DSNQDSN(0,DSNQENTP),LISTDSN(@01)                         01257000
+@SM00203 MVC   DMYTOENT(0,TEMPTR),DMYFRENT(@15)                         01258000
+@SM00205 MVC   DEQENTRY-4(0,@08),DQLIST                                 01259000
+         DS    0F                                                       01260000
+@AL00139 EQU   *                       LIST WITH   5 ARGUMENT(S)        01261000
+@AL00252 DC    A(@CF00110)             LIST WITH   5 ARGUMENT(S)        01262000
+         DC    A(@CF00110)                                              01263000
+         DC    A(@CF00110)                                              01264000
+         DC    A(@CF00110)                                              01265000
+         DC    A(@CF00110)                                              01266000
+@DATD    DSECT                                                          01267000
+         DS    0F                                                       01268000
+@SA00001 DS    18F                                                      01269000
+@PC00001 DS    6F                                                       01270000
+@AL00001 DS    7A                                                       01271000
+@TF00001 DS    F                                                        01272000
+IEFAB4A6 CSECT                                                          01273000
+         DS    0F                                                       01274000
+@CF00110 DC    F'0'                                                     01275000
+@CF00049 DC    F'1'                                                     01276000
+@CH00049 EQU   @CF00049+2                                               01277000
+@CF00189 DC    F'-8'                                                    01278000
+@CF00193 DC    F'-7'                                                    01279000
+@CF00197 DC    F'-4'                                                    01280000
+@CF00120 DC    XL4'E6000000'                                            01281000
+@DATD    DSECT                                                          01282000
+         DS    0D                                                       01283000
+DEQLISTP DS    A                                                        01284000
+DSNQPTR  DS    A                                                        01285000
+FRSTBLKP DS    A                                                        01286000
+FRSTEPAP DS    A                                                        01287000
+LEPACHNP DS    A                                                        01288000
+SVABLSTP DS    A                                                        01289000
+SVALISTP DS    A                                                        01290000
+DQLSTCTR DS    F                                                        01291000
+NUMBLKS  DS    F                                                        01292000
+GTSTRTCD DS    F                                                        01293000
+SWACTLS  DS    FL2                                                      01294000
+         ORG   SWACTLS                                                  01295000
+SWASN    DS    BL1                                                      01296000
+SWDEL    EQU   SWACTLS+0                                                01297000
+SWREAD   EQU   SWACTLS+0                                                01298000
+SWWRT    EQU   SWACTLS+0                                                01299000
+SWNEW    EQU   SWACTLS+0                                                01300000
+SWFREE   EQU   SWACTLS+0                                                01301000
+SWMOD    EQU   SWACTLS+0                                                01302000
+SWOLD    EQU   SWACTLS+0                                                01303000
+SWCHN    DS    BL1                                                      01304000
+@NM00004 EQU   SWACTLS+1                                                01305000
+         ORG   SWACTLS+2                                                01306000
+SWITCHES DS    BL1                                                      01307000
+         ORG   SWITCHES                                                 01308000
+MATCHSW  DS    BL1                                                      01309000
+DEQNAMSW EQU   SWITCHES+0                                               01310000
+STOPSW   EQU   SWITCHES+0                                               01311000
+FIRSTSW  EQU   SWITCHES+0                                               01312000
+@NM00003 EQU   SWITCHES+0                                               01313000
+         ORG   SWITCHES+1                                               01314000
+@OLDKEY  DS    AL1                                                      01315000
+IEFAB4A6 CSECT                                                          01316000
+         DS    0F                                                       01317000
+@SIZDATD DC    AL1(230)                                                 01318000
+         DC    AL3(@ENDDATD-@DATD)                                      01319000
+@CV00130 DC    V(IEFAB4F7)                                              01320000
+         DS    0D                                                       01321000
+GTSTZERO DC    F'0'                                                     01322000
+SYSDSN   DC    CL8'SYSDSN  '                                            01323000
+IEFAB4A6 CSECT                                                          01324000
+         DS   0H                                                        01325000
+A4A6PTCH DC ((@DATA-@PSTART)/20)X'00'                                   01326000
+IEFAB4A6 CSECT                                                          01327000
+DQLIST DEQ (SYSDSN,,,SYSTEM),RET=HAVE,MF=L,TCB=0  DEQ LIST              01328000
+DQLSTLEN DC A(*-DQLIST)  LENGTH OF DEQ LIST                             01329000
+@DATD    DSECT                                                          01330000
+         ORG   *+1-(*-@DATD)/(*-@DATD) INSURE DSECT DATA                01331000
+@ENDDATD EQU   *                                                        01332000
+IEFAB4A6 CSECT                                                          01333000
+@00      EQU   00                      EQUATES FOR REGISTERS 0-15       01334000
+@01      EQU   01                                                       01335000
+@02      EQU   02                                                       01336000
+@03      EQU   03                                                       01337000
+@04      EQU   04                                                       01338000
+@05      EQU   05                                                       01339000
+@06      EQU   06                                                       01340000
+@07      EQU   07                                                       01341000
+@08      EQU   08                                                       01342000
+@09      EQU   09                                                       01343000
+@10      EQU   10                                                       01344000
+@11      EQU   11                                                       01345000
+@12      EQU   12                                                       01346000
+@13      EQU   13                                                       01347000
+@14      EQU   14                                                       01348000
+@15      EQU   15                                                       01349000
+L1       EQU   @02                                                      01350000
+RETCODE  EQU   @06                                                      01351000
+LISTCTR  EQU   @05                                                      01352000
+ELGNMCTR EQU   @04                                                      01353000
+DSENTCTR EQU   @07                                                      01354000
+DEQLSTSZ EQU   @10                                                      01355000
+BYTECTR  EQU   @03                                                      01356000
+TEMPTR   EQU   @05                                                      01357000
+DSRLPTR  EQU   @09                                                      01358000
+DSNQENTP EQU   @02                                                      01359000
+REG0     EQU   @00                                                      01360000
+REG1     EQU   @01                                                      01361000
+REG15    EQU   @15                                                      01362000
+GTSTR0   EQU   @00                                                      01363000
+GTSTR1   EQU   @01                                                      01364000
+GTSTR2   EQU   @02                                                      01365000
+GTSTR15  EQU   @15                                                      01366000
+GTSTR4   EQU   @04                                                      01367000
+GTSTR5   EQU   @05                                                      01368000
+GTSTR6   EQU   @06                                                      01369000
+GTSTR7   EQU   @07                                                      01370000
+GTSTR8   EQU   @08                                                      01371000
+GTSTR3   EQU   @03                                                      01372000
+NEXTSVA  EQU   0                                                        01373000
+DEQPLIST EQU   0                                                        01374000
+DEQTCBA  EQU   DEQPLIST                                                 01375000
+DEQENTRY EQU   DEQPLIST+4                                               01376000
+DEQFLGS1 EQU   DEQENTRY                                                 01377000
+DEQEND   EQU   DEQFLGS1                                                 01378000
+DEQMINLN EQU   DEQENTRY+1                                               01379000
+DEQMINA  EQU   DEQENTRY+8                                               01380000
+DSRLST   EQU   0                                                        01381000
+DSRLHDR  EQU   DSRLST                                                   01382000
+DSRLNO   EQU   DSRLHDR                                                  01383000
+DSRLENT  EQU   DSRLST+4                                                 01384000
+DSRDSNP  EQU   DSRLENT                                                  01385000
+DSRDSNLN EQU   DSRLENT+4                                                01386000
+DMYTOENT EQU   0                                                        01387000
+DMYFRENT EQU   0                                                        01388000
+LISTDSN  EQU   0                                                        01389000
+DSNQTABL EQU   0                                                        01390000
+DSNQNSVA EQU   DSNQTABL+4                                               01391000
+DSNQNEXT EQU   DSNQTABL+8                                               01392000
+DSNQFREE EQU   DSNQTABL+12                                              01393000
+DSNQENTS EQU   DSNQTABL+14                                              01394000
+DSNQNTRY EQU   0                                                        01395000
+DSNQSTEP EQU   DSNQNTRY                                                 01396000
+DSNQFLG1 EQU   DSNQNTRY+1                                               01397000
+DSNQDSNL EQU   DSNQNTRY+2                                               01398000
+DSNQDSN  EQU   DSNQNTRY+3                                               01399000
+FUNCMAP  EQU   0                                                        01400000
+NODSRLST EQU   FUNCMAP                                                  01401000
+DSRLP    EQU   0                                                        01402000
+STEPNUM  EQU   0                                                        01403000
+DEQTCBP  EQU   0                                                        01404000
+NQTABSVA EQU   0                                                        01405000
+RSNCODE  EQU   0                                                        01406000
+         AGO   .@UNREFD                START UNREFERENCED COMPONENTS    01407000
+@NM00001 EQU   FUNCMAP                                                  01408000
+DSNQRS02 EQU   DSNQFLG1                                                 01409000
+DSNQSHR  EQU   DSNQFLG1                                                 01410000
+DSNQRS01 EQU   DSNQTABL+7                                               01411000
+DSNQID   EQU   DSNQTABL+3                                               01412000
+DSNQSVA  EQU   DSNQTABL                                                 01413000
+DSRFLGS  EQU   DSRLENT+6                                                01414000
+DEQMAJA  EQU   DEQENTRY+4                                               01415000
+DEQRET   EQU   DEQENTRY+3                                               01416000
+DEQFLGS2 EQU   DEQENTRY+2                                               01417000
+@NM00002 EQU   DEQFLGS1                                                 01418000
+.@UNREFD ANOP                          END UNREFERENCED COMPONENTS      01419000
+@RF00083 EQU   @RC00055                                                 01420000
+@RF00128 EQU   @RC00124                                                 01421000
+@ENDDATA EQU   *                                                        01422000
+         END   IEFAB4A6                                                 01423000

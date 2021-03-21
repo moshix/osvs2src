@@ -1,0 +1,842 @@
+         TITLE 'IGC0002A - FIRST LOAD OF BPAM STOW ROUTINE'             00090021
+IGC0002A CSECT                                                          00180021
+         SPACE                                                          00270021
+*********************************************************************** 00360021
+*                                                                     * 00450021
+* MODULE NAME = IGC0002A                                              * 00452002
+*                                                                     * 00454002
+* DESCRIPTIVE NAME = FIRST LOAD OF BPAM STOW ROUTINE                  * 00456002
+*                                                                     * 00458002
+* STATUS = RELEASE VS2-4, LEVEL 000                                   * 00990037
+*                                                                     * 01172002
+*                                                                     * 01350021
+* FUNCTION = THE STOW FUNCTION MAINTAINS THE DIRECTORY PORTION OF A   * 01440002
+*            PARTITIONED DATA SET.  THE ENTRIES WITHIN A DIRECTORY    * 01530002
+*            ARE KEPT IN ASCENDING ORDER OF THEIR BINARY VALUE.  STOW * 01620002
+*            WILL PERFORM ONE OF THE FOLLOWING FOUR FUNCTIONS         * 01710002
+*            DEPENDING UPON THE USER'S REQUEST:                       * 01800002
+*            1. ADD - ADD A NEW ENTRY TO A DIRECTORY.                 * 02070002
+*                                                                     * 02160021
+*            2. REPLACE - EITHER REPLACE AN EXISTING ENTRY WITH A NEW * 02250002
+*               ENTRY OR ADD THE NEW ENTRY IF THE EXISTING ENTRY CAN  * 02340002
+*               NOT BE FOUND.                                         * 02430002
+*                                                                     * 02520021
+*            3. DELETE - DELETE AN ENTRY FROM A DIRECTORY.            * 02610002
+*                                                                     * 02700021
+*            4. CHANGE - CHANGE THE NAME OF A DIRECTORY ENTRY.        * 02790002
+*                                                                     * 02970021
+*            IF THE REQUEST IS FOR EITHER AN ADD OR REPLACE FUNCTION  * 03060002
+*            AND THE DIRECTORY HAS BEEN SUCCESSFULLY UPDATED, AN END  * 03150002
+*            OF DATA MARK WILL BE WRITTEN AT THE END OF THE MEMBER.   * 03240002
+*                                                                     * 03420021
+*            IGC0002A IS RESPONSIBLE FOR PERFORMING VARIOUS DIAGNOS-  * 03600002
+*            TICS FOR THE STOW FUNCTION AS FOLLOWS:                   * 03690002
+*            1. DATA CONTROL BLOCK CHECK                              * 03960002
+*               A. CHECK THE DCB FOR TO DETERMINE IF IT IS OPEN.      * 04050002
+*               B. CHECK TO SEE IF THE DCB IS OPEN FOR INPUT.         * 04140002
+*               C. IF AN INVALID CONDITION IS DETECTED FROM THE ABOVE * 04230002
+*                  CHECKS, IGC0002A WILL SET A  RETURN CODE IN REG 15 * 04320002
+*                  AND RETURN TO THE CALLER VIA A BR 14.              * 04410002
+*                                                                     * 04590021
+*            2. REQUEST TYPE                                          * 04770002
+*               THE REQUEST TYPE IS DETERMINED BY A UNIQUE            * 04860002
+*               COMBINATION OF THE SIGNS IN REGISTERS 0 AND 1.        * 04950002
+*                                                                     * 05130021
+*            3. WORKAREA FOR THE FOLLOWING                            * 05220002
+*               A. THE INPUT/OUTPUT BUFFERS FOR MANIPULATING THE      * 05310002
+*                  THE DIRECTORY ENTRIES.                             * 05400002
+*               B. THE ECB, IOB, AND CHANNEL PROGRAMS FOR READING AND * 05490002
+*                  WRITING THE DIRECTORY BLOCKS.                      * 05670002
+*               C. THE FUNCTION CODE INDICATING THE REQUEST TYPE.     * 05850002
+*               D. THE RETURN CODE IF APPLICABLE.                     * 05940002
+*               E. SAVE THE ADDRESS OF THE CALLER'S PARAMETERS.       * 06120002
+*               F. SAVE THE RELATIVE TRACK ADDRESS, (TTR), FROM THE   * 06210002
+*                  DCB IF THE ALIAS BIT IS NOT ON IN THE CALLER'S     * 06300002
+*                  PARAMETER LIST AND THE FUNCTION REQUEST IS EITHER  * 06390002
+*                  ADD OR REPLACE.                                    * 06480002
+*               G. IF A CHANGE FUNCTION, SAVE THE RELATIVE ADDRESS,   * 06660002
+*                  (TTR), FROM THE OLD ENTRY.                         * 06750002
+*               H. SET A SWITCH REFLECTING THE LAST OPERATION         * 06840002
+*                  PERFORMED WITH THE DCB BEFORE STOW WAS ISSUED.     * 06930002
+*               I. FOR CHANGE, INDICATE IN WORK AREA WHICH OPERATION  * 07110002
+*                  WILL BE PERFORMED FIRST - ADD OR DELETE.           * 07200002
+*                                                                     * 07380021
+*            4. EVENT CONTROL BLOCK, INPUT OUTPUT BLOCK               * 07470002
+*               A. IGC0002A DYNAMICALLY CONSTRUCTS THE ECB, IOB, AND  * 07560002
+*                  THE CHANNEL PROGRAMS THAT WILL BE USED BY IT.      * 07650002
+*               B. IGC0002A EXECUTES A CHANNEL PROGRAM TO READ IN THE * 07830002
+*                  DIRECTORY BLOCK AGAINST WHICH SOME ACTION WILL BE  * 07920002
+*                  PERFORMED AND THE FOLLOWING BLOCK IF AVAILIBLE.    * 08010002
+*               C. IF AN I/O ERROR OCCURS, RETURN AND REASON CODES    * 08190002
+*                  WILL BE SET AND CONTROL RETURNED TO THE CALLER     * 08280002
+*                  WITHOUT FURTHER PROCESSING.                        * 08370002
+*                                                                     * 08550021
+*            5. DIRECTORY BLOCK DIAGNOSTICS                           * 08730002
+*               A. DETERMINE IF THE REQUEST IS VALID AND IF NOT SET   * 08820002
+*                  THE APPROPIATE RETURN CODE AND RETURN TO THE       * 08910002
+*                  CALLER VIA A BR 14.                                * 09000002
+*                                                                     * 09000402
+*                                                                     * 09002002
+* NOTES = DIRECTORY LAYOUT                                            * 09004002
+*                                                                     * 09006002
+*         |-------| |-------| |---|-------------|------|----------|   * 09008002
+*         | COUNT | |  KEY  | | N | FIRST ENTRY | ETC. | FFFFFFFF |   * 09010002
+*         |-------| |-------| |---|-------------|------|----------|   * 09012002
+*                                                                     * 09012402
+*         COUNT - AN EIGHT BYTE FIELD CONTAINING THE ADDRESS OF THIS  * 09014002
+*                 DIRECTORY BLOCK IN THE FORM OF CCHHRKDD.            * 09016002
+*         KEY   - AN EIGHT BYTE FIELD CONTAINING THE NAME OF THE LAST * 09018002
+*                 ENTRY IN THIS DIRECTORY BLOCK.  IF THIS IS THE LAST * 09020002
+*                 BLOCK IN THE DIRECTORY THE KEY WILL CONTAIN         * 09022002
+*                 X'FFFFFFFF'.                                        * 09024002
+*         N     - A TWO BYTE FIELD INDICATING THE TOTAL NUMBER OF     * 09026002
+*                 BYTES USED IN THIS DIRECTORY BLOCK INCLUDING ITSELF.* 09028002
+*                 IF THIS IS THE LAST BLOCK, THE TOTAL WILL ALSO IN-  * 09030002
+*                 CLUDE THE 4 X'0'S FOLLOWING THE X'FFFFFFFF' FIELD.  * 09032002
+*         F'S   - AN EIGHT BYTE FIELD SHOWING THE END OF THE ENTRIES  * 09034002
+*                 FOR A DIRECTORY.                                    * 09036002
+*                                                                     * 09038002
+*    DEPENDENCIES = NONE                                              * 09040002
+*                                                                     * 09042002
+*    RESTRICTIONS = NONE                                              * 09044002
+*                                                                     * 09046002
+*    REGISTER CONVENTIONS = SEE REGISTER EQUATES BELOW                * 09048002
+*                                                                     * 09050002
+*    PATCH LABEL = PATCH                                              * 09052002
+*                                                                     * 09052402
+*                                                                     * 09054002
+* MODULE TYPE = SVC ROTUINE                                           * 09056002
+*                                                                     * 09058002
+*    ATTRIBUTES = REENTRANT, ENABLED, PRIVILEGED, ENTERED IN          * 09060002
+*                 SUPERVISOR KEY AND ISSUES A MODESET TO RUN IN THE   * 09062002
+*                 CALLER'S KEY.                                       * 09064002
+*                                                                     * 09066002
+*                                                                     * 09180021
+* ENTRY POINT = IGC0002A                                              * 09270002
+*                                                                     * 09272002
+*    PURPOSE = SEE FUNCTION                                           * 09274002
+*                                                                     * 09276002
+*    LINKAGE = THIS ROUTINE RECEIVES CONTROL FROM THE SECOND LEVEL    * 09278002
+*              SVC INTERRUPT HANDLER FOLLOWING THE ISSUANCE OF THE    * 09280002
+*              STOW MACRO WHICH RESULTS IN SVC 21.                    * 09282002
+*                                                                     * 09540021
+*    INPUT = REGISTER 0  - ADDRESS OF THE CALLERS DATA AREA           * 09630002
+*            REGISTER 1  - ADDRESS OF THE CALLER'S DCB                * 09632002
+*            REGISTER 3  - CVT ADDRESS                                * 09634002
+*            REGISTER 4  - TCB ADDRESS                                * 09636002
+*            REGISTER 5  - SVRB ADDRESS                               * 09638002
+*            REGISTER 14 - RETURN ADDRESS                             * 09640002
+*                                                                     * 09642002
+*            IN ADDITION TO THE ADDRESS OF THE DATA IN REGISTER 0 AND * 10530002
+*            THE ADDRESS OF THE DCB IN REGISTER 1, THE STOW MACRO     * 10620002
+*            ALSO SETS THE SIGNS OF THE TWO REGISTERS AS FOLLOWS:     * 10710002
+*               FUNCTION       REGISTER ZERO       REGISTER ONE       * 10890002
+*                ADD              POSITIVE           POSITIVE         * 10980002
+*                REPLACE          POSITIVE           NEGATIVE         * 11070002
+*                DELETE           NEGATIVE           POSITIVE         * 11160002
+*                CHANGE           NEGATIVE           NEGATIVE         * 11250002
+*                                                                     * 11252002
+*            FOLLOWING ARE THE FORMATS OF THE DATA AREA SUPPLIED BY   * 11430002
+*            THE CALLER IN REGISTER 0:                                * 11520002
+*                                                                     * 11522002
+*               ADD OR REPLACE                                        * 11610002
+*               |------------|------|-------------------------|       * 11790002
+*               |    NAME    | TTRC |   VARIABLE USER DATA    |       * 11970002
+*               |------------|------|-------------------------|       * 12150002
+*                                                                     * 12240002
+*               CHANGE                                                * 12330002
+*               |------------|------------|                           * 12510002
+*               |  OLD NAME  |  NEW NAME  |                           * 12690002
+*               |------------|------------|                           * 12870002
+*                                                                     * 12960021
+*               DELETE                                                * 13050002
+*               |------------|                                        * 13230002
+*               |    NAME    |                                        * 13410002
+*               |------------|                                        * 13590002
+*                                                                     * 13770021
+*               NAME- EIGHT BYTE NAME OF ENTRY BEING ACTED UPON.      * 13950002
+*               TT -  RELATIVE TRACK FROM THE BEGINNING OF THE DATA   * 14130002
+*                     SET.                                            * 14220002
+*               R  -  RELATIVE BLOCK NUMBER ON A TRACK.               * 14310002
+*               C  -  INDICATES IF THE NAME IS AN ALIAS, THE NUMBER   * 14400002
+*                     OF TTRN'S IN THE USER DATA AND THE LENGTH OF    * 14490002
+*                     THE USER DATA. THE FORMAT IS AS FOLLOWS:        * 14580002
+*                        BIT0   -   IF ON NAME IS AN ALIAS.           * 14760002
+*                        BITS 1-2 - NUMBER OF TTRNS IN USER DATA.     * 14850002
+*                                   FIELD.  MAXIMUM NUMBER IS THREE.  * 14940002
+*                        BITS 3-7 - BY THEIR BINARY VALUE, INDICATE   * 15030002
+*                                   NUMBER OF HALF WORDS OF USER DATA.* 15120002
+*                                                                     * 15390021
+*    OUTPUT = IF RETURNING TO THE CALLER -                            * 15480002
+*                REGISTER 0  - CONTAINS THE REASON CODE               * 15482002
+*                REGISTER 15 - CONTAINS THE RETURN CODE               * 15484002
+*                                                                     * 15484402
+*             IF TRANSFERING CONTROL TO THE SECOND LOAD OF STOW -     * 15486002
+*                REGISTER 10 - CONTAINS ADDR OF THE STOW WORK AREA    * 15488002
+*                REGISTER 11 - ADDRESS OF THE CALLER'S DCB            * 15488402
+*                                                                     * 15490002
+*    EXIT-NORMAL = BRANCH TO THE SECOND LOAD - IGG0210A.              * 15492003
+*                                                                     * 15494002
+*    EXIT-ERROR = RETURN TO THE CALLER VIA A BR 14 WITH REASON CODE   * 15496002
+*                 REGISTER 0 AND RETURN CODE REGISTER 15 CONTAINING   * 15498002
+*                 THE FOLLOWING:                                      * 15500002
+*                 REG 0   REG 15              CONDITION               * 15502002
+*                   0       4 -  ADD FUNCTION - ENTRY ALREADY EXIST.  * 15502402
+*                                CHANGE FUNCTION - DIRECTORY ALREADY  * 15502802
+*                                CONTAINS THE SPECIFIED NEW NAME.     * 15503202
+*                   0       8 -  REPLACE AND DELETE FUNCTIONS - THE   * 15503702
+*                                SPECIFIED NAME COULD NOT BE FOUND.   * 15504402
+*                                CHANGE FUNCTION - THE SPECIFIED      * 15505002
+*                                OLD NAME COULD NOT BE FOUND.         * 15505102
+*                   1       16 - ALL FUNCTIONS - A PERMANENT I/O      * 15505702
+*                                ERROR OCCURED READING THE DIRECTORY. * 15506202
+*                   0       20 - ALL FUNCTIONS - THE USER'S DCB IS    * 15506602
+*                                NOT OPEN.                            * 15507102
+*                   0       24 - ALL FUNCTIONS - NO CORE AVAILIBLE.   * 15507202
+*                                                                     * 15507602
+*                                                                     * 15507702
+* ENTRY POINT = EXITRTN                                               * 15507802
+*                                                                     * 15507902
+*    PURPOSE = ENTERED FROM THE RTM WHEN THERE IS AN ATTEMPT TO       * 15508002
+*              ABNORMALLY TERMINATE THE RB LEVEL ON WHICH THIS SVC IS * 15510002
+*              ACTIVE.  THIS ROUTINE WILL FIND THE ADDRESS OF THE TRR * 15512002
+*              BY ISSUING A LOAD. IT WILL ALSO FILL IN SDWACSCT       * 15514002
+*              AND SDWAREXN.                                          * 15516002
+*                                                                     * 15518002
+*    LINKAGE = ENTERED FROM THE RTM VIA A SYNCH IN KEY ZERO, ENABLED  * 15520002
+*                                                                     * 15522002
+*    INPUT = REGISTER 0  - CODE (12 IF NO RTCA IS PASSED)             * 15524002
+*            REGISTER 1  - ADDRESS OF THE RTCA                        * 15526002
+*            REGISTER 13 - ADDRESS OF AN 18 FULLWORD SAVE AREA        * 15528002
+*            REGISTER 14 - RETURN ADDRESS TO THE RTM                  * 15530002
+*            REGISTER 15 - ADDRESS OF THE ESTAE EXIT BOOTSTRAP RTN    * 15532002
+*                                                                     * 15534002
+*    OUTPUT = SAME AS INPUT EXCEPTING REGISTER 15 WHICH WILL CONTAIN  * 15536002
+*             THE ADDRESS OF THE ESTAE ROUTINE IGCT0021.              * 15538002
+*                                                                     * 15540002
+*    EXIT-NORMAL = BR 15 TO IGCT0021                                  * 15542002
+*                                                                     * 15544002
+*    EXIT-ERROR = BR 14 TO THE RTM IF NO RTCA WAS PASSED.             * 15546002
+*                                                                     * 15840021
+*                                                                     * 15842002
+* EXTERNAL REFERENCES = SEE BELOW                                     * 15930002
+*                                                                     * 15932002
+*    ROUTINES = ESTAE(SVC 60) - ESTABLISHES A TASK RECOVERY ROUTINE.  * 15934002
+*                                                                     * 15934402
+*               MODESET - USED TO CHANGE THE STORAGE PROTECT KEY.     * 15934802
+*                                                                     * 15935202
+*               GETMAIN(SVC 120) - GETS CORE FOR A STOW WORK AREA.    * 15936002
+*                                                                     * 15938002
+*               EXCP(SVC 0) AND WAIT(SVC 1) - ARE USED TO PERFORM I/O * 16920002
+*               OPERATIONS.                                           * 16922002
+*                                                                     * 16924002
+*               FREEMAIN(SVC 10) - USED TO FREE THE STOW WORK AREA.   * 17010002
+*                                                                     * 17280402
+*               IGGSTAE - TRANSFERS CONTROL TO THE STOW ESTAE ROUTINE.* 17282002
+*                                                                     * 17550021
+*    DATA AREAS = NONE                                                * 17552002
+*                                                                     * 17554002
+*    CONTROL BLOCKS = DCB,DEB,ECB,IOB,SVRB,SDWA,TCB                   * 17556002
+*                                                                     * 17558002
+*                                                                     * 17560002
+* TABLES = A WORK AREA IS GOTTEN FROM SUBPOOL 229 IN WHICH TO BUILD   * 17562002
+*          AN IOB, ECB, BUFFERS, AND CHANNEL PROGRAMS FOR STOW.       * 17564002
+*                                                                     * 17564402
+*                                                                     * 17566002
+* MACROS = ACTION MACROS - ESTAE,MODESET,GETMAIN,EXCP,WAIT,FREEMAIN,  * 17568002
+*             IGGSTAE                                                 * 17570003
+*                                                                     * 17570402
+*          MAPPING MACROS - DCBD,IEZDEB,IHAPDS,IHARB,IHASDWA,IHASTOW, * 17572002
+*             IKJTCB,IGGSTW                                           * 17574002
+*                                                                     * 20250021
+*                                                                     * 20252002
+* CHANGE ACTIVITY = AS FOLLOWS:                                       * 20340002
+*                                                                     * 20342002
+*        RELEASE 21 DELETIONS                                         * 24572002
+*    THIS MODULE WAS REWRITTEN FOR RELEASE 21.  THE FOLLOWING APARS   * 24572402
+*    WERE CORRECTED.  28169, 33374, 35322, 42484, AND 43923.          * 24572802
+*0281                                                            A50697 24574002
+*0281                                                            S01964 24576002
+*        VS1 RELEASE 01 DELETIONS                                     * 24578002
+*                                                                XM5415 24580002
+*        VS1 RELEASE 03 DELETIONS                                     * 24580202
+*                                                               XA02068 24580402
+*        VS2 RELEASE 01 DELETIONS                                     * 24582002
+*D617400                                                         YM0943 24584002
+*        VS2 RELEASE 02 DELETIONS                                     * 24586002
+*D001400,005000,007400,279900,285300,298400-298900,305100-306000,Y02072 24588002
+*D324500-325400,351100-351500,365400-366300,370800-377100,       Y02072 24590002
+*D388800-390600,394200,400500-409500,452700-453600,485100-486000,Y02072 24592002
+*D495000,615600-616500,665100-670500,708300-709200,713700-729000,Y02072 24594002
+*D730800-893700,899100-908100                                    Y02072 24596002
+*        VS2 RELEASE 03 DELETIONS                                     * 24646003
+* SEE CODE FLAGGED YA06505 AND SA66881 FOR VS2-3 APAR ZA01548   ZA01548 24653037
+*A628200-628400,628800                                         @ZA12202 24655037
+*C713340-713342                                                @ZA12202 24657037
+*                                                              @Z30TSMI 24660003
+*********************************************************************** 24750021
+         EJECT                                                          24840021
+*********************************************************************** 24930021
+****                                                               **** 25020021
+****     EQUATES                                                   **** 25110021
+****                                                               **** 25200021
+*********************************************************************** 25290021
+         SPACE                                                          25380021
+****     THE FOLLOWING REGISTER EQUATES WILL BE USED DURING CONSTRUC-   25470021
+****     TION OF THE IOB, ECB, AND CHANNEL PROGRAMS USED BY STOW.       25560021
+         SPACE                                                          25650021
+R0       EQU   0                        WORK REGISTER                   25740021
+R1       EQU   1                        WORK REGISTER                   25830021
+R2       EQU   2                        WORK REGISTER                   25920021
+R3       EQU   3                        WORK REGISTER                   26010021
+R4       EQU   4                        WORK REGISTER                   26100021
+R5       EQU   5                        WORK REGISTER                   26190021
+R6       EQU   6                        WORK REGISTER                   26280021
+R7       EQU   7                        WORK REGISTER                   26370021
+R8       EQU   8                        WORK REGISTER                   26460021
+R9       EQU   9                        WORK REGISTER                   26550021
+R10      EQU   10                       WORK REGISTER                   26640021
+R11      EQU   11                       WORK REGISTER                   26730021
+R12      EQU   12                       WORK REGISTER                   26820021
+R13      EQU   13                       WORK REGISTER                   26910021
+R14      EQU   14                       WORK REGISTER                   27000021
+R15      EQU   15                       WORK REGISTER                   27090021
+         SPACE 2                                                        27180021
+****     THE FOLLOWING REGISTER EQUATES WILL BE USED IN THE             27270021
+****     PROGRAM FLOW                                                   27360021
+         SPACE                                                          27450021
+PARMRG0  EQU   R0                       POINTS TO USER DATA UPON ENTRY  27540021
+DCBRG1   EQU   R1                       POINTS TO DCB UPON ENTRY        27630021
+DIRSCNRG EQU   R2                       POINTS TO LOCATION IN DIRECTORY 27720021
+*                                       FOR ACTION TAKING PLACE         27810021
+PARMRG2  EQU   DIRSCNRG                 USED TO SAVE ADDR OF USER DATA  27900021
+TTRCRG   EQU   R3                       MANIPULATES THE AMOUNT OF       28080002
+*                                       USER DATA FOR AN ENTRY          28170021
+RTCB     EQU   R4                       TCB ADDRESS              Y02072 28220002
+ENTADDRG EQU   RTCB                     CONTAINS ADDR OF ENTRY   Y02072 28260002
+*                                       SUPPLIED BY THE USER     Y02072 28350002
+BUFADRG  EQU   R5                       ADDRESSABILITY TO BUFFERS       28440021
+RWRK1    EQU   R6                       WORK REGISTER                   28580002
+RWRK2    EQU   R7                       WORK REGISTER                   28590002
+FUNRG    EQU   R8                       CONTAINS FUNCTION CODE          28620021
+SAVECDRG EQU   R9                       SAVES THE RETURN CODE           28710021
+RDEB     EQU   SAVECDRG                 ADDRESS OF USER'S DEB    Y02072 28760002
+WRKARG   EQU   R10                      ADDRESS OF THE WORK AREA        28800021
+DCBRG11  EQU   R11                      ADDRESS OF THE USER'S DCB       28890021
+BASERG   EQU   R12                      BASE REGISTER                   28980021
+RSVRB    EQU   R13                      SVRB ADDRESS             Y02072 29070002
+LINKRG   EQU   R14                      LINKAGE REGISTER WITHIN MODULE  29160021
+RTNRG    EQU   R15                      CONTAINS RETURN CODE            29250021
+         SPACE 2                                                        29340002
+****     DISPLACEMENT AND MASK EQUATES                                  29430021
+         SPACE                                                          29520021
+THREE    EQU   3                        DISPLACE BY THREE               29790021
+UNITEXCP EQU   X'01'                    TEST FOR UNIT EXCEPTION         30420021
+         SPACE                                                          30960021
+****     ERROR CONDITION EQUATES                                        31050021
+         SPACE                                                          31140021
+DIRECTRY EQU   1                        IND I/O ERROR ENCOUNTER- Y02072 31190002
+*                                       ED IN DIRECTORY          Y02072 31210002
+NMEXIST  EQU   X'04'                    NAME ALREADY EXISTS             31230021
+NONAME   EQU   X'08'                    NAME DOESN'T EXIST              31320021
+IOERRCD  EQU   X'10'                    I/O ERROR                       31410021
+DCBERR1  EQU   X'14'                    DCB NOT OPEN                    31500021
+NOCORE   EQU   X'18'                    NO CORE AVAILABLE               31590021
+         EJECT                                                          31770021
+*********************************************************************** 31860021
+****                                                               **** 31950021
+****     ESTABLISH BASE REGISTERS                                  **** 32040002
+****                                                               **** 32130021
+*********************************************************************** 32220021
+         BALR  BASERG,0                 ESTABLISH BASE ADDR             32310002
+         USING *,BASERG                 ESTABLISH BASE ADDR             32400021
+         USING TCB,RTCB                 ESTABLISH TCB BASE REG   Y02072 32450002
+         LR    RSVRB,R5                 GET SVRB ADDRESS         Y02072 32460002
+         USING RBSECT,RSVRB             ESTABLISH SVRB BASE REG  Y02072 32500002
+         ST    R14,XSAREG14             SAVE RETURN REGISTER     Y02072 32550002
+         SR    RWRK1,RWRK1              CLEAR REGISTER           Y02072 32552002
+         ST    RWRK1,XSASTWWA           IND GETMAIN NOT YET DONE Y02072 32554002
+         MVC   XSAESTAE(ESTAELEN),ESTALIST  MOVE ESTAE LIST TO   Y02072 32556002
+*                                       SVRB EXTENDED SAVE AREA  Y02072 32558002
+         SPACE 2                                                        32560002
+****                                                                    32570002
+****     ISSUE THE ESTAE MACRO TO ESTABLISH A TASK RECOVERY ROUTINE.    32572002
+****                                                                    32574002
+         ESTAE XCTL=YES,PARAM=(RSVRB),MF=(E,XSAESTAE)            Y02072 32576002
+         SPACE 2                                                        32587302
+****                                                                    32589302
+****     MODSET TO THE CALLER'S KEY.                                    32591302
+****                                                                    32593302
+         MODESET EXTKEY=RBT234,WORKREG=1                         Y02072 32594902
+         SPACE                                                          32604902
+         L     PARMRG0,RBGRS0           RESTORE PARMETER REG     Y02072 32609902
+         L     DCBRG1,RBGRS1            RESTORE DCB REGISTER     Y02072 32619902
+         SPACE 2                                                        32640002
+*********************************************************************** 32670021
+****                                                               **** 32760021
+****     THIS SECTION DETERMINES THE FUNCTION OF STOW REQUESTED    **** 32850021
+****                                                               **** 32940021
+*********************************************************************** 33030021
+         LA    FUNRG,STWADD             SET FUNCTION TO ADD             33120021
+         LTR   PARMRG0,PARMRG0          TEST FOR DELETE OR CHANGE       33210021
+         BP    TEST1                    BRANCH IF ADD OR REPLACE        33300021
+         SLL   FUNRG,1                  SET CODE FOR REPLACE            33390002
+         SPACE                                                          33480021
+TEST1    EQU   *                                                        33570021
+         LTR   DCBRG1,DCBRG1            TEST FOR ADD/REPLACE            33660021
+         BP    TEST02                   BRANCH IF ADD / REPLACE         33750021
+         SLL   FUNRG,1                  SET FUNCTION TO DELETE          33840002
+         SPACE                                                          33930021
+TEST02   EQU   *                                                        34020021
+         LTR   PARMRG0,PARMRG0          TEST FOR CHANGE FUNCTION        34110021
+         BP    DCBTEST                  IF NOT BRANCH                   34200021
+         SLL   FUNRG,1                  SET FUNCTION TO CHANGE          34290002
+         SPACE 2                                                        34380021
+*********************************************************************** 34470021
+****                                                               **** 34560021
+****     THIS SECTION TESTS THE DATA CONTROL BLOCK FOR OPEN        **** 34650021
+****                                                               **** 34740021
+*********************************************************************** 34830021
+DCBTEST  EQU   *                                                        34920021
+         LPR   PARMRG2,PARMRG0          MAKE PARAMETER ADDR POSITIVE    35010021
+         LPR   DCBRG11,DCBRG1           MAKE DCB ADDR POSITIVE          35100021
+         USING IHADCB,DCBRG11           ESTABLISH DCB ADDRESSABILITY    35190021
+         TM    DCBOFLGS,DCBOFOPN        DATA CONTROL BLOCK OPEN         35280002
+         BO    GETWORK                  GO GET THE WORK AREA            35370021
+         SPACE                                                          35420002
+INVALDCB EQU   *                                                 Y02072 35460002
+         LA    RTNRG,DCBERR1            SET THE RETURN CODE             35550021
+         SPACE                                                          35640021
+RTRNUSR1 EQU   *                                                 Y02072 35730002
+         SR    R0,R0                    CLEAR REASON CODE REG    Y02072 35780002
+         SPACE 2                                                        35790002
+****                                                                    35792002
+****     MODESET TO KEY 0 AND RETURN TO THE CALLER.                     35794002
+****                                                                    35796002
+RTRNUSR2 EQU   *                                                 Y02072 35800002
+         L     R14,XSAREG14             RESTORE RETURN ADDRESS   Y02072 35810002
+         MODESET EXTKEY=SUPR            MODESET TO KEY 0         Y02072 35812002
+         BR    R14                      RETURN TO THE CALLER     Y02072 35820002
+         SPACE 2                                                        35910021
+*********************************************************************** 36000021
+****                                                               **** 36090021
+****     THIS SECTION GETS THE WORK AREA FOR STOW                  **** 36180021
+****                                                               **** 36270021
+*********************************************************************** 36360021
+GETWORK  EQU   *                                                        36450021
+         L     RDEB,DCBDEBAD            GET DEB ADDRESS                 36720002
+         USING DEBBASIC,RDEB            ESTABLISH DEB BASE REGISTER     36810002
+         TM    DEBOPATB,DEBACCS         DCB OPEN FOR INPUT              36900002
+         BZ    INVALDCB                 BRANCH IF YES            Y02072 36990002
+         GETMAIN  RC,LV=CORESIZE,SP=229  GET THE WORK AREA       Y02072 37800002
+         SPACE                                                          37850002
+         LTR   RTNRG,RTNRG              GETMAIN SUCCESSFUL              37890021
+         LA    RTNRG,NOCORE             SET RETURN CODE                 37980021
+         BNZ   RTRNUSR1                 RETURN TO USER IF NOT    Y02072 38070002
+         LR    WRKARG,R1                GET THE ADDRESS OF CORE  Y02072 38080002
+         USING STWAREA,WRKARG           EST WORK AREA BASE REG   Y02072 38090002
+         SPACE 2                                                        38120002
+****                                                                    38130002
+****     MODESET TO KEY 0 IN ORDER TO SAVE THE WORK AREA ADDRESS IN     38140002
+****     THE EXTENDED SAVE AREA OF THE SVRB.                            38150002
+****                                                                    38152002
+         MODESET EXTKEY=SUPR                                     Y02072 38154002
+         ST    WRKARG,XSASTWWA          SAVE WORK AREA ADDR      Y02072 38156002
+         SPACE 2                                                        38158002
+****                                                                    38158402
+****     RETURN TO THE CALLER'S KEY.                                    38158802
+****                                                                    38159202
+         MODESET EXTKEY=RBT234,WORKREG=1                         Y02072 38159602
+         DROP  RTCB                     DROP TCB BASE REGISTER   Y02072 38159702
+         SPACE 2                                                        38160021
+*********************************************************************** 38250021
+****                                                               **** 38340021
+****     THIS SECTION CLEARS THE WORK AREA AND SAVES THE           **** 38430002
+****     CONDITION AND FUNCTION CODES.                             **** 38520002
+****                                                               **** 38700021
+*********************************************************************** 38790021
+         XC    STWAREA(STWFLGLN),STWAREA  CLEAR THE CONDITION AND       39150021
+*                                       FUNCTION BYTES                  39240021
+         STC   FUNRG,STWFLAG1           SAVE FUNCTION CODE              39330021
+         TM    DCBOFLGS,DCBOFLWR        LAST OPERATION A WRITE          39510002
+         BNO   CHANGECK                 NO, CHECK FOR CHANGE     Y02072 39600002
+         OI    STWFLAG1,STWDCBWR        INDICATE LAST OPERATION         39690021
+*                                       WAS A WRITE                     39780021
+         SPACE                                                          39870021
+CHANGECK EQU   *                                                 Y02072 39960002
+         LA    ENTADDRG,STWOLDNM        POINT TO LOCATION FOR           41040021
+*                                       ENTRY TO BE MOVED               41130021
+         TM    STWFLAG1,STWCHNG         CHANGE FUNCTION                 41220021
+         BNO   DATEST                   GO MOVE THE PARAMETER           41310021
+         SPACE 2                                                        41400021
+*********************************************************************** 41490021
+****                                                               **** 41580021
+****     WITH A CHANGE REQUEST THIS SECTION DETERMINES WHICH       **** 41670021
+****     ENTRY IS THE LOWEST IN ALPHANUMERIC SEQUENCE SO           **** 41760021
+****     THE FIRST SEARCH IS ON THAT ENTRY                         **** 41850021
+****                                                               **** 41940021
+*********************************************************************** 42030021
+         USING STOW,PARMRG2             ESTABLISH ADDRESSABILITY        42120002
+         LR    PARMRG0,PARMRG2          SAVE THE PARM. ADDR.    A50697  42170021
+         CLC   STONAME,STOCHANG         COMPARE OLD ENTRY NAME TO NEW   42210002
+*                                       ENTRY NAME                      42300021
+         BH    OLDHIGH                  BRANCH IF OLD NAME IS HIGHER    42390021
+         OI    STWFLAG1,STWCHNG+STWDEL  INDICATE DELETE FUNCTION        42480021
+*                                       TO BE PERFORMED FIRST           42570021
+         ST    PARMRG2,STWPARM          SAVE ADDRESS OF OLD NAME        42660021
+         LA    PARMRG2,STOCHANG         POINT TO NEW NAME               42750002
+         ST    PARMRG2,STWHIGH          SAVE ADDRESS OF NEW NAME        42840021
+         B     POINTOLD                 GO SAVE BOTH NAMES              42930021
+         SPACE                                                          43020021
+OLDHIGH  EQU   *                                                        43110021
+         OI    STWFLAG1,STWCHNG+STWADD  INDICATE ADD FUNCTION TO        43200021
+*                                       BE PERFORMED FIRST              43290021
+         ST    PARMRG2,STWHIGH          SAVE ADDRESS OF OLD NAME        43380021
+         LA    PARMRG2,STOCHANG         POINT TO NEW NAME               43470002
+         ST    PARMRG2,STWPARM          SAVE NEW NAME ADDRESS           43560021
+         SPACE                                                          43650021
+POINTOLD EQU   *                                                        43740021
+         LPR   PARMRG2,PARMRG0          POINT TO PARAMETER              43830021
+*                                       ENTRY TO BE ACTED UPON          43920021
+         MVC   STWOLDNM(L'STWOLDNM+L'STWNEWNM),STONAME  SAVE THE        44010002
+*                                       USER' PARAMETER FOR CHANGE      44100021
+         B     BUILDIO                  GO BUILD THE I/O                44190021
+         SPACE 2                                                        44280021
+*********************************************************************** 44370021
+****                                                               **** 44460021
+****     THIS SECTION MOVES THE USER'S PARAMETER TO THE WORK AREA  **** 44550021
+****                                                               **** 44640021
+*********************************************************************** 44730021
+DATEST   EQU   *                                                        44820021
+         LA    TTRCRG,L'STONAME         LENGTH TO BE MOVED              44910002
+         ST    PARMRG2,STWPARM          SAVE THE ENTRY ADDRESS          45000021
+         TM    STWFLAG1,STWDEL          DELETE FUNCTION                 45090021
+         BO    MOVEUSER                 YES GO MOVE ITS ENTRY           45180021
+         IC    TTRCRG,STOCTTRN          GET THE AMOUNT OF USER DATA     45450002
+         SLL   TTRCRG,27                CLEAR ALIAS BIT                 45540002
+         SRL   TTRCRG,26                RESTORE, MULTIPLY BY TWO        45630002
+         LA    TTRCRG,STOLNGMV(TTRCRG)  ADD NAME AND TTR LENGTH         45720002
+         LA    ENTADDRG,STWNEWNM        POINT TO AREA FOR ENTRY         45810021
+*                                       TO BE MOVED                     45900021
+         SPACE                                                          45990021
+MOVEUSER EQU   *                                                        46080021
+         BCTR  TTRCRG,0                 PREPARE FOR EXECUTE             46170002
+         EX    TTRCRG,MOVEPARM          MOVE THE USER'S ENTRY           46260021
+         TM    STWFLAG1,STWCHNG+STWDEL  CHANGE OR DELETE FUNCTION       46350021
+         BM    BUILDIO                  IF YES, BRANCH                  46440021
+         TM    STWCTTRN,STWALIAS        ALIAS BIT ON                    46530021
+         BO    BUILDIO                  IF YES, BRANCH                  46620021
+         MVC   STWTTR,DCBRELAD          SAVE THE RELATIVE ADDR.         46710021
+         MVC   STWCTTRN,STOCTTRN        GET THE USER'S LENGTH           46800002
+         SPACE 2                                                        46890021
+*********************************************************************** 46980021
+****                                                               **** 47070021
+****     THIS SECTION BUILDS THE ECB IOB AND CHANNEL PROGRAMS      **** 47160021
+****     THAT WILL BE USED BY STOW.                                **** 47250021
+****                                                               **** 47340021
+*********************************************************************** 47430021
+         SPACE 2                                                        47520021
+****                                                                    47610021
+****     THIS PART BUILDS THE ECB AND THE IOB                           47700021
+****                                                                    47790021
+BUILDIO  EQU   *                                                        47880021
+         DROP  PARMRG2                  DROP ADDRESSABILITY             47970021
+         SR    R15,R15                  CLEAR FOR ECB                   48060021
+         SR    R0,R0                    CLEAR FOR IOB SENSE             48150021
+         LA    R1,ECB                   POINT TO THE ECB                48240021
+         SR    R2,R2                    CLEAR FOR IOB CHANNEL           48330021
+         LA    R4,STWINCP               POINT TO THE CHANNEL PROG       48420021
+         LR    R5,DCBRG11               GET THE DCB ADDRESS      Y02072 48690002
+         SR    R6,R6                    CLEAR FOR RESTART ADDR          48780021
+         SR    R7,R7                    CLEAR FOR BLOCK COUNT           48870021
+         LM    R8,R9,DEBBASND+(DEBBINUM-DEBDASD)  GET DATA SET          48960021
+*                                       STARTING BBCCHH FROM THE DEB    49050021
+         DROP  RDEB                     DROP DEB BASE REGISTER   Y02072 49100002
+         SRDL  R8,16                    SET EXTENT NUMBER TO ZERO       49140002
+         SLDL  R8,8                     SET RECORD NUMBER TO ZERO       49230002
+         STM   R15,R9,ECB               STORE REGISTERS TO CREATE       49320021
+*                                       THE ECB AND IOB                 49410021
+         OI    IOBFLAG1,IOBUNREL+IOBSPSVC  SET UNRELATED AND NO  Y02072 49590002
+*                                       APPENDAGE PROCESS. FLAGS Y02072 49640002
+         SPACE 2                                                        49680021
+****                                                                    49770021
+****     THIS PART BUILDS THE CHANNEL PROGRAMS                          49860021
+****                                                                    49950021
+         LM    R14,R9,CHNLPRG1          LOAD SKELETON CHANNEL PROGRAM   50040021
+         AR    R14,R10                  ESTABLISH ADDRESSING            50130021
+*                                       FOR SEARCH ID                   50220021
+         AR    R0,R10                   ESTABLISH TRANSFER ADDR         50310021
+         AR    R2,R10                   ADDRESSING FOR READ COUNT       50400021
+         A     R4,STWPARM               POINT TO USER ENTRY             50490021
+         AR    R6,R10                   ESTABLISH ADDRESSING            50580021
+         AR    R8,R10                   ESTABLISH ADDRESSING            50670021
+         STM   R14,R9,STWINCP           STORE REGISTERS TO CREATE       50760021
+*                                       PARTIAL CHANNEL PROGRAM         50850021
+         LM    R14,R15,RDCTKDA          LOAD REST OF SKELETON           50940021
+*                                       CHANNEL PROGRAM                 51030021
+         AR    R14,R10                  ESTABLISH ADDRESSING            51120021
+         STM   R14,R15,STWRCKD1         COMPLETE CHANNEL PROGRAM        51210021
+         SPACE                                                          51300021
+CSWTEST  EQU   *                                                        51390021
+         BAL   LINKRG,EXCPSTW           GO EXECUTE CHANNEL PROG         51480021
+         SPACE 2                                                        51570021
+*********************************************************************** 51660021
+****                                                               **** 51750021
+****     THIS SECTION SEARCHES FOR ENTRY IN THE DIRECTORY          **** 51840021
+****     THAT IS EQUAL OR HIGHER THAN THE REQUESTER'S PARAMETER    **** 51930021
+****                                                               **** 52020021
+*********************************************************************** 52110021
+         LA    BUFADRG,STWBUF1          POINT TO THE FIRST BUFFER       52200021
+         USING BUFFER,BUFADRG           ESTABLISH ADDRESSABILITY        52290021
+         LA    DIRSCNRG,BUFENTRY        POINT TO FIRST ENTRY            52380021
+         L     ENTADDRG,STWPARM         GET ADDRESS OF ENTRY IN         52470021
+*                                       USER'S AREA                     52560021
+         TM    STWFLAG1,STWFLOW         FIRST TIME THROUGH              52650021
+         BNO   DIRSCAN                  YES, GO SEARCH DIRECTORY        52740021
+         L     ENTADDRG,STWHIGH         NO, POINT TO SECOND ENTRY       52830021
+         SPACE                                                          52920021
+DIRSCAN  EQU   *                                                        53010021
+         CLC   0(L'STONAME,DIRSCNRG),0(ENTADDRG)  COMPARE ENTRY         53100002
+*                                       NAME USER SUPPLIED TO ONE       53190021
+*                                       IN THE DIRECTORY                53280021
+         BNL   TSTRQST                  ENTRY IN DIRECTORY EQUAL        53370021
+*                                       OR HIGH, BRANCH                 53460021
+         USING PDS2,DIRSCNRG            ESTABLISH ADDRESSABILITY        53550002
+         IC    TTRCRG,PDS2INDC          GET C OF TTRC FOR THIS ENTRY    53640002
+         SLL   TTRCRG,27                CLEAR TTR AND ALIAS BITS        53730002
+         SRL   TTRCRG,26                RESTORE AND MULTIPLY BY TWO     53820002
+         LA    DIRSCNRG,PDS2USRD(TTRCRG)  POINT TO NEXT ENTRY IN THE    53910002
+*                                       DIRECTORY                       54000002
+         B     DIRSCAN                  GO LOOK AT NEXT ENTRY           54090021
+         SPACE 2                                                        54180021
+*********************************************************************** 54270021
+****                                                               **** 54360021
+****     THIS SECTION TESTS THE VALIDITY OF THE USER'S REQUEST     **** 54450021
+****                                                               **** 54540021
+*********************************************************************** 54630021
+TSTRQST  EQU   *                                                        54720021
+         BE    EQLENT                   IF COMPARE OF ENTRIES WAS       54810021
+*                                       EQUAL, BRANCH                   54900021
+         TM    STWFLAG1,STWFLOW         FIRST TIME THROUGH              54990021
+         BNO   DELETFUN                 YES, BRANCH                     55080021
+         TM    STWFLAG1,STWCHNG+STWADD  CHANGE-ADD TO BE PERFORMED      55170021
+         BO    EREXIT1                  YES, GO RETURN TO USER          55260021
+         B     SAVEOFF                  GO SAVE THE OFFSET              55350021
+         SPACE                                                          55440021
+DELETFUN EQU   *                                                        55530021
+         TM    STWFLAG1,STWDEL          DELETE FUNCTION                 55620021
+         BO    EREXIT1                  YES, RETURN TO USER             55710021
+         TM    STWFLAG1,STWREPL         REPLACE FUNCTION                55800021
+         BNO   SAVEOFF                  NO, BRANCH                      55890021
+         MVI   STWRTN,NONAME            INDICATE ENTRY COULD NOT        55980021
+*                                       BE FOUND IN THE DIRECTORY       56070021
+         XI    STWFLAG1,STWREPL+STWADD  CHANGE FUNCTION TO ADD          56160021
+         B     SAVEOFF                  GO SAVE OFFSET                  56250021
+         SPACE                                                          56340021
+EQLENT   EQU   *                                                        56430021
+         TM    STWFLAG1,STWFLOW         FIRST TIME THROUGH              56520021
+         BNO   ADDTEST                  YES, BRANCH                     56610021
+         TM    STWFLAG1,STWCHNG+STWDEL  CHANGE-DELETE REQUESTED         56700021
+         BO    ER4EXIT                  YES, RETURN TO USER             56790021
+         B     MAYBEREP                 GO SAVE USER DATA               56880021
+         SPACE                                                          56970021
+ADDTEST  EQU   *                                                        57060021
+         TM    STWFLAG1,STWADD          ADD FUNCTION                    57150021
+         BNO   CHNGTEST                 NO, BRANCH                      57240021
+         SPACE                                                          57330021
+ER4EXIT  EQU   *                                                        57420021
+         LA    SAVECDRG,NMEXIST         SET RETURN CODE                 57510021
+         B     EREXIT2                  RETURN TO USER                  57600021
+         SPACE                                                          57690021
+CHNGTEST EQU   *                                                        57780021
+         TM    STWFLAG1,STWREPL+STWCHNG CHANGE OR REPLACE               57870021
+         BZ    SAVEOFF                  NO, GO SAVE OFFSET              57960021
+         SPACE 2                                                        58050021
+*********************************************************************** 58140021
+****                                                               **** 58230021
+****     THIS SECTION SAVES THE TTR AND USER DATA FROM THE         **** 58320021
+****     ENTRY IN THE DIRECTORY BLOCK                              **** 58410021
+****                                                               **** 58500021
+*********************************************************************** 58590021
+MAYBEREP EQU   *                                                        58680021
+         USING PDS2,DIRSCNRG            ESTABLISH ENTRY ADDR            58770002
+         TM    STWFLAG1,STWREPL         REPLACE FUNCTION                58860021
+         BNO   SAVENTRY                 NO, SAVE ENTRY FOR CHANGE       58950021
+         TM    STWFLAG1,STWDCBWR        LAST OPERATION A WRITE          59040021
+         BO    SAVEOFF                  YES, GO SAVE OFFSET             59130021
+         TM    STWCTTRN,STWALIAS        IS ENTRY AN ALAIS       XA02068 59132002
+         BO    SAVEOFF                  YES, USE TTR SUPPLIED   XA02068 59134002
+*                                       BY THE USER             XA02068 59136002
+         MVC   STWTTR,PDS2TTRP          SAVE TTR FROM OLD ENTRY         59220002
+         B     SAVEOFF                  GO SAVE OFFSET                  59310021
+         SPACE                                                          59400021
+SAVENTRY EQU   *                                                        59490021
+         IC    TTRCRG,PDS2INDC          GET C OF THE TTRC FOR           59580002
+*                                       THIS ENTRY                      59670021
+         SLL   TTRCRG,27                CLEAR TTR AND ALIAS BITS        59760002
+         SRL   TTRCRG,26                RESTORE AND MULTIPLY BY TWO     59850002
+         LA    TTRCRG,(PDS2USRD-PDS2TTRP)-1(TTRCRG)  SET LENGTH TO MOVE 59940002
+*                                       THE TTRC AND USER DATA          60030002
+         LA    ENTADDRG,STWTTR          POINT IN WORK AREA TO           60120021
+*                                       RELATIVE ADDR. FOR ENTRY        60210021
+         EX    TTRCRG,MVTTRDAT          SAVE THE ENTRY'S TTRC           60300021
+*                                       AND USER DATA                   60390021
+         B     SAVEOFF                  GO SAVE THE OFFSET              60480021
+         SPACE 2                                                        60570021
+*********************************************************************** 60660021
+****                                                               **** 60750021
+****     THIS SECTION IS ENTERED WHEN AN ERROR IS DETECTED         **** 60840021
+****     AND CONTROL IS TO BE PASSED TO THE USER                   **** 60930021
+****                                                               **** 61020021
+*********************************************************************** 61110021
+EREXIT1  EQU   *                                                        61200021
+         LA    SAVECDRG,NONAME          SET RETURN CODE                 61290021
+         SPACE                                                          61380021
+EREXIT2  EQU   *                                                        61470021
+         SR    RWRK1,RWRK1              CLEAR FOR REASON CODE    Y02072 61520002
+         SPACE                                                          61530002
+EREXIT3  EQU   *                                                 Y02072 61540002
+         FREEMAIN  R,LV=CORESIZE,A=(WRKARG),SP=229  FREE CORE    Y02072 61830002
+         SPACE                                                          61832002
+         LR    R0,RWRK1                 GET THE REASON CODE      Y02072 61840002
+         LR    RTNRG,SAVECDRG           GET THE RETURN CODE      YM0943 61880001
+         B     RTRNUSR2                 RETURN TO THE CALLER     Y02072 61920002
+         SPACE 2                                                        62010021
+*********************************************************************** 62100021
+****                                                               **** 62190021
+****     THIS SECTION ISSUES THE EXCP AND TESTS FOR                **** 62280021
+****     A SUCCESSFUL COMPLETION                                   **** 62370021
+****                                                               **** 62460021
+*********************************************************************** 62550021
+EXCPSTW  EQU   *                                                        62640021
+         EXCP  IOBSTDRD                 EXECUTE THE CHANNEL PROG        62730021
+         TM    ECBCC,ECBPOST            HAS ECB BEEN POSTED    @ZA12202 62820037
+         BO    BYWAIT                   BYPASS WAIT SVC        @ZA12202 62840037
+         WAIT  ECB=ECBCC                WAIT FOR PROGRAM                62860037
+BYWAIT   EQU   *                                               @ZA12202 62880037
+         TM    ECBCC,ECBNORM            SUCCESSFUL COMPLETION           62910021
+         BCR   1,LINKRG                 YES, RETURN TO MAIN LINE        63000021
+         NI    DCBIFLGS,X'FF'-DCBIFEC   TURN OFF ERROR FLAGS     Y02072 63050002
+         TM    IOBCSW+3,UNITEXCP        UNIT EXCEPTION                  63090002
+         BCR   1,LINKRG                 YES, RETURN TO MAIN LINE        63180021
+         LA    RWRK1,DIRECTRY           READ ERROR REASON CODE   Y02072 63230002
+         LA    SAVECDRG,IOERRCD         SET IO ERROR CODE               63270021
+         B     EREXIT3                  RETURN TO USER           Y02072 63360002
+         SPACE 2                                                        63450021
+*********************************************************************** 63540021
+****                                                               **** 63630021
+****     THIS SECTION WILL ESTABLISH THE NEW KEY TO SEARCH         **** 63720021
+****     ON FOR THE CHANGE FUNCTION                                **** 63810021
+****                                                               **** 63900021
+*********************************************************************** 63990021
+SETFRST  EQU   *                                                        64080021
+         OI    STWFLAG1,STWFLOW         INDICATE SECOND TIME THROUGH    64170021
+         L     ENTADDRG,STWHIGH         POINT TO THE HIGH NAME          64260021
+*                                       IN USER'S AREA                  64350021
+         MVC   STWKYAD1,STWHIGH+1       SET NEW SEARCH KEY              64440021
+         B     CSWTEST                  GO ISSUE EXCP                   64530021
+         SPACE 2                                                        64620021
+*********************************************************************** 64710021
+****                                                               **** 64800021
+****     THIS SECTION OF CODE SAVES THE OFFSET OF THE ENTRY INTO   **** 64890021
+****     THE INPUT BUFFER.                                         **** 64980021
+****                                                               **** 65070021
+*********************************************************************** 65160021
+SAVEOFF  EQU   *                                                        65250021
+         SR    DIRSCNRG,BUFADRG         DETERMINE OFFSET                65340021
+         TM    STWFLAG1,STWFLOW         FIRST TIME THROUGH              65430021
+         BO    NEXTLOAD                 NO, GO TO DETERMINE NEXT LOAD   65520021
+         STH   DIRSCNRG,STWOFFLW        SAVE THE FIRST ENTRY OFFSET     65610021
+         TM    STWFLAG1,STWCHNG         CHANGE FUNCTION                 65700021
+         BO    SETFRST                  YES, RETURN TO MAINLINE         65790021
+         DROP  RSVRB                    DROP SVRB BASE REGISTER  Y02072 65840002
+         SPACE 2                                                        65880021
+*********************************************************************** 65970021
+****                                                               **** 66060021
+****     THIS SECTION BRANCHES TO THE SECOND LOAD.                 **** 66150003
+****                                                               **** 66240021
+*********************************************************************** 66330021
+NEXTLOAD EQU   *                                                        66420021
+         L     R15,V210A                ADDRESS OF NEXT LOAD   @Z30TSMI 67140003
+         BR    R15                      BRANCH TO NEXT LOAD    @Z30TSMI 67150003
+         SPACE 2                                                        67190002
+****                                                                    67200002
+****     ESTABLISH THE ESTAE EXIT BOOTSTRAP ROUTINE.                    67210002
+****                                                                    67220002
+EXITRTN  IGGSTAE STOWTRR                EST AN EXIT ROUTINE      Y02072 67222002
+         EJECT                                                          67230021
+*********************************************************************** 67320021
+****                                                               **** 67410021
+****     SKELETON CHANNEL PROGRAMS                                 **** 67500021
+****                                                               **** 67590021
+*********************************************************************** 67680021
+CHNLPRG1 DS    0F                       THIS CHANNEL PROGRAM IS USED TO 67770021
+*                                       READ TWO DIRECTORY BLOCKS       67860021
+RDSRCHID DC    X'31'                    SEARCH ID EQUAL                 67950021
+         DC    AL3(IOBCC-STWAREA)       ADDRESS OF SEARCH ARGUMENT      68040021
+         DC    X'4000'                  COMMAND CHAINING                68130021
+         DC    X'0005'                  NO. OF BYTES                    68220021
+RDSRCTIC DC    X'08'                    TRANSFER CONTROL                68310021
+         DC    AL3(STWSRCH1-STWAREA)    ADDR OF SEARCH ID               68400021
+         DC    XL4'00'                  NOT USED, BUT REQUIRED          68490021
+RDCOUNT  DC    X'92'                    READ COUNT                      68580021
+         DC    AL3(STWBUF1-STWAREA)     ADDR. FOR COUNT                 68670021
+         DC    X'4000'                  COMMAND CHAINING                68760021
+         DC    X'0008'                  NO. OF BYTES TRANSFERED         68850021
+RDSRCHKY DC    X'E9'                    SEARCH KEY EQUAL- HIGH          68940021
+         DC    AL3(0)                   ADDR OF USER PARAMETER          69030021
+         DC    X'4000'                  COMMAND CHAINING                69120021
+         DC    X'0008'                  NO. BYTES TO SEARCH ON          69210021
+RDSRCHTC DC    X'08'                    TRANSFER CONTROL                69300021
+         DC    AL3(STWRDCT1-STWAREA)    ADDR. OF READ COUNT             69390021
+         DC    XL4'00'                  NOT USED BUT REQUIRED           69480021
+RDRDDATA DC    X'86'                    READ DATA                       69570021
+         DC    AL3(STWBUF1+L'BUFCNT+L'BUFKEY-STWAREA)  ADDR. FOR DATA   69660021
+         DC    X'4000'                  COMMAND CHAINING                69750021
+         DC    X'0100'                  NO. OF BYTES TRANSFERED         69840021
+RDCTKDA  DC    X'9E'                    READ COUNT KEY DATA             69930021
+         DC    AL3(STWBUF2-STWAREA)     ADDR. FOR COUNT KEY DATA        70020021
+         DC    X'0000'                  NO FLAGS                        70110021
+         DC    X'0110'                  NO. OF BYTES TRANSFERED         70200021
+         SPACE 2                                                        70290021
+*********************************************************************** 70380021
+****                                                               **** 70470021
+****     DEFINED CONSTANTS                                         **** 70560021
+****                                                               **** 70650021
+*********************************************************************** 70740021
+MOVEPARM MVC   0(0,ENTADDRG),0(PARMRG2) MOVE USER PARAMETER TO          71010021
+*                                       WORK AREA                       71100021
+MVTTRDAT MVC   0(0,ENTADDRG),L'PDS2NAME(DIRSCNRG) MOVE USER DATA FROM   71190002
+*                                       DIRECTORY TO WORK AREA          71280021
+V210A    DC    V(IGG0210A)              ADDRESS OF NEXT LOAD   @Z30TSMI 71290003
+STOWTRR  DC    CL8'IGCT0021'            STOW ESTAE ROUTINE NAME  Y02072 71330002
+ESTALIST ESTAE EXITRTN,RECORD=YES,MF=L  LIST FORM OF ESTAE MACRO Y02072 71332002
+ESTAELEN EQU   *-ESTALIST               LENGTH OF ESTAE LIST     Y02072 71334002
+         DC    C'@ZA12202'              MODULE ID              @ZA12202 71334637
+         DC    CL8'&SYSDATE'            LATEST DATE            @ZA12202 71335237
+PATCH    DC    0XL50'0',C'IGC0002A',42X'0'  50 BYTE PATCH AREA   Y02072 71336002
+         EJECT                                                          72990021
+*********************************************************************** 73040002
+****                                                               **** 73050002
+****     CONTROL BLOCK DEFINITIONS                                 **** 73090002
+****                                                               **** 73140002
+*********************************************************************** 73190002
+         SPACE                                                          73240002
+         CVT   DSECT=YES                                                73290002
+         EJECT                                                          73340002
+         DCBD  DSORG=PO,DEVD=DA                                         89460021
+         EJECT                                                          89550021
+         IEZDEB                                                         89690002
+         EJECT                                                          89692002
+         IHAPDS PDSBLDL=NO                                              89694002
+         EJECT                                                          89730021
+         IHARB                                                   Y02072 89820002
+         EJECT                                                          90770002
+         IHASDWA                                                 Y02072 90820002
+         EJECT                                                          90822002
+         IHASTOW                                                        90824002
+         EJECT                                                          90870002
+         IKJTCB                                                  Y02072 90880002
+         EJECT                                                          90890002
+         IGGSTW                                                  Y02072 90892002
+         END                                                            90900021

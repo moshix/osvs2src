@@ -1,0 +1,942 @@
+         TITLE 'IEFDB402 - DYNAMIC ALLOCATION ESTAE EXIT               *00001000
+                        '                                               00002000
+IEFDB402   CSECT                                                        00003000
+*                                                                       00004000
+* NOTE - REGISTER USAGE IN THESE STATEMENTS MUST AGREE WITH THE PLS/2   00005000
+* PROCEDURE OPTIONS.                                                    00006000
+*                                                                       00007000
+           BALR   12,0                                                  00008000
+           USING  *,12                                                  00009000
+           B      SKIPID                 SKIP MODULE ID                 00010000
+           DC     AL1(16)                LENGTH OF ID                   00011000
+           DC     C'IEFDB402  73.227'                                   00012000
+SKIPID     DS     0H                                                    00013000
+           LA     11,12                                                 00014000
+           CR     0,11                                                  00015000
+           BNE    SETPTR                 BR IF SDWA EXISTS              00016000
+           LR     11,2                   ADDR OF DEPARMS                00017000
+           B      COMMON                                                00018000
+SETPTR     L      11,0(1)                ADDR OF DEPARMS                00019000
+COMMON     EQU    *                                                     00020000
+           USING  @DATD,11               DEPARMS HOLDS AUTO-STORAGE     00021000
+*                                                                       00022000
+JSCBDISP EQU 188                                                        00023000
+JSCBAOS1 EQU  72                                                        00024000
+JSCBAOS2 EQU 192                                                        00025000
+*SAVREG13 = R13;                       /*SAVE INPUT R13      @Z40FPPG*/ 00026000
+         LR    SAVREG13,R13                                     01S0039 00027000
+*SAVREG14 = R14;                       /*SAVE RETURN ADDR            */ 00028000
+         LR    SAVREG14,R14                                     01S0040 00029000
+*R13 = R11;                            /*ADDR OF SAVE AREA   @Z40FPPG*/ 00030000
+         LR    R13,R11                                          01S0041 00031000
+*IF R0=12 THEN                         /*SDWA PRESENT                */ 00032000
+         C     R0,@CF00032                                      01S0042 00033000
+         BNE   @RF00042                                         01S0042 00034000
+*  SDWAPTR = 0;                        /*NO                          */ 00035000
+         SLR   SDWAPTR,SDWAPTR                                  01S0043 00036000
+*ELSE                                                           01S0044 00037000
+*  SDWAPTR = R1;                       /*YES, INIT MACRO'S BASE      */ 00038000
+         B     @RC00042                                         01S0044 00039000
+@RF00042 LR    SDWAPTR,R1                                       01S0044 00040000
+*RFY (R0,R1,R13,R14) UNRESTRICTED;                              01S0045 00041000
+*                                                               01S0045 00042000
+@RC00042 DS    0H                                               01S0046 00043000
+* DO; /*MODESET  EXTKEY(SCHED)*/                                01S0046 00044000
+*   SPKA (16); /*SET PSW KEY*/                                  01S0047 00045000
+         LA    @10,16                                           01S0047 00046000
+         SPKA  0(@10)                                           01S0047 00047000
+* END; /*MODESET  EXTKEY(SCHED)*/               /*SCHED KEY FOR CHAIN   00048000
+*                                                 MANIPULATION, ETC.    00049000
+*      */                                                       01S0048 00050000
+*IF DSQBADFC=ON                        /*DSAB FWD-CHAIN BAD          */ 00051000
+*  | DSQBADBC=ON THEN                  /*DSAB BACK-CHAIN BAD         */ 00052000
+         L     @10,DEJSCB(,R11)                                 01S0049 00053000
+         L     @10,JSCDSABQ(,@10)                               01S0049 00054000
+         TM    DSQBADFC(@10),B'10000000'                        01S0049 00055000
+         BO    @RT00049                                         01S0049 00056000
+         TM    DSQBADBC(@10),B'10000000'                        01S0049 00057000
+         BNO   @RF00049                                         01S0049 00058000
+@RT00049 DS    0H                                               01S0050 00059000
+*  DO;                                                          01S0050 00060000
+*/********************************************************************/ 00061000
+*/*                                                                  */ 00062000
+*/* SEGMENT NAME - FIXCHAIN                                          */ 00063000
+*/*                                                                  */ 00064000
+*/* DESCRIPTIVE NAME - FIX DSAB CHAIN                                */ 00065000
+*/*                                                                  */ 00066000
+*/* FUNCTION - IF BITS IN THE DSAB QDB INDICATE THAT EITHER THE      */ 00067000
+*/*            FORWARD OR THE BACK-CHAINS ARE INVALID, CORRECT THE   */ 00068000
+*/*            INVALID CHAIN.                                        */ 00069000
+*/*                                                                  */ 00070000
+*/* OPERATION -                                                      */ 00071000
+*/*            IF BIT DSQBADBC (IN THE QDB) IS ON, THE BACK CHAIN    */ 00072000
+*/*            WILL BE RECONSTRUCTED,                                */ 00073000
+*/*            OTHERWISE THE FORWARD CHAIN IS RECONSTRUCTED.         */ 00074000
+*/*            THIS ORDER IS MEANINGFUL - BOTH BITS, DSQBADBC AND    */ 00075000
+*/*            DSQBADFC, ARE ON IF MARK-NOT-IN-USE PROCESSING HAD    */ 00076000
+*/*            FINISHED ORDERING THE FORWARD CHAIN, BUT HAD NOT      */ 00077000
+*/*            YET BEGUN MANIUPLATING THE BACK CHAIN. THE            */ 00078000
+*/*            REORDERING IS THUS CORRECTLY COMPLETED HERE.          */ 00079000
+*/*                                                                  */ 00080000
+*/*                                                                  */ 00081000
+*/* INPUT -                                                          */ 00082000
+*/*        . QDB BITS INDICATING THE STATUS OF THE FORWARD AND       */ 00083000
+*/*          BACKWARD DSAB CHAINS                                    */ 00084000
+*/*        . QDB POINTERS TO THE FIRST/LAST DSAB'S ON THE CHAIN.     */ 00085000
+*/*                                                                  */ 00086000
+*/*                                                                  */ 00087000
+*/* OUTPUT -                                                         */ 00088000
+*/*         . CORRECTLY CHAINED DSAB'S                               */ 00089000
+*/*                                                                  */ 00090000
+*/*                                                                  */ 00091000
+*/********************************************************************/ 00092000
+*IF DSQBADBC=ON THEN                   /*BACK CHAIN INVALID          */ 00093000
+         L     @10,DEJSCB(,R11)                                 02S0051 00094000
+         L     @10,JSCDSABQ(,@10)                               02S0051 00095000
+         TM    DSQBADBC(@10),B'10000000'                        02S0051 00096000
+         BNO   @RF00051                                         02S0051 00097000
+*  DO;                                                          02S0052 00098000
+*    SAVPTR = 0;                       /*BACK PTR FOR 1ST DSAB       */ 00099000
+         SLR   SAVPTR,SAVPTR                                    02S0053 00100000
+*    DSABPTR = DSQFRSTP;               /*ADDR OF 1ST DSAB ON CHAIN   */ 00101000
+         L     DSABPTR,DSQFRSTP(,@10)                           02S0054 00102000
+*    DO WHILE DSABPTR^=0;              /*LOOP THRU CHAIN             */ 00103000
+         B     @DE00055                                         02S0055 00104000
+@DL00055 DS    0H                                               02S0056 00105000
+*      DSABPTR->DSABBCHN = SAVPTR;     /*FIX BACK CHAIN              */ 00106000
+         ST    SAVPTR,DSABBCHN(,DSABPTR)                        02S0056 00107000
+*      SAVPTR = DSABPTR;               /*BACK PTR FOR NEXT DSAB      */ 00108000
+         LR    SAVPTR,DSABPTR                                   02S0057 00109000
+*      DSABPTR = DSABPTR->DSABFCHN;    /*NEXT DSAB TO FIX            */ 00110000
+         L     DSABPTR,DSABFCHN(,DSABPTR)                       02S0058 00111000
+*    END;                                                       02S0059 00112000
+@DE00055 LTR   DSABPTR,DSABPTR                                  02S0059 00113000
+         BNZ   @DL00055                                         02S0059 00114000
+*    DSQLASTP = SAVPTR;                /*FINALLY, FIX THE QDB        */ 00115000
+         L     @10,DEJSCB(,R11)                                 02S0060 00116000
+         L     @10,JSCDSABQ(,@10)                               02S0060 00117000
+         ST    SAVPTR,DSQLASTP(,@10)                            02S0060 00118000
+*  END;                                                         02S0061 00119000
+*ELSE                                  /*FORWARD CHAIN INVALID       */ 00120000
+*  DO;                                                          02S0062 00121000
+         B     @RC00051                                         02S0062 00122000
+@RF00051 DS    0H                                               02S0063 00123000
+*    SAVPTR = 0;                       /*FWD PTR FOR LAST DSAB       */ 00124000
+         SLR   SAVPTR,SAVPTR                                    02S0063 00125000
+*    DSABPTR = DSQLASTP;               /*ADDR OF LAST DSAB           */ 00126000
+         L     @10,DEJSCB(,R11)                                 02S0064 00127000
+         L     @10,JSCDSABQ(,@10)                               02S0064 00128000
+         L     DSABPTR,DSQLASTP(,@10)                           02S0064 00129000
+*    DO WHILE DSABPTR^=0;              /*LOOP THRU CHAIN             */ 00130000
+         B     @DE00065                                         02S0065 00131000
+@DL00065 DS    0H                                               02S0066 00132000
+*      DSABPTR->DSABFCHN = SAVPTR;     /*FIX FORWARD CHAIN           */ 00133000
+         ST    SAVPTR,DSABFCHN(,DSABPTR)                        02S0066 00134000
+*      SAVPTR = DSABPTR;               /*FWD CHAIN FOR NEXT DSAB     */ 00135000
+         LR    SAVPTR,DSABPTR                                   02S0067 00136000
+*      DSABPTR = DSABPTR->DSABBCHN;    /*NEXT DSAB TO FIX            */ 00137000
+         L     DSABPTR,DSABBCHN(,DSABPTR)                       02S0068 00138000
+*    END;                                                       02S0069 00139000
+@DE00065 LTR   DSABPTR,DSABPTR                                  02S0069 00140000
+         BNZ   @DL00065                                         02S0069 00141000
+*    DSQFRSTP = SAVPTR;                /*FINALLY, FIX THE QDB        */ 00142000
+         L     @10,DEJSCB(,R11)                                 02S0070 00143000
+         L     @10,JSCDSABQ(,@10)                               02S0070 00144000
+         ST    SAVPTR,DSQFRSTP(,@10)                            02S0070 00145000
+*  END;                                                         02S0071 00146000
+*    DSQBADFC = OFF;                   /*SHOW CHAIN NOW OK           */ 00147000
+@RC00051 L     @10,DEJSCB(,R11)                                 01S0072 00148000
+         L     @10,JSCDSABQ(,@10)                               01S0072 00149000
+         NI    DSQBADFC(@10),B'01111111'                        01S0072 00150000
+*    DSQBADBC = OFF;                                            01S0073 00151000
+         NI    DSQBADBC(@10),B'01111111'                        01S0073 00152000
+*  END;                                                         01S0074 00153000
+*                                                               01S0074 00154000
+*CALL IEFDB418 (DEPARMS);              /*CALL NORMALOC ERR PROC.     */ 00155000
+*                                                               01S0075 00156000
+@RF00049 ST    R11,@AL00001                                     01S0075 00157000
+         L     @15,@CV00058                                     01S0075 00158000
+         LA    @01,@AL00001                                     01S0075 00159000
+         BALR  @14,@15                                          01S0075 00160000
+*IF DSQFRSTP^=0 THEN                   /*DSAB'S PRESENT              */ 00161000
+         SLR   @10,@10                                          01S0076 00162000
+         L     @07,DEJSCB(,R11)                                 01S0076 00163000
+         L     @07,JSCDSABQ(,@07)                               01S0076 00164000
+         L     @07,DSQFRSTP(,@07)                               01S0076 00165000
+         CR    @07,@10                                          01S0076 00166000
+         BE    @RF00076                                         01S0076 00167000
+*  DSQFRSTP->DSABSIOT=0;               /*FORCE RE-READ OF SWA BLOCKS */ 00168000
+*                                                               01S0077 00169000
+         ST    @10,DSABSIOT(,@07)                               01S0077 00170000
+*IF DETCTIOP^=0 & DETCTIOL^=0 THEN     /*TCT TIOT ENTRY PASSED       */ 00171000
+@RF00076 SLR   @10,@10                                          01S0078 00172000
+         L     @07,DETCTIOP(,R11)                               01S0078 00173000
+         CR    @07,@10                                          01S0078 00174000
+         BE    @RF00078                                         01S0078 00175000
+         L     @04,DETCTIOL(,R11)                               01S0078 00176000
+         CR    @04,@10                                          01S0078 00177000
+         BE    @RF00078                                         01S0078 00178000
+*  DO;                                 /*FREE THE ENTRY              */ 00179000
+*    RFY (R0,R1) RSTD;                                          01S0080 00180000
+*    R0 = DETCTIOL;                    /*SET LENGTH, SUBPOOL         */ 00181000
+         LR    R0,@04                                           01S0081 00182000
+*    R1 = DETCTIOP;                    /*ADDR OF ENTRY               */ 00183000
+         LR    R1,@07                                           01S0082 00184000
+*    GEN(FREEMAIN R,LV=(0),A=(1));                              01S0083 00185000
+         FREEMAIN R,LV=(0),A=(1)                                        00186000
+*    RFY (R0,R1) UNRSTD;                                        01S0084 00187000
+*  END;                                                         01S0085 00188000
+*                                                               01S0085 00189000
+*IF TIOTNQSW=OFF                       /*TIOT ENQ DONE BY SVC 99     */ 00190000
+*  & DETDQLST^=(DETDQLST&&DETDQLST) THEN /*AND LIST FORM AVAILABLE   */ 00191000
+@RF00078 L     @10,DEALFMAP(,R11)                               01S0086 00192000
+         TM    TIOTNQSW(@10),B'00000100'                        01S0086 00193000
+         BNZ   @RF00086                                         01S0086 00194000
+         MVC   @TS00001(16),DETDQLST(R11)                       01S0086 00195000
+         XC    @TS00001(16),DETDQLST(R11)                       01S0086 00196000
+         CLC   DETDQLST(16,R11),@TS00001                        01S0086 00197000
+         BE    @RF00086                                         01S0086 00198000
+*  DO;                                                          01S0087 00199000
+*    RFY (R1) RSTD;                                             01S0088 00200000
+*    R1 = ADDR(DETDQLST);              /*PTR TO DEQ LIST FORM        */ 00201000
+         LA    R1,DETDQLST(,R11)                                01S0089 00202000
+*    GEN(DEQ (,,,,),RET=HAVE,MF=(E,(1)) ); /*DEQ FROM TIOT - USE        00203000
+*                                            RET=HAVE IN CASE   01S0090 00204000
+*                                            IEFDB400 LOST CONTROL      00205000
+*                                            BEFORE ENQ WAS ISSUED   */ 00206000
+         DEQ (,,,,),RET=HAVE,MF=(E,(1))                                 00207000
+*    RFY (R1) UNRSTD;                                           01S0091 00208000
+*  END;                                                         01S0092 00209000
+*                                                               01S0092 00210000
+*IF DECPYLOC^=0 & DECPYLEN^=0 THEN     /*COPY OF PARM LIST TO BE FREED* 00211000
+@RF00086 SLR   @10,@10                                          01S0093 00212000
+         L     @07,DECPYLOC(,R11)                               01S0093 00213000
+         CR    @07,@10                                          01S0093 00214000
+         BE    @RF00093                                         01S0093 00215000
+         L     @04,DECPYLEN(,R11)                               01S0093 00216000
+         CR    @04,@10                                          01S0093 00217000
+         BE    @RF00093                                         01S0093 00218000
+*  DO;                                                          01S0094 00219000
+*    RFY(R0,R1) RSTD;                                           01S0095 00220000
+*    R0 = DECPYLEN;                          /*SET UP R0 FOR FREEMAIN*/ 00221000
+         LR    R0,@04                                           01S0096 00222000
+*    R1 = DECPYLOC;                          /*R1 PTS TO AREA TO FREE*/ 00223000
+         LR    R1,@07                                           01S0097 00224000
+*    GEN(FREEMAIN R,LV=(0),A=(1) );                             01S0098 00225000
+         FREEMAIN R,LV=(0),A=(1)                                        00226000
+*    RFY (R0,R1) UNRSTD;                                        01S0099 00227000
+*  END;                                                         01S0100 00228000
+*                                                               01S0100 00229000
+* DO; /*MODESET  KEYADDR(KEY0)*/                                01S0101 00230000
+@RF00093 DS    0H                                               01S0102 00231000
+*   SPKA (KEY0); /*SET PSW KEY*/                                01S0102 00232000
+         L     @10,KEY0                                         01S0102 00233000
+         SPKA  0(@10)                                           01S0102 00234000
+* END; /*MODESET  KEYADDR(KEY0)*/               /*END USE OF SCHED KEY  00235000
+*      */                                                       01S0103 00236000
+*                                                               01S0103 00237000
+*R13 = SAVREG13;                       /*RESTORE INPUT R13   @Z40FPPG*/ 00238000
+         LR    R13,SAVREG13                                     01S0104 00239000
+*GOTO SAVREG14;                        /*RETURN TO CALLER            */ 00240000
+         BR    SAVREG14                                         01S0105 00241000
+*END IEFDB402                                                   01S0106 00242000
+*/* THE FOLLOWING INCLUDE STATEMENTS WERE FOUND IN THIS PROGRAM.      * 00243000
+*/*%INCLUDE SYSLIB  (ESTADATA)                                        * 00244000
+*/*%INCLUDE SYSLIB  (IEFZB4D9)                                        * 00245000
+*/*%INCLUDE SYSLIB  (IHASDWA )                                        * 00246000
+*/*%INCLUDE SYSLIB  (IHADSAB )                                        * 00247000
+*/*%INCLUDE SYSLIB  (IHAQDB  )                                        * 00248000
+*/*%INCLUDE SYSLIB  (IEFZB4D5)                                        * 00249000
+*/*%INCLUDE SYSLIB  (IEZJSCB )                                        * 00250000
+*/*%INCLUDE SYSLIB  (IEFZB4D7)                                        * 00251000
+*/*%INCLUDE SYSLIB  (FIXCHAIN)                                        * 00252000
+*;                                                              01S0106 00253000
+@DATA    DS    0H                                                       00254000
+@DATD    DSECT                                                          00255000
+         DS    0F                                                       00256000
+@SA00001 DS    18F                                                      00257000
+@AL00001 DS    1A                                                       00258000
+IEFDB402 CSECT                                                          00259000
+         DS    0F                                                       00260000
+@CF00032 DC    F'12'                                                    00261000
+@DATD    DSECT                                                          00262000
+         DS    0D                                                       00263000
+QDBPTR   DS    A                                                        00264000
+TCBJSCB  DS    A                                                        00265000
+@TS00001 DS    CL16                                                     00266000
+IEFDB402 CSECT                                                          00267000
+         NOPR  ((@ENDDATD-@DATD)/201*16)                                00268000
+         DS    0F                                                       00269000
+@SIZDATD DC    AL1(230)                                                 00270000
+         DC    AL3(@ENDDATD-@DATD)                                      00271000
+@CV00058 DC    V(IEFDB418)                                              00272000
+         DS    0D                                                       00273000
+KEY0     DC    F'0'                                                     00274000
+IEFDB402 CSECT                                                          00275000
+         DS   0H                                                        00276000
+PATCHLOC DC (50)X'00'                                                   00277000
+@DATD    DSECT                                                          00278000
+         ORG   *+1-(*-@DATD)/(*-@DATD) INSURE DSECT DATA                00279000
+@ENDDATD EQU   *                                                        00280000
+IEFDB402 CSECT                                                          00281000
+@00      EQU   00                      EQUATES FOR REGISTERS 0-15       00282000
+@01      EQU   01                                                       00283000
+@02      EQU   02                                                       00284000
+@03      EQU   03                                                       00285000
+@04      EQU   04                                                       00286000
+@05      EQU   05                                                       00287000
+@06      EQU   06                                                       00288000
+@07      EQU   07                                                       00289000
+@08      EQU   08                                                       00290000
+@09      EQU   09                                                       00291000
+@10      EQU   10                                                       00292000
+@11      EQU   11                                                       00293000
+@12      EQU   12                                                       00294000
+@13      EQU   13                                                       00295000
+@14      EQU   14                                                       00296000
+@15      EQU   15                                                       00297000
+SDWAPTR  EQU   @07                                                      00298000
+SAVREG14 EQU   @06                                                      00299000
+SAVREG13 EQU   @05                                                      00300000
+DSABPTR  EQU   @02                                                      00301000
+SAVPTR   EQU   @03                                                      00302000
+R0       EQU   @00                                                      00303000
+R1       EQU   @01                                                      00304000
+R11      EQU   @11                                                      00305000
+R13      EQU   @13                                                      00306000
+R14      EQU   @14                                                      00307000
+R15      EQU   @15                                                      00308000
+R2       EQU   @02                                                      00309000
+DEPARMS  EQU   0                                                        00310000
+DEALFMAP EQU   DEPARMS+200                                              00311000
+DEJSCB   EQU   DEPARMS+220                                              00312000
+DECPYLOC EQU   DEPARMS+224                                              00313000
+DECPYLEN EQU   DEPARMS+228                                              00314000
+DENQRETN EQU   DEPARMS+232                                              00315000
+DEDMYEPA EQU   DEPARMS+240                                              00316000
+DEDMYAS  EQU   DEPARMS+260                                              00317000
+DETDQLST EQU   DEPARMS+280                                              00318000
+DETCTIOP EQU   DEPARMS+296                                              00319000
+DETCTIOL EQU   DEPARMS+300                                              00320000
+SDWA     EQU   0                                                        00321000
+SDWAFIOB EQU   SDWA+4                                                   00322000
+SDWAABCC EQU   SDWAFIOB                                                 00323000
+SDWACMPF EQU   SDWAABCC                                                 00324000
+SDWACTL1 EQU   SDWA+8                                                   00325000
+SDWACMKA EQU   SDWACTL1                                                 00326000
+SDWAMWPA EQU   SDWACTL1+1                                               00327000
+SDWAPMKA EQU   SDWACTL1+4                                               00328000
+SDWACTL2 EQU   SDWA+16                                                  00329000
+SDWACMKP EQU   SDWACTL2                                                 00330000
+SDWAMWPP EQU   SDWACTL2+1                                               00331000
+SDWAPMKP EQU   SDWACTL2+4                                               00332000
+SDWAGRSV EQU   SDWA+24                                                  00333000
+SDWANAME EQU   SDWA+88                                                  00334000
+SDWAEC1  EQU   SDWA+104                                                 00335000
+SDWAEMK1 EQU   SDWAEC1                                                  00336000
+SDWAMWP1 EQU   SDWAEC1+1                                                00337000
+SDWAINT1 EQU   SDWAEC1+2                                                00338000
+SDWANXT1 EQU   SDWAEC1+4                                                00339000
+SDWAAEC1 EQU   SDWA+112                                                 00340000
+SDWAILC1 EQU   SDWAAEC1+1                                               00341000
+SDWAINC1 EQU   SDWAAEC1+2                                               00342000
+SDWAICD1 EQU   SDWAINC1+1                                               00343000
+SDWAEC2  EQU   SDWA+120                                                 00344000
+SDWAEMK2 EQU   SDWAEC2                                                  00345000
+SDWAMWP2 EQU   SDWAEC2+1                                                00346000
+SDWAINT2 EQU   SDWAEC2+2                                                00347000
+SDWANXT2 EQU   SDWAEC2+4                                                00348000
+SDWAAEC2 EQU   SDWA+128                                                 00349000
+SDWAILC2 EQU   SDWAAEC2+1                                               00350000
+SDWAINC2 EQU   SDWAAEC2+2                                               00351000
+SDWAICD2 EQU   SDWAINC2+1                                               00352000
+SDWASRSV EQU   SDWA+136                                                 00353000
+SDWAIDNT EQU   SDWA+200                                                 00354000
+SDWAMCH  EQU   SDWA+204                                                 00355000
+SDWASTCK EQU   SDWAMCH                                                  00356000
+SDWAMCHI EQU   SDWAMCH+8                                                00357000
+SDWAMCHS EQU   SDWAMCHI                                                 00358000
+SDWAMCHD EQU   SDWAMCHI+1                                               00359000
+SDWARSR1 EQU   SDWAMCH+12                                               00360000
+SDWARSR2 EQU   SDWAMCH+13                                               00361000
+SDWAFLGS EQU   SDWA+232                                                 00362000
+SDWAERRA EQU   SDWAFLGS                                                 00363000
+SDWAERRB EQU   SDWAFLGS+1                                               00364000
+SDWAERRC EQU   SDWAFLGS+2                                               00365000
+SDWAERRD EQU   SDWAFLGS+3                                               00366000
+SDWAIOFS EQU   SDWA+238                                                 00367000
+SDWACPUA EQU   SDWA+248                                                 00368000
+SDWAPARQ EQU   SDWA+252                                                 00369000
+SDWAACF2 EQU   SDWAPARQ+1                                               00370000
+SDWAACF3 EQU   SDWAPARQ+2                                               00371000
+SDWAACF4 EQU   SDWAPARQ+3                                               00372000
+SDWALKWA EQU   SDWA+256                                                 00373000
+SDWALKWS EQU   SDWALKWA                                                 00374000
+SDWARECP EQU   SDWA+292                                                 00375000
+SDWASNPA EQU   SDWA+320                                                 00376000
+SDWADUMP EQU   SDWASNPA                                                 00377000
+SDWADPFS EQU   SDWADUMP+1                                               00378000
+SDWADDAT EQU   SDWASNPA+4                                               00379000
+SDWASDAT EQU   SDWADDAT                                                 00380000
+SDWAPDAT EQU   SDWADDAT+2                                               00381000
+SDWADPSA EQU   SDWA+328                                                 00382000
+SDWADPSL EQU   SDWADPSA                                                 00383000
+SDWARA   EQU   SDWA+400                                                 00384000
+SDWADPVA EQU   SDWARA+2                                                 00385000
+DSAB     EQU   0                                                        00386000
+DSABFCHN EQU   DSAB+4                                                   00387000
+DSABBCHN EQU   DSAB+8                                                   00388000
+DSABGIDP EQU   DSAB+24                                                  00389000
+DSABANMP EQU   DSAB+28                                                  00390000
+DSABORG  EQU   DSAB+32                                                  00391000
+DSABORG1 EQU   DSABORG                                                  00392000
+DSABORG2 EQU   DSABORG+1                                                00393000
+DSABFLG1 EQU   DSAB+34                                                  00394000
+DSABFLG2 EQU   DSAB+35                                                  00395000
+DSABFLG3 EQU   DSAB+36                                                  00396000
+DSABFLG4 EQU   DSAB+37                                                  00397000
+DSABSIOT EQU   DSAB+64                                                  00398000
+DSABANMI EQU   0                                                        00399000
+DSABGIDL EQU   0                                                        00400000
+QDB      EQU   0                                                        00401000
+IEZJSCB  EQU   0                                                        00402000
+JSCBSEC1 EQU   IEZJSCB+188                                              00403000
+JSCHPCE  EQU   JSCBSEC1+4                                               00404000
+JSCBDCB  EQU   JSCBSEC1+36                                              00405000
+JSCBOPTS EQU   JSCBSEC1+48                                              00406000
+JSCBSWT1 EQU   JSCBSEC1+55                                              00407000
+JSCBWTP  EQU   JSCBSEC1+64                                              00408000
+JSCBWTFG EQU   JSCBWTP                                                  00409000
+JSCBEND1 EQU   IEZJSCB+260                                              00410000
+ALFNCMAP EQU   0                                                        00411000
+INPUTSW  EQU   ALFNCMAP                                                 00412000
+TIOTNQSW EQU   INPUTSW+2                                                00413000
+PROCESSW EQU   ALFNCMAP+6                                               00414000
+ERRPROSW EQU   PROCESSW                                                 00415000
+DSABQDB  EQU   QDB                                                      00416000
+DSQFRSTP EQU   DSABQDB+12                                               00417000
+DSQBADBC EQU   DSQFRSTP                                                 00418000
+DSQLASTP EQU   DSABQDB+16                                               00419000
+DSQBADFC EQU   DSQLASTP                                                 00420000
+JSCBSEC2 EQU   JSCBEND1                                                 00421000
+JSCBSEC3 EQU   JSCBEND1                                                 00422000
+JSCBJCT  EQU   JSCBSEC3                                                 00423000
+JSCBJCTA EQU   JSCBJCT+1                                                00424000
+JSCBASID EQU   JSCBSEC3+8                                               00425000
+JSCBFBYT EQU   JSCBSEC3+10                                              00426000
+JSCBJNL  EQU   JSCBSEC3+28                                              00427000
+JSCBJJSB EQU   JSCBJNL                                                  00428000
+JSCBSUB  EQU   JSCBSEC3+40                                              00429000
+JSCDSABQ EQU   JSCBSEC3+60                                              00430000
+JSCSCT   EQU   JSCBSEC3+68                                              00431000
+JSCRSV45 EQU   JSCBSEC3+112                                             00432000
+JSCRSV46 EQU   JSCRSV45                                                 00433000
+JSCRSV47 EQU   JSCRSV45+2                                               00434000
+         AGO   .@UNREFD                START UNREFERENCED COMPONENTS    00435000
+JSCBEND3 EQU   JSCBSEC3+120                                             00436000
+JSCRSV52 EQU   JSCBSEC3+116                                             00437000
+JSCRSV51 EQU   JSCRSV47+1                                               00438000
+JSCRSV50 EQU   JSCRSV47                                                 00439000
+JSCRSV49 EQU   JSCRSV46+1                                               00440000
+JSCRSV48 EQU   JSCRSV46                                                 00441000
+JSCRSV44 EQU   JSCBSEC3+108                                             00442000
+JSCRSV43 EQU   JSCBSEC3+104                                             00443000
+JSCRSV42 EQU   JSCBSEC3+100                                             00444000
+JSCBASWA EQU   JSCBSEC3+96                                              00445000
+JSCBUFPT EQU   JSCBSEC3+92                                              00446000
+JSCBACT  EQU   JSCBSEC3+88                                              00447000
+JSCBSWSP EQU   JSCBSEC3+87                                              00448000
+JSCRSV33 EQU   JSCBSEC3+86                                              00449000
+JSCDDNUM EQU   JSCBSEC3+84                                              00450000
+JSCRSV53 EQU   JSCBSEC3+82                                              00451000
+JSCDDNNO EQU   JSCBSEC3+80                                              00452000
+JSCBVATA EQU   JSCBSEC3+76                                              00453000
+JSCTMCOR EQU   JSCBSEC3+72                                              00454000
+JSCSCTP  EQU   JSCSCT+1                                                 00455000
+JSCRSV55 EQU   JSCSCT                                                   00456000
+JSCRSV54 EQU   JSCBSEC3+64                                              00457000
+JSCBSSIB EQU   JSCBSEC3+56                                              00458000
+JSCBFRBA EQU   JSCBSEC3+48                                              00459000
+JSCRSV28 EQU   JSCBSEC3+46                                              00460000
+JSCBSONO EQU   JSCBSEC3+44                                              00461000
+JSCBSUBA EQU   JSCBSUB+1                                                00462000
+JSCRSV31 EQU   JSCBSUB                                                  00463000
+JSCBSMLR EQU   JSCBSEC3+36                                              00464000
+JSCBJNLR EQU   JSCBSEC3+32                                              00465000
+JSCBJNLA EQU   JSCBJNL+1                                                00466000
+JSCBJSBT EQU   JSCBJJSB                                                 00467000
+JSCBJSBX EQU   JSCBJJSB                                                 00468000
+JSCBJSBA EQU   JSCBJJSB                                                 00469000
+JSCBJSBI EQU   JSCBJJSB                                                 00470000
+@NM00061 EQU   JSCBJJSB                                                 00471000
+JSCBJNLE EQU   JSCBJJSB                                                 00472000
+JSCBJNLF EQU   JSCBJJSB                                                 00473000
+JSCBJNLN EQU   JSCBJJSB                                                 00474000
+@NM00060 EQU   JSCBSEC3+24                                              00475000
+JSCBJRBA EQU   JSCBSEC3+16                                              00476000
+JSCBIECB EQU   JSCBSEC3+12                                              00477000
+JSCBRV08 EQU   JSCBSEC3+11                                              00478000
+JSCBRV07 EQU   JSCBFBYT                                                 00479000
+JSCBRV06 EQU   JSCBFBYT                                                 00480000
+JSCBRV05 EQU   JSCBFBYT                                                 00481000
+JSCBRV04 EQU   JSCBFBYT                                                 00482000
+JSCBRV03 EQU   JSCBFBYT                                                 00483000
+JSCBRV02 EQU   JSCBFBYT                                                 00484000
+JSCBADSP EQU   JSCBFBYT                                                 00485000
+JSCBRV01 EQU   JSCBFBYT                                                 00486000
+JSCBTJID EQU   JSCBASID                                                 00487000
+JSCBPSCB EQU   JSCBSEC3+4                                               00488000
+JSCJCTP  EQU   JSCBJCTA                                                 00489000
+JSCRSV24 EQU   JSCBJCT                                                  00490000
+JSCBEND2 EQU   JSCBSEC2                                                 00491000
+@NM00057 EQU   DSABQDB+24                                               00492000
+DSQBDSP  EQU   DSABQDB+22                                               00493000
+DSQFDSP  EQU   DSABQDB+20                                               00494000
+DSQNELMS EQU   DSABQDB+8                                                00495000
+DSQDBLN  EQU   DSABQDB+6                                                00496000
+DSQATTRS EQU   DSABQDB+4                                                00497000
+DSQDBID  EQU   DSABQDB                                                  00498000
+@NM00064 EQU   PROCESSW+1                                               00499000
+DYNMSSOK EQU   PROCESSW+1                                               00500000
+HSKPDQSW EQU   PROCESSW+1                                               00501000
+DISMSGSW EQU   PROCESSW+1                                               00502000
+USERERSW EQU   PROCESSW+1                                               00503000
+EPALSISW EQU   PROCESSW+1                                               00504000
+EPASCTSW EQU   PROCESSW+1                                               00505000
+EPAJCTSW EQU   PROCESSW                                                 00506000
+FRRPERSW EQU   PROCESSW                                                 00507000
+DCBSPCSW EQU   PROCESSW                                                 00508000
+NQEXCLSW EQU   PROCESSW                                                 00509000
+UNALOCSW EQU   ERRPROSW                                                 00510000
+DEQDSNSW EQU   ERRPROSW                                                 00511000
+COPYSW   EQU   PROCESSW                                                 00512000
+DYNMSSTM EQU   PROCESSW                                                 00513000
+@NM00063 EQU   INPUTSW+3                                                00514000
+PCATINIT EQU   INPUTSW+3                                                00515000
+UNITDEVT EQU   INPUTSW+3                                                00516000
+MOUNTSW  EQU   INPUTSW+2                                                00517000
+CATLOGSW EQU   INPUTSW+2                                                00518000
+OFFLINSW EQU   INPUTSW+2                                                00519000
+WTUNTSW  EQU   INPUTSW+2                                                00520000
+NORESSW  EQU   INPUTSW+2                                                00521000
+WTDSNSW  EQU   INPUTSW+2                                                00522000
+WTVOLSW  EQU   INPUTSW+2                                                00523000
+@NM00062 EQU   INPUTSW                                                  00524000
+JOBRLSYS EQU   INPUTSW                                                  00525000
+NOMONTSW EQU   INPUTSW                                                  00526000
+NOCNVTSW EQU   INPUTSW                                                  00527000
+ONCNVTSW EQU   INPUTSW                                                  00528000
+JSCBCSCB EQU   JSCBSEC1+68                                              00529000
+JSCBPMG  EQU   JSCBWTP+2                                                00530000
+JSCBWTSP EQU   JSCBWTP+1                                                00531000
+JSCRSV23 EQU   JSCBWTFG                                                 00532000
+JSCRSV22 EQU   JSCBWTFG                                                 00533000
+JSCRSV21 EQU   JSCBWTFG                                                 00534000
+JSCRSV20 EQU   JSCBWTFG                                                 00535000
+JSCRSV19 EQU   JSCBWTFG                                                 00536000
+JSCRSV18 EQU   JSCBWTFG                                                 00537000
+JSCBRET  EQU   JSCBWTFG                                                 00538000
+JSCBIOFG EQU   JSCBWTFG                                                 00539000
+@NM00059 EQU   JSCBSEC1+60                                              00540000
+JSCBQMPI EQU   JSCBSEC1+56                                              00541000
+JSCBPMSG EQU   JSCBSWT1                                                 00542000
+JSCRSV16 EQU   JSCBSWT1                                                 00543000
+JSCRSV15 EQU   JSCBSWT1                                                 00544000
+JSCRSV14 EQU   JSCBSWT1                                                 00545000
+JSCRSV13 EQU   JSCBSWT1                                                 00546000
+JSCRSV12 EQU   JSCBSWT1                                                 00547000
+JSCRSV11 EQU   JSCBSWT1                                                 00548000
+JSCBPASS EQU   JSCBSWT1                                                 00549000
+JSCBTTTR EQU   JSCBSEC1+52                                              00550000
+JSCRSV10 EQU   JSCBSEC1+49                                              00551000
+JSCBAUTH EQU   JSCBOPTS                                                 00552000
+JSCSIOTS EQU   JSCBOPTS                                                 00553000
+JSCRSV08 EQU   JSCBOPTS                                                 00554000
+JSCRSV07 EQU   JSCBOPTS                                                 00555000
+JSCRSV06 EQU   JSCBOPTS                                                 00556000
+JSCBLONG EQU   JSCBOPTS                                                 00557000
+JSCRSV05 EQU   JSCBOPTS                                                 00558000
+JSCRSV04 EQU   JSCBOPTS                                                 00559000
+JSCBSECB EQU   JSCBSEC1+44                                              00560000
+JSCRSV03 EQU   JSCBSEC1+41                                              00561000
+JSCBSTEP EQU   JSCBSEC1+40                                              00562000
+JSCBDCBA EQU   JSCBDCB+1                                                00563000
+JSCRSV02 EQU   JSCBDCB                                                  00564000
+JSCBID   EQU   JSCBSEC1+32                                              00565000
+JSCBDBTB EQU   JSCBSEC1+28                                              00566000
+JSCBIJSC EQU   JSCBSEC1+24                                              00567000
+JSCBTCBP EQU   JSCBSEC1+20                                              00568000
+JSCBPCC  EQU   JSCBSEC1+16                                              00569000
+JSCBTCP  EQU   JSCBSEC1+12                                              00570000
+JSCBSHR  EQU   JSCBSEC1+8                                               00571000
+JSCHPCEA EQU   JSCHPCE+1                                                00572000
+JSCRSV32 EQU   JSCHPCE                                                  00573000
+JSCRSV01 EQU   JSCBSEC1                                                 00574000
+@NM00058 EQU   IEZJSCB                                                  00575000
+QDBRV002 EQU   QDB+28                                                   00576000
+QDBPRDS  EQU   QDB+26                                                   00577000
+QDBPRSZ  EQU   QDB+24                                                   00578000
+QDBBPTDS EQU   QDB+22                                                   00579000
+QDBFPTDS EQU   QDB+20                                                   00580000
+QDBLELMP EQU   QDB+16                                                   00581000
+QDBFELMP EQU   QDB+12                                                   00582000
+QDBNELMS EQU   QDB+8                                                    00583000
+QDBRV001 EQU   QDB+6                                                    00584000
+QDBATTR  EQU   QDB+4                                                    00585000
+QDBQDB   EQU   QDB                                                      00586000
+DSABGRID EQU   DSABGIDL+4                                               00587000
+DSABLLEN EQU   DSABGIDL                                                 00588000
+DSABANAM EQU   DSABANMI+1                                               00589000
+DSABANML EQU   DSABANMI                                                 00590000
+DSABRS04 EQU   DSAB+68                                                  00591000
+DSABRS03 EQU   DSAB+62                                                  00592000
+DSABDCBM EQU   DSAB+56                                                  00593000
+DSABSSCM EQU   DSAB+52                                                  00594000
+DSABSSNM EQU   DSAB+48                                                  00595000
+DSABPTTR EQU   DSAB+44                                                  00596000
+DSABTCBP EQU   DSAB+40                                                  00597000
+DSABRS02 EQU   DSAB+38                                                  00598000
+@NM00056 EQU   DSABFLG4                                                 00599000
+DSABCKSI EQU   DSABFLG4                                                 00600000
+DSABCKVL EQU   DSABFLG4                                                 00601000
+DSABCKDS EQU   DSABFLG4                                                 00602000
+@NM00055 EQU   DSABFLG3                                                 00603000
+DSABJSCT EQU   DSABFLG3                                                 00604000
+DSABCATL EQU   DSABFLG3                                                 00605000
+DSABVMSC EQU   DSABFLG3                                                 00606000
+DSABVAM  EQU   DSABFLG3                                                 00607000
+DSABPASS EQU   DSABFLG3                                                 00608000
+DSABDEFR EQU   DSABFLG3                                                 00609000
+@NM00054 EQU   DSABFLG2                                                 00610000
+DSABUNAL EQU   DSABFLG2                                                 00611000
+DSABIRM  EQU   DSABFLG2                                                 00612000
+DSABOPEN EQU   DSABFLG2                                                 00613000
+DSABNUSE EQU   DSABFLG1                                                 00614000
+DSABCATM EQU   DSABFLG1                                                 00615000
+DSABPCAT EQU   DSABFLG1                                                 00616000
+DSABDCAT EQU   DSABFLG1                                                 00617000
+DSABCONV EQU   DSABFLG1                                                 00618000
+DSABDCNV EQU   DSABFLG1                                                 00619000
+DSABPALC EQU   DSABFLG1                                                 00620000
+DSABDALC EQU   DSABFLG1                                                 00621000
+@NM00053 EQU   DSABORG2                                                 00622000
+DSABTR   EQU   DSABORG2                                                 00623000
+DSABAM   EQU   DSABORG2                                                 00624000
+@NM00052 EQU   DSABORG2                                                 00625000
+DSABTQ   EQU   DSABORG2                                                 00626000
+DSABTX   EQU   DSABORG2                                                 00627000
+DSABGS   EQU   DSABORG2                                                 00628000
+DSABU    EQU   DSABORG1                                                 00629000
+DSABPO   EQU   DSABORG1                                                 00630000
+DSABMQ   EQU   DSABORG1                                                 00631000
+DSABCQ   EQU   DSABORG1                                                 00632000
+DSABCX   EQU   DSABORG1                                                 00633000
+DSABDA   EQU   DSABORG1                                                 00634000
+DSABPS   EQU   DSABORG1                                                 00635000
+DSABIS   EQU   DSABORG1                                                 00636000
+DSABSSVA EQU   DSAB+21                                                  00637000
+DSABRS01 EQU   DSAB+20                                                  00638000
+DSABTIOT EQU   DSAB+16                                                  00639000
+DSABOPCT EQU   DSAB+14                                                  00640000
+DSABLNTH EQU   DSAB+12                                                  00641000
+DSABID   EQU   DSAB                                                     00642000
+@NM00051 EQU   SDWA+512                                                 00643000
+SDWAVRA  EQU   SDWARA+4                                                 00644000
+SDWAURAL EQU   SDWARA+3                                                 00645000
+@NM00050 EQU   SDWADPVA                                                 00646000
+SDWAEBC  EQU   SDWADPVA                                                 00647000
+SDWAHEX  EQU   SDWADPVA                                                 00648000
+SDWAVRAL EQU   SDWARA                                                   00649000
+@NM00049 EQU   SDWA+396                                                 00650000
+SDWACOMP EQU   SDWA+392                                                 00651000
+SDWARCPL EQU   SDWA+364                                                 00652000
+@NM00048 EQU   SDWADPSA+32                                              00653000
+SDWATO4  EQU   SDWADPSL+28                                              00654000
+SDWAFRM4 EQU   SDWADPSL+24                                              00655000
+SDWATO3  EQU   SDWADPSL+20                                              00656000
+SDWAFRM3 EQU   SDWADPSL+16                                              00657000
+SDWATO2  EQU   SDWADPSL+12                                              00658000
+SDWAFRM2 EQU   SDWADPSL+8                                               00659000
+SDWATO1  EQU   SDWADPSL+4                                               00660000
+SDWAFRM1 EQU   SDWADPSL                                                 00661000
+@NM00047 EQU   SDWADDAT+3                                               00662000
+@NM00046 EQU   SDWAPDAT                                                 00663000
+SDWAUSPL EQU   SDWAPDAT                                                 00664000
+SDWADPSW EQU   SDWAPDAT                                                 00665000
+SDWATJPA EQU   SDWAPDAT                                                 00666000
+SDWATLPA EQU   SDWAPDAT                                                 00667000
+SDWADREG EQU   SDWAPDAT                                                 00668000
+SDWADSAH EQU   SDWAPDAT                                                 00669000
+SDWADSAS EQU   SDWAPDAT                                                 00670000
+@NM00045 EQU   SDWADDAT+1                                               00671000
+@NM00044 EQU   SDWASDAT                                                 00672000
+SDWAQQS  EQU   SDWASDAT                                                 00673000
+SDWACBS  EQU   SDWASDAT                                                 00674000
+SDWAGTF  EQU   SDWASDAT                                                 00675000
+SDWASWA  EQU   SDWASDAT                                                 00676000
+SDWALSQA EQU   SDWASDAT                                                 00677000
+SDWASQA  EQU   SDWASDAT                                                 00678000
+SDWANUC  EQU   SDWASDAT                                                 00679000
+@NM00043 EQU   SDWADUMP+2                                               00680000
+@NM00042 EQU   SDWADPFS                                                 00681000
+SDWASLST EQU   SDWADPFS                                                 00682000
+@NM00041 EQU   SDWADPFS                                                 00683000
+SDWADLST EQU   SDWADPFS                                                 00684000
+SDWADPT  EQU   SDWADPFS                                                 00685000
+SDWADPID EQU   SDWADUMP                                                 00686000
+SDWADPLA EQU   SDWA+316                                                 00687000
+SDWAREXN EQU   SDWARECP+16                                              00688000
+SDWACSCT EQU   SDWARECP+8                                               00689000
+SDWAMODN EQU   SDWARECP                                                 00690000
+@NM00040 EQU   SDWA+290                                                 00691000
+SDWAASID EQU   SDWA+288                                                 00692000
+SDWATALW EQU   SDWALKWS+28                                              00693000
+SDWATDLW EQU   SDWALKWS+24                                              00694000
+SDWATNLW EQU   SDWALKWS+20                                              00695000
+SDWAAPLW EQU   SDWALKWS+16                                              00696000
+SDWAIPLW EQU   SDWALKWS+12                                              00697000
+SDWAILLW EQU   SDWALKWS+8                                               00698000
+SDWAIULW EQU   SDWALKWS+4                                               00699000
+SDWAICLW EQU   SDWALKWS                                                 00700000
+SDWAFLLK EQU   SDWAACF4                                                 00701000
+SDWACMS  EQU   SDWAACF4                                                 00702000
+SDWAOPTM EQU   SDWAACF4                                                 00703000
+SDWATADB EQU   SDWAACF4                                                 00704000
+SDWATDNB EQU   SDWAACF4                                                 00705000
+SDWATNCB EQU   SDWAACF4                                                 00706000
+SDWAILCH EQU   SDWAACF4                                                 00707000
+SDWAIUCB EQU   SDWAACF4                                                 00708000
+SDWAICAT EQU   SDWAACF3                                                 00709000
+SDWAIPRG EQU   SDWAACF3                                                 00710000
+SDWASALL EQU   SDWAACF3                                                 00711000
+SDWAASMP EQU   SDWAACF3                                                 00712000
+SDWADISP EQU   SDWAACF3                                                 00713000
+@NM00039 EQU   SDWAACF3                                                 00714000
+@NM00038 EQU   SDWAACF2                                                 00715000
+SDWAFREE EQU   SDWAACF2                                                 00716000
+SDWAUPRG EQU   SDWAACF2                                                 00717000
+@NM00037 EQU   SDWAACF2                                                 00718000
+SDWASPIN EQU   SDWAACF2                                                 00719000
+@NM00036 EQU   SDWAACF2                                                 00720000
+SDWARCRD EQU   SDWAACF2                                                 00721000
+SDWARCDE EQU   SDWAPARQ                                                 00722000
+SDWALCPU EQU   SDWACPUA+2                                               00723000
+@NM00035 EQU   SDWACPUA                                                 00724000
+SDWARECA EQU   SDWA+244                                                 00725000
+SDWARTYA EQU   SDWA+240                                                 00726000
+@NM00034 EQU   SDWA+239                                                 00727000
+@NM00033 EQU   SDWAIOFS                                                 00728000
+SDWANIOP EQU   SDWAIOFS                                                 00729000
+SDWANOIO EQU   SDWAIOFS                                                 00730000
+SDWAIOHT EQU   SDWAIOFS                                                 00731000
+SDWAIOQR EQU   SDWAIOFS                                                 00732000
+SDWAFMID EQU   SDWA+236                                                 00733000
+@NM00032 EQU   SDWAERRD                                                 00734000
+SDWAMCIV EQU   SDWAERRD                                                 00735000
+SDWARPIV EQU   SDWAERRD                                                 00736000
+SDWAMABD EQU   SDWAERRD                                                 00737000
+SDWACTS  EQU   SDWAERRD                                                 00738000
+SDWASTAE EQU   SDWAERRD                                                 00739000
+SDWANRBE EQU   SDWAERRD                                                 00740000
+SDWACLUP EQU   SDWAERRD                                                 00741000
+@NM00031 EQU   SDWAERRC                                                 00742000
+SDWAEAS  EQU   SDWAERRC                                                 00743000
+SDWAPERC EQU   SDWAERRC                                                 00744000
+SDWAIRB  EQU   SDWAERRC                                                 00745000
+SDWASTAI EQU   SDWAERRC                                                 00746000
+SDWASTAF EQU   SDWAERRC                                                 00747000
+SDWASRBM EQU   SDWAERRB                                                 00748000
+SDWALDIS EQU   SDWAERRB                                                 00749000
+SDWAENRB EQU   SDWAERRB                                                 00750000
+SDWATYP1 EQU   SDWAERRB                                                 00751000
+@NM00030 EQU   SDWAERRB                                                 00752000
+SDWAPGIO EQU   SDWAERRA                                                 00753000
+SDWATEXC EQU   SDWAERRA                                                 00754000
+SDWASVCE EQU   SDWAERRA                                                 00755000
+SDWAABTM EQU   SDWAERRA                                                 00756000
+SDWASVCD EQU   SDWAERRA                                                 00757000
+SDWARKEY EQU   SDWAERRA                                                 00758000
+SDWAPCHK EQU   SDWAERRA                                                 00759000
+SDWAMCHK EQU   SDWAERRA                                                 00760000
+SDWATIME EQU   SDWAMCH+20                                               00761000
+SDWARFSA EQU   SDWAMCH+16                                               00762000
+@NM00029 EQU   SDWAMCH+14                                               00763000
+SDWAVEQR EQU   SDWARSR2                                                 00764000
+SDWAPGFX EQU   SDWARSR2                                                 00765000
+SDWAFLSQ EQU   SDWARSR2                                                 00766000
+SDWAFSQA EQU   SDWARSR2                                                 00767000
+SDWANUCL EQU   SDWARSR2                                                 00768000
+SDWASPER EQU   SDWARSR2                                                 00769000
+SDWAINTC EQU   SDWARSR2                                                 00770000
+SDWAOFLN EQU   SDWARSR2                                                 00771000
+SDWACHNG EQU   SDWARSR1                                                 00772000
+SDWAMSER EQU   SDWARSR1                                                 00773000
+@NM00028 EQU   SDWARSR1                                                 00774000
+SDWACPID EQU   SDWAMCH+10                                               00775000
+SDWATERR EQU   SDWAMCHD                                                 00776000
+SDWAFPRX EQU   SDWAMCHD                                                 00777000
+SDWAINSF EQU   SDWAMCHD                                                 00778000
+SDWAACR  EQU   SDWAMCHD                                                 00779000
+SDWASCK  EQU   SDWAMCHD                                                 00780000
+SDWAPSWU EQU   SDWAMCHD                                                 00781000
+SDWAREGU EQU   SDWAMCHD                                                 00782000
+SDWASKYF EQU   SDWAMCHD                                                 00783000
+@NM00027 EQU   SDWAMCHS                                                 00784000
+SDWARSRF EQU   SDWAMCHS                                                 00785000
+SDWARSRC EQU   SDWAMCHS                                                 00786000
+SDWAINVP EQU   SDWAMCHS                                                 00787000
+SDWATSVL EQU   SDWAMCHS                                                 00788000
+SDWARCDF EQU   SDWAMCHS                                                 00789000
+SDWASRVL EQU   SDWAMCHS                                                 00790000
+SDWASCKE EQU   SDWASTCK+4                                               00791000
+SDWASCKB EQU   SDWASTCK                                                 00792000
+SDWALNTH EQU   SDWAIDNT+1                                               00793000
+SDWASPID EQU   SDWAIDNT                                                 00794000
+SDWASR15 EQU   SDWASRSV+60                                              00795000
+SDWASR14 EQU   SDWASRSV+56                                              00796000
+SDWASR13 EQU   SDWASRSV+52                                              00797000
+SDWASR12 EQU   SDWASRSV+48                                              00798000
+SDWASR11 EQU   SDWASRSV+44                                              00799000
+SDWASR10 EQU   SDWASRSV+40                                              00800000
+SDWASR09 EQU   SDWASRSV+36                                              00801000
+SDWASR08 EQU   SDWASRSV+32                                              00802000
+SDWASR07 EQU   SDWASRSV+28                                              00803000
+SDWASR06 EQU   SDWASRSV+24                                              00804000
+SDWASR05 EQU   SDWASRSV+20                                              00805000
+SDWASR04 EQU   SDWASRSV+16                                              00806000
+SDWASR03 EQU   SDWASRSV+12                                              00807000
+SDWASR02 EQU   SDWASRSV+8                                               00808000
+SDWASR01 EQU   SDWASRSV+4                                               00809000
+SDWASR00 EQU   SDWASRSV                                                 00810000
+SDWATRN2 EQU   SDWAAEC2+4                                               00811000
+SDWAIPC2 EQU   SDWAICD2                                                 00812000
+SDWAIMC2 EQU   SDWAICD2                                                 00813000
+SDWAIPR2 EQU   SDWAICD2                                                 00814000
+@NM00026 EQU   SDWAINC2                                                 00815000
+@NM00025 EQU   SDWAILC2                                                 00816000
+SDWAIL2  EQU   SDWAILC2                                                 00817000
+@NM00024 EQU   SDWAILC2                                                 00818000
+@NM00023 EQU   SDWAAEC2                                                 00819000
+SDWAADD2 EQU   SDWANXT2+1                                               00820000
+@NM00022 EQU   SDWANXT2                                                 00821000
+@NM00021 EQU   SDWAEC2+3                                                00822000
+SDWASGN2 EQU   SDWAINT2                                                 00823000
+SDWAEXP2 EQU   SDWAINT2                                                 00824000
+SDWADEC2 EQU   SDWAINT2                                                 00825000
+SDWAFPO2 EQU   SDWAINT2                                                 00826000
+SDWACC2  EQU   SDWAINT2                                                 00827000
+@NM00020 EQU   SDWAINT2                                                 00828000
+SDWAPGM2 EQU   SDWAMWP2                                                 00829000
+SDWAWAT2 EQU   SDWAMWP2                                                 00830000
+SDWAMCK2 EQU   SDWAMWP2                                                 00831000
+SDWAECT2 EQU   SDWAMWP2                                                 00832000
+SDWAKEY2 EQU   SDWAMWP2                                                 00833000
+SDWAEXT2 EQU   SDWAEMK2                                                 00834000
+SDWAIO2  EQU   SDWAEMK2                                                 00835000
+SDWATRM2 EQU   SDWAEMK2                                                 00836000
+@NM00019 EQU   SDWAEMK2                                                 00837000
+SDWAPER2 EQU   SDWAEMK2                                                 00838000
+@NM00018 EQU   SDWAEMK2                                                 00839000
+SDWATRAN EQU   SDWAAEC1+4                                               00840000
+SDWAIPC1 EQU   SDWAICD1                                                 00841000
+SDWAIMC1 EQU   SDWAICD1                                                 00842000
+SDWAIPR1 EQU   SDWAICD1                                                 00843000
+@NM00017 EQU   SDWAINC1                                                 00844000
+@NM00016 EQU   SDWAILC1                                                 00845000
+SDWAIL1  EQU   SDWAILC1                                                 00846000
+@NM00015 EQU   SDWAILC1                                                 00847000
+@NM00014 EQU   SDWAAEC1                                                 00848000
+SDWAADD1 EQU   SDWANXT1+1                                               00849000
+@NM00013 EQU   SDWANXT1                                                 00850000
+@NM00012 EQU   SDWAEC1+3                                                00851000
+SDWASGN1 EQU   SDWAINT1                                                 00852000
+SDWAEXP1 EQU   SDWAINT1                                                 00853000
+SDWADEC1 EQU   SDWAINT1                                                 00854000
+SDWAFPO1 EQU   SDWAINT1                                                 00855000
+SDWACC1  EQU   SDWAINT1                                                 00856000
+@NM00011 EQU   SDWAINT1                                                 00857000
+SDWAPGM1 EQU   SDWAMWP1                                                 00858000
+SDWAWAT1 EQU   SDWAMWP1                                                 00859000
+SDWAMCK1 EQU   SDWAMWP1                                                 00860000
+SDWAECT1 EQU   SDWAMWP1                                                 00861000
+SDWAKEY1 EQU   SDWAMWP1                                                 00862000
+SDWAEXT1 EQU   SDWAEMK1                                                 00863000
+SDWAIO1  EQU   SDWAEMK1                                                 00864000
+SDWATRM1 EQU   SDWAEMK1                                                 00865000
+@NM00010 EQU   SDWAEMK1                                                 00866000
+SDWAPER1 EQU   SDWAEMK1                                                 00867000
+@NM00009 EQU   SDWAEMK1                                                 00868000
+SDWAIOBR EQU   SDWA+100                                                 00869000
+SDWAEPA  EQU   SDWA+96                                                  00870000
+@NM00008 EQU   SDWANAME+4                                               00871000
+SDWARBAD EQU   SDWANAME                                                 00872000
+SDWAGR15 EQU   SDWAGRSV+60                                              00873000
+SDWAGR14 EQU   SDWAGRSV+56                                              00874000
+SDWAGR13 EQU   SDWAGRSV+52                                              00875000
+SDWAGR12 EQU   SDWAGRSV+48                                              00876000
+SDWAGR11 EQU   SDWAGRSV+44                                              00877000
+SDWAGR10 EQU   SDWAGRSV+40                                              00878000
+SDWAGR09 EQU   SDWAGRSV+36                                              00879000
+SDWAGR08 EQU   SDWAGRSV+32                                              00880000
+SDWAGR07 EQU   SDWAGRSV+28                                              00881000
+SDWAGR06 EQU   SDWAGRSV+24                                              00882000
+SDWAGR05 EQU   SDWAGRSV+20                                              00883000
+SDWAGR04 EQU   SDWAGRSV+16                                              00884000
+SDWAGR03 EQU   SDWAGRSV+12                                              00885000
+SDWAGR02 EQU   SDWAGRSV+8                                               00886000
+SDWAGR01 EQU   SDWAGRSV+4                                               00887000
+SDWAGR00 EQU   SDWAGRSV                                                 00888000
+SDWANXTP EQU   SDWACTL2+5                                               00889000
+SDWASGP  EQU   SDWAPMKP                                                 00890000
+SDWAEUP  EQU   SDWAPMKP                                                 00891000
+SDWADOP  EQU   SDWAPMKP                                                 00892000
+SDWAFPP  EQU   SDWAPMKP                                                 00893000
+SDWACCP  EQU   SDWAPMKP                                                 00894000
+SDWAILP  EQU   SDWAPMKP                                                 00895000
+SDWAINTP EQU   SDWACTL2+2                                               00896000
+SDWASPVP EQU   SDWAMWPP                                                 00897000
+SDWAWATP EQU   SDWAMWPP                                                 00898000
+SDWAMCKP EQU   SDWAMWPP                                                 00899000
+@NM00007 EQU   SDWAMWPP                                                 00900000
+SDWAKEYP EQU   SDWAMWPP                                                 00901000
+SDWAEXTP EQU   SDWACMKP                                                 00902000
+SDWAIOP  EQU   SDWACMKP                                                 00903000
+SDWANXTA EQU   SDWACTL1+5                                               00904000
+SDWASGA  EQU   SDWAPMKA                                                 00905000
+SDWAEUA  EQU   SDWAPMKA                                                 00906000
+SDWADOA  EQU   SDWAPMKA                                                 00907000
+SDWAFPA  EQU   SDWAPMKA                                                 00908000
+SDWACCA  EQU   SDWAPMKA                                                 00909000
+SDWAILA  EQU   SDWAPMKA                                                 00910000
+SDWAINTA EQU   SDWACTL1+2                                               00911000
+SDWASPVA EQU   SDWAMWPA                                                 00912000
+SDWAWATA EQU   SDWAMWPA                                                 00913000
+SDWAMCKA EQU   SDWAMWPA                                                 00914000
+@NM00006 EQU   SDWAMWPA                                                 00915000
+SDWAKEYA EQU   SDWAMWPA                                                 00916000
+SDWAEXTA EQU   SDWACMKA                                                 00917000
+SDWAIOA  EQU   SDWACMKA                                                 00918000
+SDWACMPC EQU   SDWAABCC+1                                               00919000
+@NM00005 EQU   SDWACMPF                                                 00920000
+SDWASTCC EQU   SDWACMPF                                                 00921000
+@NM00004 EQU   SDWACMPF                                                 00922000
+SDWASTEP EQU   SDWACMPF                                                 00923000
+SDWAREQ  EQU   SDWACMPF                                                 00924000
+SDWAPARM EQU   SDWA                                                     00925000
+@NM00003 EQU   DEPARMS+304                                              00926000
+DEALASTP EQU   DEPARMS+276                                              00927000
+DEASGNP  EQU   DEDMYAS+12                                               00928000
+@NM00002 EQU   DEDMYAS                                                  00929000
+DEWLASTP EQU   DEPARMS+256                                              00930000
+DEWRITP  EQU   DEDMYEPA+12                                              00931000
+@NM00001 EQU   DEDMYEPA                                                 00932000
+DEDSNQRC EQU   DENQRETN+4                                               00933000
+DEDSNQEN EQU   DENQRETN                                                 00934000
+DESCT    EQU   DEPARMS+216                                              00935000
+DEJCT    EQU   DEPARMS+212                                              00936000
+DESIOT   EQU   DEPARMS+208                                              00937000
+DETCB    EQU   DEPARMS+204                                              00938000
+DECORE   EQU   DEPARMS                                                  00939000
+.@UNREFD ANOP                          END UNREFERENCED COMPONENTS      00940000
+@ENDDATA EQU   *                                                        00941000
+         END   IEFDB402,(C'PLS1347',0701,78089)                         00942000

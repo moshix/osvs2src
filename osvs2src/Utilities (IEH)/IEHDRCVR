@@ -1,0 +1,835 @@
+ TITLE 'IEHDRCVR - RECOVER FROM I/O ERRORS WHEN DUMPING TO SYSPRINT'    00100019
+         COPY  LCGASMSW                                          SM4351 00200021
+IEHDRCVR CSECT                                                     O122 00250021
+*******************************************************************O122 00300019
+*                                                                  O122 00400019
+*STATUS - CHANGE LEVEL 000                                         O122 00500019
+*                                                                  O122 00600019
+*FUNCTION/OPERATION - IEHDRCVR RECEIVES CONTROL WHEN IEHDEXCP      O122 00700019
+*        ENCOUNTERS A PERMANENT DATA CHECK OR MISSING ADDRESS      O122 00800019
+*        MARKER ON A DIRECT ACCESS DEVICE WHILE DUMPING TO SYSOUT. O122 00900019
+*        THE ROUTINE PRINTS THE GOOD PORTION OF THE TRACK ALREADY  O122 01000019
+*        READ SUCCESSFULLY, IDENTIFIES THE RECORD AND FIELD (COUNT,O122 01100019
+*        KEY OR DATA) IN ERROR, READS AND PRINTS THE DEFECTIVE     O122 01200019
+*        RECORD, MODIFIES THE ORIGINAL CHANNEL PROGRAM TO BYPASS   O122 01300019
+*        THIS RECORD, AND RETURNS CONTROL TO IEHDEXCP.             O122 01400019
+*                                                                  O122 01500019
+*ENTRY POINTS - THIS ROUTINE IS ALWAYS ENTERED AT IEHDRCVR.        O122 01600019
+*        CONTROL IS ALWAYS RECEIVED FROM IEHDEXCP.                 O122 01700019
+*                                                                  O122 01800019
+*INPUT - THE ADDRESS OF THE DIRECT ACCESS IOB MUST BE IN REG 6.    O122 01900019
+*                                                                  O122 02000019
+*OUTPUT - THE DEFECTIVE TRACK IS PRINTED ON THE SYSTEM OUTPUT      O122 02100019
+*        DEVICE, WITH A MESSAGE DECSRIBING THE FIELD IN ERROR.     O122 02200019
+*                                                                  O122 02300019
+*EXTERNAL ROUTINES - IEHDAOUT IS USED TO FORMAT AND PRINT THE TRACKO122 02400019
+*        IMAGE.  A SWITCH CONTROLS HOW MUCH OF THE RECORD IS       O122 02500019
+*        PRINTED  AT A TIME AND HOW IT IS FORMATTED. IEHDMSGB IS   O122 02600019
+*        USED TO FORMAT THE MESSAGES AND IEHDPRNT TO PRINT THEM.   O122 02700019
+*        ALL EXTERNAL ROUTINES ARE ENTERED VIA THE LINK MACRO OR   O122 02800019
+*        A DIRECT BRANCH AND LINK.                                 O122 02900019
+*                                                                  O122 03000019
+*EXITS-NORMAL - CONTROL IS RETURNED TO IEHDEXCP WITH A RETURN CODE O122 03100019
+*        OF 0 IF IEHDRCVR SUCCESSFULLY RECOVERED AND PRINTED THE   O122 03200019
+*        DEFECTIVE RECORD.  A RETURN CODE OF 4 IS USED IF RECOVERY O122 03300019
+*        WAS SUCCESSFUL AND IEHDEXCP IS TO CONTINUE WITH THE NEXT  O122 03400019
+*        TRACK.                                                    O122 03500019
+*                                                                  O122 03600019
+*     -ERRORS - CONTROL IS RETURNED TO IEHDEXCP WITH A RETURN CODE O122 03700019
+*        OF 8 IF THE DEFECTIVE RECORD COULD NOT BE RECOVERED (DATA O122 03800019
+*        CHECK IN THE COUNT FIELD OR MISSING ADDRESS MARKER ON     O122 03900019
+*        2301). IEHDEXCP SHOULD TERMINATE THE FUNCTION WITH A      O122 04000019
+*        RETURN CODE OF 8.                                         O122 04100019
+*                                                                  O122 04200019
+*TABLES/WORKAREAS - FUNCBLK IS USED TO COMMUNICATE WITH IEHDAOUT.  O122 04300019
+*        UPON ENTRY TO IEHDRCVR, REGISTER 10 POINTS TO THIS DSECT  O122 04400019
+*                                                                  O122 04500019
+*ATTRIBUTES - SERIALLY REUSABLE,RELOCATABLE,NONPRIVILEGED.         O122 04600019
+         EJECT                                                     O122 04700019
+*NOTE - IEHDRCVR MAY STORE IN ITS OWN CORE IF IT REINITIALIZES ALL O122 04800019
+*        NEEDED CONSTANTS.  THIS IS BECAUSE SIMULTANEOUS FUNCTIONS O122 04900019
+*        ARE IMPOSSIBLE WHEN DUMPING TO SYSOUT.                    O122 05000019
+*                                                                  O122 05100019
+*     - NEED TO BE ABLE TO RECOVER FROM I/O ERROR ON 06, 9E, 92,   O122 05200019
+*        0E, 1E AND 12                                             O122 05300019
+*                                                                  O122 05400019
+*     -  06 IS ALWAYS READ DATA RECORD 0, 9F RAD COUNT KEY DATA R1 O122 05500019
+*        0E READ KEY DATA RECORD 2                                 O122 05600019
+*                                                                  O122 05700019
+*     -  IEHDRCVR REPLACES ERROR CCW WITH 03, 0F 08 OR 12          O122 05800019
+*                                                                  O122 05900019
+*******************************************************************O122 06000019
+         EJECT                                                     O122 06100019
+         USING *,BASEREG                                           O122 06200019
+         USING OUTIOB,IOB                                          O122 06300019
+         USING OUTECB,A                VALID WHILE WAIT FOR I/O    O122 06400019
+         USING FUNCBLK,BLKPTR                                      O122 06500019
+         USING WORK,AWORK                                          O122 06600019
+         SAVE  (14,12),T,*                                         O122 06700019
+         LR    BASEREG,ENTER                                       O122 06800019
+         LA    A,RCVRSAVE              SAVE AREA ADDRESS           O122 06900019
+         ST    A,8(SAVEREG)            ADDR NEW SAVE AREA TO OLD   O122 07000019
+         ST    SAVEREG,4(A)            ADDR OLD SAVE AREA TO NEW   O122 07100019
+         LR    SAVEREG,A               CURRENT SAVE AREA           O122 07200019
+         STM   PARM1,PARM2,DAOUTADR    SAVE PARAMETERS             O122 07300019
+         LA    A,8                                                 O122 07400019
+         L     ERRCCW,OUTSTAT          CCW ADDRESS FROM CSW        O122 07500019
+         SR    ERRCCW,A                ADDR CCW GETTING DATA CHECK O122 07600019
+         XC    TICADDR(4),TICADDR      INITIALIZE FOR CHKNOP AND   O122 07700019
+*                                      RETRN1                      O122 07800019
+         CLI   0(ERRCCW),X'31'         IS CCW A SEARCH             O122 07900019
+         BE    SRCHERR                 YES                         O122 08000019
+         TM    OUTSENSE+1,X'0A'        MISS ADR MKR AND NO REC FND O122 08100019
+         BO    SRCHERR                 YES, CAN'T FIN HA OR R0     O122 08200019
+         CLI   RECNUM,X'00'            FIRST ERROR AN TRACK EXCEPT O122 08300019
+*                                      READ COUNT AND READ DATA    O122 08400019
+         BNE   TESTRDSC                NO, TEST FOR ALREADY READ   O122 08500019
+*        PRINT GOOD PORTION OF TRACK   (AT LEAST TRACK ADDRESS AND O122 08600019
+*        R0 DATA)                                                  O122 08700019
+NOTRDSUC L     ENDATA,0(ERRCCW)        ADDRESS OF INPUT            O122 08800019
+         S     ENDATA,EIGHT                                        O122 08900019
+         CLI   0(ERRCCW),X'0E'         IS CCW A READ KEY DATA (R2) O122 09000019
+         BNE   FIRSTPR                 NO                          O122 09100019
+         S     ENDATA,EIGHT            YES, DO NOT PRINT R2        O122 09200019
+FIRSTPR  BAL   LINK2,PRINT             PRINT FIRST PART OF TRACK   O122 09300019
+         MVI   AOUTSW,FMTCNT           SET SWITCH TO FORMAT COUNT  O122 09400019
+         MVC   TRACKPT(4),0(ERRCCW)                                O122 09500019
+         BAL   LINK1,SYNADAF           SET UP SYNADAF MESSAGE      O122 09600019
+         BAL   LINK1,PRTMSG            PRINT SYNADAF MESSAGE       O122 09700019
+         MVC   CCWCODE(8),0(ERRCCW)    SAVE ERROR CCW              O122 09800019
+         TM    OUTSENSE+1,X'02'        MISSING ADDRESS MARKER      O122 09900019
+         BO    MISADRMK                YES                         O122 10000019
+         TM    OUTSENSE+1,X'80'        WAS IT DATA CHECK IN COUNT  O122 10100019
+         BO    COUNTERR                YES, RCVR FROM DC IN COUNT  O122 10200019
+         TM    CCWCODE,X'9E'           READ COUNT MULTI-TRK R1     O122 10300019
+         BO    ERKEYDAT                YES, DC IN KEY OR DATA      O122 10400019
+RESIDCNT SR    A,A                      ZERO                       O122 10500019
+         CH    A,OUTSTAT+6             IS RESIDUAL COUNT ZERO      O122 10600019
+         BNE   TRYRD                   NO, DATA CHECK IN KEY FIELD,O122 10700019
+*                                      TRY READING DATA FIELD      O122 10800019
+         TM    OUTSTAT+4,X'01'         IS IT END OF FILE RECORD    O122 10900019
+         BNO   DATAERR                 NO, DATA CHECK IN DATA FIELDO122 11000019
+*                                      YES, FALL THROUGH TO DATA   O122 11100019
+*                                      CHECK IN KEY FIELD          O122 11200019
+         EJECT                                                     O122 11300019
+*******************************************************************O122 11400019
+*        DATA CHECK IN KEY FIELD                                   O122 11500019
+*******************************************************************O122 11600019
+         SPACE 3                                                   O122 11700019
+KEYMSG   EQU   *                                                   O122 11800019
+*        PRINT DATA CHECK IN KEY                                   O122 11900019
+         LA    FIELD,KEYFLD                                        O122 12000019
+         BAL   LINK1,PRTMSG42          PRINT MESSAGE IEH842I       O122 12100019
+*        DETERMINE IF ERROR CCW READ COUNT FIELD                   O122 12200019
+INSRTWHT LA    A,CCWCODE                                           O122 12300019
+         BAL   LINK1,GETRECNO          GET RECORD NUMBER           O122 12400019
+         STC   B,RECNUM                UPDATE RECORD NUMBER        O122 12500019
+         TM    CCWCODE,X'1E'           WAS ERROR CCW A RCKD        O122 12600019
+         BO    INSRTRC                 YES, REPLACE WITH READ COUNTO122 12700019
+*                                      AND RETURN                  O122 12800019
+         L     A,OUTCCWAD               GET STARTING CCW ADDR   OX01495 12850002
+         LA    A,0(A)                   ZERO HIGH BYTE          OX01495 12860002
+         LA    ERRCCW,0(ERRCCW)         ZERO HIGH BYTE          OX01495 12870002
+         CR    ERRCCW,A                 COMPARE ADDRESSES       OX01495 12880002
+         BL    RETRN4                   IF LOW, ERROR MUST BE   OX01495 12890002
+*                                       IN IOS OR ERP. EXIT TO  OX01495 12892002
+*                                       PROCESS NEXT TRACK.     OX01495 12894002
+         MVI   0(ERRCCW),NOP           NO, REPLACE CCW WITH NOP    O122 12900019
+         MVI   AOUTSW,NOFMT            DO NOT FORMAT THIS RECORD   O122 13000019
+         L     ENDATA,TRACKPT          ADDRESS OF RECORD           O122 13100019
+         TM    CCWCODE,X'0E'           IS CCW A READ KEY DATA (R2) O122 13200019
+         BNO   PRKEYDAT                NO                          O122 13300019
+         LR    A,ENDATA                ADDRESS OF KEY DATA         O122 13400019
+         S     A,EIGHT                 ADDRESS OF COUNT KEY DATA   O122 13500019
+         ST    A,TRACKPT                                           O122 13600019
+         MVI   AOUTSW,FMTCNT           FORMAT COUNT FOR THIS RECORDO122 13700019
+PRKEYDAT AH    ENDATA,CCWCODE+6        END OF DATA                 O122 13800019
+         TM    CCWCODE+4,X'40'         CHAINING BIT ON             O122 13900019
+         BO    PRKD                    YES                         O122 14000019
+         BCTR  ENDATA,0                SUBTRACT 1 IF LAST RECORD   O122 14100019
+*                                      (IEHDEXCP ADDS 1 TO CHECK   O122 14200019
+*                                      FOR OVERFLOW)               O122 14300019
+PRKD     BAL   LINK2,PRINT             PRINT RECORD                O122 14400019
+         MVI   AOUTSW,FMTCNT           RESET SWITCH TO FORMAT COUNTO122 14500019
+         TM    CCWCODE+4,X'40'        CHAINGING BIT ON             O122 14600019
+         BNO   RETRN4                  FINISHED, GO PROCESS NEXT TRO122 14700019
+MORE1    BAL   LINK1,MORE              UPDATE TRACKPT              O122 14800019
+         B     OKRETRN                 RETURN                      O122 14900019
+INSRTRC  MVC   0(8,ERRCCW),RC          REPLACE CCW WITH READ COUNT O122 15000019
+         BAL   LINK1,PRTRC             PRINT RECORD, FORMATTING CT O122 15100019
+         TM    CCWCODE+4,X'40'        CHAINGING BIT ON             O122 15200019
+        BO    MORE1                   YES                          O122 15300019
+         B     RETRN4                  FINISHED, GO PROCESS NEXT T O122 15400019
+*        TEST FOR DATA CHECK IN DATA FIELD ALSO                    O122 15500019
+TRYRD    MVC   0(8,ERRCCW),TIC         REPLACE ERROR CCW WITH TIC  O122 15600019
+*                                      TO RCVRCCWS                 O122 15700019
+         MVC   RCVRCCWS(8),RD          MOVE IN READ DATA CCW       O122 15800019
+         L     A,CCWCODE+4             BYTE COUNT IN CCW           O122 15900019
+         SH    A,OUTSTAT+6             LENGTH READ                 O122 16000019
+         SLL   A,16                    REMOVE ALL BUT LENGTH       O122 16100019
+         SRL   A,16                                                O122 16200019
+         A     A,CCWCODE               NEXT BYTE IN INPUT RECORD   O122 16300019
+         LA    A,0(A)                  CLEAR HIGH ORDER BYTE       O122 16400019
+         O     A,RCVRCCWS                                          O122 16500019
+         ST    A,RCVRCCWS              INSERT ADDRESS INTO READ DATO122 16600019
+         BAL   LINK2,CHKERROR          RETRY I/O                   O122 16700019
+         LTR   RETCODE,RETCODE         IS RETURN CODE 0            O122 16800019
+         BZ    KEYMSG                  YES, DATA FIELD OK          O122 16900019
+*        PRINT DATA CHECK IN KEY AND DATA FIELDS                   O122 17000019
+         LA    FIELD,KEYFLD                                        O122 17100019
+         BAL   LINK1,PRTMSG42          PRINT MESSAGE IEH842I       O122 17200019
+*        CONTINUE INTO NEXT SECTION TO PRINT DATA CHECK IN DATA    O122 17300019
+*        FIELD MESSAGE AND TO PRINT DEFECTIVE RECORD               O122 17400019
+         EJECT                                                     O122 17500019
+*******************************************************************O122 17600019
+*        DATA CHECK IN DATA FIELD                                  O122 17700019
+*******************************************************************O122 17800019
+         SPACE 3                                                   O122 17900019
+DATAERR  EQU   *                                                   O122 18000019
+*        PRINT DATA CHECK IN DATA FIELD                            O122 18100019
+         LA    FIELD,DATAFLD                                       O122 18200019
+         BAL   LINK1,PRTMSG42          PRINT MESSAGE IEH842I       O122 18300019
+         B     INSRTWHT                PRINT RECORD AND REPLACE CCWO122 18400019
+         EJECT                                                     O122 18500019
+*******************************************************************O122 18600019
+*        DETERMINE WHETHER DATA CHECK IN KEY OR DATA FIELD OF R1   O122 18700019
+*              (BYTE COUNT IN CSW WON'T HELP WHEN COUNT IN CCW     O122 18800019
+*              IS FFFF)                                            O122 18900019
+*******************************************************************O122 19000019
+         SPACE 3                                                   O122 19100019
+ERKEYDAT L     A,FUCBPTR               ADDRESS OF UCB              O122 19200019
+         CLI   19(A),X'02'             IS DEVICE A 2301            O122 19300019
+         BE    TRYRD                   YES, ASSUME DATA CHECK IN   O122 19400019
+*                                      KEY TO BE SURE READ DATA    O122 19500019
+*        (NO NEED TO CHECK FOR PREVIOUS NOP)                       O122 19600019
+         MVC   0(8,ERRCCW),TIC         TIC TO RCVRCCWS             O122 19700019
+         MVC   RCVRCCWS(16),READTRK    READ KEY AND DATA AGAIN     O122 19800019
+         L     A,CCWCODE               ADDRESS OF COUNT FIELD      O122 19900019
+         LA    A,5(A)                  PTR TO KEY AND DATA LENGTH  O122 20000019
+         ST    A,RCVRCCWS                                          O122 20100019
+         MVI   RCVRCCWS,X'0F'          REPLACE SPACE COUNT OP CODE O122 20200019
+         SR    B,B                     ZERO                        O122 20300019
+         IC    B,0(A)                  KEY LENGTH                  O122 20400019
+         LA    A,1(A)                  POINT TO DATA LENGTH        O122 20500019
+         AH    B,0(A)                  KEY LENGTH + DATA LENGTH    O122 20600019
+         STH   B,RCVRCCWS+14           LENGTH FOR RKD CCW          O122 20700019
+         LA    A,2(A)                  POINTER TO KEY AND DATA     O122 20800019
+         ST    A,RCVRCCWS+8                                        O122 20900019
+         MVI   RCVRCCWS+8,X'0E'        REPLACE OP CODE             O122 21000019
+         BAL   LINK2,CHKERROR          READ KEY AND DATA AGAIN     O122 21100019
+*        (ASSUME IF DATA CHECK DOES NOT OCCUR ON RETRY THAT IT WAS O122 21200019
+*        IN THE DATA FIELD)                                        O122 21300019
+         B     RESIDCNT                TEST FOR KEY OR DATA ERROR  O122 21400019
+*                                      WITH THIS CSW BYTE COUNT    O122 21500019
+         EJECT                                                     O122 21600019
+*******************************************************************O122 21700019
+*        DATA CHECK IN COUNT FIELD                                 O122 21800019
+*******************************************************************O122 21900019
+         SPACE 3                                                   O122 22000019
+COUNTERR L     A,FUCBPTR               ADDRESS OF UCB              O122 22100019
+         CLI   19(A),X'02'             IS DEVICE A 2301            O122 22200019
+         BE    CNT2301                 YES, CANNOT RECOVER FROM    O122 22300019
+*                                      COUNT ERROR                 O122 22400019
+         TM    CCWCODE,X'1E'           IS CCW A READ COUNT KEY DATAO122 22500019
+        BO     RCKDERR               YEYES, CCW IS A READ CKD      O122 22600019
+*        DATA CHECK ON READ COUNT COMMAND                          O122 22700019
+         LA    FIELD,COUNTFLD          NAME OF DEFECTIVE FIELD     O122 22800019
+         BAL   LINK1,PRTMSG42          PRINT MESSAGE IEH842I       O122 22900019
+         TM    CCWCODE,X'92'           READ COUNT MULTITRACK       O122 23000019
+         BO    RDCMULTI                YES                         O122 23100019
+         BAL   LINK1,PRTCNT            PRINT RECORD FORMATTING CNT O122 23200019
+         L     A,CCWCODE               ADDRESS OF THIS RECORD      O122 23300019
+         B     INCR                    INCREMENT TO NEXT RECORD    O122 23400019
+RDCMULTI MVI   AOUTSW,NOFMT            DO NOT FORMAT THIS COUNT    O122 23500019
+         BAL   LINK1,PRTCNT            PRINT COUNT FIELD           O122 23600019
+         MVI   AOUTSW,FMTCNT           RESET SWITCH TO FORMAT COUNTO122 23700019
+         L     A,DATBUFPT              ADDRESS OF DATA BUFFER      O122 23800019
+INCR     LA    A,8(A)                  ADDRESS OF R1 OR NEXT REC   O122 23900019
+         ST    A,TRACKPT               SAVE ADDRESS FOR IEHDAOUT   O122 24000019
+*        MAKE ERROR CCW A SPACE COUNT                              O122 24100019
+INSRTSC  LR    A,ERRCCW                ADDRESS OF CCW              O122 24200019
+         BAL   LINK1,SPACECNT          INSERT SPACE COUNT          O122 24300019
+         B     OKRETRN                 RETURN                      O122 24400019
+         SPACE 1                                                   O122 24500019
+*        DATA CHECK IN COUNT OF READ COUNT KEY DATA COMMAND        O122 24600019
+*        SET UP SPACE COUNT                                        O122 24700019
+RCKDERR  LR    A,ERRCCW                                            O122 24800019
+         BAL   LINK1,GTRECNUM                                      O122 24900019
+         STC   B,RECNUM                                            O122 25000019
+         LR    A,ERRCCW                ADDRESS OF CCW              O122 25100019
+         BAL   LINK2,CHKNOP            CHECK FOR PREVIOUS NOP      O122 25200019
+         MVC   RCVRCCWS(16),READTRK    SPACE COUNT AND READ KEY DATO122 25300019
+        L     A,CCWCODE  )             ADDR OF COUNT FIELD         O122 25400019
+         LA    A,5(A)                  ADDR OF KEY AND DATA LENGTHSO122 25500019
+         ST    A,RCVRCCWS              LENGTH ADDRESS FOR SPACE CNTO122 25600019
+         MVI   RCVRCCWS,X'0F'          SPACE COUNT OP CODE         O122 25700019
+         LA    A,3                                                 O122 25800019
+         STH   A,RCVRCCWS+6            BYTE COUNT FOR SC CCW       O122 25900019
+*        COMPLETE READ KEY DATA CCW                                O122 26000019
+         L     A,CCWCODE          ADDR OF COUNT FIELD              O122 26100019
+         LA    A,8(A)             ADDR KEY AND DATA FIELDS         O122 26200019
+         ST    A,RCVRCCWS+8       INSERT ADDR IN RKD CCW           O122 26300019
+         MVI   RCVRCCWS+8,X'0E'        READ KEY DATA OP CODE       O122 26400019
+*        REPLACE ERROR CCW WITH TIC TO RCVRCCWS                    O122 26500019
+         MVC   0(8,ERRCCW),TIC                                     O122 26600019
+*        RETRY ERROR CHAIN AND TEST FOR ERROR                      O122 26700019
+         BAL   LINK2,CHKERROR          RETRY I/O                   O122 26800019
+         LTR   RETCODE,RETCODE         IS RETURN CODE 0            O122 26900019
+         BZ    CNTONLY                 YES, KEY AND DATA OK        O122 27000019
+*        PRINT DATA CHECK IN COUNT AND POSSIBLY IN KEY AND DATA    O122 27100019
+         LA    MSG,IEH843I                                         O122 27200019
+         LINK  EP=IEHDMSGB                                         O122 27300019
+         UNPK  0(9,MSG),OUTSEEK+3(5)   TRACK ADDRESS               O122 27400019
+         MVI   8(MSG),C' '             CLEAR TRASH FROM UNPACK     O122 27500019
+         TR    0(8,MSG),IOTAB-240      GRAPHIC TRACK ADDRESS       O122 27600019
+         MVC   9(8,MSG),DDNAME1        DIRECT ACCESS DD NAME       O122 27700019
+         L     ENTER,PRNTADR           ADDRESS OF IEHDPRNT         O122 27800019
+         BALR  LINK,ENTER              GO PRINT MESSAGE            O122 27900019
+*        READ REMAINDER OF TRACK BECAUES LENGTH FIELDS IN COUNT    O122 28000019
+*        MAY BE BAD                                                O122 28100019
+REMTRK1  BAL   LINK1,REMTRK            READ AND PRINT TRACK        O122 28200019
+         MVI   AOUTSW,FMTCNT           RESET SWITCH TO FORMAT COUNTO122 28300019
+         TM    CCWCODE+4,X'40'        CHAINGING BIT ON             O122 28400019
+         BNO   RETRN4                  FINISHED, GO PROCESS NEXT TRO122 28500019
+         CLI   CCWCODE,X'9E'           READING R1                  O122 28600019
+         BO    RETRN4                  YES, GO PROCESS NEXT TRACK  O122 28700019
+*                                      (CAN'T CALC WHERE R2 STARTS)O122 28800019
+MORE2    BAL   LINK1,MORE              UPDATE TRACKPT              O122 28900019
+         B     INSRTSC            INSERT SC IN ERROR CCW           O122 29000019
+*        PRINT DATA CHECK IN COUNT                                 O122 29100019
+CNTONLY  EQU   *                                                   O122 29200019
+         LA    FIELD,COUNTFLD                                      O122 29300019
+         BAL   LINK1,PRTMSG42          PRINT MESSAGE IEH842I       O122 29400019
+*        PRINT RECORD                                              O122 29500019
+         BAL   LINK1,PRTRC                                         O122 29600019
+         TM    CCWCODE+4,X'40'        CHAINGING BIT ON             O122 29700019
+        BO    MORE2                   YES                          O122 29800019
+         B     RETRN4                  FINISHED, GO PROCESS NEXT T O122 29900019
+         SPACE 2                                                   O122 30000019
+*        CANNOT RECOVER FORM DATA CHECK IN COUNT FIELD OR MISSING  O122 30100019
+*        ADDRESS MARKER ON 2301 BECAUSE IT DOESN'T RECOGNIZE THE   O122 30200019
+*        COUNT COMMAND.                                            O122 30300019
+CNT2301  LA    FIELD,COUNTFLD                                      O122 30400019
+         BAL   LINK1,PRTMSG42          PRINT MESSAGE IEH842I       O122 30500019
+*        PRINT COUNT FIELD                                         O122 30600019
+         BAL   LINK1,PRTCNT                                        O122 30700019
+         B     RETRN8                  RETURN TO IEHDEXCP          O122 30800019
+         EJECT                                                     O122 30900019
+*******************************************************************O122 31000019
+*                                                                  O122 31100019
+*        MISSING ADDRESS MARKER                                    O122 31200019
+*                                                                  O122 31300019
+*******************************************************************O122 31400019
+         SPACE 3                                                   O122 31500019
+MISADRMK EQU   *                                                   O122 31600019
+*        IS DEVICE A 2301                                          O122 31700019
+         L     A,FUCBPTR               ADDRESS OF UCB              O122 31800019
+         TM    19(A),X'02'             IS DEVICE A 2301            O122 31900019
+         BO    RETRN8                  YES, CANNOT RECOVER         O122 32000019
+*        PRINT MESSAGE IEH844I                                     O122 32100019
+         LA    MSG,IEH844I             MESSAGE NUMBER              O122 32200019
+         LINK  EP=IEHDMSGB             SET UP MESSAGE              O122 32300019
+         UNPK  0(9,MSG),OUTSEEK+3(5)   TRACK ADDRESS               O122 32400019
+         MVI   8(MSG),C' '             CLEAR TRASH FROM UNPACK     O122 32500019
+         TR    0(8,MSG),IOTAB-240      GRAPHIC TRACK ADDRESS       O122 32600019
+         MVC   9(8,MSG),DDNAME1        DIRECT ACCESS DD NAME       O122 32700019
+         L     ENTER,PRNTADR           ADDRESS OF IEHDPRNT         O122 32800019
+         BALR  LINK,ENTER              GO PRINT MESSAGE            O122 32900019
+         CLI   CCWCODE,X'92'           IS CCW A READ COUNT MULTI-TRO122 33000019
+         BE    NOT2301                 YES, DO NOT UPDATE RECNUM   O122 33100019
+         LR    A,ERRCCW                                            O122 33200019
+         BAL   LINK1,GTRECNUM          GET RECORD NUMBER           O122 33300019
+         STC   B,RECNUM                UPDATE RECORD NUMBER        O122 33400019
+NOT2301  B     REMTRK1                 NO, READ AND PRINT TRACK    O122 33500019
+         EJECT                                                     O122 33600019
+*******************************************************************O122 33700019
+*        REISSUE I/O AND TEST FOR I/O ERROR                        O122 33800019
+*        (DESTROYS REGISTERS 0,1,A,B)                              O122 33900019
+*******************************************************************O122 34000019
+         SPACE 3                                                   O122 34100019
+CHKERROR EXCP  OUTIOB                  DATA CHECK EXPECTED         O122 34200019
+         L     A,OUTECBAD              ADDRESS OF ECB              O122 34300019
+         WAIT  ECB=OUTECB                                          O122 34400019
+         TM    OUTSTAT+4,X'02'         UNIT CHECK                  O122 34500019
+         BO    TSTDTACH                YES, TEST FOR DATA CHECK    O122 34600019
+         TM    OUTSTAT+5,X'FF'         OTHER ERROR                 O122 34700019
+         BZ    ERRNO                   RETURN WITHOUT ERROR        O122 34800019
+         B     CANTRCVR                YES, CAN'T RECOVER          O122 34900019
+TSTDTACH TM    OUTSENSE,X'08'     DATA CHECK                       O122 35000019
+         BO    ACCPT                   YES                         O122 35100019
+         TM    OUTSENSE+1,X'02'        MISSING ADDRESS MARKER      O122 35200019
+         BNO   TSTACCPT           NO, TEST IF ERROR ACCEPTABLE     O122 35300019
+*        DATA CHECK ON RETRY                                       O122 35400019
+ACCPT    L     A,OUTSTAT          DID DATA CHECK OCCUR ON          O122 35500019
+         CLC   0(8,A),RCVRCCWS+8       FIRST RCVRCCW               O122 35600019
+         BE    ERRYES             YES, DATA CHECK EXPECTED         O122 35700019
+         CLC   0(8,A),RCVRCCWS+16      DID DATA CHECK OCCUR ON     O122 35800019
+*                                      SECOND RCVRCCW              O122 35900019
+         BE    ERRYES                  YES, ERROR EXPECTED         O122 36000019
+*        DATA CHECK ON CCW ALREADY EXECUTED SUCCESSFULLY           O122 36100019
+         S     A,EIGHT                 ADDRESS OF FAILING CCW      O122 36200019
+         TM    0(A),X'31'              SEARCH COMMAND              O122 36300019
+         BO    SRCHERR                 YES                         O122 36400019
+         LA    LINK1,READSUCC                                      O122 36500019
+         ST    LINK2,SAVELNK2      SAVE RETURN REGISTER            O122 36600019
+         LA    LINK2,TRYAGAIN                                      O122 36700019
+         TM    OUTSENSE+1,X'80'        DATA CHECK IN COUNT         O122 36800019
+         BO    GTRECNUM                YES, GET RECORD NUMBER FROM O122 36900019
+*                                      PREVIOUS CCW                O122 37000019
+         B     GETRECNO                RECOVER FROM NEW ERROR &    O122 37100019
+*                                      CONTINUE PRCCESSING OLD ERR O122 37200019
+*        RETRY I/O AFTER RECOVERING FROM ERROR ON RECORD ALREADY   O122 37300019
+*        READ SUCCESSFULLY                                         O122 37400019
+TRYAGAIN L     LINK2,SAVELNK2          RESTORE LINKAGE REGISTER    O122 37500019
+         L     B,TICADDR                                           O122 37600019
+         LTR   B,B                                                 O122 37700019
+         BZ    CHKERROR                                            O122 37800019
+         ST    A,0(B)                  CHANGE TIC TO RCVRCCWS TO   O122 37900019
+         MVI   0(B),X'08'              TIC TO THIS ERROR CCW       O122 38000019
+         XC    TICADDR(4),TICADDR                                  O122 38100019
+         B     CHKERROR                RETRY I/O                   O122 38200019
+TSTACCPT EQU   *                                                   O122 38300019
+         TM    OUTSENSE,X'02'          TRACK CONDITION CHECK       O122 38400019
+         BO    ERRNO                   YES, RETRY SUCCESSFUL       O122 38500019
+         TM    OUTSENSE+1,X'05'        FILE PROTECT OR OVFLOW INCM O122 38600019
+         BO    ERRNO                   YES                         O122 38700019
+         TM    OUTSENSE+1,X'08'        NO RECORD FOUND             O122 38800019
+         BZ    CANTRCVR                NO                          O122 38900019
+         LA    B,PRTREM                RETURN ADDR FOR REMTRK      O122 39000019
+         CR    B,LINK2                 DID NO REC FND OCCUR REMTRK O122 39100019
+         BNE   CANTRCVR                NO                          O122 39200019
+         LA    B,RCVRCCWS+16           END OF REMTRK CHAN PROG     O122 39300019
+         CH    B,OUTCCWAD+2            NO REC FND ON 0E AFTER 0F   O122 39400019
+         BNE   CANTRCVR                NO                          O122 39500019
+*        RETRY SUCCESSFUL                                          O122 39600019
+ERRNO    SR    RETCODE,RETCODE         RETURN CODE = 0             O122 39700019
+         BR    LINK2                                               O122 39800019
+*        RETRY UNSUCCESSFUL                                        O122 39900019
+ERRYES   TM    OUTSENSE+1,X'02'        MISSING ADDRESS MARKER      O122 40000019
+         BO    CANTRCVR                YES, DIDN'T RECOVER              40100019
+         LA    RETCODE,8               RETURN CODE = 8             O122 40200019
+         BR    LINK2                                               O122 40300019
+         EJECT                                                     O122 40400019
+*******************************************************************O122 40500019
+*        MAKE CCW ADDRESSED BY REGISTER A A SPACE COUNT            O122 40600019
+*        (DESTROYS REGISTER B)                                     O122 40700019
+*******************************************************************O122 40800019
+         SPACE 3                                                   O122 40900019
+SPACECNT BAL   LINK2,CHKNOP            CHECK FOR PRECEEDING NOP    O122 41000019
+         L     B,0(A)                  ADDRESS OF COUNT FIELD      O122 41100019
+         LA    B,5(B)                  ADDR OF KEY AND DATA LENGTHSO122 41200019
+         ST    B,0(A)                  LENGTH ADDRESS FOR SP CNT   O122 41300019
+         MVI   0(A),X'0F'              SPACE COUNT OP CODE         O122 41400019
+         LA    B,3                                                 O122 41500019
+         STH   B,6(A)                  BYTE COUNT FOR SC CCW       O122 41600019
+         BR    LINK1                   RETURN                      O122 41700019
+         SPACE 10                                                  O122 41800019
+*******************************************************************O122 41900019
+*        CHECK FOR AND CORRECT NOP PRECEEDING SPACE COUNT          O122 42000019
+*              (NOP WILL HAVE REPLACED 06 OR 0E)                   O122 42100019
+*        (IF NOT CORRECTED,NOP WIL ORIENT TRACK ON RECORD 1)       O122 42200019
+*******************************************************************O122 42300019
+CHKNOP   LR    B,A                     ADDRESS OF ERROR CCW        O122 42400019
+RETREAT  S     B,EIGHT                 ADDRESS OF PREVIOUS CCW     O122 42500019
+         CLI   0(B),X'03'              IS PREVIOUS CCW A NOP       O122 42600019
+         BE    MAKETIC                 YES, MAKE NOP A TIC         O122 42700019
+         BR    LINK2                   NO                          O122 42800019
+MAKETIC  MVC   0(8,B),TIC              REPLACE WITH TIC TO RCVRCCW O122 42900019
+         ST    B,TICADDR               SAVE ADDRESS OF TIC         O122 43000019
+         BR    LINK2                                               O122 43100019
+         EJECT                                                     O122 43200019
+*******************************************************************O122 43300019
+*                                                                  O122 43400019
+*        SET UP SYNADAF MESSAGE                                    O122 43500019
+*                                                                  O122 43600019
+*******************************************************************O122 43700019
+         SPACE 3                                                   O122 43800019
+SYNADAF  L     ENTER,PRNTADR           ADDRESS OF IEHDPRNT         O122 43900019
+         BALR  LINK,ENTER              SPACE A LINE                O122 44000019
+         LA    MSG,IEH813I             MESSAGE NUMBER              O122 44100019
+         LINK  EP=IEHDMSGB                                         O122 44200019
+         LA    MSG,OUTIOB              ADDRESS OF IOB FOR SYNADAF  O122 44300019
+         SYNADAF ACSMETH=EXCP,PARM1=(MSG)                          O122 44400019
+         MVC   MESS+22(78),49(MSG)                               SM4350 44500021
+         SYNADRLS                      FREE SYNADAF BUFFER         O122 44600019
+         BR    LINK1                                               O122 44700019
+         EJECT                                                     O122 44800019
+*******************************************************************O122 44900019
+*        WRITE MESSAGE IEH842I - DATA CHECK IN COUNT, KEY OR DATA  O122 45000019
+*******************************************************************O122 45100019
+         SPACE 3                                                   O122 45200019
+PRTMSG42 LA    MSG,IEH842I             MESSAGE NUMBER              O122 45300019
+         LINK  EP=IEHDMSGB             SET UP MESSAGE              O122 45400019
+         MVC   0(5,MSG),0(FIELD)       FIELD IN ERROR              O122 45500019
+         UNPK  19(9,MSG),OUTSEEK+3(5)  TRACK ADDRESS               O122 45600019
+         MVI   27(MSG),C' '            CLEAR TRASH FROM UNPACK     O122 45700019
+         TR    19(8,MSG),IOTAB-240     GRAPHIC TRACK ADDRESS       O122 45800019
+         MVC   28(8,MSG),DDNAME1       DIRECT ACCESS DD NAME       O122 45900019
+         SPACE 3                                                   O122 46000019
+PRTMSG   L     ENTER,PRNTADR           ADDRESS OF IEHDPRNT         O122 46100019
+         BALR  LINK,ENTER              GO PRINT MESSAGE            O122 46200019
+         BR    LINK1                   RETURN                      O122 46300019
+         EJECT                                                     O122 46400019
+*******************************************************************O122 46500019
+*                                                                  O122 46600019
+*        PRINT THE RECORD, FORMATTING THE COUNT FIELD              O122 46700019
+*                                                                  O122 46800019
+*******************************************************************O122 46900019
+         SPACE 3                                                   O122 47000019
+PRTRC    L     A,TRACKPT               ADDRESS OF BUFFER           O122 47100019
+         L     B,CCWCODE               ADDRESS OF COUNT FIELD      O122 47200019
+         SR    ENDATA,ENDATA                                       O122 47300019
+         IC    ENDATA,5(B)             KEY LENGTH                  O122 47400019
+         AH    ENDATA,6(B)             KEY LENGTH PLUS DATA LENGTH O122 47500019
+         LA    ENDATA,8(ENDATA)        LENGTH OF RECORD            O122 47600019
+         AR    ENDATA,A                ADDRESS OF END OF RECORD    O122 47700019
+         BAL   LINK2,PRINT             PRINT RECORD                O122 47800019
+         BR    LINK1                                               O122 47900019
+         SPACE 10                                                  O122 48000019
+*******************************************************************O122 48100019
+*                                                                  O122 48200019
+*        PRINT THE COUNT FIELD ONLY                                O122 48300019
+*                                                                  O122 48400019
+*******************************************************************O122 48500019
+         SPACE 3                                                   O122 48600019
+PRTCNT   L     B,CCWCODE               ADDRESS OF COUNT            O122 48700019
+         L     ENDATA,TRACKPT          BEGINNING OF BUFFER         O122 48800019
+         LA    ENDATA,8(ENDATA)        END OF COUNT                O122 48900019
+         BAL   LINK2,PRINT             PRINT COUNT FIELD           O122 49000019
+         BR    LINK1                                               O122 49100019
+         EJECT                                                     O122 49200019
+*******************************************************************O122 49300019
+*        PRINT PART OF THE TRACK                                   O122 49400019
+*******************************************************************O122 49500019
+         SPACE 3                                                   O122 49600019
+*        SET UP PARAMETERS FOR IEHDAOUT                            O122 49700019
+PRINT    LA    TRK,CCHH                POINTER TO TRACK ADDRESS    O122 49800019
+         L     PRNT,PRNTADR            ADDRESS OF IEHDPRNT         O122 49900019
+         L     ENTER,DAOUTADR          ADDRESS OF IEHDAOUT         O122 50000019
+*        PARAMETERS ALREADY ESTABLISHED                            O122 50100019
+*              REGISTER  3 - END OF DATA                           O122 50200019
+*              REGISTER 10 - ADDRESS OF IEHDBLKS                   O122 50300019
+*              REGISTER 12 - ADDRESS OF IEHDWORK                   O122 50400019
+*              AOUTSW      - PROPER FORMATTING                     O122 50500019
+*              TRACKPT     - BEGINNING OF DATA                     O122 50600019
+         SPACE 1                                                   O122 50700019
+*        LINK TO IEHDAOUT TO PRINT RECORDS                         O122 50800019
+         BALR  LINK,ENTER                                          O122 50900019
+         L     ENTER,PRNTADR           ADDRESS OF IEHDPRNT         O122 51000019
+         BALR  LINK,ENTER              SPACE A LINE                O122 51100019
+         BR    LINK2                                               O122 51200019
+         EJECT                                                     O122 51300019
+*******************************************************************O122 51400019
+*        CALCULATE BEGINNING ADDRESS FOR IEHDAOUT                  O122 51500019
+*******************************************************************O122 51600019
+         SPACE 3                                                   O122 51700019
+MORE     TM    CCWCODE,X'90'           READING R1-RN FIRST PASS    O122 51800019
+         BO    BEGINR2                 YES, TELL IEHDAOUT BEGIN R2 O122 51900019
+         MVC   TRACKPT(4),8(ERRCCW)    NO, BEGIN NEXT CCW          O122 52000019
+         BR    LINK1                                               O122 52100019
+BEGINR2  L     A,DATBUFPT              ADDRESS OF BUFFER           O122 52200019
+         LA    A,8(A)                  ADDRESS OF R1               O122 52300019
+         SR    B,B                                                 O122 52400019
+         IC    B,5(A)                  KEY LENGTH OF R1            O122 52500019
+         AH    B,6(A)                  KEY + DATA LENGTH OF R1     O122 52600019
+         LA    B,8(B)                  LENGTH OF R1                O122 52700019
+         AR    A,B                     END OF R1                   O122 52800019
+         ST    A,TRACKPT               STORE TO SEE IF DOUBLE WORD O122 52900019
+         TM    TRACKPT+3,X'07'         IS PTR ON DOUBLE WORD BNDRY O122 53000019
+         BCR   8,LINK1                 YES, RETURN                 O122 53100019
+         NI    TRACKPT+3,X'F8'         NO, FORCE TO BOUBLE WORD BNDO122 53200019
+         L     A,TRACKPT                                           O122 53300019
+         LA    A,8(A)                  NEXT DOUBLE WORD AFTER R1   O122 53400019
+         ST A,TRACKPT                  ADDRESS OF R2               O122 53500019
+         BR    LINK1                                               O122 53600019
+         EJECT                                                     O122 53700019
+*******************************************************************O122 53800019
+*        PRINT REMAINDER OF TRACK                                  O122 53900019
+*******************************************************************O122 54000019
+         SPACE 3                                                   O122 54100019
+REMTRK   LR    A,ERRCCW                ADDRESS OF CCW              O122 54200019
+         BAL   LINK2,CHKNOP            CHECK FOR PRECEEDING NOP    O122 54300019
+SPRKD    MVC   RCVRCCWS(16),READTRK    SPACE COUNT AND READ        O122 54400019
+*                                      TRACK AS IF ONE RECORD      O122 54500019
+         L     A,DATBUFPT              POINTER TO TRACK LENGTH BUFFO122 54600019
+         O     A,RCVRCCWS+8            INSERT BUFFER ADDRESS       O122 54700019
+         ST    A,RCVRCCWS+8               INTO READ CCW            O122 54800019
+         L     B,IODEVCON              LOAC BASE REGISTER          O122 54900019
+         USING CONSTANT,B                                          O122 55000019
+         LH    A,SACAP                 TRACK CAPACITY              O122 55100019
+         DROP  B                                                   O122 55200019
+         STH   A,TRKLNGTH+1                                        O122 55300019
+         MVC   0(8,ERRCCW),TIC         REPLACE ERROR CCW WITH TIC  O122 55400019
+*                                      TO RCVRCCWS                 O122 55500019
+         BAL   LINK2,CHKERROR          READ REMAINDER OF TRACK     O122 55600019
+*        PRINT REMAINDER OF TRACK                                  O122 55700019
+PRTREM   L     ENDATA,RCVRCCWS+12      DATA LENGTH IN READ CCW     O122 55800019
+         LA    ENDATA,0(ENDATA)        CLEAR HIGH ORDER BYTE       O122 55900019
+         MVC   BYTECNT+2(2),OUTSTAT+6  CSW BYTE COUNT              O122 56000019
+         S     ENDATA,BYTECNT          LENGTH OF RECORD READ       O122 56100019
+         A     ENDATA,DATBUFPT         ADDRESS OF END OF DATA      O122 56200019
+         MVI   AOUTSW,NOFMT            SET SWITCH FOR NO FORMATTINGO122 56300019
+         MVC   TRACKPT(4),DATBUFPT                                 O122 56400019
+         BAL   LINK2,PRINT             PRINT REMAINDER OF TRACK    O122 56500019
+         BR    LINK1                                               O122 56600019
+         EJECT                                                     O122 56700019
+*******************************************************************O122 56800019
+*        GET THE RECORD NUMBER FOR THIS RECORD                     O122 56900019
+*              REGISTER A MUST POINT TO ERROR CCW                  O122 57000019
+*              RECORD NUMBER RETURNDD IN REGISTER !                O122 57100019
+*******************************************************************O122 57200019
+         SPACE 3                                                   O122 57300019
+GETRECNO CLI   0(A),X'9E'              READ COUNT KEY DATA R1      O122 57400019
+         BE    ERR1                    YES                         O122 57500019
+         TM    0(A),X'12'              READ COUNT OR RCKD          O122 57600019
+         BO    GETFRCNT                YES, GET RECORD NUMBER      O122 57700019
+*                                      FROM COUNT FIELD            O122 57800019
+         CLI   0(A),X'0E'              READ KEY DATA R2            O122 57900019
+         BE    ERR2                    YES                         O122 58000019
+*        READ DATA R0                                              O122 58100019
+ERR0     SR    B,B                                                 O122 58200019
+         BR    LINK1                   RETURN OR GO TO READSUCC    O122 58300019
+*        READ COUNT KEY DATA MULTI-TRACK R1                        O122 58400019
+ERR1     LA    B,1                                                 O122 58500019
+         BR    LINK1                                               O122 58600019
+*        READ KEY DATA R2                                          O122 58700019
+ERR2     LA    B,2                                                 O122 58800019
+         BR    LINK1                   RETURN OR GO TO READSUCC    O122 58900019
+*        * RECORD 3                                                O122 59000019
+ERR3     LA    B,3                                                 O122 59100019
+         BR    LINK1                                               O122 59200019
+*        GET RECORD NUMBER FROM COUNT FLD                          O122 59300019
+GETFRCNT L     B,0(A)                  ADDRES OF COUNT FIELD       O122 59400019
+         IC    B,4(B)                  RECORD NUMBER               O122 59500019
+         BR    LINK1                                               O122 59600019
+*        RECORD NUMBER IN COUNT FIELD NOT RELIABLE FOR MISSING     O122 59700019
+*        ADDRESS MARKER OR DATA CHECK IN COUNT FIELD.  OBTAIN      O122 59800019
+*        RECORD NUMBER FROM PREVIOUS RECORD                        O122 59900019
+*        (REGISTER A MUST NOT POIN T TO CCWCODE)                   O122 60000019
+GTRECNUM CLI   0(A),X'9E'              READ CKD MULTI TRACK R1     O122 60100019
+         BE    ERR1                    YES                         O122 60200019
+         LR    B,A                                                 O122 60300019
+         S     B,EIGHT                 ADDRESS OF PREVIOUS CCW     O122 60400019
+         CLI   0(B),X'0E'              IS PREB RECORD R2           O122 60500019
+         BE    ERR3                    YES                         O122 60600019
+         CLI   0(B),X'03'              IS PREVIOUS CCW NOP         O122 60700019
+         BE    LOOKBACK                COULD BE R0, R2             O122 60800019
+         CLI   0(B),X'0F'              SPACE COUNT                 O122 60900019
+         BE    LOOKBACK                YES                         O122 61000019
+*        PREVIOUS CCW IS READ COUNT OR READ COUNT KEY DATA         O122 61100019
+         IC    B,4(B)                  RECORD # OF PREC RECORD     O122 61200019
+         LA    B,1(B)                  RECORD NUMBER OF THIS RECORDO122 61300019
+         BR    LINK1                                               O122 61400019
+*        LOOK BACKWARDS TO FIND A KNOWN RECORD NUMBER              O122 61500019
+LOOKBACK LA    A,1                                                 O122 61600019
+BACKAGAN S     B,EIGHT                 NEXT PREVIOUS RECORD NUMBER O122 61700019
+         CLI   0(B),X'08'              IS PREVIOUS CCW A TIC       O122 61800019
+         BE    BACKAGAN                YES                         O122 61900019
+         CLI   0(B),X'31'              IS PREVIOUS A SEARCH        O122 62000019
+         BNE   BACK                    NO                          O122 62100019
+         IC    B,OUTSEEK+7             RECORD NUMBER FOR SEARCH IS O122 62200019
+*                                      SAME AS FOR 06 OR 0E        O122 62300019
+         AR    B,A                     RECNUM FOR THIS RECORD      O122 62400019
+         BR    LINK1                                               O122 62500019
+BACK     LA    A,1(A)                                              O122 62600019
+         CLI   0(B),X'06'                                          O122 62700019
+         BE    PREVR0                                              O122 62800019
+         CLI   0(B),X'0E'                                          O122 62900019
+         BE    PREVR2                                              O122 63000019
+         CLI   0(B),X'03'                                          O122 63100019
+         BE    BACKAGAN                                            O122 63200019
+         CLI   0(B),X'0F'              SPACE COUNT                 O122 63300019
+         BE    BACKAGAN                YES                         O122 63400019
+         L     B,0(B)                  ADDRESS OF COUNT FIELD      O122 63500019
+         IC    B,4(B)                  RECORD NUMBER OF PREVIOUS   O122 63600019
+         AR    B,A                     RECNUM FOR THIS RECORD      O122 63700019
+         BR    LINK1                                               O122 63800019
+PREVR0   SR    B,B                                                 O122 63900019
+         AR    B,A                                                 O122 64000019
+         BR    LINK1                                               O122 64100019
+PREVR2   LA    B,2                                                 O122 64200019
+         AR    B,A                                                 O122 64300019
+         BR    LINK1                                               O122 64400019
+         EJECT                                                     O122 64500019
+*******************************************************************O122 64600019
+*        I/O ERROR ON SEARCH COMMAND OR MISSING ADDRESS MARKER AND O122 64700019
+*        NO RECORD FOUND                                           O122 64800019
+*******************************************************************O122 64900019
+         SPACE 3                                                   O122 65000019
+SRCHERR  BAL   LINK1,SYNADAF           SET UP SYNADAF MESSAGE      O122 65100019
+         BAL   LINK1,PRTMSG            PRINT SYNADAF MESSAGE       O122 65200019
+         MVC   SAVCCWAD(4),OUTCCWAD    SAVE DCCW ADR FROM IOB      O122 65300019
+         LA    A,SPCNT                                             O122 65400019
+         ST    A,OUTCCWAD                                          O122 65500019
+         BAL   LINK1,SPRKD             READ TRK                    O122 65600019
+         MVC   OUTCCWAD(4),SAVCCWAD    RESTORE CCW ADR TO IOB      O122 65700019
+         B     RETRN4                                              O122 65800019
+         EJECT                                                     O122 65900019
+*******************************************************************O122 66000019
+*        TEST FOR ALREADY READ THIS RECORD SUCCESSFULLY            O122 66100019
+*******************************************************************O122 66200019
+         SPACE 3                                                   O122 66300019
+TESTRDSC CLI   0(ERRCCW),X'92'         READ COUNT MULTI-TRACK      O122 66400019
+         BE    NOTRDSUC                YES, GO PROCESS ERROR       O122 66500019
+         LR    A,ERRCCW                                            O122 66600019
+         LA    LINK1,COMPNUM                                       O122 66700019
+         LA    LINK2,OKRETRN                                       O122 66800019
+         CLI   0(A),X'0E'              READ KEY DATA R2            O122 66900019
+         BNE   GETFRCNT                NO, CCW IS 1E OR 12         O122 67000019
+         CLI   RECNUM,X'02'            HAVE WE ALREADY READ R2     O122 67100019
+         BL    NOTRDSUC                NO, GO PROCESS ERROR        O122 67200019
+         B     ERR2                                                O122 67300019
+COMPNUM  STC   B,RECNO                 PREPARE TO COMPARE REC NUMS O122 67400019
+         CLC   RECNUM,RECNO            WAS RECORD READ BEFORE      O122 67500019
+         BL    NOTRDSUC                NO                          O122 67600019
+READSUCC BAL   LINK1,SYNADAF                                       O122 67700019
+         UNPK  MESS+89(3),RECNO        PRINTABLE RECORD NUMBER     O122 67800019
+         MVI   MESS+91,C','                                        O122 67900019
+         BAL   LINK1,PRTMSG            PRINT SYANDAF MESSAGE       O122 68000019
+         BAL   LINK1,PRTMSG        SPACE A LINE                    O122 68100019
+         TM    0(A),X'12'              READ COUNT OR RCKD          O122 68200019
+         BO    REPLCNT                 YES                         O122 68300019
+*        ERROR ON READ KEY DATA                                    O122 68400019
+         MVI   0(A),NOP                                            O122 68500019
+         BR    LINK2                                               O122 68600019
+REPLCNT  L     B,FUCBPTR               ADDRESS OF UCB              O122 68700019
+         TM    19(B),X'02'             IS DEVICE A 2301            O122 68800019
+         BO    TSTCNTER                YES                         O122 68900019
+         ST    LINK2,SAVLNK2           SAVE RETURN REGISTER      A58105 68950021
+         BAL   LINK1,SPACECNT                                      O122 69000019
+         L     LINK2,SAVLNK2           RESTORE RETURN REGISTER   A58105 69050021
+         BR    LINK2                                               O122 69100019
+TSTCNTER TM    OUTSENSE+1,X'80'        ERROR IN COUNT ON 2301      O122 69200019
+         BO    CANTRCVR                YES, ACN'T RECOVER          O122 69300019
+         MVI   0(A),X'12'              NO, REPLACE WITH READ COUNT O122 69400019
+         BR    LINK2                                               O122 69500019
+         EJECT                                                     O122 69600019
+*******************************************************************O122 69700019
+*        RETURN TO IEHDEXCP                                        O122 69800019
+*******************************************************************O122 69900019
+         SPACE 3                                                   O122 70000019
+RETRN4   LA    RETCODE,4               RETURN CODE = 4             O122 70100019
+         B     RETRN1                                              O122 70200019
+CANTRCVR BAL   LINK1,SYNADAF           SET UP SYNADAF MESSAGE      O122 70300019
+         BAL   LINK1,PRTMSG            PRINT SYNADAF MESSAGE       O122 70400019
+RETRN8   LA    RETCODE,8               RETURN CODE = 8             O122 70500019
+         B     RETRN1                                              O122 70600019
+OKRETRN  TM    OUTSENSE+1,X'05'        FILE PROTECT OR OVFL INCMPT O122 70700019
+         BNZ   RETRN4                  YES, FINISHED THE TRACK     O122 70800019
+         SR    RETCODE,RETCODE         RETURN CODE = 0             O122 70900019
+         L     A,TICADDR               ADDR OF TIC                 O122 71000019
+         LTR   A,A                                                 O122 71100019
+         BZ    RETRN1                  NO                          O122 71200019
+         ST ERRCCW,0(A)                CHANGE TIC TO RCVRCCWS TO   O122 71300019
+         MVI   0(A),X'08'              TIC TO ERROR CCW            O122 71400019
+RETRN1   L     SAVEREG,RCVRSAVE+4      RESTORE SAVE ADDRESS        O122 71500019
+         RETURN (14,12),T,RC=(15)      RESTORE REGISTERS AND RETURNO122 71600019
+         EJECT                                                     O122 71700019
+*******************************************************************O122 71800019
+*        EQUATES                                                   O122 71900019
+*******************************************************************O122 72000019
+         SPACE 3                                                   O122 72100019
+*        REGISTER EQUATES                                          O122 72200019
+         SPACE 1                                                   O122 72300019
+*        DESCRIPTION OF LINKAGE REGISTERS                          O122 72400019
+*        INTERNAL BRANCHES                                         O122 72500019
+*              CHKERROR      LINK2                                 O122 72600019
+*              PRINT         LINK2                                 O122 72700019
+*              PRTCNT        LINK1                                 O122 72800019
+*              PRTRC         LINK1                                 O122 72900019
+*              PRTMSG42      LINK1                                 O122 73000019
+*              SPACECNT      LINK1                                 O122 73100019
+*        EXTERNAL BRANCHES                                         O122 73200019
+*              IEHDAOUT      LINK                                  O122 73300019
+*              IEHDPRNT      LINK                                  O122 73400019
+         SPACE 1                                                   O122 73500019
+MSG      EQU   1                       MESSAGE NUMBER              O122 73600019
+TRK      EQU   1                       PTR TO TRK ADDR FOR IEHDAOUTO122 73700019
+PRNT     EQU   2                       ADDRESS OF IEHDPRNT         O122 73800019
+ENDATA   EQU   3                       END OF DATA FOR IEHDAOUT    O122 73900019
+LINK1    EQU   4                       INTERNAL LINKAGE REGISTER   O122 74000019
+PARM1    EQU   4                       ADDRESS OF IEHDAOUT         O122 74100019
+PARM2    EQU   5                       ADDRESS OF IEHDPRNT         O122 74200019
+LINK2    EQU   5                       LINKAGE REGISTER            O122 74300019
+FIELD    EQU   5                       ADDRESS OF NAME OF DEFECTIVEO122 74400019
+*                                      FIELD FOR MESSAGE IEH842I   O122 74500019
+IOB      EQU   6                       ADDR OF IOB FOR FROM DEVICE O122 74600019
+B        EQU   7                       WORKREGISTER                O122 74700019
+ERRCCW   EQU   8                       ADDR OF CCW WITH I/O ERROR  O122 74800019
+A        EQU   9                       WORK REGISTER               O122 74900019
+BLKPTR   EQU   10                      POINTER TO FUNCBLK          O122 75000019
+BASEREG  EQU   11                                                  O122 75100019
+AWORK    EQU   12                      POINTER TO IEHDWORK         O122 75200019
+*                                      IEHDEXCP, PASSED TO IEHDAOUTO122 75300019
+SAVEREG  EQU   13                      ADDRESS OF SAVE AREA        O122 75400019
+LINK     EQU   14                      EXTERNAL LINKAGE REGISTER   O122 75500019
+ENTER    EQU   15                      ENTRY POINT                 O122 75600019
+RETCODE  EQU   15                      RETURN CODE                 O122 75700019
+         SPACE 2                                                   O122 75800019
+*        MISCELLANEOUS EQUATES                                     O122 75900019
+IEH813I  EQU   13                      SYNADAF MESSAGE             O122 76000019
+IEH842I  EQU   42                      COUNT,KEY OR DATA MESSAGE   O122 76100019
+IEH843I  EQU   43                      COUNT AND KEY OR DATA MESSAGO122 76200019
+IEH844I  EQU   44                      MISSING ADDRESS MARKER MESS O122 76300019
+NOP      EQU   03                      NO OPERATION CCW CODE       O122 76400019
+         EJECT                                                     O122 76500019
+*******************************************************************O122 76600019
+*        STORAGE ALLOCATION                                        O122 76700019
+*******************************************************************O122 76800019
+         SPACE 3                                                   O122 76900019
+RCVRSAVE DS    18F                SAVE AREA                        O122 77000019
+SPCNT    CCW   X'0F',TRKLNGTH,X'60',3  SPACE COUNT TO ORIENT ON R1 O122 77100019
+*                                      (MUST IMMEDIATELY PRECEDE   O122 77200019
+*                                      RCVRCCWS)                   O122 77300019
+RCVRCCWS DC    2D'0'                   CCWS FOR I/O ERROR RECOVERY O122 77400019
+COUNTFLD DC    CL5'COUNT'                                          O122 77500019
+KEYFLD   DC    CL5'  KEY'                                          O122 77600019
+DATAFLD  DC    CL5' DATA'                                          O122 77700019
+IOTAB    DC    C'0123456789ABCDEF'                                 O122 77800019
+RECNO    DC    X'00'                                               O122 77900019
+SAVCCWAD DS    1F                                                  O122 78000019
+CCWCODE  DC    D'0'                    SAVE ERROR CCW              O122 78100019
+TICADDR  DC    F'0'                    ADDR OF TIC WITH CHANGED AD O122 78200019
+         DS    0H                                                  O122 78300019
+         DS    1X                                                  O122 78400019
+TRKLNGTH DC    X'00FFFF'               KEY AND DATA LENGTH         O122 78500019
+*                                      FOR SPACE COUNT             O122 78600019
+BYTECNT  DC    F'0'                    BYTE COUNT FROM CSW         O122 78700019
+SAVELNK2 DC    F'0'                    SAVE LINK2                  O122 78800019
+SAVLNK2  DC    F'0'                    SAVE LINK2                A58105 78850021
+EIGHT    DC    F'8'                    LENGTH OF CCW               O122 78900019
+DAOUTADR DS    2F                      ADDRESS OF IEHDAOUT AND     O122 79000019
+PRNTADR  EQU   DAOUTADR+4              ADDRESS OF IEHDPRNT         O122 79100019
+         SPACE 2                                                   O122 79200019
+*        CCWS TO BE MOVED INDIVIDUALLY TO RCVRCCWS                 O122 79300019
+TIC      CCW   X'08',RCVRCCWS,X'60',1  TIC TO RCVRCCWS             O122 79400019
+RD       CCW   X'06',0,X'20',X'FFFF'   READ DATA                   O122 79500019
+RC       CCW   X'12',0,X'70',8         READ COUNT                  O122 79600019
+READTRK  CCW   X'0F',TRKLNGTH,X'60',3  SPACE COUNT AND             O122 79700019
+         CCW   X'0E',0,X'20',X'FFFF'   READ KEY DATA               O122 79800019
+         EJECT                                                     O122 79900019
+*******************************************************************O122 80000019
+*        DSECTS FOR I/O CONTROL BLOCKS AND FUNCTION BLOCK          O122 80100019
+*******************************************************************O122 80200019
+         SPACE 3                                                   O122 80300019
+OUTIOB   DSECT                                                     O122 80400019
+*        REGISTER IOB IS USED AS BASE REGISTER                     O122 80500019
+OUTFLG   DS    XL2                                                 O122 80600019
+OUTSENSE DS    XL2                                                 O122 80700019
+OUTECBAD DS    F                                                   O122 80800019
+OUTSTAT  DS    2F                                                  O122 80900019
+OUTCCWAD DS    F                                                   O122 81000019
+OUTDCBAD DS    F                                                   O122 81100019
+OUTRESAD DS    F                                                   O122 81200019
+OUTBLKCT DS    XL2                                                 O122 81300019
+OUTERROR DS    XL2                                                 O122 81400019
+OUTSEEK  DS    2F                                                  O122 81500019
+CCHH     EQU   OUTSEEK+3               CURRENT TRACK ADDRESS       O122 81600019
+         SPACE 2                                                   O122 81700019
+OUTECB   DSECT                                                     O122 81800019
+*        REGISTER ECB IS USED AS BASE REGISTER                     O122 81900019
+         DS    F                                                   O122 82000019
+         EJECT                                                     O122 82100019
+         IEHDBLKS                                                  O122 82200019
+         IEHDWORK                                                  O122 82300019
+         END                                                            82400019

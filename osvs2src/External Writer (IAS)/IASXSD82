@@ -1,0 +1,1171 @@
+SD82     TITLE 'IASXSD82 - ACCESS SYSOUT DATA SETS FROM HASP'           00080000
+*********************************************************************** 00160000
+*                                                                     * 00240000
+*STATUS CHANGE LEVEL 000                                              * 00320000
+*                                                                     * 00400000
+*FUNCTION OF THIS MODULE:                                             * 00480000
+*                                                                     * 00560000
+*    1. PREPARE TO PUT OUT A DATA SET.                                * 00640000
+*    2. ISSUE IEFSSREQ TO OBTAIN A DATA SET FROM HASP.                * 00720000
+*    3. DYNAMICALLY ALLOCATE THE DATA SET RECEIVED FROM HASP.         * 00800000
+*    4. PUT OUT MESSAGES TO THE OPERATOR INDICATING PAUSE BETWEEN     * 00880000
+*       DATA SETS OR FORMS CHANGE.                                    * 00960000
+*    5. WRITE TYPE 6 SMF RECORD PER JOB OR FORM WITHIN JOB.           * 01040000
+*    6. ATTACH IEFSD087 OR USER WRITTEN WRITER.                       * 01120000
+*    7. WAIT FOR WORK IF HASP HAS NO DATA SETS ELGIBLE FOR WRITER.    * 01200000
+*                                                                     * 01280000
+*OPERATION OF THIS MODULE:                                            * 01360000
+*    ENTRY POINT:                                                     * 01440000
+*       IASXSD82 - FROM IASXSD81                                      * 01520000
+*                                                                     * 01600000
+*    EXIT POINT 1 - ATTACH IEFSD087 OR USER WRITER                    * 01680000
+*    EXIT POINT 2 - RETURN TO VS WHEN STOP COMMAND RECEIVED           * 01760000
+*    EXIT POINT 3 - TO IASXSD81 TO PROCESS A MODIFY COMMAND           * 01840000
+*                                                                     * 01920000
+*EXTERNAL ROUTINES:                                                   * 02000000
+*                                                                     * 02080000
+*    IEFSD087 - STANDARD OUTPUT WRITER OR USER WRITER                 * 02160000
+*    IEFSSREQ - INTERFACE TO HASP TO OBTAIN WORK                      * 02240000
+*                                                                     * 02320000
+*ATTRIBUTES - REENTRANT, REUSABLE, KEY1, SUPERVISOR STATE             * 02400000
+*                                                                     * 02480000
+*                                                                     * 02560000
+*REGISTER USAGE:                                                      * 02640000
+*                                                                     * 02720000
+*    R1-R4- WORK REGISTERS                                            * 02800000
+*    R5   - OUTPUT AND INPUT DCB ADDRESSABILITY                       * 02880000
+*    R6   - ADDRESS OF PARLIST                                        * 02960000
+*    R7   - SSOB ADDRESSABILTTY                                       * 03040000
+*    R8   - DYNAMIC ALLOCATION RB ADDRESSABILITY                      * 03120000
+*    R9   - BASE REGISTER                                             * 03200000
+*    R10  - ERROR MESSAGES ADDRESSABILITY                             * 03280000
+*    R14  - RETURN REGISTER                                           * 03360000
+*                                                                     * 03440000
+*CORE USAGE:                                                          * 03520000
+*                                                                     * 03600000
+*    ONE GETMAIN IS ISSUED FOR THE FOLLOWING AREAS                    * 03680000
+*                                                                     * 03760000
+*        1.  WORKLST                                                  * 03840000
+*        2.  SAVE AREA FOR EXTERNAL WRITER                            * 03920000
+*        3.  INPUT DCB, OPEN AND CLOSE LISTS                          * 04000000
+*        4.  ECBLIST, ATACHLIST,ETC.                                  * 04080000
+*        5.  FOUR BYTES FOR READ JFCB L-FORM DATA                     * 04160000
+*        6.  JFCB FOR INPUT DCB                                       * 04240000
+*        7.  VALID WRITER NAME TABLE                                  * 04320000
+*        8.  SMF RECORD AREA                                          * 04400000
+*        9.  ALLOC PARAMETER LIST                                     * 04480000
+*                                                                     * 04560000
+*********************************************************************** 04640000
+         EJECT                                                          04720000
+IASXSD82 CSECT                                                          04800000
+R0       EQU   0                                                        04880000
+R1       EQU   1                                                        04960000
+R2       EQU   2                                                        05040000
+R3       EQU   3                                                        05120000
+R4       EQU   4                                                        05200000
+R5       EQU   5                                                        05280000
+R6       EQU   6                                                        05360000
+R7       EQU   7                                                        05440000
+R8       EQU   8                                                        05520000
+R9       EQU   9                                                        05600000
+R10      EQU   10                                                       05680000
+R11      EQU   11                                                       05760000
+R12      EQU   12                                                       05840000
+R13      EQU   13                                                       05920000
+R14      EQU   14                                                       06000000
+R15      EQU   15                                                       06080000
+VARSP    EQU   X'48'               VARIABLE  SPANNED RECFM              06160000
+SUBPOOL  EQU   245                 SUBPOOL FOR CSCB                     06240000
+CSCBSIZ  EQU   64                  CSCB SIZE                            06320000
+MODFCM   EQU   X'08'               MODIFY COMMAND BIT                   06400000
+STOPCM   EQU   X'10'               STOP COMMAND BIT                     06480000
+NOENTRYS EQU   8                   NO. OF ENTRIES IN TABLE              06560000
+ENTRYSIZ EQU   8                   SIZE OF EACH ENTRY                   06640000
+TBLESIZ  EQU   NOENTRYS*ENTRYSIZ   SIZE OF VALID NAMES TABLE            06720000
+SAVEAREA EQU   72                                                       06800000
+WAITAND  EQU   X'7F'               CLEAR WAIT FLAG                      06880000
+SIZPRG   EQU   12                  SIZE OF PURGE PARAMETER LIST         06960000
+PRGDEB   EQU   0                   ADDRESS OF DEB IN PURGE LIST         07040000
+PRGOPT   EQU   0                   OTION BYTE IN PURGE LIST             07120000
+PRGTCB   EQU   4                   ADDRESS OF TCB IN PURGE LIST         07200000
+PRGUSR   EQU   8                   ADDRESS OF PURGE LINK FIELD          07280000
+PURGOPT  EQU   X'E4'               PURGE RQE'S FOR DEB ONLY,            07360000
+*                                   POST PURGED REQUESTS, HALT I/O OPTS 07440000
+PRGOPT2  EQU   X'84'               PURGE BY DEV, POST, & QUIESCE OPTION 07520000
+DEBTCBAD EQU   0                   ADDR. OF TCB IN DEB                  07600000
+DEBUSRPG EQU   16                  USER PURGE CHAIN                     07680000
+ENTRY82  EQU   X'FF'               INDICATOR FOR IEFSD094 THAT          07760000
+*                                   ENTRY IS FROM IASXSD82              07840000
+TTETYPE  EQU   X'09'               3211 UNIT TYPE                       07920000
+UCBFDF   EQU   X'80'               UCB FCB ID IS DEFAULT ID             08000000
+UCBUDF   EQU   X'80'               UCB UCS ID IS DEFAULT ID             08080000
+ZERO     EQU   0                                                        08160000
+         EJECT                                                          08240000
+         BALR  R9,0                SET UP BASE REGISTER                 08320000
+         USING *,R9                                                     08400000
+         LR    R6,R1               SAVE PARM REG                        08480000
+         USING PARLIST,R6                                               08560000
+         XC    PARXXX(8),PARXXX    INDICATE NO SPANNING MODULE          08640000
+         OI    PARDUM,PARWAIT      INDICATE WRITER IS TO WRITE WAIT MSG 08720000
+         L     R10,MSGADDR         GET MESSAGE ADDRESS                  08800000
+         USING IASXS82M,R10                                             08880000
+         L     R5,PARDCB           ADDRESS OF OUTPUT DCB                08960000
+         USING IHADCB,R5                                                09040000
+         TM    DCBRECFM,VARSP      IF NOT VS, DON'T LOAD XXX            09120000
+         BNO   SD82WKT                                                  09200000
+***                                                                 *** 09280000
+*   LOAD VARIABLE SPANNING MODULE AND GET WORK AREA FOR IT            * 09360000
+***                                                                 *** 09440000
+         LOAD  EP=IEFSDXXX         LOAD THE VARIABLE SPANNING MODULE    09520000
+         ST    R0,PARXXX           SAVE THE ADDRESS OF THE MODULE       09600000
+         LA    R0,WORKFEND-WORKFXXX     GET CORE FOR SPANNING WORK AREA 09680000
+         GETMAIN R,LV=(0)                                               09760000
+         ST    R1,PARXXA           SAVE ADDRESS OF WKX                  09840000
+SD82WKT  LA    R0,SD82CORE         GET SIZE OF CORE NEEDED FOR IEFSD082 09920000
+         GETMAIN R,LV=(0)          GET CORE FOR INPUT DCB WKT, ETC.     10000000
+         ST    R1,PARWKLST         SAVE ADDRESS OF CORE           .     10080000
+         USING WORKLST,R1                                               10160000
+         LA    R2,WORKT(R1)        ADDRESS OF SAVE AREA                 10240000
+         ST    R13,4(R2)           SAVE CONTENT OF SAVE REGISTER        10320000
+         LR    R13,R2              NEW SAVE AREA ADDRESS                10400000
+         LA    R2,SAVEAREA(R2)     INCREMENT TO DCB ADDRESS             10480000
+         ST    R2,DCBIN            SAVE DCB ADDRESS                     10560000
+         LA    R3,IDCB(R2)         ADDRESS OF ECB AND ATTACH LISTS      10640000
+         ST    R3,VARAR            STORE LISTS ADDR IN WORKLST          10720000
+         LA    R2,ATCHADDR+ATCHLST+4(R3)  ADDRESS OF INPUT DCB JFCB     10800000
+         ST    R2,WJFCB            SAVE ADDR OF INPUT DCB JFCB          10880000
+         LA    R2,JFCBLGTH(R2)     ADDRESS OF VALID WRITER NAMES TABLE  10960000
+         MVI   0(R2),X'00'         CLEAR WRITER NAME TABLE              11040000
+         MVC   1(TBLESIZ-1,R2),0(R2)    CLEAR WRITER NAME TABLE         11120000
+         ST    R2,PARNAMES         SAVE ADDR. OF NAME TABLE             11200000
+         LA    R2,TBLESIZ(R2)      ADDRESS OF SMF RECORD                11280000
+         ST    R2,PARSMF           SAVE ADDRESS OF SMF RECORD           11360000
+         LA    R2,SMF6(R2)         ADDRESS OF DYNAMIC ALLOCATE PARM LST 11440000
+         ST    R2,PARALLOC         STORE ADDRESS OF ALLOC AREA          11520000
+         XC    PARSMB,PARSMB       ZERO PARSMB                          11600000
+***                                                                 *** 11680000
+*   INITIALIZE WORKLST                                                * 11760000
+***                                                                 *** 11840000
+         ST    R13,WOSAP           USE SAME SAVE REGISTER               11920000
+         ST    R6,WOSPS            ADDRESS OF PARLIST                   12000000
+         MVC   DCBOT(4),PARDCB     ADDRESS OF OUTPUT DCB                12080000
+         MVC   WOXXX(8),PARXXX     ADDRESS OF SPANNING MODULE AND WORK  12160000
+         L     R3,16               GET TCB ADDR.                        12240000
+         L     R3,0(R3)                                                 12320000
+         L     R3,4(R3)            NOW HAVE TCB ADDR.                   12400000
+         USING TCB,R3              TCB ADDRESSABILITY                   12480000
+         MVC   WOTIO(4),TCBTIO     GET TIOT PTR. FOR WORKLST            12560000
+         L     R2,TCBJSCB          ADDRESS OF JSCB                      12640000
+         USING IEZJSCB,R2          JSCB ADDRESSABILITY                  12720000
+         L     R2,JSCBSSIB         ADDRESS OF SSIB                      12800000
+         USING SSIB,R2             USE SSIB TO GET SUBSYSTEM NAME       12880000
+         TM    PARSWCH,PARDUMMY    IS THIS A DUMMY DATA SET             12960000
+         BZ    NODUMMY             NO                                   13040000
+         OI    VARBA,UNRWR         TURN ON UNIT RECORD SWITCH           13120000
+         B     SD82NDWK            BRANCH OUT                           13200000
+NODUMMY  L     R4,PARUCB           GET ADDR OF OUTPUT UCB               13280000
+         USING UCBOB,R4                                                 13360000
+         TM    UCBTBYT3,UCB3UREC   TEST FOR UNIT RECORD                 13440000
+         BZ    SD82TFPT            NO                                   13520000
+         OI    VARBA,UNRWR         TURN ON UNIT RECORD SWITCH           13600000
+         CLI   UCBTBYT4,X'0C'      CHECK FOR 3525 PUNCH                 13680000
+         BE    PCHTYP              YES                                  13760000
+         TM    UCBTBYT4,X'F8'      TEST FOR NO-PUNCH                    13840000
+         BNE   SD82NDWK            BRANCH OUT IF SO                     13920000
+PCHTYP   OI    VARBA,PUNSH         TURN ON PUNCH SWITCH                 14000000
+         CLI   UCBTBYT4,X'03'      TEST FOR 1442                        14080000
+         BNE   SD82NDWK            BRANCH OUT                           14160000
+         OI    VARBA,FTFTW         TURN ON 1442 SWITCH                  14240000
+         B     SD82NDWK            BRANCH OUT                           14320000
+SD82TFPT TM    PARSWCH,PARPUN      TEST FOR PUNCH TYPE                  14400000
+         BZ    SD82NDWK            BRANCH OUT                           14480000
+         OI    VARBA,PUNSH         TURN ON PUNCH SWITCH                 14560000
+         DROP  R1,R4                                                    14640000
+SD82NDWK EQU   *                                                        14720000
+***                                                                 *** 14800000
+*        INITIALIZE DYNAMIC ALLOCATION PARAMETER AREA                 * 14880000
+***                                                                 *** 14960000
+         L     R8,PARALLOC                                              15040000
+         LR    R1,R8                 ADDRESS OF PARALLOC                15120000
+         LA    R8,4(R8)            INCREMENT TO DAL REQUEST BLOCK       15200000
+         ST    R8,0(R1)            SET UP RB PTR ADDR.                  15280000
+         OI    0(R1),S99RBPND                                           15360000
+         USING S99RB,R8                                                 15440000
+         XC    S99RB(DYNRBSIZ),S99RB                                    15520000
+         MVI   S99RBLN,DYNRBSIZ    SIZE OF RB                           15600000
+         LA    R3,DYNRBSIZ(R8)     INCREMENT TO FIRST TEXT POINTER      15680000
+         USING DYNTXTPT,R3                                              15760000
+         LA    R4,TXTPTSIZ(R3)     INCREMENT TO TEXT UNITS              15840000
+         USING S99TUNIT,R4                                              15920000
+         ST    R4,DSNTXTPT         SET UP ADDR OF FIRST TEXT UNIT       16000000
+         XC    S99TUKEY(DYNEND-DYNTXTND),S99TUKEY ZERO TEXT UNITS       16080000
+         MVI   S99TUKEY+1,DALDSNAM DSNAME IS SUPPLIED TO SVC99          16160000
+         MVI   S99TUNUM+1,X'01'    NUMBER OF ENTRIES                    16240000
+         MVI   S99TULNG+1,44       SIZE OF DSNAME                       16320000
+         LA    R4,L'DSNTXTUT(R4)   INCREMENT TO SSREQ TEXT UNIT         16400000
+         ST    R4,SSRTXTPT         ADDRESS OF SSREQ TEXT UNIT           16480000
+         MVI   S99TUKEY+1,DALSSREQ THIS IS A REQUEST FOR SUBSYSTEM      16560000
+         MVI   S99TULNG+1,4        LENGTH OF PARM FIELD                 16640000
+         MVC   S99TUPAR(4),SSIBSSNM PRIMARY SUBSYSTEM NAME              16720000
+         DROP  R2                  UNUSE SSIB                           16800000
+         MVI   S99TUNUM+1,X'01'    NUMBER OF REQUESTS                   16880000
+         LA    R4,L'SSRTXTUT(R4)   INCREMENT TO DDN TEXT UNIT           16960000
+         ST    R4,DDNTXTPT         ADDR OF DDNAME RETURNED TEXT UNIT    17040000
+         MVI   DDNTXTPT,S99TUPLN   LAST TEXT UNIT PTR. IN LIST          17120000
+         MVI   S99TUKEY+1,DALRTDDN RETURN DDNAME TO ME                  17200000
+         MVI   S99TUNUM+1,X'01'    NUMBER OF ENTRIES                    17280000
+         MVI   S99TULNG+1,8        LENGTH OF PARM FIELD                 17360000
+         MVC   S99TUPAR(8),BLANKS  INITIALIZE TO BLANKS                 17440000
+         LA    R4,L'DDNTXTUT(R4)   INCREMENT TO DDNAME UNALLOC TEXT     17520000
+         ST    R4,UDNTXTPT         SAVE UNALLOC TEXT ADDRESS            17600000
+         MVI   S99TUKEY+1,DUNDDNAM USE DDNAME TO UNALLOCATE             17680000
+         MVI   S99TUNUM+1,X'01'    NUMBER OF ENTRIES                    17760000
+         MVI   S99TULNG+1,8        LENGTH OF PARM FIELD                 17840000
+         LA    R4,L'UDNTXTUT(R4)   INCREMENT TO OVERRIDE TEXT           17920000
+         ST    R4,UORTXTPT         SAVE ADDRESS OF OVERRIDE TEXT        18000000
+         MVI   UORTXTPT,S99TUPLN   LAST TEXT UNIT PTR. IN LIST          18080000
+         MVI   S99TUKEY+1,DUNOVDSP OVERRIDE DISPOSITION KEY             18160000
+         MVI   S99TULNG+1,1        LENGTH OF PARM FIELD                 18240000
+         MVI   S99TUNUM+1,X'01'    NUMBER OF ENTRIES                    18320000
+         DROP  R4                                                       18400000
+         DROP  R3                                                       18480000
+***                                                                 *** 18560000
+*        INITIALIZE FIRST TYPE 6 RECORD                               * 18640000
+***                                                                 *** 18720000
+         L     R3,PARSMF                                                18800000
+         USING SMFREC,R3                                                18880000
+         XC    SMFREC(SMF6),SMFREC ZERO SMF RECORD                      18960000
+         MVI   SMFLEN1+1,SMFEND-SMFLEN1 LENGTH OF SECTION               19040000
+         MVI   SMFRECTP,X'06'      RECORD TYPE                          19120000
+         MVI   SMFLLBB+1,(SMFENDFM-SMFLLBB)+(SMFEND-SMFRSV1) SIZE OF 6  19200000
+         TIME  BIN                                                      19280000
+         STM   R0,R1,SMFWORKA      SAVE START TIME AND DATE             19360000
+         MVC   SMFSTTM(8),SMFWORKA PUT TIME AND DATE IN SMF RECORD      19440000
+         DROP  R3                                                       19520000
+***                                                                 *** 19600000
+*   SET UP SSOB TO ISSUE IEFSSREQ TO ACCESS A DATA SET                * 19680000
+***                                                                 *** 19760000
+SD82SSOB EQU   *                                                        19840000
+         L     R1,PARWORK          GET ADDRESS OF CORE FOR SSOB         19920000
+         LA    R7,4(R1)            INCREMENT TO SSOB ITSELF             20000000
+         USING SSOB,R7                                                  20080000
+         ST    R7,0(R1)            SET UP ADDR OF ADDR OF SSOB IN R1    20160000
+         OI    0(R1),X'80'                                              20240000
+         XC    SSOBEGIN(SSOBHSIZ),SSOBEGIN   CLEAR SSOB HEADER          20320000
+         LA    R2,SSOBGN           INITIALIZE SSOB                      20400000
+         XC    0(SSSOSIZE,R2),0(R2)     CLEAR SYSOUT EXTENSION          20480000
+         MVC   SSOB(WTRSOSIZ),WTRSSOB   INITIALIZE HEADER               20560000
+         ST    R2,SSOBINDV         ADDRESS OF SYSOUT EXTENSION          20640000
+         LA    R4,SSSOSIZE         SYSOUT EXTENSION SIZE                20720000
+         STH   R4,0(R2)            SET UP SIZE OF SYSOUT EXTENSION      20800000
+         MVC   SSSOPGMN,BLANKS     INITIALIZE WRITER NAME TO BLANKS     20880000
+         OI    SSSOFLG1,SSSODST    DEFAULT DESTINATION IS LOCAL         20960000
+         MVC   SSSODEST(8),=C'LOCAL   ' SET DEFAULT DESTINATION         21040000
+         TM    PARDUM,PARMOD       IS WRITER TO WAIT FOR MODIFY COMND?  21120000
+         BO    SD82WAIT            YES, GO WAIT                         21200000
+         OI    SSSOFLG1,SSSOSCLS   INDICATE USE CLASS LIST              21280000
+SD82CLSL MVC   SSSOCLSL,PARGCLN    SET UP CLASS LIST IN SSOB            21360000
+SD82HASP EQU *                                                          21440000
+         IEFSSREQ                  ASK HASP FOR WORK                    21520000
+         LTR   R15,R15             TEST RETURN CODE                     21600000
+         BZ    SD82RTRN            NORMAL RETURN                        21680000
+         LA    R11,SD82M1          SET UP ADDRESS OF ERR MSG            21760000
+         STH   R15,PARSMB+2        SAVE RETURN FROM SUBSYSTEM   OZ02411 21840000
+         B     SD82STOP                                                 21920000
+SD82RTRN EQU   *                                                        22000000
+         C     R15,SSOBRETN                                             22080000
+         BE    SD82NEXT            NORMAL RETURN                        22160000
+         LA    R2,4                COMPARE RETURN TO 4                  22240000
+         C     R2,SSOBRETN         ARE THERE ANY MORE DATA SETS.        22320000
+         BE    SD82WAIT            NO, WAIT FOR WORK                    22400000
+         OI    PARDUM,PARMOD+PARWAIT    WRITE MSG. AND WAIT ON ONE ECB  22480000
+         L     R14,PARWKLST        ADDRESS WORK LIST                    22560000
+         USING WORKLST,R14         ADDRESS WORK LIST                    22640000
+         L     R1,WJFCB            WORK AREA FOR WTO SKELETON           22720000
+         DROP  R14                                                      22800000
+         LA    R11,M82KEYBD        INVALID JOBID/DEST MSG               22880000
+         MVC   0(SIZINVAL,R1),0(R11)    MOVE IN MSG. SKELETON           22960000
+         MVC   WTRNAM(3,R1),PARWTRNM  PUT IDENT. OF WTR IN MSG.         23040000
+         NI    SSSOFLG2,255-SSSOCTRL    TURN CONTROL BIT OFF            23120000
+         CLI   SSOBRETN+3,SSSOIDST WAS THERE A DEST. ERROR              23200000
+         BNE   SD82SSJB            NO, GO TEST FOR JOBID ERROR          23280000
+         LA    R2,SSSODEST         ADDRESS OF DEST IN SSOB              23360000
+         MVC   DESTDISP(5,R1),=C'DEST '      MOVE DEST INTO MSG.        23440000
+         B     WRITDJ              GO WRITE MSG.                        23520000
+SD82SSJB CLI   SSOBRETN+3,SSSOINVA IS RETURN INVALID SEARCH ARGUMENTS   23600000
+         BNE   SD82SSER            NO, GO PRINT SS ERR.                 23680000
+         TM    SSSOFLG1,SSSOSJBI   DO I SELECT BY JOBID?                23760000
+         BZ    SD82SSER            NO, THEN IT IS LOGIC ERROR           23840000
+         LA    R2,SSSOJOBI         ADDRESS OF JOBID IN SSOB             23920000
+WRITDJ   MVC   DISPPARM(8,R1),0(R2)     MOVE SSOB FIELD INTO MSG.       24000000
+         WTO   MF=(E,(1))          WRITE MSG.                           24080000
+         B     SD82WAIT            GO WAIT FOR NEW COMMAND              24160000
+SD82SSER EQU   *                                                        24240000
+         LA    R11,SD82M1          ADDR. OF ERROR MSG.                  24320000
+         MVC   PARSMB+2(2),SSOBRETN+2        SAVE RETURN CODE           24400000
+         MVI   PARSMB,X'FF'        INDICATE MSG. IS SSOBRETN            24480000
+         B     SD82STOP                                                 24560000
+SD82NEXT EQU   *                                                        24640000
+***                                                                 *** 24720000
+*  DETERMINE IF WRITER NAME IS VALID OR IF OPERATOR MUST BE QUESTIONED* 24800000
+***                                                                 *** 24880000
+         OI    PARDUM,PARWAIT      PRINT WAIT MSG. NEXT TIME            24960000
+         L     R2,PARWKLST         ADDRESS WORK LIST                    25040000
+         USING WORKLST,R2                                               25120000
+         MVC   WOWRN(8),OSWTR      SET UP STD. NAME AS DEFAULT          25200000
+         CLC   SSSOPGMN,BLANKS     WAS THERE A SPECIAL WTR NAME?        25280000
+         BE    SD82DAL             NO                                   25360000
+         CLC   SSSOPGMN,OSWTR      IS EXTERNAL WRITER NAME = IBM NAME?  25440000
+         BE    SD82DAL             YES                                  25520000
+         LA    R1,NOENTRYS         ENTRIES IN NAME TABLE                25600000
+         L     R3,PARNAMES         ADDR. OF VALID WRITER NAMES          25680000
+TESTNAME CLC   SSSOPGMN,0(R3)      IS NAME IN TABLE                     25760000
+         BE    SD82USE             YES                                  25840000
+         CLI   0(R3),X'00'         IS THIS END OF TABLE                 25920000
+         BE    ASKOPER             YES, OPERATOR MUST VALIDATE NAME     26000000
+         LA    R3,ENTRYSIZ(R3)     INCREMENT TO NEXT ENTRY              26080000
+         BCT   R1,TESTNAME         TRY AGAIN                            26160000
+         L     R3,PARNAMES         POINT TO BEGINNING OF TABLE          26240000
+         MVC   0(TBLESIZ-ENTRYSIZ,R3),ENTRYSIZ(R3) WIPE OUT FIRST ENTRY 26320000
+         LA    R3,TBLESIZ-ENTRYSIZ(R3)  POINT TO LAST ENTRY IN TABLE    26400000
+ASKOPER  L     R4,WJFCB            GET ADDR. OF MSG AREA                26480000
+         LA    R11,SD82M6          ADDR. OF MSG.                        26560000
+         SLR   R1,R1               ZERO REGISTER                        26640000
+         ST    R1,0(,R4)           ZERO ECB                             26720000
+         STH   R1,4(,R4)           ZERO REPLY AREA                      26800000
+         MVC   6(8,R4),BLANKS      BLANK OUT REPLY AREA                 26880000
+         ST    R4,OECBL(R4)        STORE ADDR. OF ECB IN WTOR           26960000
+         LA    R1,OREPLY(R4)       INCREMENT TO REPLY AREA              27040000
+         ST    R1,OREPLL(R4)       STORE ADDR. OF REPLY AREA IN WTOR    27120000
+         MVI   OREPLL(R4),10       PUT IN LENGTH 10 FOR REPLY           27200000
+         MVC   OWTORH(LENVALID,R4),0(R11)    MOVE MSG. SKELETON         27280000
+         MVC   OFSETO(3,R4),PARWTRNM    PUT IN WRITER IDENT.            27360000
+         MVC   MSGNAME(8,R4),SSSOPGMN   NAME OF WRITER TO BE VALIDATED  27440000
+         MVC   JOBIDSP(8,R4),SSSOJOBI   PRINT JOBID                     27520000
+         LA    R1,OREPLL(,R4)      WTOR LOCATION                        27600000
+         WTOR  MF=(E,(1))          WRITE TO OPERATOR                    27680000
+         LR    R1,R4               ECB ADDR.                            27760000
+         WAIT  ECB=(1)             WAIT FOR REPLY                       27840000
+         CLI   OREPLY(R4),C'U'     USE THE NAME?                        27920000
+         BNE   SD82NO              NO, CONTINUE TESTING                 28000000
+         MVC   0(8,R3),SSSOPGMN    PUT VALID WTR NAME IN TABLE          28080000
+SD82USE  MVC   WOWRN(8),SSSOPGMN   USE WRITER NAME                      28160000
+         B     SD82DAL             GO ALLOCATE DATA SET                 28240000
+SD82NO   CLI   OREPLY(R4),C'N'     DON'T WRITE DATA SET?                28320000
+         BNE   SD82DAL             NO, USE DEFAULT                      28400000
+         CLI   OREPLY+1(R4),C','   IS ANOTHER NAME TO BE SUBSTITUTED?   28480000
+         BNE   SD82ALUN            BO, BYPASS THIS DATA SET             28560000
+         MVC   WOWRN(8),OREPLY+2(R4)    USE NAME SUPPLIED BY OPERATOR   28640000
+SD82DAL  EQU   *                   DYNAMICALLY ALLOCATE DATA SET        28720000
+***                                                                 *** 28800000
+*    SET UP TO DYNAMICALLY ALLOCATE DATA SET                          * 28880000
+***                                                                 *** 28960000
+         MVI   S99VERB,S99VRBAL    ALLOCATION VERB                      29040000
+         LA    R3,DISPDSN(R8)      ADDR. DSNAME TEXT UNIT               29120000
+         ST    R3,S99TXTPP         STORE ADDR OF TEXT UNIT PTRS         29200000
+         L     R4,0(,R3)           ADDR OF FIRST TEXT UNIT              29280000
+         MVC   6(44,R4),SSSODSN    GET DATA SET NAME FROM SSOB          29360000
+         BAL   R11,DYNAL           DYNAMICALLY ALLOCATE DATA SET        29440000
+***                                                                 *** 29520000
+         MVC   DCBLRECL(2),PARLRECL     RESET OUTPUT DCB LRECL          29600000
+         L     R2,PARWKLST         GET WORKLST ADDRESSABILITY           29680000
+         USING WORKLST,R2                                               29760000
+         L     R3,PARSMF                                                29840000
+         USING SMFREC,R3           ADDRESS SMF RECORD                   29920000
+         CLC   SSSOJOBN,SMFJOBNM   DID JOB NAME CHANGE                  30000000
+         BE    SD82SAME            NO                                   30080000
+         CLI   SMFCLASS,0          IS THIS THE FIRST JOB                30160000
+         BNE   CHSEP               NO, CONTINUE WITH SEPARATOR TEST     30240000
+         BAL   R4,CRE8NEW          GO INITIALIZE SMF RECORD             30320000
+CHSEP    EQU   *                                                        30400000
+***                                                                 *** 30480000
+*   CALL JOB SEPARATOR ROUTINE, IF APPLICABLE                         * 30560000
+***                                                                 *** 30640000
+         L     R4,PARJBSEP         ADDRESS OF SEPARATOR ROUTINE         30720000
+         CLC   0(8,R4),BLANKS      IS THERE A JOB SEPARATOR ROUTINE     30800000
+         BE    SD82SAME            NO JOB SEPARATOR ROUTINE             30880000
+         TM    PARSWCH,PARDUMMY    IS OUTPUT DUMMY DATA SET             30960000
+         BO    SD82SEP             YES                                  31040000
+         L     R1,PARUCB           NO, GET ADDRESS OF OUTPUT DCB        31120000
+         USING UCBOB,R1            ADDRESS UCB                          31200000
+         TM    UCBTBYT3,UCB3UREC   IS DEVICE CLASS UNIT RECORS          31280000
+         BNO   SD82SEP             NO, CONTINUE                         31360000
+         TM    UCBTBYT4,TTETYPE    IS UNIT TYPE A 3211 PRINTER          31440000
+         BNO   SD82SEP             NO                                   31520000
+* CHECK OUTPUT UCB FOR DEFAULT LOADS IN UCS/FCB BUFFERS                 31600000
+         L     R1,UCBXTADR         SHIFT TO UCB/UCS EXTENSION           31680000
+         USING UCBUCS,R1                                                31760000
+         TM    UCBUCSOP,UCBUDF     IS DEFAULT VALID                     31840000
+         BO    CHKFCB              CONTINUE                             31920000
+         CLI   PARUCSID,ZERO       DO I HAVE A UCSID                    32000000
+         BNE   TTENT               YES                                  32080000
+CHKFCB   TM    UCBFCBOP,UCBFDF     IS PRESENT FCB IMAGE DEFAULT?        32160000
+         BO    SD82SEP             YES, NORMAL OPERATION                32240000
+         CLI   PARFCBID,ZERO       WAS FCB LOADED?                      32320000
+         BE    SD82SEP             NO                                   32400000
+TTENT    OI    PARSWCH,PARTTE1     TURN ON TTE ENTRY SW                 32480000
+         ST    R13,PARSAP          SET UP SAVE AREA ADDRESS FOR TTE     32560000
+         LA    R13,PARSAV          SAVE AREA FOR TTE                    32640000
+         DROP  R1                                                       32720000
+         LR    R1,R8               ADDRESS OF PARLIST IN R1             32800000
+         L     R7,PARWKLST         ADDRESS OF WORKLST FOR TTE           32880000
+* LINK TO THE 3211 SUPPORT MODULE                                     * 32960000
+         LINK  EP=IEFSDTTE,MF=(E,(1))   LINK TO 3211 PROCESSOR          33040000
+         L     R13,PARSAP          RELOAD R13                           33120000
+         USING WORKLST,R7          WORK LIST ADDRESSABLILTY             33200000
+         L     R7,WOSAP            ERROR RETURN ADDRESS                 33280000
+         CLI   19(R7),0            DID TTE GIVE AN ERROR RETURN         33360000
+         BNE   SD82NORM            YES                                  33440000
+         L     R7,PARWORK          GET ADDRESS OF SSOB                  33520000
+         LA    R7,4(R7)            RESTORE ADDRESS OF SSOB              33600000
+         USING SSOB,R7             RESTORE SSOB ADDRESSABILITY          33680000
+         B     SD82SEP             GO TO JOB SEPARATOR ROUTINE          33760000
+SD82SAME EQU   *                                                        33840000
+         TM    VARBA,UNRWR         NO SMF OR PAUSE IF NOT UNIT RECORD   33920000
+         BNZ   SD82UR              OUTPUT DEVICE IS UNIT RECORD         34000000
+         MVC   SMFJOBNM(8),SSSOJOBN     CHANGE SMF JOB NAME             34080000
+         B     SD82DCB             GO INITIALIZE DCB                    34160000
+SD82UR   SLR   R1,R1               CLEAR R1                             34240000
+         CLC   SMFJOBNM(8),SSSOJOBN     DID JOBNAME CHANGE              34320000
+         BE    TCLAS               NO, TEST FOR CLASS CHANGE            34400000
+         LA    R1,1(R1)            INCREMENT R1 TO INDICATE SMF         34480000
+TCLAS    CLC   SMFCLASS(1),SSSOCLAS     DID CLASS CHANGE                34560000
+         BE    TFORM               NO                                   34640000
+         LA    R1,1(R1)            INDICATE SMF NEEDED                  34720000
+TFORM    CLC   PARFORM(4),SSSOFORM DID FORM CHANGE?                     34800000
+         BE    TSMF                NO                                   34880000
+         BAL   R4,WRITSMF          WRITE SMF RECORD                     34960000
+         MVC   PARFORM(4),SSSOFORM INDICATE NEW FORM UNMBER             35040000
+         LA    R11,M82FORM         FORMS MOUNT MESSAGE ADDRESS          35120000
+         SR    R15,R15             INDICATE THIS IS FORMS MOUNT MSG.    35200000
+         B     SD82WTOR            GO WRITE MSG                         35280000
+TSMF     LTR   R1,R1               WRITE SMF RECORD?                    35360000
+         BZ    TPAUS               NO, TEST FOR PAUSE BY DATA SET       35440000
+         BAL   R4,WRITSMF          GO WRITE SMF RECORD                  35520000
+TPAUS    TM    PARSWCH,PARDAT                                           35600000
+         BZ    SD82DCB             NO PAUSE BY DATA SET                 35680000
+         LA    R11,SD82M7          ADDRESS OF PAUSE MSG.                35760000
+         LA    R15,1(,R15)         MAKE R15 NON-ZERO                    35840000
+         DROP  R3                                                       35920000
+SD82WTOR L     R3,WJFCB            MESSAGE AREA                         36000000
+         MVI   0(R3),X'00'         ZERO FIRST TWO WORDS                 36080000
+         MVC   1(7,R3),0(R3)       ZERO FIRST TWO WORDS                 36160000
+         ST    R3,RECBL(R3)        PUT IN PTR. TO ECB                   36240000
+         LA    R14,REPLY(,R3)      REPLY LOCATION                       36320000
+         ST    R14,REPLL(,R3)      POINT TO IT                          36400000
+         MVI   REPLL(R3),1         PUT IN LENGTH 1 FOR REPLY            36480000
+         MVC   WTORH(LENGTH,R3),0(R11)  MOVE IN MSG. SKELETON           36560000
+         MVC   OFSET(3,R3),PARWTRNM     WRITER IDENTITY                 36640000
+         LTR   R15,R15             FORMS MSG.?                          36720000
+         BNZ   PIPAS               NO                                   36800000
+         MVC   FORMN(4,R3),PARFORM MOVE IN FORM NUMBER                  36880000
+PIPAS    LA    R1,REPLL(,R3)       INCREMENT TO MSG. ITSELF             36960000
+         WTOR  MF=(E,(1))          WRITE TO OPERATOR                    37040000
+         WAIT  ECB=(R3)            WAIT FOR REPLY                       37120000
+SD82DCB  EQU   *                   INITIALIZE DCB                       37200000
+*   INITIALIZE INPUT DCB                                              * 37280000
+***                                                                 *** 37360000
+         L     R5,DCBIN            GET ADDRESS OF INPUT DCB             37440000
+         MVC   IHADCB(IDCB),INDCB  INITIALIZE INPUT DCB                 37520000
+         L     R3,S99TXTPP         ADDRESS OF TEXT UNITS                37600000
+         L     R4,DDNTXTPT-DYNTXTPT(R3) ADDRESS OF DDNAME TEXT UNIT     37680000
+         MVC   DCBDDNAM(8),6(R4)   PUT DDNAME IN INPUT DCB              37760000
+***                                                                 *** 37840000
+*   READ JFCB FOR INPUT DCB                                           * 37920000
+***                                                                 *** 38000000
+         LA    R3,WJFCB            ADDRESS OF INPUT DCB JFCB CORE       38080000
+         ST    R3,DCBEXLST         PUT JFCB ADDR. INTO INPUT DCB EXTLST 38160000
+         MVI   WJFCB,X'87'         INDICATE THIS IS ONLY ENTRY          38240000
+         LA    R3,4                FOUR                                 38320000
+         L     R1,WJFCB            ADDRESS OF JFCB                      38400000
+         SLR   R1,R3               ADDRESS OF L FORM OF READ JFCB       38480000
+         MVC   0(L'JFCBL,R1),JFCBL PUT JFCB LIST INTO GOTTEN CORE       38560000
+         RDJFCB ((R5)),MF=(E,(1))  READ JFCB                            38640000
+         SLR   R3,R3               CLEAR R3                             38720000
+         L     R1,WJFCB            GET ADDRESS OF JFCB                  38800000
+         USING INFMJFCB,R1         ADDRESS JFCB                         38880000
+         CLC   JFCUCSID(4),HASPDFLT     IS UCS HASP DEFAULT             38960000
+         BNE   TSTFCB              NO, GO TEST FOR DEFAULT FCB          39040000
+         ST    R3,JFCUCSID         MAKE DEFAULT ZERO                    39120000
+TSTFCB   CLC   JFCFCBID(4),HASPDFLT     IS FCB HASP DEFAULT             39200000
+         BNE   CONTCSCB            NO                                   39280000
+         ST    R3,JFCFCBID         MAKE DEFAULT ZERO                    39360000
+         DROP  R1                                                       39440000
+CONTCSCB EQU   *                   GET CSCB                             39520000
+***                                                                 *** 39600000
+*   CREATE CANCEL CSCB FOR SUBTASK - CANCELABLE STEP TYPE             * 39680000
+***                                                                 *** 39760000
+         LA    R0,CSCBSIZ          GET SIZE OF CSCB                     39840000
+         LR    R3,R0               SAVE CSCB SIZE                       39920000
+         ICM   R0,8,SBPL           PUT SUBPOOL NUMBER IN HIGH ORDER BYT 40000000
+         MODESET EXTKEY=ZERO       KEY TO ACCESS CSCB                   40080000
+         GETMAIN R,LV=(0)          GET CORE FOR CSCB                    40160000
+         USING CHAIN,R1            ADDRESSABILITY FOR CSCB              40240000
+         MVI   CHAIN,X'00'         ZERO CSCB CORE                       40320000
+         MVC   CHAIN+1(CSCBSIZ-1),CHAIN  ZERO CSCB CORE                 40400000
+         SRL   R3,3                CONVERT TO DOUBLE WORD SIZE          40480000
+         STC   R3,CHSZE            STORE CSCB SIZE                      40560000
+         MVC   CHKEY(8),BLANKS     PUT IN PADDING OF BLANKS             40640000
+         MVC   CHKEY(3),PARWTRNM   PUT IDENT. OF WTR IN CSCB            40720000
+         MVC   CHUNIT(3),PARWTRNM  PUT IDENT. OF WTR IN CSCB            40800000
+         L     R3,PARWKLST         GET ADDR. OF ECBLIST CORE            40880000
+         USING WORKLST,R3                                               40960000
+         SR    R2,R2               ZERO R2                              41040000
+         ICM   R2,7,VARAR+1        GET ADDRESS OF LISTS                 41120000
+         NI    VARBA,X'EF'         TURN OFF DATASET WTR-FAILURE SWITCH  41200000
+         USING LISTS,R2                                                 41280000
+         ST    R1,CSCBADDR         SAVE THE NEW CSCB ADDR.              41360000
+         LA    R4,CHCECB           ECB ADDR IN NEW CSCB                 41440000
+         ST    R4,WOTIQ                                                 41520000
+         ST    R4,CHECBPTR                                              41600000
+         SR    R0,R0               ZERO REGISTER ZERO                   41680000
+         ST    R0,CHECB            CLEAR CANCEL ECB                     41760000
+         ST    R0,ATACHECB         CLEAR ATTACH ECB                     41840000
+         LA    R4,ATACHECB         SET UP ADDR OF ATTACH ECB            41920000
+         ST    R4,ATECBPTR         ATTACH - ECB IN ECBLIST              42000000
+         MVI   ATECBPTR,X'80'      MARK AS LAST ECB                     42080000
+         MVI   CHTRKID,CHJOBID     INDICATE JOB IDENTIFIER              42160000
+         L     R4,PSAAOLD-PSA      ADDRESS OF ASCB                      42240000
+         LH    R4,ASCBASID-ASCB(,R4)    ADDRESS OF ASID                 42320000
+         STH   R4,CHASID           BUT ASID INTO CSCB                   42400000
+         OI    CHACT,CHCL          MARK CSCB 'CANCELABLE'               42480000
+         OI    CHSTS,CHAD          INDICATE 'ADD TO CHAIN'              42560000
+         MGCR  (1),CHAIN                                                42640000
+         DROP  R1                                                       42720000
+         MODESET EXTKEY=HASP       NORMAL KEY                           42800000
+***                                                                 *** 42880000
+*        ATTACH THE WRITER                                            * 42960000
+***                                                                 *** 43040000
+         LA    R1,IASXS82A                                              43120000
+         IDENTIFY EP=IASXS82A,ENTRY=(1)                                 43200000
+         LR    R1,R3               PARAMETER REGISTER FOR 087           43280000
+         MVC   ATACHLST(SUPLEND-SUPVLIST),SUPVLIST MOVE ATTACH LIST     43360000
+         L     R13,WOSAP           OLD SAVE AREA                        43440000
+         XC    16(4,R13),16(R13)   INDICATE GOOD RETURN                 43520000
+         LA    R13,WOSVA           REGISTER SAVE AREA                   43600000
+         LA    R15,ATACHLST        ADDR. OF ATTACH LIST                 43680000
+         LA    R14,ATACHECB        ADDRESS OF ECB FOR 087               43760000
+         ST    R14,ATACHLST+8      PUT INTO ATTACH LIST                 43840000
+         ATTACH SF=(E,(15))        AWAY WE GO                           43920000
+         ST    R1,ATACHTCB         SAVE SUBTASK'S TCB ADDR.             44000000
+         LA    R1,ATECBPTR         POINT TO ECBLIST                     44080000
+         WAIT  ECBLIST=(1)         WAIT ON SUBTASK                      44160000
+***                                                                 *** 44240000
+*        AFTER REGAINING CONTROL, DETACH AND UNCHAIN AND FREE CSCB    * 44320000
+***                                                                 *** 44400000
+         MODESET EXTKEY=ZERO       KEY TO ACCESS CSCB                   44480000
+         L     R1,CSCBADDR                                              44560000
+         USING CHAIN,R1                                                 44640000
+         NI    CHSTS,255-CHAD      TURN OFF ADD TO CHAIN INDICATOR      44720000
+         OI    CHSTS,CHDL+CHFC     INDICATE DELETE AND FREE CORE        44800000
+         MGCR  (1),CHAIN           GET RID OF CSCB                      44880000
+         MODESET EXTKEY=HASP       NORMAL KEY                           44960000
+         L     R5,DCBOT            GET OUTPUT DCB ADDRESS               45040000
+         L     R11,WOSAP           GET ADDRESS ERROR RETURN PUT AT      45120000
+         XC    16(4,R11),16(R11)   CLEAR RETURN INDICATION              45200000
+         L     R1,ATECBPTR         LOAD ATTACH ECB PTR                  45280000
+         MVC   19(1,R11),3(R1)     MOVE RC FROM ECB POST CODE TO R15    45360000
+         L     R1,ATACHTCB         ADDR. OF SUBTASK TCB                 45440000
+         MVI   S99VERB,S99VRBUN    UNALLOCATION VERB                    45520000
+         DROP  R3                                                       45600000
+         LA    R3,DISPUAL(R8)      INCREMENT TO UNAL                    45680000
+         ST    R3,S99TXTPP         STORE ADDR. OF TEXT UNIT PTRS.       45760000
+         L     R3,0(R3)            ADDRESS OF DDNAME FOR UNALLOCATE     45840000
+         L     R4,DISPDDN(R8)      ADDRESS OF DDNAME UNIT               45920000
+         MVC   6(8,R3),6(R4)       PUT DDNAME INTO TEXT FOR UNALLOC     46000000
+         L     R4,DISPOVR(R8)      ADDRESS OF OVERIDE UNIT              46080000
+         TM    16(R1),X'80'        TEST FOR SUCCESSFUL COMPLETION       46160000
+         BO    KEEPDS              ABNORMAL RETURN FROM SUBTASK         46240000
+         MVI   6(R4),X'04'         DELETE DATA SET                      46320000
+         LA    R4,DETACH           NORMAL RETURN FROM SUBTASK           46400000
+         B     DYNUN               UNALLOCATE WITH DELETE DISP          46480000
+KEEPDS   MVI   6(R4),X'08'         KEEP DATA SET                        46560000
+         LA    R4,BADSBTSK         BAD RETURN FROM SUBTASK              46640000
+DYNUN    BAL   R11,DYNAL           DYNAMICALLY UNALLOCATE DATA SET      46720000
+         BR    R4                  DETACH SUBTASK                       46800000
+DETACH   EQU   *                                                        46880000
+* RESTORE I/O PURGED AT END OF SUBTASK                                  46960000
+         L     R1,DCBDEBAD         LOAD DEB POINTER                     47040000
+         LA    R1,DEBUSRPG(R1)     ADDERESS OF USER PURGE CHAIN         47120000
+         RESTORE (1)               SVC 17                               47200000
+         LA    R1,ATACHTCB         LOAD SUBTASK TCB                     47280000
+         DETACH (1)                DETACH IT                            47360000
+         L     R2,PARSMF           ADDRESS SMF RECORD                   47440000
+         USING SMFREC,R2           ADDRESSABILITY FOR SMF RECORD        47520000
+         IC    R1,SMFDSCTF         GET DATA SET COUNT                   47600000
+         LA    R1,1(,R1)           INCREMENT BY 1                       47680000
+         STC   R1,SMFDSCTF         STORE NEW COUNT IN SMF RECORD        47760000
+         DROP  R2                                                       47840000
+TESTCSCB EQU   *                                                        47920000
+         BAL   R2,SD82COMD         SEE IF COMMAND ECB POSTED            48000000
+         L     R1,PARWORK          SSOB ADDR.                           48080000
+         B     SD82HASP            GO GET MORE WORK                     48160000
+SD82WAIT EQU   *                   SET UP TO WAIT FOR DIRECTION         48240000
+         L     R2,PARWKLST         ADDR. OF WORK LIST                   48320000
+         USING WORKLST,R2          WORK LIST ADDRESSABILITY             48400000
+         TM    VARBA,UNRWR         NO SMF IF NOT UNIT RECORD            48480000
+         BZ    SD82W               SKIP SMF                             48560000
+         BAL   R4,WRITSMF          GO WRITE SMF RECORD IF NEEDED        48640000
+SD82W    EQU   *                   CONTINUE                             48720000
+         L     R1,WJFCB            USE JFCB AREA FOR MESSAGE AREA       48800000
+         L     R4,VARAR            ADDR. OF ECBS,ETC.                   48880000
+         USING LISTS,R4                                                 48960000
+         DROP  R2                                                       49040000
+         TM    PARDUM,PARWAIT      IS WRITER TO WRITE WAIT MSG.         49120000
+         BZ    WAITWORK            NO                                   49200000
+         LA    R11,M82WAIT         WAIT MESSAGE ADDRESS                 49280000
+         LH    R3,0(R11)           GET SIZE OF MESSAGE                  49360000
+         LA    R3,3(R3)            SIZE OF WHOLE WTO                    49440000
+         EX    R3,SD82MSG          MOVE SKELETON TO MESSAGE AREA        49520000
+         MVC   WTRNAM(3,R1),PARWTRNM  PUT IDENT. OF WTR IN MSG.         49600000
+         LA    R3,CRITERIA(R1)     INCREMENT TO VARIABLE AREA           49680000
+         MVI   0(R3),X'40'         CLEAR VARIABLE AREA                  49760000
+         MVC   1(VARBLARA-1,R3),0(R3)  BLANK OUT VARIABLE AREA  OZ01279 49840000
+         TM    SSSOFLG1,SSSOSCLS   DOES WTR SELECT BY CLASS LIST        49920000
+         BZ    TRYFORM             NO                                   50000000
+         MVI   0(R3),C','          SEPARATE KEYWORDS WITH COMMAS        50080000
+         MVC   2(6,R3),CLASS       MOVE IN 'CLASS='                     50160000
+         MVC   8(8,R3),SSSOCLSL    MOVE CLASS LIST FROM SSOB            50240000
+         LA    R3,15(R3)           INCREMENT FOR NEXT KEYWORD           50320000
+TRYFORM  TM    SSSOFLG1,SSSOSFRM   DOES WTR SELECT BY FORM NUMBER       50400000
+         BZ    TRYDEST             NO                                   50480000
+SUB1     BCTR  R3,0                SUBTRACT 1 TO CHECK BLANK            50560000
+         CLI   0(R3),C' '          IS THIS A BLANK                      50640000
+         BE    SUB1                YES, GO SUBTRACT AGAIN               50720000
+         MVI   1(R3),C','          SEPARATE KEYWORDS WITH COMMAS        50800000
+         MVC   3(6,R3),FORMS       MOVE 'FORMS=' INTO MSG               50880000
+         MVC   9(4,R3),SSSOFORM    MOVE FORM NUMBER FROM SSOB           50960000
+         LA    R3,12(R3)           INCREMENT TO NEXT KEYWORD SLOT       51040000
+TRYDEST  TM    SSSOFLG1,SSSODST    DOES WTR SELECT BY DEST              51120000
+         BZ    TRYJOBID            NO                                   51200000
+SUB2     BCTR  R3,0                SUBTRACT 1 TO CHECK BLANK            51280000
+         CLI   0(R3),C' '          IS THIS A BLANK                      51360000
+         BE    SUB2                YES, GO SUBTRACT AGAIN               51440000
+         MVI   1(R3),C','          SEPARATE KEYWORDS WITH COMMAS        51520000
+         MVC   3(5,R3),DEST        MOVE 'DEST=' INTO MSG.               51600000
+         MVC   8(8,R3),SSSODEST    MOVE DEST NAME FROM SSOB             51680000
+         LA    R3,15(R3)           INCREMENT TO NEXT KEYWORD SLOT       51760000
+TRYJOBID TM    SSSOFLG1,SSSOSJBI   DOES WTR SELECT BY JOBID             51840000
+         BZ    TRYWRITR            NO                                   51920000
+SUB3     BCTR  R3,0                SUBTRACT 1 TO CHECK BLANK            52000000
+         CLI   0(R3),C' '          IS THIS A BLANK                      52080000
+         BE    SUB3                YES, GO SUBTRACT AGAIN               52160000
+         MVI   1(R3),C','          SEPARATE KEYWORDS WITH COMMAS        52240000
+         MVC   3(6,R3),JOBID       MOVE 'JOBID=' INTO MSG.              52320000
+         MVC   9(8,R3),SSSOJOBI    MOVE JOBID FROM SSOB                 52400000
+         LA    R3,17(R3)           INCREMENT FOR NEXT KEYWORD           52480000
+TRYWRITR TM    SSSOFLG1,SSSOSPGM   DOES WTR SELECT BY PROGRAM NAME      52560000
+         BZ    WRITMSG             NO                                   52640000
+SUB4     BCTR  R3,0                SUBTRACT 1 TO CHECK BLANK            52720000
+         CLI   0(R3),C' '          IS THIS A BLANK                      52800000
+         BE    SUB4                YES, GO SUBTRACT AGAIN               52880000
+         MVI   1(R3),C','          SEPARATE KEYWORDS WITH COMMAS        52960000
+         MVC   3(7,R3),WRITER      MOVE 'WRITER=' INTO MSG.             53040000
+         MVC   10(8,R3),SSSOPGMN   MOVE WRITER NAME FROM SSOB           53120000
+WRITMSG  WTO   MF=(E,(1))          WRITE WAITING FOR WORK MSG.          53200000
+         NI    PARDUM,WAITAND      CLEAR WAIT A BIT FLAG                53280000
+WAITWORK EQU   *                                                        53360000
+         MVC   HASPECB,SSSOWTRC    SAVE ADDR. OF HASP ECB               53440000
+         MVC   COMNDECB,PARECBL    SAVE ADDR. OF COMMAND ECB FROM CSCB  53520000
+         BAL   R2,SD82COMD         SEE IF COMMAND ECB POSTED            53600000
+         L     R4,PARWKLST         ADDRESS OF WORK LIST                 53680000
+         USING WORKLST,R4                                               53760000
+         L     R4,VARAR            ADDRESS OF ECB LISTS                 53840000
+         USING LISTS,R4                                                 53920000
+         OI    COMNDECB,X'80'      INDICATE COMM ECB IS LAST IN LIST    54000000
+         LA    R1,HASPECB          ADDR. OF WAIT LIST                   54080000
+         TM    PARDUM,PARMOD       DOES WRITER WAIT ON ONLY ONE ECB?    54160000
+         BZ    WAIT                NO, WAIT ON TWO                      54240000
+         LA    R1,COMNDECB         WAIT ONLY ON COMMAND ECB             54320000
+         NI    PARDUM,255-PARMOD   TURN WAIT BIT OFF                    54400000
+WAIT     EQU   *                                                        54480000
+         WAIT  1,ECBLIST=(1)       WAIT FOR WORK OR COMMAND ECB         54560000
+         MVI   SSSODSN,X'00'       INDICATE THIS IS AN INITIAL REQUEST  54640000
+         TIME  BIN                 GET TIME FOR SMF RECORD              54720000
+         L     R3,PARSMF           ADDRESS SMF RECORD                   54800000
+         USING SMFREC,R3           SMF RECORD ADDRESSABILITY            54880000
+         STM   R0,R1,SMFWORKA      STORE TIME                           54960000
+         MVC   SMFSTTM(8),SMFWORKA SAVE NEW START TIME                  55040000
+         DROP  R3                                                       55120000
+         BAL   R2,SD82COMD         WAS COMMAND ECB POSTED?              55200000
+         L     R1,PARWORK          ADDR. OF SSOB                        55280000
+         B     SD82HASP            GO TRY TO GET MORE WORK FROM HASP    55360000
+         DROP  R4                                                       55440000
+***                                                                 *** 55520000
+*        STOP THE WRITER                                              * 55600000
+***                                                                 *** 55680000
+SD82NORM LA    R11,SD82M2          NORMAL STOP MESSAGE                  55760000
+SD82OK   XC    PARSMB,PARSMB       ZERO ERROR CODE                      55840000
+SD82HALT OI    SSSOFLG2,SSSOCTRL   INDICATING STOPPING                  55920000
+         L     R1,PARWORK          SSOB ADDR                            56000000
+         IEFSSREQ                  TELL HASP WTR IS QUITTING            56080000
+SD82STOP EQU   *                                                        56160000
+         L     R1,PARWKLST         ADDRESS OF WKT                       56240000
+         USING WORKLST,R1          WORK LIST ADDRESSABILITY             56320000
+         TM    VARBA,UNRWR         IS OUTPUT DEVICE UNIT RECORD         56400000
+         BZ    SD82CLR             NO, SKIP SMF                         56480000
+         BAL   R4,WRITSMF          GO WRITE FINAL SMF RECORD            56560000
+         DROP  R1                  DROP SMF ADDRESSABILITY              56640000
+SD82CLR  EQU   *                                                        56720000
+         LA    R0,SD82CORE         SIZE OF CORE TO BE FREED             56800000
+         L     R1,PARWKLST         ADDRESS OF WKT                       56880000
+         USING WORKLST,R1          ADDRESS WOSAP                        56960000
+         L     R13,WOSAP           RESTORE REGISTER 13                  57040000
+         L     R13,4(R13)          RESTORE SAVE AREA ADDRESS            57120000
+         DROP  R1                                                       57200000
+         FREEMAIN R,LV=(0),A=(1)   FREE CORE                            57280000
+         L     R1,PARXXA           GET THE SPANNED ADDRESS              57360000
+         LTR   R1,R1               IS THE ADDRESS EXISTANT              57440000
+         BZ    SD82NOSP            NO, DON'T DELETE IT                  57520000
+         LA    R0,WORKFEND-WORKFXXX     GET SIZE                        57600000
+         FREEMAIN R,LV=(0),A=(1)   FREE CORE                            57680000
+         DELETE EP=IEFSDXXX        DELETE VARIABLE SPANNING MODULE      57760000
+SD82NOSP EQU   *                                                        57840000
+***                                                                     57920000
+*        CLOSE OUTPUT DCB                                             * 58000000
+***                                                                 *** 58080000
+         MVC   PARWORK2(4),SD82CLOS     MOVE CLOSE LIST                 58160000
+         L     R2,PARDCB           ADDR OF OUTPUT DCB                   58240000
+         LA    R1,PARWORK2         POINT TO CLOSE LIST                  58320000
+         CLOSE ((R2),),MF=(E,(1))  CLOSE OUTPUT DCB                     58400000
+***                                                                 *** 58480000
+*        SET UP MESSAGE TO OPERATOR TO INDICATE WRITER CLOSED         * 58560000
+***                                                                 *** 58640000
+         L     R1,PARWORK          MSG. AREA                            58720000
+         LH    R3,0(R11)           MSG. SIZE                            58800000
+         LA    R3,3(R3)            INCREMENT TO INCLUDE DESC. & RT      58880000
+         EX    R3,SD82MSG          MOVE IN MESSAGE PATTERN              58960000
+         MVC   UNIT(3,R1),PARWTRNM PUT IDENT. OF WTR IN MSG.            59040000
+         L     R3,PARCOMM          GET ADDR. OF COMM AREA               59120000
+         USING COMMAD,R3           CSCB COMMUNICATIONS AREA             59200000
+         L     R3,COMMCIB          GET ADDRESS OF CIB                   59280000
+         USING CIB,R3                                                   59360000
+         SR    R0,R0               CLEAR REGISTER                       59440000
+         IC    R0,CIBCONID         GET CONSOLE IDENTIFIER               59520000
+         SR    R5,R5                                                    59600000
+         C     R5,PARSMB           ARE ANY ERROR CODES TO BE PRINTED?   59680000
+         BE    SD82WTOO            NO                                   59760000
+         UNPK  SSERR(5,R1),PARSMB+2(3)                                  59840000
+         TR    SSERR(4,R1),TRTBLE-240   MAKE CODE PRINTABLE             59920000
+         MVI   SSERR+4(R1),C'/'    INSERT SLASH INTO MESSAGE            60000000
+         CH    R5,PARSMB           ANY MORE ERROR CODES?                60080000
+         BE    SD82WTOO            NO                                   60160000
+         UNPK  DALERR(5,R1),PARSMB(3)                                   60240000
+         TR    DALERR(4,R1),TRTBLE-240  MAKE CODE PRINTABLE             60320000
+         MVI   DALERR+4(R1),X'40'                                       60400000
+         DROP  R3                                                       60480000
+***                                                                 *** 60560000
+*        WRITE MSG TO OPERATOR TO INDICATE WRITER CLOSED              * 60640000
+***                                                                 *** 60720000
+SD82WTOO WTO   MF=(E,(1))                                               60800000
+***                                                                 *** 60880000
+*        FREE WORK AREAS AND RETURN                                   * 60960000
+***                                                                 *** 61040000
+SD82PARF L     R1,PARDCB           ADDR OF CORE GOT BY IEFSD080         61120000
+         LA    R7,4                DECREMENT TO                         61200000
+         SR    R1,R7                 LENGTH FIELD ADDR.                 61280000
+         L     R0,0(R1)            LOAD PREVIOUSLY STORED LENGTH        61360000
+         FREEMAIN R,LV=(0),A=(1)   FREE PARLIST AND OUTPUT DCB, ETC.    61440000
+         RETURN (14,12),RC=0       ISSUE RETURN                         61520000
+***                                                                 *** 61600000
+*        THE WRITER JUST GAVE UP CONTROL                              * 61680000
+***                                                                 *** 61760000
+WRITSMF  EQU   *                   WRITE OUT SMF RECORD, IF ANY DATA    61840000
+         L     R3,PARSMF           ADDRESS OF SMF RECORD                61920000
+         USING SMFREC,R3           ADDRESSABILITY TO TYPE 6 RECORD      62000000
+         MVC   SMFWORKA(4),SMFSOCTF     DATA SET COUNT                  62080000
+         ICM   R0,15,SMFWORKA      TEST FOR ZERO                        62160000
+         BZ    CRE8NEW             CREATE NEW SMF RECORD                62240000
+         MVC   SMFENDFM(SMFEND-SMFRSV1),SMFRSV1  MOVE RECORD INTO PLACE 62320000
+         LA    R1,SMFLLBB          ADDRESS OF SMF RECORD                62400000
+         SMFWTM (1)                WRITE TYPE 6 RECORD                  62480000
+         TIME  BIN                 GET TIME FOR NEXT RECORD             62560000
+         STM   R0,R1,SMFWORKA      SAVE FOR NEXT RECORD                 62640000
+         MVC   SMFSTTM(8),SMFWORKA GET NEW START TIME                   62720000
+CRE8NEW  MVC   SMFJOBNM(8),SSSOJOBN     PUT JOB NAME INTO SMF RECORD    62800000
+         MVC   SMFFORM(4),SSSOFORM SAVE FORM UNMBER                     62880000
+         MVC   SMFCLASS(1),SSSOCLAS     SAVE CLASS OF DATA SET          62960000
+         L     R15,SSSOWTRC        ADDRESS OF JOB LOG                   63040000
+         MVC   SMFRDSTM(16),SSSORDR(R15)     READER START TIME          63120000
+         MVC   SMFJOBNO(4),SSSOJOBI+4   JOB NUMBER                      63200000
+         MVI   SMFSOCTF,0          ZERO COUNTS                          63280000
+         MVC   SMFSOCTF+1(5),SMFSOCTF   ZERO COUNTS                     63360000
+         MVC   SMFFCB,PARFCBID     DEFAULT FCBID                        63440000
+         MVC   SMFUCS,PARUCSID     DEFAULT UCS                          63520000
+         LA    R1,SMF6             SIZE OF SMF WORK AREA                63600000
+         ST    R1,SMFWKLL          SAVE LENGTH OF WORK AREA             63680000
+         MVI   SMFDYCNT,0          CLEAR SMF RECORD WORK AREA           63760000
+         MVC   SMFDYCNT+1(4),SMFDYCNT   CLEAR AREA                      63840000
+         DROP  R3                                                       63920000
+         BR    R4                  RETURN TO CALLER                     64000000
+***                                                                ***  64080000
+*   SUBROUTINE TO CHECK TO SEE IF THE COMMAND ECB HAS BEEN POSTED     * 64160000
+***                                                                ***  64240000
+SD82COMD EQU   *                                                        64320000
+         L     R4,PARECBL          ADDR OF COMMAND ECB                  64400000
+         XR    R0,R0                                                    64480000
+         TM    0(R4),STOPCM        STOP COMMAND                         64560000
+         BO    SD82NORM            EXIT                                 64640000
+TESTMOD  TM    0(R4),MODFCM        MODIFY COMMAND?                      64720000
+         BZR   R2                  NO, RETURN TO CALLER                 64800000
+MODIFY   LR    R1,R6               RESTORE PARM LIST ADDRESS            64880000
+         OI    PARDUM,PARWAIT      PRINT WAIT MSG. NEXT TIME            64960000
+         MODESET EXTKEY=ZERO       KEY FOR CSCB ACCESSING               65040000
+         ST    R0,0(R4)            ZERO ECB                             65120000
+         MODESET EXTKEY=HASP       NORMAL KEY                           65200000
+         STM   R0,R12,20(R13)      SAVE REGISTERS                       65280000
+         L     R15,SD82EXIT        GO TO SD081 TO PROCESS MODIFY        65360000
+         BALR  R14,R15                                                  65440000
+         LM    R0,R12,20(R13)      RESTORE REGISTERS                    65520000
+         TM    PARDUM,PARMOD       WAS MODIFY COMMAND INVALID?          65600000
+         BO    SD82WAIT            GO AWAIT COMMAND                     65680000
+         LTR   R15,R15             NORMAL RETURN?                       65760000
+         BNZ   SD82NORM            NO, HALT                             65840000
+         L     R1,PARWORK          ADDR. OF SSOB                        65920000
+         B     SD82CLSL            GO TO SSREQ WITH NEW CLASS LIST      66000000
+***                                                                 *** 66080000
+*   DYNAMICALLY ALLOCATE AND UNALLOCATE DATA SET TO DELETE IT         * 66160000
+***                                                                 *** 66240000
+SD82ALUN MVI   S99VERB,S99VRBAL    ALLOCATION VERB                      66320000
+         LA    R3,DISPDSN(R8)      ADDR. DSNAME TEXT UNIT               66400000
+         ST    R3,S99TXTPP         STORE ADDR. OF TEXT UNIT PTRS.       66480000
+         L     R4,0(,R3)           ADDR. OF FIRST TEXT UNIT             66560000
+         MVC   6(44,R4),SSSODSN    GET DATA SET NAME FROM SSOB          66640000
+         BAL   R11,DYNAL           DYNAMICALLY ALLOCATE DATA SET        66720000
+         MVI   S99VERB,S99VRBUN    UNALLOCATION VERB                    66800000
+         LA    R3,DISPUAL(R8)      INCREMENT TO UNAL                    66880000
+         ST    R3,S99TXTPP         STORE ADDR. OF TEXT UNIT PTRS.       66960000
+         L     R3,0(,R3)           ADDRESS OF DDNAME FOR UNALLOCATE     67040000
+         L     R4,DISPDDN(R8)      ADDRESS OF DDNAME UNIT               67120000
+         MVC   6(8,R3),6(R4)       PUT DDNAME INTO TEXT FOR UNALLOC     67200000
+         L     R4,DISPOVR(R8)      ADDRESS OF OVERIDE UNIT              67280000
+         MVI   6(R4),X'04'         DELETE DATA SET                      67360000
+         BAL   R11,DYNAL           DYNAMICALLY UNALLOCATE DATA SET      67440000
+         B     TESTCSCB            RETURN TO SUBSYSTEM                  67520000
+         TITLE 'LINK TO JOB SEPARATOR ROUTINE'                          67600000
+         USING SMFREC,R3           ADDRESSABILITY TO SMF RECORD         67680000
+SD82SEP  L     R2,PARWKLST         ADDRESS WORK LIST                    67760000
+         USING WORKLST,R2          ADDRESSABILITY FOR WORK LIST         67840000
+         XR    R1,R1               ZERO R1                              67920000
+         ICM   R1,7,WJFCB+1        SET UP TO CREATE JOB SEP PARM LIST   68000000
+         USING JSPARMS,R1          JOB SEP LIST ADDRESSABILITY          68080000
+         MVC   JSSWTCHS(1),VARBA   SET SWITCHES BYTE                    68160000
+         MVC   JSDCBOUT(4),PARDCB  OUTPUT DCB POINTER                   68240000
+         MVI   JSSWT078,ENTRY82    SET ENTRY FROM IASXSD82              68320000
+         LA    R0,SSSOJOBN         GET ADDRESS OF JOB NAME              68400000
+         ST    R0,JSNAMEAD         PUT IT INTO JOB SEP PARM LIST        68480000
+         LA    R0,JSLTH(R1)        ADDRESS OF SYSOUT CLASS BYTE         68560000
+         ST    R0,JSSYSCLA         PUT INTO SYSOUT CLASS POINTER        68640000
+         MVC   JSLTH(1,R1),SSSOCLAS     PUT CLASS NAME INTO LIST        68720000
+         MVC   JSLIST,LINKLST      MOVE LINK CODE TO CORE               68800000
+         ST    R4,JSLIST           STORE EPLOC INTO PARM LIST           68880000
+         LA    R15,JSLIST          PTR TO SPVR PARAM. LIST              68960000
+         LINK  ,MF=(E,(1)),SF=(E,(15))  LINK TO JOB SEPARATOR RPUTINE   69040000
+         LTR   R15,R15             ERROR RETURN?                        69120000
+         BZ    SD82SAME            NORMAL RETURN                        69200000
+         DROP  R3                                                       69280000
+***                                                                 *** 69360000
+*   FOR ABNORMAL RETURN FROM JOB SEPARATOR ROUTINE, UNALLOCATE DATA   * 69440000
+*    SET WITH KEEP OPTION, ISSUE OUTPUT ERROR MESSAGE, AND HALT       * 69520000
+***                                                                 *** 69600000
+         MVI   S99VERB,S99VRBUN    UNALLOCATION VERB                    69680000
+         LA    R3,DISPUAL(R8)      INCREMENT TO UNAL                    69760000
+         ST    R3,S99TXTPP         STORE ADDRESS OF TEXT UNIT PTRS.     69840000
+         L     R3,0(R3)            ADDRESS OF DDNAME FOR UNALLOCATE     69920000
+         L     R4,DISPDDN(R8)      ADDRESS OF DDNAME                    70000000
+         MVC   6(8,R3),6(R4)       PUT DDNAME INTO UNALLOC TEXT UNIT    70080000
+         L     R4,DISPOVR(R8)      ADDRESS OVERRIDE TEXT UNIT           70160000
+         MVI   6(R4),X'08'         KEEP DATA SET                        70240000
+         BAL   R11,DYNAL           DYNAMICALLY UNALLOCATE DATA SET      70320000
+         LA    R11,SD82M3          INDICATE OUTPUT ERROR                70400000
+         B     SD82OK              RETURN                               70480000
+         DROP  R1                                                       70560000
+         TITLE 'CLEANUP AFTER SUBTASK TERMINATING ABNORMALLY'           70640000
+***                                                                 *** 70720000
+*   IF THE SUBTASK ABENDED, ISSUE WTO, CLEANUP, AND STOP              * 70800000
+***                                                                 *** 70880000
+BADSBTSK EQU   *                                                        70960000
+         USING LISTS,R2                                                 71040000
+         LA    R4,ATACHTCB         SAVE TCB ADDRESS                     71120000
+         L     R2,ATACHTCB         TCB ADDRESS FOR SUBTASK              71200000
+         DROP  R2                                                       71280000
+         L     R1,PARWKLST         ADDRESS WORKLIST                     71360000
+         USING WORKLST,R1          ADDRESS WORKLIST                     71440000
+         OI    VARBA,X'10'         TURN ON DATASET WTR-FAILURE SWITCH   71520000
+         L     R11,WOSAP           ADDRESS OF SAVE AREA                 71600000
+         MVI   19(R11),X'00'       FAKE GOOD COMPLETION                 71680000
+         L     R1,WJFCB            USE JFCB AREA FOR WTO                71760000
+         LR    R11,R1              SAVE AREA ADDRESS FOR PURGE LIST     71840000
+         DROP  R1                                                       71920000
+         MVC   0(ABSZ,R1),ABEND    MOVE MSG. SKELETON                   72000000
+         USING TCB,R2              TCB ADDRESSABILITY                   72080000
+         L     R3,TCBTIO           ADDR. OF TIOT                        72160000
+         USING TIOT1,R3                                                 72240000
+         MVC   STEPNAME(8,R1),TIOCSTEP  MOVE IN STEPNAME                72320000
+         UNPK  CMPCODE(7,R1),TCBCMP+1(4)     TASK COMPLETION CODE       72400000
+         TR    CMPCODE(6,R1),TRTBLE-240  MAKE IT PRINTABLE              72480000
+         MVC   SYSCODE(3,R1),CMPCODE(R1)     MAKE ROOM FOR SLASH        72560000
+         MVI   SLASH(R1),C'/'      SEPARATE SYSTEM AND USER CODE        72640000
+         MVI   PERIOD(R1),C'.'     END OF PRINTED MSG.                  72720000
+STEPNAME EQU   23                                                       72800000
+SYSCODE  EQU   61                                                       72880000
+CMPCODE  EQU   62                                                       72960000
+SLASH    EQU   64                                                       73040000
+PERIOD   EQU   68                                                       73120000
+         WTO   MF=(E,(1))          WRITE MSG.                           73200000
+         LR    R1,R4               TCB ADDR                             73280000
+         DETACH (1)                GET RID OF SUBTASK                   73360000
+*********************************************************************** 73440000
+*                                                                     * 73520000
+* CLEANUP IOB'S WHOSE I/O REQUESTS HAVE BEEN PURGED BY ABTERM.        * 73600000
+* THE ADDRESS OF THE IOB PREFIX IS X'44' BYTES INTO THE DCB.          * 73680000
+*                                                                     * 73760000
+*********************************************************************** 73840000
+         NI    DCBIFLGS,X'FF'-X'C0'     TURN OFF I FLAGS IN DCB         73920000
+* BUILD PURGE PARAMETER LIST                                          * 74000000
+         LR    R1,R11              RESTORE WORK AREA ADDRESS            74080000
+         L     R3,DCBDEBAD         GET DEB PTR.                         74160000
+         ST    R3,PRGDEB(R1)       STORE IN PURGE LIST                  74240000
+         MVI   PRGOPT(R1),PURGOPT  SET PURGE OPTION BYTE                74320000
+         L     R4,DEBTCBAD(R3)     GET TCB ADDRESS                      74400000
+         ST    R4,PRGTCB(R1)       STORE TCB ADDRESS IN PURGE           74480000
+         MVI   PRGTCB(R1),X'00'    ZERO HIGH ORDER BYTE                 74560000
+         L     R4,DEBUSRPG(R3)     GET LINK FIELD OF USER PURGE CHAIN   74640000
+         ST    R4,PRGUSR(R1)       STORE IN PURGE LIST                  74720000
+         MVI   PRGUSR(R1),X'00'    ZERO HIGH ORDER BYTE                 74800000
+         PURGE (1)                 ISSUE PURGE MACRO, SVC 16            74880000
+         LA    R11,SD82M3          INDICATE OUTPUT ERROR        OZ00573 74960000
+         B     SD82HALT            GO STOP                              75040000
+         TITLE 'CALL DYNAMIC ALLOCATE/UNALLOCATE SUBROUTINE'            75120000
+DYNAL    L     R1,PARALLOC         LOAD ADDR. OF ALLOCATE PARM LIST     75200000
+         DYNALLOC                                                       75280000
+         LTR   R15,R15             RETURN NORMAL?                       75360000
+         BZR   R11                 RETURN IF NORMAL RETURN              75440000
+         STH   R15,PARSMB+2        SAVE RETURN CODE FOR MSG.            75520000
+         MVC   PARSMB(2),S99ERROR  SAVE SVC 99 ERROR RETURN             75600000
+         LA    R11,SD82M1          ADDR. OF ERROR MSG.                  75680000
+         B     SD82HALT            GO STOP                              75760000
+DALOK    EQU   *                   INPUT NOW ALLOCATED                  75840000
+SD82MSG  MVC   0(1,R1),0(R11)                                           75920000
+         LTORG                                                          76000000
+         TITLE 'CONSTANTS AND DSECTS FOR IASXSD82'                      76080000
+*    CONSTANTS                                                          76160000
+OSWTR    DC    CL8'IEFSD087'       DEFAULT WRITER NAME                  76240000
+IAS82A   DC    CL8'IASXS82A'                                            76320000
+BLANKS   DC    CL8' '              BLANKS                               76400000
+SD82EXIT DC    V(IASXSD81)         EXIT FOR START COMMAND               76480000
+MSGADDR  DC    A(IASXS82M)         ADDRESS OF MESSAGES PUT OUT BY 082   76560000
+WTRSSOB  DS    0F                                                       76640000
+WTSSOBID DC    CL4'SSOB'                                                76720000
+WTSSOBSZ DC    AL2(SSOBHSIZ)                                            76800000
+WTSSOBFN DC    AL2(SSOBSOUT)                                            76880000
+WTRSOSIZ EQU   *-WTRSSOB                                                76960000
+TRTBLE   DC    C'0123456789ABCDEF'                                      77040000
+JFCBL    RDJFCB (0),MF=L           READ JFCB LIST                       77120000
+LINKLST  LINK  ,,SF=L              REMOTE SUPV PARAM LIST               77200000
+SUPVLIST ATTACH SF=L,EPLOC=IAS82A,SVAREA=YES,SM=PROB,                  C77280000
+               LPMOD=1,DPMOD=-1,GIVEJPQ=NO                              77360000
+SUPLEND  EQU   *                                                        77440000
+*DEFINE DCB AND OPEN AND CLOSE. (EODAD,SYNAD,OPEN AND CLOSE)            77520000
+INDCB    DCB   DSORG=PS,MACRF=GL,BUFNO=2                                77600000
+INOPEN   OPEN  (0,INPUT),MF=L                                           77680000
+SD82CLOS CLOSE (0),MF=L            CLOSE LIST                           77760000
+SPEXL    DC    F'0'                DCB EXIT LIST                        77840000
+SPEXL1   DC    F'0'                DCB EXIT LIST                        77920000
+INDCBEND EQU   *                                                        78000000
+FZERO    DC    F'0'                FULL WORD OF ZERO                    78080000
+CLASS    DC    C'CLASS='                                                78160000
+FORMS    DC    C'FORMS='           FOR WAITING FOR WORK MSG.            78240000
+WRITER   DC    C'WRITER='          FOR WAITING FOR WORK MSG.            78320000
+DEST     DC    C'DEST='            FOR WAITING FOR WORK MSG.            78400000
+JOBID    DC    C'JOBID='           FOR WAITING FOR WORK MSG.            78480000
+HASPDFLT DC    CL4'****'           HASP DEFAULT UCS/FCB                 78560000
+SBPL     DC    AL1(SUBPOOL)        SUBPOOL NUMBER                       78640000
+         DC    C'ZAPZAPZAPZAPZAPZAP'                                    78720000
+         DC    C'ZAPZAPZAPZAPZAPZAP'                                    78800000
+         DC    C'ZAPZAPZAPZAPZAPZAP'                                    78880000
+         DC    C'ZAPZAPZAPZAPZAPZAP'                                    78960000
+         DC    C'ZAPZAPZAPZAPZAPZAP'                                    79040000
+         DC    C'ZAPZAPZAPZAPZAPZAP'                                    79120000
+         TITLE 'SUBTASK IASXS82A ATTACHED BY IASXSD82'                  79200000
+*********************************************************************** 79280000
+*                                                                     * 79360000
+* SUBTASK CODE -- THIS IS ATTACHED, IT IN TURN CALLS TO THE WRITER    * 79440000
+* PROGRAM.  THIS ALLOWS THE PURGE TO BE DONE WITHIN THE SUBTASK,      * 79520000
+* WITHOUT REQUIRING USERS TO PUT PURGE INTO THEIR EXISTING CODE.        79600000
+*                                                                     * 79680000
+*********************************************************************** 79760000
+         DS    0F                                                       79840000
+         ENTRY IASXS82A            ENTRY FOR SUBTASK                    79920000
+IASXS82A LR    R2,R14              SAVE RETURN REGISTER                 80000000
+         LR    R3,R1               SAVE PARM REG                        80080000
+         USING WORKLST,R3          ADDRESS WORKLIST                     80160000
+*LOAD AND CALL WRITER PROGRAM                                           80240000
+         LOAD  EPLOC=WOWRN         LOAD WRITER LOAD MODULE              80320000
+         LR    R15,R0              PASS ENTRY POINT                     80400000
+         LR    R1,R3               PASS PARM REGISTER TO SUBTASK        80480000
+         CALL  (15),MF=(E,(1))     CALL                                 80560000
+         LR    R4,R15              SAVE RETURN CODE                     80640000
+*BUILD PURGE PARAMETER LIST                                             80720000
+         L     R5,DCBOT            GET OUTPUT DCB                       80800000
+* PARWORK IS USED TO READ THE OUTPUT JFCB INTO BY IASXWR00,             80880000
+*  THEN TO CREATE THE SSOB INTO BY IASXSD82,                            80960000
+* AND THIS SUBTASK USES 12 BYTES BEYOND THE SSOB AS A PURGE LIST        81040000
+         L     R1,PARWORK          ADDRESS OF SSOB CORE                 81120000
+         LA    R1,SSOBLEN1+8(R1)   INCREMENT BEYOND SSOB AND POINTER    81200000
+         XC    PRGOPT(SIZPRG,R1),PRGOPT(R1)  ZERO CORE                  81280000
+         L     R11,DCBDEBAD        ADDR. OF DCB TO BE PURGED            81360000
+         ST    R11,PRGDEB(R1)                                           81440000
+         LA    R11,DEBUSRPG(R11)   ADDR. TO RECEIVE RESTORE POINTER     81520000
+         ST    R11,PRGUSR(R1)      SAVE IN PARMLIST                     81600000
+         MVI   PRGOPT(R1),PRGOPT2  SET PURGE OTPION BYTE                81680000
+         PURGE (1)                 PURGE RQE'S                          81760000
+         DELETE EPLOC=WOWRN        DELETE LOAD MODULE                   81840000
+         LR    R15,R4              RESTORE RETURN CODE                  81920000
+         LR    R14,R2              RESTORE RETURN ADDRESS.              82000000
+         BR    R14                 *** END OF SUBTASK ***               82080000
+         DROP  R3                                                       82160000
+         TITLE 'DSECTS USED BY IASXSD82'                                82240000
+*    DSECTS                                                             82320000
+*********************************************************************** 82400000
+COMMAD   DSECT                     COMMUMICATIONS AREA IN CSCB          82480000
+COMMECB  DS    A                   ADDR OF COMMAND ECB                  82560000
+COMMCIB  DS    A                   ADDR OF COMMAND INPUT BUFFER         82640000
+*ATTACH LIST                                                            82720000
+LISTS    DSECT                                                          82800000
+CSCBADDR DS    F                   SLOT FOR SUBTASK CSCB ADDR.          82880000
+ATACHTCB DS    F                   SLOT FOR SUBTASK TCB ADDR.           82960000
+ATACHECB DS    F                   ATTACH - ECB                         83040000
+ATECBPTR DS    F                   ECBLIST -- ATTACH - ECB PTR.         83120000
+CHECBPTR DS    F                   ECBLIST -- CANCEL - ECB PTR.         83200000
+*  ECB LIST USED WHEN WAITING FOR WORK OR OS COMMAND                  * 83280000
+HASPECB  DS    F                   ECBLIST-- HASP ECB PTR FOR CLASSWRK  83360000
+COMNDECB DS    F                   ECBLIST-- CSCB ECB PTR FOR COMMANDS  83440000
+ATACHLST EQU   *                                                        83520000
+*DYNAMIC ALLOCATION DSECT                                               83600000
+DYNTXTPT DSECT                                                          83680000
+DSNTXTPT DS    F                   POINTER TO DSNAME TEXT UNIT          83760000
+SSRTXTPT DS    F                   PTR. TO SUBSYSTEM REQUEST TEXT UNIT  83840000
+DDNTXTPT DS    F                   PTR TO DDNAME RETURNED TEXT UNIT     83920000
+UDNTXTPT DS    F                   DDNAME TEXT PTR. FOR UNALLOCATE      84000000
+UORTXTPT DS    F                   OVERRIDE TEXT PTR. FOR UNALLOCATE    84080000
+DYNTXTND EQU   *                   END OF TEXT POINTERS                 84160000
+DSNTXTUT DS    CL50                DSNAME TEXT UNIT                     84240000
+SSRTXTUT DS    CL10                SUBSYSTEM REQUEST TEXT UNIT          84320000
+DDNTXTUT DS    CL14                DDNAME RETURNED  TEXT UNIT           84400000
+UDNTXTUT DS    CL14                UNALLOCATE DDNAME TEXT UNIT          84480000
+UORTXTUT DS    CL7                 OVERRIDE DISPOSITION FOR UNALLOCATE  84560000
+DYNEND   EQU   *                                                        84640000
+*********************************************************************** 84720000
+***                                                                 *** 84800000
+*   JOB SEPARATOR PARAM LIST PASSED TO JOB SEPARATOR ROUTINE.         * 84880000
+***                                                                 *** 84960000
+         DS    0F                                                       85040000
+JSPARMS  DSECT                                                          85120000
+JSSWTCHS DS    C                   SWITCHES.                            85200000
+JSP1442  EQU   128                 1442 SWITHC.                         85280000
+JSPUTYPE EQU   64                  PUNCH TYPE SWITCH.                   85360000
+JSPUPR   EQU   32                  UNIT RCD WRITER SWITCH.              85440000
+JSDCBOUT DS    F                   ADDRESS OF OUTPUT DCB.               85520000
+JSNAMEAD DS    F                   ADDRESS OF 8 CHAR JOBNAME FIELD      85600000
+JSSYSCLA DS    F                   ADDRESS OF SYSOUT CLASS.             85680000
+JSEND    EQU   *                   END OF JSPARMS.                      85760000
+         DS    F                   SYSOUT CLASS NAME                    85840000
+JSLIST   DS    CL8                 REMOTE LINK LIST                     85920000
+JSLTH    EQU   JSEND-JSPARMS       LENGTH OF JSPARMS LIST.              86000000
+JSSWT078 EQU   JSSWTCHS+1          SWITCH FOR ENTRY FROM 078            86080000
+         IEFSDPAR                  DEFINE PAR WORK LIST                 86160000
+         IEFSDWKX                  DEFINE WORKX                         86240000
+         IEFSDWKT                  DEFINE WORKLST                       86320000
+         IEFSDSMF                  DEFINE TYPE 6 SMF RECORD             86400000
+         IEFZB4D0                                                       86480000
+         IEFZB4D2                                                       86560000
+         IEFJSSOB (SO)                                                  86640000
+         IEFJESCT                                                       86720000
+         IKJTCB LIST=YES           TCB MAPPING MACRO                    86800000
+         IEZJSCB ,                 JSCB MAPPING MACRO                   86880000
+         IEFJSSIB ,                SSIB MAPPING MACRO                   86960000
+         IEFTIOT1                  DEFINE TIOT                          87040000
+CIB      DSECT                                                          87120000
+         IEZCIB                                                         87200000
+         CVT   DSECT=YES                                                87280000
+CHAINDSC DSECT                                                          87360000
+         IEECHAIN                  DEFINE CSCB                          87440000
+         DCBD  DSORG=PS                                                 87520000
+JFCBD    DSECT                                                          87600000
+         IEFJFCBN LIST=YES                                              87680000
+         DSECT                                                          87760000
+         IEFUCBOB LIST=YES         DEFINE UCB                           87840000
+         IHAPSA                                                         87920000
+         IHAASCB                                                        88000000
+*********************************************************************** 88080000
+*EQUATES:                                                             * 88160000
+WORKT    EQU   WORKEND-WORKLST                                          88240000
+SMF6     EQU   SMFEND-SMFREC       SIZE OF TYPE 6 SMF RECORD            88320000
+TXTPTSIZ EQU   DYNTXTND-DYNTXTPT   SIZE OF TEXT UNIT POINTERS           88400000
+DYNRBSIZ EQU   S99RBEND-S99RB      SIZE OF DYN ALLOC REQUEST BLOCK      88480000
+DYN      EQU   TXTPTSIZ+DYNRBSIZ+(DYNEND-DSNTXTUT)+L'S99RBPTR           88560000
+ATCHADDR EQU   ATACHLST-LISTS      SIZE OF ATTACH LIST ADDRESSES        88640000
+ATCHLST  EQU   SUPLEND-SUPVLIST    SIZE OF ATTACH LIST                  88720000
+IDCB     EQU   INDCBEND-INDCB                                           88800000
+SD82CORE EQU   WORKT+SAVEAREA+IDCB+ATCHADDR+ATCHLST+4+JFCBLGTH+TBLESIZ+C88880000
+               SMF6+DYN            SIZE OF GETMAIN FOR IASXSD82         88960000
+DISPDDN  EQU   DYNRBSIZ+DDNTXTPT-DYNTXTPT    ADDR. OF DDNAME IN DYN LST 89040000
+DISPOVR  EQU   DYNRBSIZ+UORTXTPT-DYNTXTPT    ADDR. OVRIDE IN DYN LST    89120000
+DISPUAL  EQU   DYNRBSIZ+UDNTXTPT-DYNTXTPT    ADDR. UNAL IN DYN LST      89200000
+DISPDSN  EQU   DYNRBSIZ+DSNTXTPT-DYNTXTPT    ADDR. DSNAME IN DYN LIST   89280000
+SMFJOBNM EQU   SMFJOBLG+4          JOB NAME DISPLACEMENT IN SMF RECORD  89360000
+SMFCLASS EQU   SMFJOBLG+28                                              89440000
+SSSORDR  EQU   4                   DISP. IN SSSOWTC OF RDR START TIME   89520000
+SMFRDSTM EQU   SMFJOBLG+12                                              89600000
+         TITLE 'ERROR MESSAGES PRODUCED BY THIS EXTERNAL WRITER MODULE' 89680000
+*********************************************************************** 89760000
+IASXS82M CSECT                                                          89840000
+SD82M1   WTO   'IEF300I XXX WTR CLOSED - SUBSYSTEM INTERFACE ERROR XXXXC89920000
+               /YYYY',MF=L,ROUTCDE=(2,10),DESC=(4),MCSFLAG=(REG0)       90000000
+SD82M2   WTO   'IEF301I XXX WTR CLOSED',MF=L,DESC=(4),MCSFLAG=(REG0)    90080000
+SD82M3   WTO   'IEF303I XXX WTR CLOSED - OUTPUT ERROR',MF=L,           X90160000
+               ROUTCDE=(7,10),DESC=(4),MCSFLAG=(REG0)                   90240000
+SD82M6   WTO   'IEF302A CCC WTR WAITING TO START AAAAAAAA FOR JOBID NNNC90320000
+               NNNNN',MF=L,ROUTCDE=(2,7),DESC=(2)                       90400000
+SD82M7   WTO   'IEF382A CCC WTR WAIT DUE TO PAUSE',MF=L,               X90480000
+               ROUTCDE=(2,7),DESC=(2)                                   90560000
+M82FORM  WTO   'IEF383A CCC WTR, CHANGE FORM TO NNNN',MF=L,            C90640000
+               ROUTCDE=(7),DESC=(2)                                     90720000
+M82WAIT  WTO   'IEF176I WTR DDD WAITING FOR WORK,                      C90800000
+                                                               ',MF=L,RC90880000
+               OUTCDE=(2),DESC=(4)                                      90960000
+M82KEYBD WTO   'IEF179I WTR DDD INVALID JOBID XXXXXXXX',MF=L,          C91040000
+               ROUTCDE=(2),DESC=(3)                                     91120000
+ABEND    WTO   'IEF438I SUBTASK OF          TERMINATED.  COMPLETION CODX91200000
+               E         ',MF=L,ROUTCDE=(2),DESC=(4)                    91280000
+ABENDEND EQU   *                                                        91360000
+SD82MEND EQU   *                                                        91440000
+ABSZ     EQU   ABENDEND-ABEND                                           91520000
+UNIT     EQU   12                  OFFSET OF UNIT NAME FOR CLOSE MSGS   91600000
+SSERR    EQU   55                  OFFSET OF RETURN CODE IN MSG.        91680000
+DALERR   EQU   60                  DISPLACEMENT INTO MESSAGE            91760000
+LENVALID EQU   SD82M7-SD82M6                                            91840000
+OFSETO   EQU   36                  OFFSET OF WRITER IDENT.              91920000
+MSGNAME  EQU   61                  OFFSET OF NAME OF WRITER TO BE ATTCH 92000000
+OECBL    EQU   20                  LOCATION OF ECB                      92080000
+OREPLY   EQU   4                   AREA OF REPLY                        92160000
+OREPLL   EQU   16                  ADDRESS OF WTOR AREA & REPLY ADDR.   92240000
+OREPLOC  EQU   8                   LOCATION OF REPLY                    92320000
+OWTORH   EQU   24                  LENGTH OF HEADER FOR WTOR            92400000
+JOBIDSP  EQU   80                  OFFSET OF JOBID NEEDING WTR VALID.   92480000
+RECBL    EQU   12                  ECB POINTER LOCATION                 92560000
+REPLY    EQU   4                   REPLY LOCATION                       92640000
+REPLL    EQU   8                   ADDRESS OF REPLY LOCATION            92720000
+WTORH    EQU   16                  ADDRESS OF WTOR AREA                 92800000
+LENGTH   EQU   82                  LENGTH OF MESSAGE                    92880000
+OFSET    EQU   28                  OFSET OF WRITER IDENTITY             92960000
+FORMN    EQU   52                  OFSET OF FORM NUMBER                 93040000
+SIZINVAL EQU   46                  SIZE OF DEST/JOBID MSG               93120000
+DISPPARM EQU   34                  DISP. OF JOBID/DEST IN MSG           93200000
+DESTDISP EQU   28                  DISP OF 'DEST '                      93280000
+WTRDISP  EQU   16                  DISP OF WTR ID IN MSG.               93360000
+VARBLARA EQU   71                  VARIABLE AREA LENGTH TO BE CLEARED   93440000
+CRITERIA EQU   36                  DISP. WHERE VARIABLE AREA STARTS     93520000
+WTRNAM   EQU   16                  DISP. OF WTRNAME                     93600000
+         END                                                            93680000

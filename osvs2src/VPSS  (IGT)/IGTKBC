@@ -1,0 +1,618 @@
+TKBC     TITLE 'IGTKBC -- VPSS I/O DRIVER TERMINATION ROUTINE (MVS ONLY*00100000
+               )'                                                       00200000
+*/* * START OF SPECIFICATIONS ************************************** */ 00300000
+*/*                                                                  */ 00400000
+*/*   MODULE-NAME = IGTKBC                                           */ 00500000
+*/*                                                                  */ 00600000
+*/*   DESCRIPTIVE-NAME = FINAL VPSS I/O TERMINATION ROUTINE          */ 00700000
+*/*                                                                  */ 00800000
+*/*   COPYRIGHT = NONE                                               */ 00900000
+*/*                                                                  */ 01000000
+*/*   STATUS = RELEASE 1, MODIFICATION LEVEL 0.                      */ 01100000
+*/*                                                                  */ 01200000
+*/*   FUNCTION = TO PROVIDE THE FINAL CLEANUP OF AN I/O REQUEST      */ 01300000
+*/*       AND POSTING OF THE I/O REQUESTOR WITH THE I/O COMPLETION   */ 01400000
+*/*       CODE.  THIS ROUTINE IS ENTERED VIA AN SRB SCHEDULE FROM    */ 01500000
+*/*       THE DIE SECOND EXIT (IGTKBB) IF THE I/O COMPLETED          */ 01600000
+*/*       NORMALLY.  THIS ROUTINE IS ENTERED VIA A CALL FROM THE     */ 01700000
+*/*       POST STATUS ROUTINE IF THE I/O REQUEST REQUIRED ERP        */ 01800000
+*/*       PROCESSING TO COMPLETE. THE FINAL COMPLETION MAY BE        */ 01900000
+*/*       NORMAL OR ABNORMAL.                                        */ 02000000
+*/*                                                                  */ 02100000
+*/*   NOTES = THE GENERAL INTERFACE SPECIFICATIONS ARE DETERMINED    */ 02200000
+*/*       BY VS/2 (MVS) IOS INTERFACES AS DOCUMENTED IN THE IOS      */ 02300000
+*/*       DESIGN NOTEBOOK AND THE SUPERVISOR SRL.                    */ 02400000
+*/*                                                                  */ 02500000
+*/*     DEPENDENCIES = THE FOLLOWING ARE THE INTERFACES TO THE       */ 02600000
+*/*                    SYSTEM ROUTINES --                            */ 02700000
+*/*                                                                  */ 02800000
+*/*         SETLOCK --                                               */ 02900000
+*/*           PURPOSE: BRANCH ENTERED FROM A SUPERVISOR STATE,       */ 03000000
+*/*                    KEY-0 ROUTINE DESIRING TO ACQUIRE OR          */ 03100000
+*/*                    RELEASE A SYSTEM LOCK.                        */ 03200000
+*/*           LINKAGE: BALR (USING MACRO SETLOCK)                    */ 03300000
+*/*           INPUT:                                                 */ 03400000
+*/*             USE MACRO SETLOCK                                    */ 03500000
+*/*           OUTPUT:                                                */ 03600000
+*/*             REGISTERS 0-10, 15 UNCHANGED. REGISTERS 11-14        */ 03700000
+*/*             ARE DESTROYED. REGISTER 13 HAS THE RETURN CODE--     */ 03800000
+*/*             (0) OK, (4/8) ERROR.                                 */ 03900000
+*/*                                                                  */ 04000000
+*/*         PGFREE (IEAVPSIB) --                                     */ 04100000
+*/*           PURPOSE: BRANCH ENTERED FROM A SUPERVISOR STATE,       */ 04200000
+*/*                    KEY-0 ROUTINE DESIRING A PAGE SERVICES        */ 04300000
+*/*                    FUNCTION.                                     */ 04400000
+*/*           LINKAGE: BALR - ADDRESS IN CVTVPSIB                    */ 04500000
+*/*           INPUT:                                                 */ 04600000
+*/*             LOCAL LOCK HELD                                      */ 04700000
+*/*             R0   - ECB ADDRESS OR ZERO                           */ 04800000
+*/*             R1,R2- IF BYTE 0 BIT 0 OF R1=1, THEN R1 CONTAINS     */ 04900000
+*/*                    A POINTER TO A VIRTUAL SUBAREA LIST (VSL)     */ 05000000
+*/*                    AND R2 IS IRRELEVANT (THE VSL MUST ALREADY    */ 05100000
+*/*                    BE IN FIXED STORAGE).                         */ 05200000
+*/*                    IF BYTE 0 BIT 0 OF R1=0, THEN R1 AND R2       */ 05300000
+*/*                    FORM A VSL ENTRY.                             */ 05400000
+*/*             R4   - TCB ASSOCIATED WITH PAGE FIX REQUEST.         */ 05500000
+*/*                    IF ZERO, NO TCB SO DO NOT BUILD FOE'S         */ 05600000
+*/*             R14  - RETURN ADDRESS                                */ 05700000
+*/*             R15  - ENTRY POINT OF IEAVPSIB                       */ 05800000
+*/*           OUTPUT:                                                */ 05900000
+*/*             LOCAL LOCK STILL HELD.                               */ 06000000
+*/*             REGISTERS 0-14 ARE UNCHANGED.                        */ 06100000
+*/*             REGISTER 15 HAS RETURN CODE (SAME AS PGFIX/PGFREE    */ 06200000
+*/*             SVC REQUESTS).                                       */ 06300000
+*/*             ECB POINTED TO BY REGISTER 0 (IF ANY) IS POSTED.     */ 06400000
+*/*                                                                  */ 06500000
+*/*         RESIDENT PURGE (IECVPURG) --                             */ 06600000
+*/*           PURPOSE: BRANCH ENTERED FROM A SUPERVISOR STATE,       */ 06700000
+*/*                    KEY-0 PROGRAM TO DECREMENT THE COUNT OF       */ 06800000
+*/*                    ACTIVE I/O REQUESTS REMAINING BEFORE PURGE    */ 06900000
+*/*                    QUIESCE CAN COMPLETE PROCESSING.              */ 07000000
+*/*           LINKAGE: BALR - ADDRESS IN IOCQCNT                     */ 07100000
+*/*           INPUT:                                                 */ 07200000
+*/*             LOCAL LOCK HELD                                      */ 07300000
+*/*             R0   - 0 TO SHOW LOCAL LOCK HELD                     */ 07400000
+*/*             R1   - ADDRESS OF PURGE BLOCK (IN IOSIPIB)           */ 07500000
+*/*             R14  - RETURN ADDRESS                                */ 07600000
+*/*             R15  - ROUTINE ENTRY POINT (IECVPURG)                */ 07700000
+*/*           OUTPUT:                                                */ 07800000
+*/*             LOCAL LOCK STILL HELD.                               */ 07900000
+*/*             REGISTERS 1-9, 14  ARE UNCHANGED.                    */ 08000000
+*/*             REGISTERS 10-13, 15 ARE DESTROYED.                   */ 08100000
+*/*                                                                  */ 08200000
+*/*         POST (IEAVPT01) --                                       */ 08300000
+*/*           PURPOSE: BRANCH ENTERED FROM A SUPERVISOR STATE,       */ 08400000
+*/*                    KEY-0 ROUTINE DESIRING TO POST AN ECB         */ 08500000
+*/*                    WITH VALIDITY CHECKING.                       */ 08600000
+*/*           LINKAGE: BALR - ADDRESS IN CVT0PT02                    */ 08700000
+*/*           INPUT:                                                 */ 08800000
+*/*             LOCAL LOCK HELD                                      */ 08900000
+*/*             R10  - POST CODE                                     */ 09000000
+*/*             R11  - ECB ADDRESS                                   */ 09100000
+*/*             R14  - RETURN ADDRESS                                */ 09200000
+*/*             R15  - ADDRESS OF POST ENTRY POINT                   */ 09300000
+*/*           OUTPUT:                                                */ 09400000
+*/*             LOCAL LOCK STILL HELD.                               */ 09500000
+*/*             REGISTERS 0-9, 12-14 ARE UNCHANGED.                  */ 09600000
+*/*             REGISTERS 10-11, 15 ARE DESTROYED.                   */ 09700000
+*/*                                                                  */ 09800000
+*/*         RESUME -- IEAVRSME                                       */ 09900000
+*/*           PURPOSE: BRANCH ENTERED FROM A SUPERVISOR STATE,       */ 10000000
+*/*                    KEY-0 ROUTINE DESIRING TO 'RESUME' AN         */ 10100000
+*/*                    RB.                                           */ 10200000
+*/*           LINKAGE: BALR - USING MACRO RESUME                     */ 10300000
+*/*           INPUT:                                                 */ 10400000
+*/*             R4   - ADDRESS OF TCB TO 'RESUME'                    */ 10500000
+*/*             R5   - ADDRESS OF RB TO 'RESUME'                     */ 10600000
+*/*             R15  - ADDRESS OF RESUME PROCESSOR (SET BY MACRO)    */ 10700000
+*/*           OUTPUT:                                                */ 10800000
+*/*             REGISTERS 2-10 ARE UNCHANGED.                        */ 10900000
+*/*             REGISTERS 11-15 ARE DESTROYED.                       */ 11000000
+*/*             NOTE: CONTROL DOES NOT RETURN TO THIS ROUTINE.       */ 11100000
+*/*                                                                  */ 11200000
+*/*     RESTRICTIONS = SINCE THIS ROUTINE EXECUTES UNDER AN SRB,     */ 11300000
+*/*         IT MUST OBEY THE STANDARD SRB PROCESSING RULES.  THIS    */ 11400000
+*/*         MEANS NO SVCS MAY BE ISSUED (BRANCH ENTRIES ARE          */ 11500000
+*/*         ALLOWED TO MANY ROUTINES).                               */ 11600000
+*/*                                                                  */ 11700000
+*/*     REGISTER-CONVENTIONS = NONE                                  */ 11800000
+*/*                                                                  */ 11900000
+*/*     PATCH-LABEL = APPATCH                                        */ 12000000
+*/*                                                                  */ 12100000
+*/*   MODULE-TYPE = CSECT                                            */ 12200000
+*/*                                                                  */ 12300000
+*/*     PROCESSOR = VS/2 ASSEMBLER                                   */ 12400000
+*/*                                                                  */ 12500000
+*/*     MODULE SIZE = SEE END OF SOURCE LISTING                      */ 12600000
+*/*                                                                  */ 12700000
+*/*     ATTRIBUTES = RE-ENTRANT                                      */ 12800000
+*/*                                                                  */ 12900000
+*/*   ENTRY-POINT = IGTKBC                                           */ 13000000
+*/*                                                                  */ 13100000
+*/*     PURPOSE = PROVIDE FINAL CLEAN-UP OF A VPSS I/O REQUEST       */ 13200000
+*/*                                                                  */ 13300000
+*/*     LINKAGE = SCHEDULED AS A SRB BY THE VPSS DIE (IGTKBB) OR     */ 13400000
+*/*               ENTERED VIA A BALR BY POST STATUS (WHICH RUNS      */ 13500000
+*/*               UNDER AN SRB).                                     */ 13600000
+*/*                                                                  */ 13700000
+*/*     INPUT = THE FOLLOWING REGISTERS ARE INITIALIZED ON ENTRY --  */ 13800000
+*/*         REGISTER  1 - IOSB ADDRESS                               */ 14100000
+*/*         REGISTER 14 - RETURN ADDRESS                             */ 14200000
+*/*         REGISTER 15 - ENTRY POINT                                */ 14300000
+*/*         ENTERED ENABLED, SUPERVISOR STATE. MAY BE SRB OR TASK    */ 14400000
+*/*              MODE.                                               */ 14500000
+*/*                                                                  */ 14600000
+*/*     OUTPUT = NO REGISTERS ARE RETURNED TO THE CALLER.            */ 14700000
+*/*         NO LOCKS MAY BE OWNED ON EXIT.                           */ 14800000
+*/*                                                                  */ 14900000
+*/*   EXIT-NORMAL = 1. NO RETURN WANTED (APIORET OFF) --             */ 15000000
+*/*                    EXIT IS TO THE DISPATCHER IF ASYNCHRONOUS     */ 15030000
+*/*                    PROCESSING (WAIT/POST), OR TO THE USER,       */ 15060000
+*/*                    VIA TCTL, IF SYNCHRONOUS PROCESSING           */ 15090000
+*/*                    (SUSPEND/RESUME).                             */ 15120000
+*/*                 2. RETURN TO CALLER WANTED (APIORET ON) --       */ 15150000
+*/*                    RETURN TO CALLER WITH REGISTERS 0-14          */ 15180000
+*/*                    UNCHANGED.  POST OR RESUME CANNOT BE ISSUED   */ 15210000
+*/*                    FOR THIS TYPE OF PROCESSING.                  */ 15240000
+*/*                                                                  */ 15300000
+*/*   EXIT-ERROR = NONE                                              */ 15400000
+*/*                                                                  */ 15500000
+*/*   EXTERNAL-REFERENCES = THE FOLLOWING SYSTEM ROUTINES AND        */ 15600000
+*/*                         CONTROL BLOCKS ARE USED.                 */ 15700000
+*/*                                                                  */ 15800000
+*/*     ROUTINES =                                                   */ 15900000
+*/*         SETLOCK                                                  */ 16000000
+*/*         PGFREE                                                   */ 16100000
+*/*         PURGE                                                    */ 16200000
+*/*         POST                                                     */ 16300000
+*/*         RESUME                                                   */ 16400000
+*/*         IGTXEPLG                                                 */ 16500000
+*/*                                                                  */ 16600000
+*/*     DATA-AREAS =                                                 */ 16700000
+*/*         VSL      - R, M  (VIRTUAL STORAGE LIST)                  */ 16800000
+*/*                                                                  */ 16900000
+*/*     CONTROL-BLOCKS =                                             */ 17000000
+*/*         PSA      - R                                             */ 17100000
+*/*         CVT      - R                                             */ 17200000
+*/*         IOCOM    - R                                             */ 17300000
+*/*         IOSB     - R, M                                          */ 17400000
+*/*         SRB      -                                               */ 17500000
+*/*         APIO     - R, M                                          */ 17600000
+*/*         APUB     - R, M                                          */ 17700000
+*/*                                                                  */ 17800000
+*/*   TABLES = NONE                                                  */ 17900000
+*/*                                                                  */ 18000000
+*/*   MACROS =                                                       */ 18100000
+*/*       SETLOCK                                                    */ 18200000
+*/*       RESUME                                                     */ 18300000
+*/*                                                                  */ 18400000
+*/*   CHANGE-ACTIVITY = NONE                                         */ 18500000
+*/*                                                                  */ 18600000
+*/*   MESSAGES = NONE                                                */ 18700000
+*/*                                                                  */ 18800000
+*/*   ABEND-CODES = NONE                                             */ 18900000
+*/*                                                                  */ 19000000
+*/* * END OF SPECIFICATIONS **************************************** */ 19100000
+         EJECT ,                                                        19200000
+IGTKBC   CSECT ,                   VPSS I/O TERMINATION ROUTINE         19300000
+         USING *,R15               INPUT BASE                           19400000
+         B     STARTUP             SKIP IN-CORE ID                      19500000
+         DC    YL1(COREIDE-*-1)    * ID LENGTH                          19600000
+         DC    C'IGTKBC'           * MODULE NAME                        19700000
+         DC    C' &SYSDATE'        * ASSEMBLY DATE                      19800000
+COREIDE  EQU   *                   * END OF ID                          19900000
+         SPACE 3                                                        19930000
+** IHASU DEFS                                                           19960000
+         SPACE 3                                                        20000000
+STARTUP  DS    0H                  START OF CODE                        20100000
+*                                                                       20200000
+** INPUT REGISTERS                                                      20300000
+*                                                                       20400000
+         USING IGTKBC,R15          BASE REGISTER                        20500000
+         USING APIO,R1             IOSB ADDRESS                         20700000
+*                                  * NOTE: IOSB IS START OF APIO        20800000
+         USING FLC,*-*             0-4095 NEEDS NO BASE REGISTER        20900000
+         SPACE ,                                                        21000000
+         TM    APIOFLG3,APIORET    RETURN WANTED ?                      21100000
+         BZ    NORET1              * NO -- SKIP REGISTER SAVE           21200000
+         L     R15,PSAAOLD         USE LOCALLY LOCKED ROUTINE           21300000
+         L     R15,ASCBASXB-ASCB(,R15) * SAVEAREA (LOCAL LOCK MUST      21400000
+         STM   R0,R15,ASXBFLSA-ASXB(R15) * BE OWNED ON ENTRANCE)        21500000
+         OI    APIOFLG3,APIONPST   CANNOT POST/RESUME USER              21600000
+NORET1   EQU   *                   NO-RETURN PROCESSING POINT           21700000
+         BALR  RBASE,*-*           SWITCH BASE REGISTERS                21800000
+         USING *,RBASE             * TELL THE ASSEMBLER                 21900000
+         LR    RAPIOPTR,R1         KEEP APIO/IOSB ADDRESS IN            22000000
+         DROP  R1                  * NON-VOLITILE REGISTER              22100000
+         USING APIO,RAPIOPTR       TELL ASSEMBLER                       22200000
+         L     R3,FLCCVT           POINT TO CVT                         22300000
+         USING CVT,R3              * TELL THE ASSEMBLER                 22400000
+         EJECT ,                                                        22500000
+*********************************************************************** 22600000
+**                                                                    * 22700000
+**       DECREMENT THE NUMBER OF OUTSTANDING I/O REQUESTS FOR         * 22800000
+**       THE SUBCHANNEL WHICH JUST COMPLETED (DENOTED BY THE          * 22900000
+**       APUB).  ALSO DECREMENT COUNT IN THE ASSOCIATED SUBCHANNEL-0  * 23000000
+**       APUB. THIS INDICATES THE NUMBER OF I/O REQUESTS FOR THIS     * 23100000
+**       3838.  FOR IGTKBA TO DETERMINE 3838 AND SUBCHANNEL TO USE.   * 23200000
+**       USE I/O TIME FROM PREVIOUS I/O FOR WEIGHTING FACTOR.         * 23300000
+**       ALSO CALCULATE I/O TIME TO USE FOR NEXT EXECUTION OF         * 23400000
+**       THIS CHANNEL PROGRAM.                                        * 23500000
+**                                                                    * 23600000
+*********************************************************************** 23700000
+         SPACE 2                                                        23800000
+*                                                                       23900000
+** KEEP TRACK OF I/O ACTIVITY                                           24000000
+*                                                                       24100000
+** REGISTERS DESTROYED BY THIS ROUTINE: 0, 1, 14, 15                    24200000
+*                                                                       24300000
+         TM    APIOFLG3,APIOIOCT   I/O ACCOUNTED FOR ?                  24400000
+         BZ    NOCOUNT             * YES -- BYPASS COUNT NOW            24500000
+         SPACE 1                                                        24600000
+         L     R14,APIOXTME        THIS I/O ACTIVITY                    24700000
+         L     R15,APIOAPUB        POINT TO ASSOCIATED APUB             24800000
+         USING APUB,R15            TELL ASSEMBLER OF BASE               24900000
+         L     R1,APUBIOCT         CURRENT I/O ACTIVITY                 25000000
+DECAPUB1 EQU   *                   'CS' FAIL RETRY POINT                25100000
+         LR    R0,R1               ANY I/O OUTSTANDING ?                25200000
+         SR    R0,R14              * ERROR IF NOT                       25300000
+         BNM   DECAPUB2            * PREVENT NEGATIVE COUNT             25400000
+         SR    R0,R0               * BY FORCING REMAINDER = 0           25500000
+DECAPUB2 EQU   *                   R0 = REMAINING I/O ACTIVITY          25600000
+         CS    R1,R0,APUBIOCT      SAVED UPDATED ACTIVITY IN THE APUB   25700000
+         BNZ   DECAPUB1            IF 'CS' FAILS, RETRY LOOP            25800000
+         SPACE 2                                                        25900000
+         L     R15,APUBMSTR        ADDRESS SUBCHANNEL-0 FOR THIS 3838   26000000
+         L     R1,APUBIOCT         3838 TOTAL I/O ACTIVITY              26100000
+DECAPUBA EQU   *                   'CS' FAIL RETRY POINT                26200000
+         LR    R0,R1               ANY I/O OUTSTANDING ?                26300000
+         SR    R0,R14              * ERROR IF NOT                       26400000
+         BNM   DECAPUBB            * PREVENT NEGATIVE COUNT             26500000
+         SR    R0,R0               * BY FORCING REMAINDER = 0           26600000
+DECAPUBB EQU   *                   R0 = REMAINING I/O ACTIVITY          26700000
+         CS    R1,R0,APUBIOCT      SAVED UPDATED ACTIVITY IN THE APUB   26800000
+         BNZ   DECAPUBA            IF 'CS' FAILS, RETRY LOOP            26900000
+         DROP  R15                 FINISHED WITH POINTER                27000000
+         SPACE 2                                                        27100000
+*                                                                       27200000
+** DETERMINE ELAPSED TIME FOR THIS I/O.                                 27300000
+** USED FOR NEXT I/O EXECUTION WEIGHT.                                  27400000
+*                                                                       27500000
+** REGISTERS DESTROYED BY THIS ROUTINE: 1                               27600000
+*                                                                       27700000
+         L     R1,APIOTMEE         END TIME (BYTES 4-7 OF TOD)          27800000
+         LA    R1,0(,R1)           CLEAR HI-BYTE                        27900000
+         SRL   R1,4                BITS 24-43 OF TOD CLOCK              28000000
+         O     R1,CSETTIME         INSURE END_TIME > START_TIME         28100000
+         S     R1,APIOTMES         SUBTRACT START TIME                  28200000
+         N     R1,CCLRTIME         CLEAR EXTRA BIT                      28300000
+         ST    R1,APIOXTME         NEW I/O ELAPSED TIME                 28400000
+         SPACE 2                                                        28500000
+         NI    APIOFLG3,X'FF'-APIOIOCT SHOW APIO ACCOUNTED FOR          28600000
+         SPACE 2                                                        28700000
+NOCOUNT  EQU   *                   I/O NOW ACCOUNTED FOR                28800000
+         EJECT ,                                                        28900000
+*********************************************************************** 29000000
+**                                                                    * 29100000
+**       PGFREE BUFFERS, CCWS, ETC IF FIXED BY I/O DRIVER (AS         * 29200000
+**       OPPOSED TO THE VPSS TRANSLATION ROUTINE.) THE LOCAL          * 29300000
+**       LOCK IS REQUIRED.                                            * 29400000
+**                                                                    * 29500000
+*********************************************************************** 29600000
+         SPACE 2                                                        29700000
+         TM    APIOFLG3,APIOPGFS   PAGES FIXED BY I/O PROCESSOR ?       29800000
+         BZ    NOPGFREE            * NO -- SKIP PROCESSING              29900000
+         NI    APIOFLG3,X'FF'-APIOPGFS CLEAR FOR RECURSION              30000000
+*                                                                       30210000
+** GET THE LOCAL LOCK IF NOT ALREADY OWNED                              30220000
+*                                                                       30230000
+** REGISTERS DESTROYED BY THIS ROUTINE: 11, 12, 13, 14                  30240000
+*                                                                       30250000
+         SETLOCK TEST,             SEE IF THE                          *30300000
+               TYPE=LOCAL,         * LOCAL LOCK IS ALREADY OWNED.      *30400000
+               BRANCH=(HELD,LOCKED3), * IF OWNED, THEN SKIP            *30500000
+               RELATED=PGFIX       * SETLOCK OBTAIN                     30600000
+         SETLOCK OBTAIN,           OBTAIN THE LOCAL LOCK               *30700000
+               TYPE=LOCAL,         * REQUIRED FOR PGFREE               *30800000
+               MODE=UNCOND,        * PROCESSING.                       *30900000
+               RELATED=PGFREE      *                                    31000000
+LOCKED3  EQU   *                   LOCK OWNED BRANCH-TO-POINT           31100000
+*                                                                       31110000
+** LOOP THRU VSL ENTRIES ISSUING PGFIX FOR EACH PAIR.                   31120000
+** NOTE: REGISTER FORM FASTER THAN LIST FORM                            31130000
+*                                                                       31150000
+** REGISTERS DESTROYED BY THIS ROUTINE: 0, 1, 2, 4, 11, 12, 13, 14, 15  31160000
+*                                                                       31170000
+         L     RVSLPTR,APIOPGFX    FIRST VSL ENTRY                      31200000
+         L     RVSLEND,APIOPGFL    LAST VSL ENTRY                       31300000
+         LA    RVSLINCR,VSLLEN     LENGTH OF VSL ENTRY                  31400000
+         SR    R0,R0               NO ECB TO POST                       31700000
+         SR    RTCBPTR,RTCBPTR     NO FOE ACCOUNTING USED               31800000
+         USING VSL,RVSLPTR         TELL ASSEMBLER OF VSL POINTER        31900000
+PGFREEL1 EQU   *                   FIRST/NEXT VSL ENTRY                 32500000
+         LM    R1,R2,VSLSTRT       START, END+1                         32600000
+         L     R15,CVTVPSIB        ADDR OF PGFREE (IEAVPSIB)            32700000
+         O     R1,CPGFRFLG         SHOW PGFREE                          32800000
+         O     R2,CSETHIBT         SHOW END OF LIST IN 2ND HALF         32900000
+         CALL  (15)                CALL IEAVPSIB TO FREE PAGES          33000000
+         BXLE  RVSLPTR,RVSLINCR,PGFREEL1 PROCESS ALL ENTRIES            33100000
+         DROP  RVSLPTR             FINISHED WITH POINTER                33200000
+*                                                                       34800000
+** PGFREE ISSUED FOR ALL PAGES FIXED BY IGTKBA                          34900000
+*                                                                       35000000
+NOPGFREE EQU   *                   NO PGFREE BRANCH-TO-POINT            35100000
+         EJECT ,                                                        35200000
+*********************************************************************** 35300000
+**                                                                    * 35400000
+**       IF QUIESCE ACTIVE (IOSIPIB ^=0), THEN ENTER                  * 35500000
+**       PURGE POST ROUTINE TO ACCOUNT FOR THE I/O.                   * 35600000
+**       THE LOCAL LOCK MUST BE HELD.                                 * 35700000
+**                                                                    * 35800000
+*********************************************************************** 35900000
+         SPACE 2                                                        36000000
+*                                                                       36020000
+** REGISTERS DESTROYED BY THIS ROUTINE: 0, 1, 10, 11, 12, 13, 14, 15    36040000
+*                                                                       36060000
+         L     R1,IOSIPIB          SVC PURGE BLOCK                      36100000
+         LTR   R1,R1               PURGE=QUIESCE OUTSTANDING ?          36200000
+         BZ    NOPURGE             * NO--SKIP                           36300000
+         SETLOCK TEST,             SEE IF THE                          *36400000
+               TYPE=LOCAL,         * LOCAL LOCK IS ALREADY OWNED.      *36500000
+               BRANCH=(HELD,LOCKED2), * IF OWNED, THEN SKIP            *36600000
+               RELATED=PURGE       * SETLOCK OBTAIN                     36700000
+         SETLOCK OBTAIN,           GET THE LOCAL LOCK                  *36800000
+               TYPE=LOCAL,         * REQUIRED FOR CALL TO              *36900000
+               MODE=UNCOND,        * RESIDENT PURGE TO DECREMENT       *37000000
+               RELATED=PURGE       * THE NUMBER OF OUTSTANDING I/O'S.   37100000
+LOCKED2  EQU   *                   LOCAL LOCK OWNED SKIP-TO POINT       37200000
+         SR    R0,R0               CLEAR IPIB POINTER                   37300000
+         ST    R0,IOSIPIB          SINCE NOW PROCESSED                  37320000
+*                                  R0 = 0 SHOWS LOCAL LOCK OWNED        37340000
+         L     R15,CVTIXAVL        IOS INTERFACE BLOCK                  37400000
+         L     R15,IOCQCNT-IOCOM(,R15) RESIDENT PURGE ROUTINE ADDR      37500000
+         BALR  R14,R15             CALL IT                              37600000
+NOPURGE  EQU   *                   PURGE NOT NEEDED BRANCH-TO POINT     37900000
+         EJECT ,                                                        38000000
+*********************************************************************** 38100000
+**                                                                    * 38200000
+**       POST THE I/O REQUESTOR. IF ASYNCHRONOUS I/O PROCESSING,      * 38300000
+**       USE A BRANCH ENTRY TO POST REQUESTING ECB VALIDITY           * 38400000
+**       CHECKING. IF SYNCHRONOUS PROCESSING, ISSUE A RESUME.         * 38500000
+**                                                                    * 38600000
+*********************************************************************** 38700000
+         SPACE 2                                                        38800000
+*                                                                       38900000
+** DETERMINE IF POST/RESUME WANTED. IF NOT                              39000000
+** (APIONPST=1), THEN BYPASS POST/RESUME PROCESSING                     39100000
+** AND EXIT.                                                            39200000
+*                                                                       39300000
+         TM    APIOFLG3,APIONPST   POST/RESUME WANTED ?                 39400000
+         BO    NOPOST              * NO -- SKIP POST/RESUME             39500000
+         TM    APIOFLG0,APIOSYNC   IF SYNCHRONOUS I/O,                  39600000
+         BO    RESUME              * ISSUE RESUME                       39700000
+         SPACE 5                                                        39800000
+*********************************************************************** 39900000
+**                                                                    * 40000000
+**       ASYNCHRONOUS I/O.  ISSUE A POST (BRANCH ENTRY), FREE THE     * 40100000
+**       LOCAL LOCK AND RETURN TO THE DISPATCHER.                     * 40200000
+**                                                                    * 40400000
+*********************************************************************** 40500000
+         SPACE 2                                                        40600000
+*                                                                       40606000
+** REGISTERS DESTROYED BY THIS ROUTINE: 10, 11, 12, 13, 14, 15          40612000
+*                                                                       40618000
+         L     R15,APIOECB         IF ECB HAS NOT BEEN                  40624000
+         L     R14,0(,R15)         * WAITED ON (HI-BIT = 0),            40630000
+         LTR   R14,R14             * THEN ATTEMPT TO USE                40636000
+         BM    WAITED              * 'COMPARE-AND-SWAP' TO POST.        40642000
+         SR    R0,R0               USER POST CODE IS                    40648000
+         ICM   R0,B'1000',IOSCOD   * XX000000 (XX=IOSCOD).              40654000
+         MODESET KEYADDR=IOSCKEY,  MUST ATTEMPT POST IN                *40660000
+               WORKREG=1           * USER'S KEY                         40666000
+         CS    R14,R0,0(R15)       ATTEMPT QUICK-POST                   40672000
+         MODESET EXTKEY=ZERO       RESUME STANDARD KEY (0)              40678000
+         BZ    NOWAIT              IF WORKED, USER POSTED               40684000
+WAITED   EQU   *                   ECB BEING WAITED ON                  40690000
+         SETLOCK TEST,             SEE IF THE                          *40700000
+               TYPE=LOCAL,         * LOCAL LOCK IS ALREADY OWNED.      *40800000
+               BRANCH=(HELD,LOCKED1), * IF OWNED, THEN SKIP            *40900000
+               RELATED=POST        * SETLOCK OBTAIN                     41000000
+         SETLOCK OBTAIN,           GET THE LOCAL LOCK                  *41100000
+               TYPE=LOCAL,         * REQUIRED FOR                      *41200000
+               MODE=UNCOND,        * POST BRANCH ENTRY                 *41300000
+               RELATED=POST        * KEEP TO END OF PROGRAM             41400000
+LOCKED1  EQU   *                   LOCK-OWNED SKIP-TO POINT             41500000
+         IC    R10,IOSCOD          PUT THE IOSB I/O COMPLETION          41600000
+         SLL   R10,24              * CODE IN HI-ORDER BYTE              41700000
+         L     R11,APIOECB         * ECB TO POST                        41800000
+         L     R15,CVT0PT02        POST ENTRY POINT (VALIDITY CHECK)    41900000
+         BALR  R14,R15             CALL POST                            42000000
+NOWAIT   EQU   *                   ECB POSTED SKIP-TO POINT             42050000
+         SPACE 2                                                        42100000
+*********************************************************************** 42200000
+**                                                                    * 42300000
+**       TERMINATION PROCESSING COMPLETE. RELEASE THE                 * 42400000
+**       LOCAL LOCK AND RETURN TO THE DISPATCHER.                     * 42500000
+**                                                                    * 42600000
+*********************************************************************** 42700000
+         SPACE 2                                                        42800000
+*                                                                       42810000
+** REGISTERS DESTROYED BY THIS ROUTINE: 11, 12, 13, 14, 15              42820000
+*                                                                       42830000
+         MVI APIOACTV,0            RESET I/O ACTIVE INDICATOR           42840000
+         SETLOCK TEST,             SEE IF LOCAL LOCK OWNED             *42850000
+               TYPE=LOCAL,         * SKIP RELEASE IF NOT.              *42860000
+               BRANCH=(NOTHELD,NOLOCK2), * CANNOT HOLD LOCK            *42870000
+               RELATED=EXIT        * ON EXIT.                           42880000
+         SETLOCK RELEASE,          RELEASE THE LOCAL LOCK              *42900000
+               TYPE=LOCAL,         * SINCE NO LONGER                   *43000000
+               RELATED=EXIT        * NEEDED.                            43100000
+NOLOCK2  EQU   *                   SKIP LOCK-RELEASE POINT              43200000
+         L     R14,CVTSRBRT        SRB EXIT ADDRESS (LIKELY)            43300000
+         L     R15,PSALCCAV        CPU RELATED DATA                     43400000
+         TM    LCCADSF2-LCCA(R15),LCCASRBM EXECUTING UNDER SRB ?        43500000
+         BOR   R14                 * YES -- USER SRB EXIT               43600000
+         L     R14,CVTEXPRO        *  NO -- USE TASK MODE EXIT          43700000
+         BR    R14                 *        RETURN TO DISPATCHER        43800000
+         EJECT ,                                                        43900000
+*********************************************************************** 44000000
+**                                                                    * 44100000
+**       SYNCHRONOUS I/O PROCESSING USED. RELEASE THE                 * 44200000
+**       LOCAL LOCK (IF OWNED) AND 'RESUME' THE USER.                 * 44300000
+**       USE EXIT OPTION OF RESUME TO PASS CONTROL TO                 * 44400000
+**       THE USER. CONTROL DOES NOT RETURN TO THIS PROGRAM            * 44500000
+**       FROM THE RESUME PROCESSOR IF SRB MODE BUT DOES                 44600000
+**       RETURN IF TASK MODE.                                           44650000
+**                                                                    * 44700000
+*********************************************************************** 44800000
+         SPACE 2                                                        44900000
+*                                                                       44920000
+** REGISTERS DESTROYED BY THIS ROUTINE: 4, 5, 10, 11, 12, 13, 14, 15    44940000
+*                                                                       44960000
+RESUME   EQU   *                   SYNCHRONOUS I/O. USE RESUME          45000000
+         TM    APIOFLG3,APIORSME   RESUME REQUIRED (SUSPEND ISSUED) ?   45100000
+         BZ    NOPOST              * NO -- GOTO NON-POST EXIT           45200000
+         NI    APIOFLG3,X'FF'-APIORSME * CLEAR RESUME-NEEDED FLAG       45300000
+         SETLOCK TEST,             SEE IF THE                          *45400000
+               TYPE=LOCAL,         * LOCAL LOCK IS OWNED               *45500000
+               BRANCH=(NOTHELD,NOLOCK1) IF NOT, THEN SKIP              *45600000
+               RELATED=RESUME      * SETLOCK RELEASE                    45700000
+         SETLOCK RELEASE,          RELEASE THE LOCAL LOCK              *45800000
+               TYPE=LOCAL,         * SINCE NO LONGER                   *45900000
+               RELATED=EXIT        * NEEDED.                            46000000
+NOLOCK1  EQU   *                   NO LOCK HELD POINT                   46100000
+         LM    R4,R5,APIOTR        TCB/RB TO ACTIVATE                   46200000
+         MVI   APIOACTV,0          RESET APIO ACTIVE INDICATOR          46300000
+         L     R15,PSALCCAV        CPU RELATED DATA                     46400000
+         TM    LCCADSF2-LCCA(R15),LCCASRBM SRB MODE ?                   46500000
+         BZ    RESUME1             * NO -- MUST RETURN TO EXIT          46600000
+         RESUME TCB=(4),RB=(5),    SET WAIT COUNT TO ZERO AND          *46700000
+               RETURN=N            * PASS CONTROL TO THE USER.          46800000
+*                                                                       46900000
+**  CONTROL DOES NOT RETURN                                             47000000
+*                                                                       47100000
+         SPACE 3                                                        47150000
+RESUME1  EQU   *                   EXECUTING IN TASK MODE               47200000
+         RESUME TCB=(4),RB=(5),    SET WAIT COUNT TO ZERO.             *47300000
+               RETURN=Y            * RETURN TO OUR NSI (TASK MODE)      47400000
+         L     R14,CVTEXPRO        TYPE-2 SVC EXIT ADDRESS              47500000
+         BR    R14                 EXIT SVRB BACK TO USER PRB           47600000
+         EJECT ,                                                        47700000
+*********************************************************************** 47800000
+**                                                                    * 47900000
+**       USER NOT TO BE POSTED OR RESUMED.  IF RETURN WANTED          * 48000000
+**       (APIORET=1), RELOAD THE INPUT REGISTERS AND EXIT             * 48100000
+**       (LOCAL LOCK HELD).  IF RETURN NOT WANTED, GO TO              * 48200000
+**       THE DISPATCHER.  THE LOCAL LOCK MAY NOT BE OWNED             * 48300000
+**       IN THIS CASE.                                                * 48400000
+**                                                                    * 48500000
+*********************************************************************** 48600000
+         SPACE 2                                                        48700000
+NOPOST   EQU   *                   POST/RESUME NOT WANTED               48800000
+         TM    APIOFLG3,APIORET    RETURN WANTED (REGS SAVED) ?         48900000
+         BZ    NORET2              * NO -- GO TO DISPATCHER             49000000
+         MVI   APIOACTV,0          RESET APIO ACTIVE INDICATOR          49100000
+         L     R15,PSAAOLD         USE LOCALLY LOCKED ROUTINE           49200000
+         L     R15,ASCBASXB-ASCB(,R15) * SAVEAREA (LOCAL LOCK MUST      49300000
+         LM    R0,R15,ASXBFLSA-ASXB(R15) * BE OWNED ON ENTRANCE)        49400000
+         BR    R14                 RETURN TO CALLER                     49500000
+         SPACE 5                                                        49600000
+NORET2   EQU   *                   RETURN TO DISPATCHER, NOT CALLER     49700000
+         SETLOCK TEST,             SEE IF THE                          *49800000
+               TYPE=LOCAL,         * LOCAL LOCK IS OWNED               *49900000
+               BRANCH=(NOTHELD,NOLOCK5) IF NOT, THEN SKIP              *50000000
+               RELATED=RESUME      * SETLOCK RELEASE                    50100000
+         SETLOCK RELEASE,          RELEASE THE LOCAL LOCK              *50200000
+               TYPE=LOCAL,         * SINCE NO LONGER                   *50300000
+               RELATED=EXIT        * NEEDED.                            50400000
+NOLOCK5  EQU   *                   NO LOCK HELD POINT                   50500000
+         MVI   APIOACTV,0          RESET TS I/O ACTIVE INDICATOR        50600000
+         L     R14,CVTEXPRO        TYPE-2 SVC EXIT ADDRESS              50700000
+         L     R15,PSALCCAV        CPU RELATED DATA                     50800000
+         TM    LCCADSF2-LCCA(R15),LCCASRBM SRB MODE ?                   50900000
+         BZR   R14                 * NO -- RETURN TO EXIT               51000000
+         L     R14,CVTSRBRT        * YES -- RETURN TO                   51100000
+         BR    R14                 *        DISPATCHER                  51200000
+         EJECT ,                                                        51300000
+*********************************************************************** 51400000
+**                                                                    * 51500000
+**       CONSTANTS                                                    * 51600000
+**                                                                    * 51700000
+*********************************************************************** 51800000
+         SPACE 2                                                        51900000
+CSETHIBT DC    A(X'80000000')      SHOW END-OF-LIST                     52000000
+CPGFRFLG DC    A(X'20000000')      SHOW PGFREE REQUEST                  52200000
+CSETTIME DC    A(X'00100000')      INSURE END TIME > START TIME         52300000
+CCLRTIME DC    A(X'000FFFFF')      CLEAR POSSIBLE CSETTIME VALUE        52400000
+         EJECT ,                                                        52500000
+*********************************************************************** 52600000
+**                                                                    * 52700000
+**       VPSS DSECTS REQUIRED                                         * 52800000
+**                                                                    * 52900000
+*********************************************************************** 53000000
+         SPACE 2                                                        53100000
+         IGTXDSCT IGTXAPIO         VPSS I/O REQUEST BLOCK               53200000
+         IGTXDSCT IGTXAPUB         VPSS UNIT BLOCK                      53300000
+         EJECT ,                                                        53400000
+         PRINT NOGEN                                                    53500000
+         IHAPSA ,                  LOW CORE (0-4095)                    53600000
+         PRINT GEN                                                      53700000
+         EJECT ,                                                        53800000
+         PRINT NOGEN                                                    53900000
+         IHALCCA ,                 LOGICAL CONFIGURATION COMMUNICATIONS 54000000
+         PRINT GEN                                                      54100000
+         EJECT ,                                                        54200000
+         CVT   DSECT=YES           COMMUNICATIONS VECTOR TABLE          54300000
+         EJECT ,                                                        54400000
+         PRINT NOGEN                                                    54500000
+         IHAPVT ,                  RSM POINTERS                         54600000
+         PRINT GEN                                                      54700000
+         EJECT ,                                                        54800000
+         PRINT NOGEN                                                    54900000
+         IECDIOCM ,                I/O ROUTINE ADDRESSES                55000000
+         PRINT GEN                                                      55100000
+         EJECT ,                                                        55200000
+         PRINT NOGEN                                                    55300000
+         IHAASCB ,                 ADDRESS SPACE CONTROL BLOCK          55400000
+         PRINT GEN                                                      55500000
+         EJECT ,                                                        55600000
+         PRINT NOGEN                                                    55700000
+         IHAASXB ,                 ASCB SWAPABLE EXTENSION              55800000
+         PRINT GEN                                                      55900000
+         EJECT ,                                                        56000000
+         PRINT NOGEN                                                    56100000
+         IHAVSL ,                  VIRTUAL STORAGE LIST ENTRY           56200000
+         PRINT GEN                                                      56300000
+         EJECT ,                                                        56400000
+*********************************************************************** 56500000
+**                                                                    * 56600000
+**       MAKE IOSB PART OF APIO CONTROL BLOCK                         * 56700000
+**                                                                    * 56800000
+*********************************************************************** 56900000
+         SPACE 2                                                        57000000
+IOSB     DSECT ,                   APIO/IOSB DSECT                      57100000
+**       PRINT NOGEN                                                    57200000
+         IECDIOSB ,                I/O SUPERVISOR BLOCK (IN APIO)       57300000
+         PRINT GEN                                                      57400000
+         SPACE 2                                                        57500000
+IOSB     DSECT ,                   APIO/IOSB DSECT                      57600000
+         ORG   IOSB                APIO STARTS WITH THE IOSB            57700000
+         IGTXAPIO DSECT=NO,LIST=YES APIO IS PART OF IOSB DSECT          57800000
+         EJECT ,                                                        57900000
+**       PRINT NOGEN                                                    58000000
+         IHASRB ,                  SERVICE REQUEST BLOCK                58100000
+         PRINT GEN                                                      58200000
+         EJECT ,                                                        58300000
+IGTKBC   CSECT ,                   RESUME CONTROL SECTION               58400000
+         SPACE 2                                                        58500000
+         IGTXEPLG ,                REGISTERS/VPSS DSECTS                58600000
+RTCBPTR  EQU   R4                  ADDRESS OF TCB                       58700000
+RBASE    EQU   R7                  BASE REGISTER                        58900000
+RAPIOPTR EQU   R8                  POINTER TO APIO/IOSB                 59000000
+RVSLPTR  EQU   R11                 ADDRESS OF CURRENT VSL ENTRY         59300000
+RVSLINCR EQU   R12                 LENGTH OF VSL ENTRY                  59400000
+RVSLEND  EQU   R13                 ADDRESS OF LAST VSL ENTRY            59500000
+*                                  * NOTE: RVSLINCR/RVSLEND MUST FORM   59600000
+*                                  * AN EVEN/ODD REGISTER PAIR.         59700000
+         SPACE 5                                                        59800000
+         END   ,                   MODULE END                           59900000

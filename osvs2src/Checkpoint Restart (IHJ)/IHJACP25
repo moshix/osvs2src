@@ -1,0 +1,894 @@
+*                                                                       00010020
+         COPY  LCGASMSW                                                 00020000
+*                                                                       00050020
+         TITLE 'IGC0D06C (IHJACP25) PRESERVE2 (DSDR)'                   00100018
+*                                                                       00150037
+*                                                                       00160037
+*   VS2 030 ADDS/DELETES/CHANGES                                        00170037
+* C241000                                                      @ZA04367 00180037
+* A315800,315818-315890                                        @ZA09126 00185037
+*                                                                       00190037
+* A115594-115958,290080-290400,496200-497600,602100-603400     @ZA07204 00200037
+* A119912                                                      @ZA07204 00210037
+* C118560,119075,119083,119655-119695,241000,395000-395600     @ZA07204 00220037
+* C463992,464799,                                              @ZA07204 00230037
+* D119467,119471,119475,119476,119486,119487,119490,119498     @ZA07204 00240037
+* D119698,119718,119865-119866,509000,509500                   @ZA07204 00250037
+*                                                                       00260037
+* A464900-464909                                               @ZA09977 00270037
+* C464919                                                      @ZA09977 00280037
+* C240500,A725740                                              @ZA20785 00310037
+* C689000                                                      @ZA30810 00330037
+*                                                                       00350037
+IGC0D06C CSECT                                                          00400017
+*********************************************************************** 00450002
+*                                                                       00560002
+*FUNCTION/OPERATION   THE MAIN PURPOSE OF THIS ROUTINE IS TO WRITE OUT  00600017
+*                   DDNT AND DSDR RECORDS TO THE CHECKPOINT DATA SET.   00650002
+*                   IF DDNT RECORDS EXIST IN THE SCHEDULER WORK AREA    00700002
+*                   (SWA) THESE ARE READ IN AND WRITTEN OUT TO THE      00750002
+*                   CHECKPOINT DATA SET.  NEW CANDIDATES (UNALLOCATED   00760002
+*                   DATA SETS THAT WERE JCL SPECIFIED AT START OF STEP) 00770002
+*                   ARE ADDED TO THE LAST NON-FULL DDNT RECORD READ IN  00780002
+*                   OR TO NEWLY CONSTUCTED DDNTS.  FOR EACH DATA SET    00790002
+*                   REPRESENTED BY A DATA SET ASSOCIATION BLOCK (DSAB)  00792002
+*                   ON THE USER'S DSAB CHAIN, IGC0D06C WILL CONSTRUCT   00794002
+*                   DATA SET DESCRIPTION RECORDS (DSDRS).FOR EACH DSAB, 00800002
+*                   PRESERVE WILL CONSTRUCT AND WRITE OUT A TYPE 1      01000002
+*                   DSDR. A TYPE 1 DSDR CONTAINS THE DATA SET'S JFCB,   01200002
+*                   ITS DDNAME, THE UCBTYP FIELD FROM ITS UCB, PLUS     01400002
+*                   SELECTED FIELDS FROM THE ASSOCIATED SIOT.  IF       01450002
+*                   THERE IS A JFCB EXTENSION BLOCK (JFCBX) ASSOCIATED  01600017
+*                   WITH THE DATA SET, PRESERVE WILL WRITE OUT A TYPE 2 01800017
+*                   DSDR. A TYPE 2 DSDR CONTAINS JUST THE JFCBX. WHEN   02000017
+*                   ALL THE JFCBS AND JFCBXS HAVE BEEN PROCESSED,       02200017
+*                   PRESERVE WILL READ IN THE GDG NAME TABLE (IF        02400002
+*                   THERE IS ONE) AND WILL CONSTRUCT AND WRITE OUT A    02600017
+*                   TYPE 3 DSDR.A TYPE 3 DSDR CONTAINS JUST THE GDG     02800017
+*                   NAME TABLE. WHEN ALL THE DDNTS AND DSDRS HAVE BEEN  03000002
+*                   WRITTEN OUT, PRESERVE WILL XCTL TO CHKMAIN.         03200002
+*                     TO READ RECORDS FROM SWA PRESERVE USES THE        03400002
+*                   QMNGRIO MACRO.                                      03450002
+*                     THE JFCBVLSQ FIELD OF THE JFCB IN DSDR WILL BE    04000017
+*                   ADJUSTED AS FOLLOWS FOR DATA SETS OPENED FOR        04200017
+*                   BSAM OR QSAM PROCESSING                             04400017
+*                            READ BACKWARD - JFCBVLSQ=DEBVLSQ           04600017
+*                            READ FORWARD - JFCBVLSQ=DEBVLSQ-1+JFCBVLSQ 04800017
+*                                                                       04850002
+*                   FOR DYNAMICALLY ALLOCATED DATA SETS THE SIOTS WILL  04880037
+*                   BE WRITTEN OUT AFTER THE JFCBX IF THERE IS ONE      04910037
+*                   WITH A CODE OF 000C FOR DSDR PROCESSING             04940037
+*ENTRY POINTS: IGC0D06C                                                 05000002
+*                                                                       05050002
+*INPUT:  ADDRESS OF CHKPT WORK AREA IN REGISTER 1.                      05200017
+*                                                                       05250002
+*OUTPUT:  ADDRESS OF CHKPT WORK AREA IS IN REGISTER 1.                  05400017
+*         DDNT AND DSDR RECORDS WRITTEN TO THE CHECKPOINT DATA SET.     05450002
+*                                                                       05500002
+*EXITS-NORMAL: THIS ROUTINE WILL XCTL TO CHKMAIN (IGC0F06C)             05600002
+*                                                                       05650002
+*EXITS-ERRORS:  IF A PERMANENT I/O ERROR OCCURED, THIS ROUTINE WILL PUT 05800017
+*              THE ADDRESS OF THE CHKPT WORK AREA IN REGISTER 1 AND     06000017
+*              XCTL TO IORESUME (IGC0N06C).                             06200002
+*              THE RETURN CODE IN CHKWA IS SET TO X'OC' AND ONE OF THE  06400002
+*              FOLLOWING MESSAGE CODES WILL BE PLACED IN CHKWA:         06600017
+*              1.) X'0317'  I/O ERROR WHILE CREATING CHKPT DATA SET     06800017
+*              2.) X'031B'  INVALID E0V                                 07000002
+*              3.) X'0316'  ERROR READING CONTROL BLOCKS FROM SWA       07010002
+*                                                                       07050002
+*TABLES/WORK AREAS:  CHKWA DSECT,JCT,JFCB,JFCBX,TCB,UCB,SIOT,DSENQ      07200017
+*                  TABLE, GDG NAME TABLE, DSAB, JSCB, QDB, SCT, TIOT,   07400002
+*                  CVT, DEB, DCB                                        07450002
+*                                                                       07500002
+*ATTRIBUTES:  REENTRANT,SUPERVISOR STATE,TYPE 4 SVC ROUTINE.            07600017
+*                                                                       07650002
+*RESTRICTIONS ON USE OF ROUTINE:  MAY ONLY BE USED IN OS/VS2/2          07800002
+*                                                                       07850002
+*NOTES:  NONE                                                           08000017
+*********************************************************************** 08050002
+         EJECT                                                          08100002
+         USING CHKWA,RC            ADDRSSS W.A.                         08200017
+         BALR  RB,0                SET UP MODULE ADDRESSABILITY.        08400017
+         USING *,RB                                                     08600017
+         B     BEGIN               BRANCH AROUND EYE CATCHER            08650000
+         CNOP  0,8                 ALIGN TO A DOUBLE WORD BOUNDARY      08700000
+         DC    C'IGC0D06C'         CSECT NAME                           08750000
+         DC    C'@ZA30810'         LAST CHANGE                 @ZA20785 08753037
+         DC    C'&SYSDATE'         DATE OF LAST CHANGE         @ZA20785 08756037
+BEGIN    EQU   *                                                        08760000
+         LR    RC,R1               SET UP CHKPT W.A. ADDRESSABILITY.    08800017
+*********************************************************************** 08820018
+*                                                                     * 08840018
+*        INITIALIZE CONTROL BLOCKS FOR WRITING DSDR'S                 * 08860018
+*                                                                     * 08880018
+*********************************************************************** 08900018
+*                                                                     * 08920018
+         USING IHADCB,R2      ADDRESS CHKPT DCB                         09400017
+         LA    RD,CKREGSAV         INITIALIZE SAVE AREA REG.            09600017
+         L     R2,CKDCBAD          GET DCB ADDR                         09800017
+         LA    R9,PRESYNAD         MODIFY DCBSYNAD SO THAT              10800017
+         ST    R9,PREAD            PRESERVE SYNAD ROUTINE WILL          11000017
+         MVC   DCBSYND(LNADDR),PREAD3   GET CONTROL IF I/O ERROR OCCURS 11200018
+         XC    CKERAS01(TYPL),CKERAS01  CLEAR SIOT READ IN ADR   Y02076 11250002
+**********************************************************************  11450002
+*                                                                    *  11500002
+*  GET SPACE FOR QMNGRIO PARAMETER LIST AND WORK AREA (24+256) BYTES  * 11550002
+*                                                                Y02076 11560002
+**********************************************************************  11570002
+         ICM   R0,ADDRBYTS,QMNGWALN     WA+PARM LST LNGH INR0    Y02076 11580002
+         ICM   R0,HIORDER,SP253         SUBPOOL NO. IN R0        Y02076 11590002
+         ST    R0,CKERAS00              SAVE FOR FREEMAIN        Y02076 11590402
+         GETMAIN  R,LV=(0)              GET SPACE FOR PARM LST   Y02076 11592002
+         ST    R1,CKQMPARM              SAVE PARM LIST ADDR INWA Y02076 11594002
+         SR    R4,R4                    SWITCH- DDNTS IN SWA     Y02076 11594402
+**************GET SPACE FOR READING IN SIOTS ******************@OZ07204 11594637
+         SR    R0,R0                    ZERO REG 0             @OZ07204 11594837
+         LA    R0,JFCL                  SET LENGTH TO 176      @OZ07204 11595037
+         ICM   R0,HIORDER,SP253         SET SUBPOOL            @OZ07204 11595237
+         ST    R0,CKERAS01              SAVE FOR FREEMAIN      @OZ07204 11595437
+         GETMAIN R,LV=(0)              ISSUE GETMAIN           @OZ07204 11595637
+         ST    R1,SIOTRDIN             SAVE ADDRESS OF AREA    @OZ07204 11595837
+*********************************************************************** 11596002
+*                                                                Y02076 11598002
+*     INITIALIZE FOR WRITING THE DDNT RECORDS                    Y02076 11598402
+*                                                                Y02076 11598802
+*********************************************************************** 11599202
+         USING TCB,R6                   ADDRESS TCB.                    11600002
+         L     R6,CKTCBAD               GET ADDR OF TCB.                11800002
+         L     R6,TCBJSCB               GET ADDR OF JSCB         Y02076 11802002
+         DROP  R6                                                Y02076 11810002
+         USING IEZJSCB,R6                                        Y02076 11850002
+         SR    R0,R0                    CLEAR SCT READ           YM5777 11850402
+         ST    R0,CKERAS04              SWITCH                   YM5777 11850802
+         ICM   R0,M14,JSCSCTP           GET SVA OF SCT           YM5777 11852002
+         B     SCTREAD                  GO READ SCT              YM5777 11852102
+         USING INSMSCT,R5               ADDRESS SCT              Y02076 11854002
+SCTTEST  MVC   CKERAS05,SCTFSIOT        SAVE SIOT CHAIN ANCHOR   YM7093 11854402
+         ICM   R0,M14,SCTDDNT+K1        GET SVA ADDR OF DDNTS  @OZ06714 11856037
+         DROP  R5                       SCT ADDRESSABILITY       Y02076 11856402
+         LTR   R0,R0                    TEST IF ANY DDNTS IN SWA Y02076 11858002
+         BNZ   DDNTREAD                 BR IF DDNTS ARE IN SWA   Y02076 11858402
+DDNTNEWT EQU   *                        DO DDNT CANDIDATES EXIST Y02076 11858502
+         TM    JSCBOPTS,JSCSIOTS        ARE NEW DDNTS TO BE ADDEDYM7093 11858802
+         BO    DDNTNEW                  BRANCH IF YES            Y02076 11859202
+         B     DSDRPROC                 IF NO - GO TO DSDR PROC  Y02076 11859602
+*********************************************************************** 11859702
+*   PREPARE TO READ DDNTS FROM SWA VIA QMNGRIO                   Y02076 11859802
+*********************************************************************** 11859902
+DDNTREAD EQU   *                        SET UP FOR READING DDNTS Y02076 11873202
+         LA    R4,DDNTSWAS              SET SWITCH- DDNTS IN SWA Y02076 11875202
+SCTREAD  IC    R0,PREZERO               0 INTO LO BYTE SVA ADDR  YM5777 11883202
+         USING QMIOP,R1                                          Y02076 11885202
+         L     R1,CKQMPARM              GET ADDR OF QMNGRIO PL   Y02076 11885602
+         XC    QMITCBAD(LPL),QMITCBAD   CLEAR QMNGRIO PARM LIST  Y02076 11885702
+         ST    R0,QMIDSKAD              ST SVA ADDR IN PARM LIST Y02076 11886002
+         LA    R0,LPL                   GET OFFSET TO WORK AREA  Y02076 11886402
+         AR    R0,R1                    CALC ADDR OF WORK AREA   Y02076 11886502
+         ST    R0,QMIWRKAD              ST WRK AREA ADDR IN PL   Y02076 11886602
+         LA    R0,INFMJFCB              READ IN AREA FOR DDNTS   Y02076 11891002
+         ST    R0,QMIRECAD              READ IN ADDR TO PARM LST Y02076 11893002
+         L     R0,CKTCBAD               GET ADDR OF TCB          Y02076 11893402
+         ST    R0,QMITCBAD              STORE IN QMNGRIO P.LIST  Y02076 11893802
+         LA    R0,LNDDNT                GET LENGTH OF DDNTS      Y02076 11894202
+         STH   R0,QMIRECL               STORE IN PARM LIST       Y02076 11894602
+         MVI   QMIFLAGS,QMIOREAD        SET READ FLAG            Y02076 11895002
+         QMNGRIO                        READ IN DDNT FROM SWA    Y02076 11895402
+         LTR   RF,RF                    TEST FOR ERRORS          Y02076 11897402
+         BNZ   PREQERRX                 IF ERRORS BR TO SET CODE Y02076 11899402
+         L     R0,CKERAS04              GET SCT READ SWITCH      YM5777 11899802
+         LTR   R0,R0                    IS IT ZERO               YM5777 11900202
+         BNZ   DDNTS                    NO-MUST BE DDNT          YM5777 11900602
+         ST    RC,CKERAS04              SET SCT READ SWITCH      YM5777 11901002
+         LA    R5,INFMJFCB              GET ADDR OF SCT          YM5777 11902602
+         B     SCTTEST                  GO SEE IF DDNTS IN SWA   YM5777 11903002
+         USING DDNTREC,R9                                        Y02076 11904302
+DDNTS    LA    R9,INFMJFCB              PT TO DDNT JUST READ IN  YM5777 11905902
+         SR    R0,R0                    ZERO REG 0             @ZA07204 11907537
+         ICM   R0,M14,DDNTLINK+K1       GET ADDR OF NEXT DDNT  @ZA07204 11908337
+         DROP  R9                                                Y02076 11909102
+         LR    R3,R0                    SAVE SVA ADDR            Y02076 11910702
+         LTR   R0,R0                    ANY MORE DDNTS IN SWA    Y02076 11912302
+         BZ    DDNTNEWT                 NO MORE DDNTS IN SWA     Y02076 11913902
+         LH    R9,CODDNT                SET DDNT CODE IN R9      Y02076 11915502
+         BAL   RA,PREOBH                TO OUTPUT BUFFER HANDLER Y02076 11917102
+         LR    R0,R3                    RESTORE SVA ADDR         Y02076 11918702
+         B     DDNTREAD                 BR IF YES FOR NXT DDNT   Y02076 11920302
+DDNTNEW  EQU   *                        PREP FOR NEW DDNT ENTRY  Y02076 11921902
+*********************************************************************** 11923502
+*        SEARCH THRU SIOT CHAIN TO GET DDNT ENTRIES              Y02076 11925102
+*********************************************************************** 11926702
+         DROP  R6                                                Y02076 11927102
+         L     R6,CKERAS05              GET SIOT CHAIN ANCHOR    YM7093 11928702
+*********************************************************************** 11944702
+*        INITIALIZE FOR QMNGRIO PARAMETER LIST (PL)              Y02076 11949902
+*********************************************************************** 11953602
+         USING QMIOP,R1                                          Y02076 11955602
+         L     R1,CKQMPARM              GET PARM LIST ADDR       Y02076 11956002
+         XC    QMITCBAD(LPL),QMITCBAD   CLEAR QMNGRIO PARM LIST  Y02076 11956402
+         LA    R0,LPL                   GET OFFSET TO WORK AREA  Y02076 11956802
+         AR    R0,R1                    CALC ADDR OF WORK AREA   Y02076 11956902
+         ST    R0,QMIWRKAD              STORE WRK AREA ADR IN PL Y02076 11957202
+         L     R0,SIOTRDIN              GET READ IN ADDR         Y02076 11961402
+         ST    R0,QMIRECAD              ST READ IN ADDR IN PL    Y02076 11961802
+         L     R0,CKTCBAD               GET ADDR OF TCB          Y02076 11962202
+         ST    R0,QMITCBAD              STORE IN QMNGRIO P.LIST  Y02076 11962602
+         LA    R0,LNDDNT                GET LENGTH OF DDNTS      Y02076 11963002
+         STH   R0,QMIRECL               STORE LENGTH IN P.LIST   Y02076 11963102
+         MVI   QMIFLAGS,QMIOREAD        SET 'READ' FLAG          Y02076 11963402
+         USING DDNTREC,R5                                        Y02076 11965402
+         LA    R5,INFMJFCB              POINT TO LAST DDNT     @ZA07204 11965537
+         LTR   R4,R4                    TEST-DDNTS READ FR SWA   Y02076 11967537
+         BZ    DDNTNWA                  BRANCH IF NO             Y02076 11969537
+DDNTNWAA EQU   *                        CHECK IF DDNT IS FULL    Y02076 11973802
+         CLI   DDNTUSCT+K1,DDNTFULL     IS DDNT FULL             Y02076 11973902
+         BL    DDNTNWD                  BRANCH IF NOT FULL       Y02076 11974002
+         LH    R9,CODDNT                CODE FOR DDNT RECORDS    Y02076 11978302
+         BAL   RA,PREOBH                GO TO BUFFER HANDLER     Y02076 11980302
+*********************************************************************** 11982302
+*        CLEAR DDNT SPACE AND INITIALIZE HEADER                  Y02076 11982702
+*********************************************************************** 11984102
+DDNTNWA  XC    INFMJFCB(JFCL),INFMJFCB  ZERO 176 BYTES FOR DDNT  Y02076 11986102
+         LA    R3,K1                    GET 1 FOR ENTRY OFFSET   Y02076 11986902
+         STH   R3,DDNTUSCT              1ST OFSET-DDNT ENTRIES   Y02076 11990202
+         STH   R3,DDNTIDNT              SET DDNT CODE          @ZA07204 11991237
+DDNTNWD  LR    R0,R6                    GET SVA ADDR OF SIOT     Y02076 11992202
+DDNTNWB  EQU   *                        PROCESS SIOTS            Y02076 11992602
+         IC    R0,PREZERO               SET LO ORDER BYTE 0      Y02076 11993002
+         ST    R0,QMIDSKAD              ST SVA ADDR IN PL        Y02076 11993402
+         QMNGRIO                        READ IN SIOT             Y02076 11994102
+         LTR   RF,RF                    TEST FOR ERRORS          Y02076 11994202
+         BNZ   PREQERRX                 IF ERROR BR TO SET CODE  Y02076 11994302
+         USING INDMSIOT,R6                                       Y02076 11994502
+         L     R6,SIOTRDIN              PT TO BEGIN OF SIOT      Y02076 11994902
+         TM    SIOTBYT1,SIOTDDNT        IS IT A DDNT CANDIDATE   Y02076 11995302
+         BZ    DDNTNWC                  BRANCH IF NOT            Y02076 11995402
+         LH    R3,DDNTUSCT              GET DDNT 'NXT AVAIL SLOT Y02076 11995502
+         SLL   R3,3                     MULTIPLY BY 8            Y02076 11995602
+         LA    R9,DDNTREC               GET BEGIN ADDR OF DDNT   Y02076 11996702
+         AR    R3,R9                    ADDR OF DDNAME IN DDNT   Y02076 11998702
+         MVC   K0(K8,R3),SCTDDNAM       MOVE DDNAME INTO DDNT    Y02076 11998802
+         LH    R3,DDNTUSCT              GET DDNT'NXT AVAIL SLOT' Y02076 12005202
+         LA    R3,K1(R3)                INCREASE SLOT COUNT      Y02076 12007202
+         STH   R3,DDNTUSCT              ST NEW 'NXT AVAIL SLOT'  Y02076 12009202
+DDNTNWC  EQU   *                        TEST - END OF SIOT CHAIN Y02076 12011202
+         L     R6,SCTPSIOT              GET ADDR OF NEXT SIOT    Y02076 12011302
+         LTR   R6,R6                    IS THIS LAST SIOT        Y02076 12011402
+         BZ    DDNTNWE                  BRANCH IF YES            Y02076 12011502
+         B     DDNTNWAA                 GO TEST FOR FULL DDNT    Y02076 12021302
+*********************************************************************** 12035202
+*        END OF SIOT CHAIN                                       Y02076 12035602
+*********************************************************************** 12036002
+DDNTNWE  LH    R3,DDNTUSCT              TEST IF ANY DDNT ENTRIES Y02076 12036402
+         LA    R4,DDNTSWAS              SET R4 FOR DDNTS ENTERED Y02076 12036802
+         BCTR  R3,K0                    REDUCE ENTRY SLOT BY 1   Y02076 12036902
+         LTR   R3,R3                    IS IT 0                  Y02076 12037002
+         BZ    DSDRPRCA                 BRANCH IF NO ENTRIES     Y02076 12037102
+DSDRPROC EQU   *                        BEGIN DSDR PROCESSING    Y02076 12037202
+         LTR   R4,R4                    WERE ANY DDNTS IN SWA    Y02076 12039202
+         BZ    DSDRPRCA                 BRANCH IF NO             Y02076 12039602
+         LH    R9,CODDNT                LOAD DDNT CODE           Y02076 12040002
+         BAL   RA,PREOBH                FLUSH OUT LAST DDNT      Y02076 12040402
+*********************************************************************** 12040502
+*        BEGIN PROCESSING OF DSDR RECORDS                        Y02076 12040602
+*********************************************************************** 12040702
+DSDRPRCA EQU   *                        INITIALIZE FOR SEQUENCE  Y02076 12040802
+         DROP  R6                       THRU DSAB CHAIN          Y02076 12040902
+         USING TCB,R6                                            Y02076 12041002
+         L     R6,CKTCBAD               GET PTR TO TCB           Y02076 12041102
+         L     R6,TCBJSCB               GET PTR TO JSCB          Y02076 12041902
+         USING IEZJSCB,R6                                        Y02076 12042302
+         L     R6,JSCDSABQ              GET POINTER TO QDB       Y02076 12043602
+         DROP  R6                                                Y02076 12051002
+         USING QDB,R6                                            Y02076 12060802
+         L     R6,QDBFELMP              GET POINTER TO 1ST DSAB  Y02076 12070602
+         DROP  R6                                                Y02076 12080402
+         USING DSAB,R6                                           Y02076 12090202
+PREAG2   L     R5,DSABTIOT              GET CORRESP DD ENTRY     Y02076 12100002
+         USING TIOELNGH,R5                                       Y02076 12150002
+*                                                                     * 12820018
+*********************************************************************** 12840018
+*        GET JFCB TTR FROM TIOT ENTRY - READ IN JFCB                  * 12860002
+*        FOR SUBALLOCATE REQUEST A SIOT IS READ FROM JOB QUEUE, JFCB  * 12880018
+*        TTR EXTRACTED FROM SIOT AND THEN JFCB READ INTO CORE         * 12900018
+*                                                                     * 12920018
+*********************************************************************** 12940018
+*                                                                     * 12960018
+PREAG3   L     R0,TIOEJFCB              GET JFCB TTR.                   13200002
+         IC    R0,PREZERO               FILL IN CONCATENATION NO.       13400002
+*********************************************************************** 13450002
+*  INITIALIZE QMNGRIO PARAM LIST FOR READING JFCB FROM SWA       Y02076 13500002
+*            THEN READ IN JFCB                                   Y02076 13550002
+*********************************************************************** 13600002
+         USING QMIOP,R1                                          Y02076 13650002
+         L     R1,CKQMPARM              GET ADDR OF QMNGRIO PL   Y02076 13700002
+         XC    QMITCBAD(LPL),QMITCBAD   CLEAR QMNGRIO PARM LIST  Y02076 13710002
+         ST    R0,QMIDSKAD              ST JFCB SVA IN PARM LST  Y02076 13750002
+         LA    R0,LPL                   GET OFFSET TO WORK AREA  Y02076 13800002
+         AR    R0,R1                    CALC ADDR OF WORK AREA   Y02076 13850002
+         ST    R0,QMIWRKAD              ST WA ADDR IN PARM LST   Y02076 13900002
+         LA    R0,INFMJFCB              'READ IN' ADDR OF JFCB   Y02076 13950002
+         ST    R0,QMIRECAD              STORE ADDR IN PARM LST   Y02076 14000002
+         L     R0,CKTCBAD               GET ADDR OF TCB          Y02076 14010002
+         ST    R0,QMITCBAD              STORE IN QMNGRIO P.LIST  Y02076 14020002
+         LA    R0,LNJFCB                GET LENGTH OF JFCB       Y02076 14030002
+         STH   R0,QMIRECL               STORE IN QMNGRIO P.LIST  Y02076 14040002
+         MVI   QMIFLAGS,QMIOREAD        SET READ FLAG            Y02076 14050002
+         QMNGRIO                        READ JFCB FROM SWA       Y02076 14100002
+         LTR   RF,RF                    TEST FOR ERRORS          Y02076 14150002
+         BNZ   PREQERRX                 IF ERROR BR TO SET CODE  Y02076 14200002
+         DROP  R2                                                       14800017
+         L     R9,CKTCBAD               GET TCB ADDRESS                 15000002
+         USING TCB,R9                                                   15200000
+         L     RF,TCBTIO                GET TIOT ADDRESS                15400002
+         L     R9,TCBDEB                GET DEB QUEUE ADDRESS           15600002
+         USING DEBBASIC,R9                                              15800000
+*                                                                     * 15820018
+*********************************************************************** 15840018
+*                                                                     * 15860018
+*        SEARCH THROUGH DEB CHAIN TO FIND ASSOCIATEDDCB WITH JFCB JUST* 15880018
+*        READ         IN ORDER TO GET UCB ADDR FOR THE D.S.           * 15900018
+*                                                                     * 15920018
+*********************************************************************** 15940018
+*                                                                     * 15960018
+PRENXTDB EQU   *                                                        16000017
+         LTR   R9,R9               IS THERE ANOTHER DEB                 16200017
+         BZ    PREBK               BRANCH IF NO                         16400017
+         L     RA,DEBDCBAD         GET ADDRESS OF DCB ASSOCIATED WITH   16600000
+*                                  THIS DEB                             16800017
+         USING IHADCB,RA                                                17000017
+         LH    R0,DCBTIOT          GET INCREMENT TO TIOT DD ENTRY       17200017
+         AR    R0,RF               GET ADDRESS OF TIOT DD ENTRY BY      17400017
+*                                  ADDING DCB INCREMENT TO TIOT         17600017
+*                                  ADDRESS                              17800017
+         CR    R0,R5               IS THIS DEB ASSOCIATED WITH   Y02076 18000002
+*                                  TIOT ENTRY CURRENTLY BEING PROCESSED 18200017
+         BE    PREDCB              BRANCH IF YES                        18400017
+         L     R9,DEBDEBAD         GET POINTER TO NEXT DEB              18600000
+         LA    R9,K0(R9)           CLEAR HIGH ORDER BYTE-DEB PTR Y02076 18800002
+         B     PRENXTDB            BRANCH TO TEST NEXT DEB              19000017
+*                                                                     * 19020018
+*********************************************************************** 19040018
+*                                                                     * 19060018
+*        IF DATA SET OPENED FOR QSAM OR BSAM SPECIAL PROCESSING ON    * 19080018
+*        VOLUME SEQUENCE NO. FOLLOWS                                  * 19100018
+*                                                                     * 19120018
+*********************************************************************** 19140018
+PREDCB   EQU   *                                                        19200017
+         LR    RF,R9               GET DEB ADDRESS               YM7371 19400002
+         LA    R7,DEBPRFLN         GET LENGTH OF PREFIX          YM7371 19450002
+         SR    RF,R7               POINT TO DEB PREFIX           YM7371 19500002
+         L     R7,DEBXTNP-DEBPREFX(,RF) PTR TO DEB EXTENSION     YM7371 19600002
+         TM    DEBXDSO1-DEBXTN(R7),DCBDSGPS CHK IF SAM           YM7371 19650002
+         BZ    PREBK               BRANCH IF NO                         19800017
+         LA    R7,INFMJFCB              ADR JFCB READ-IN AREA    YM7022 19900002
+         USING INFMJFCB,R7                                       YM7022 19950002
+         CLI   DEBAMTYP-DEBPREFX(RF),ISAMDEB CHK IF ISAM         YM7371 20000002
+         BNE   PREDCB03                 BR NOT ISAM             ZA00138 20050002
+         LA    RF,K16(,RF)              BUMP PAST FUNKY ISAM EXT YM7371 20100002
+PREDCB02 EQU   *                        GET UCB                  YM7371 20160002
+         XC    PREVLHLD,PREVLHLD   CLEAR VOLSEQ HOLD AREA       Z30JSSR 20162003
+         L     RF,DEBBASND-DEBPREFX(,RF) GET TO FIRST EXT UCB    YM7371 20170002
+         LA    RF,K0(,RF)               CLEAR HI-ORDER BYTE      YM7371 20190002
+         LTR   RF,RF                    CHK IF DUMMY             YM7371 20192002
+         BZ    PREBK                    BR IF DUMMY              YM7371 20194002
+         USING UCBSECT,RF                                               20200017
+         TM    UCBTBYT3,NOTTAPDA        IS THIS TAPE OR DA       YM7371 21200002
+         BNZ   PREBK                    BR IF NOT TAPE OR DA     YM7371 21600002
+         CLI   UCBTBYT3,PRETAPE         CH IF TAPE               YM7371 21800002
+         BNE   PREDA                    BR IF D.A.               YM7371 22000002
+         MVC   JFCBFSEQ(1),SRTEFSCT+1  SAV PHYS FILE SEQ NO.    OX01653 22002002
+         DROP  RF                                                YM7371 22004002
+         CLC   DEBDCBB(LNADDR),CKDCB1    IS THIS CHKPT D.S. DEB         22010000
+         BNE   PRETAVOL            BRANCH IF NOT                        22020017
+*    DETERMINE THE SEQUENCE NO. OF THE VOLUME WITH THE          YA00142 22080002
+*    REQUIRED CHECKPOINT RECORDS AND SAVE IT IN FIELD           YA00142 22090002
+*    'JCTVOLSQ' FOR IEFDSDRP                                    YA00142 22100002
+         MVC   JCTVOLSQ,VLSQ(R9)        SET REAL VOL SEQ         YM7371 22110002
+         MVC   PREVLHLD,VLSQ+1(R9) MOVE VOLSEQ TO HOLD AREA     Z30JSSR 22160003
+         B     PREBK                    GO PREPARE TO WRITE BFR  YM7371 22188402
+PREDCB03 TM    DEBEXSCL-DEBPREFX(RF),X'FF'  USEABLE UCB         ZA00138 22198402
+         BZ    PREBK                    BRANCH IF NO            ZA00138 22208402
+         B     PREDCB02                 GO PROCESS UCB          ZA00138 22210402
+PRETAVOL EQU   *                                                        22214202
+         LA    RA,DEBDEBAD              INCR FOR VOLUME SEQ NO.  YM7371 22240002
+         B     PREVOLSQ                                                 22400017
+PREDA    EQU   *                                                        22600017
+         SR    RA,RA                    CLEAR REGISTER A                22800002
+         IC    RA,DEBNMEXT              GET NUMBER OF EXTENTS           23000002
+         SLL   RA,EQUX16                MULTIPLY BY 16                  23200002
+         AR    RA,R9                    INCR FOR VOLUME SEQ NUMBER      23400002
+PREVOLSQ EQU   *                                                        23600017
+         LH    RF,JFCBVLSQ              GET VOL SEQ SPEC ON JCL  YM7371 23800002
+         LTR   RF,RF                    CHK IF SPECIFIED         YM7371 23850002
+         BNZ   PRE00020                 BR IF VOLSQ SPECIFIED    YM7371 23900002
+         LA    RF,K1                    SET VOLSQ TO FIRST VOL   YM7371 23950002
+PRE00020 EQU   *                        CHK FOR DEFERED MOUNT    YM7371 24000002
+         MVC   PREVLHLD,INCVLSQN+DEBVSQ(RA) SAVE VOLSEQ NUM     Z30JSSR 24010003
+         CLM   RF,M1,INCVLSQN+1(RA)     CHK IF NOT FIRST VOL   @ZA20785 24050037
+         BE    PREBK                    BR IF FIRST VOL         ZA04637 24100037
+         OI    JFCBMASK+K6,DEFMOUNT     SET BIT TO CAUSE DSDR TO  M2192 26200002
+*                                       MARK SIOT FOR DATA SET FOR      26400002
+*                                       DEFERRED MOUNT AT RESTART       26600002
+         USING IHADCB,R2                                                27000017
+         DROP  R9,RA,R7                                          YM7371 27200002
+PREBK    EQU   *                                                        27400017
+         XR    R9,R9               LOAD RECORD CODE.                    27600017
+         MVC   PREAD(LNADDR),JFCBEXAD   GET JFCBX SVA ADDR       Y02076 27650002
+         BAL   RA,PREOBH           GO TO OUTPUT BUFFER HANDLER.         27800017
+         L     R0,PREAD                                                 28200017
+         IC    R0,PREZERO          SET CONCATENATION NUMBER TO ZERO.    28400017
+         LTR   R0,R0               IS THERE A JFCBX                     28600017
+         BNZ   PREJFCBX            GO TO READ IN JFCBX.                 28800017
+PRENXTI  EQU   *                                                        29000017
+         TM    DSABFLG1,DSABDALC   IS IT DYNAMICALLY ALLOCATED @OZ07204 29008037
+         BZ    PRESSON             NO SO GO ON                 @OZ07204 29016037
+         LH    R9,COSIOT           LOAD SIOT CODE              @OZ07204 29024037
+         BAL   RA,PREOBH           LINK TO OUTPUT BUFFER       @OZ07204 29032037
+PRESSON  EQU   *                                               @OZ07204 29040037
+         L     R6,DSABFCHN              GET NEXT DSAB ON CHAIN   Y02076 29050002
+         LTR   R6,R6                    IS THIS LAST DSAB        Y02076 29100002
+         BNZ   PREAG2                   BRANCH TO PROCESS NEXT   Y02076 29150002
+         L     R0,JCTGDGNT         GET SVA OF GDG NAME TABLE     Y02076 30200002
+PRENXGDG EQU   *                                                        30400017
+         IC    R0,PREZERO               CLEAR LO BYTE SVA ADDR   Y02076 30450002
+         LTR   R0,R0               IS THERE A GDG.                      30600017
+         BZ    PRESKP3             NO-SKIP GDG PROCESSING               30800017
+*********************************************************************** 31450002
+*    SET UP FOR READING GDG NAME TABLE VIA QMNGRIO               Y02076 31500002
+*********************************************************************** 31550002
+         USING QMIOP,R1                                          Y02076 31560002
+         L     R1,CKQMPARM              GET ADDR QMNGRIO PRM LST Y02076 31570002
+         XC    QMITCBAD(LPL),QMITCBAD   CLEAR QMNGRIO PARMLIST @ZA09126 31580037
+         ST    R0,QMIDSKAD              ST SVA ADDR OF GDG NAMTB Y02076 31580937
+         LA    R0,LPL                   GET OFFSET TO WORKAREA @ZA09126 31581837
+         AR    R0,R1                    CALC ADDR OF WORK AREA @ZA09126 31582737
+         ST    R0,QMIWRKAD              ST WA ADDR IN PARMLIST @ZA09126 31583637
+         LA    R0,INFMJFCB              GET READIN AREA ADDR   @ZA09126 31584537
+         ST    R0,QMIRECAD              ST READIN ADR IN PLIST @ZA09126 31585437
+         L     R0,CKTCBAD               GET ADDR OF TCB        @ZA09126 31586337
+         ST    R0,QMITCBAD              ST TCB ADDR IN PLIST   @ZA09126 31587237
+         LA    R0,LNJFCB                GET A LENGTH VALUE     @ZA09126 31588137
+         STH   R0,QMIRECL               ST LENGTH IN PLIST     @ZA09126 31589037
+         MVI   QMIFLAGS,QMIOREAD        SET 'READ' FLAG          Y02076 31590002
+         QMNGRIO                        READ IN GDG NAME TABLE   Y02076 31592002
+         LTR   RF,RF                    TEST FOR ERRORS          Y02076 31592402
+         BNZ   PREQERRX                 IF ERROR BR TO SET CODE  Y02076 31592802
+         LA    R9,COGDG                 LOAD GDG NAME TBL CODE          31594002
+         BAL   RA,PREOBH           GO TO OUTPUT BUFFER HANDLER.         31600017
+         USING GDGNT,R1                                          Y02076 31650002
+         LA    R1,INFMJFCB              ADDR OF LAST GDGNT READ  Y02076 31700002
+         L     R0,GNTNEXTP         GET SVA OF NEXT GDG TABLE            31800002
+         IC    R0,PREZERO          FILL IN CONCATENATION NUMBER.        32000017
+         B     PRENXGDG            GO TO PROCESS NEXT GDG TABLE.        32200017
+PRESKP3  EQU   *                                                        32400017
+PREXIT   EQU   *                                                        32600017
+         LA    R9,DSDREND          LOAD END-OF-DSDRS CODE.              32800017
+         BAL   RA,PREOBH           GO TO WRITE OUT LAST DSDR.           33000017
+         MVC   PRESV(LNMODNAM),PREXMN   MOVE CHKMAIN MOD NAME TO XCTLST 33200018
+PREOUT   EQU   *                                                        33400017
+         L     R0,CKERAS00              LOAD GETMAIN PARM REG    Y02076 33450002
+         L     R1,CKQMPARM              GET ADDR QMNGR PARM LIST Y02076 33500002
+         FREEMAIN  R,LV=(R0),A=(R1)     FREE UP THE PARM LST     Y02076 33550002
+         L     R0,CKERAS01              LOAD GETMAIN PARM REG    Y02076 33560002
+         LTR   R0,R0                    WERE SIOTS READ IN       Y02076 33562002
+         BZ    PREOUTB                  BR OVER FREEMAIN IF NO   Y02076 33564002
+         L     R1,SIOTRDIN              ADR OF SIOT READ-IN AREA Y02076 33570002
+         FREEMAIN  R,LV=(R0),A=(R1)     FREE UP SIOT AREA        Y02076 33580002
+PREOUTB  LR    R1,RC               PUT ADDR OF W.A. IN PARM REG.        33600002
+         LR    R6,RC                    STORE WA ADDR IN R6      Y02076 33650002
+         LA    RF,PRESV            SET UP PARAMETER LIST FOR XCTL.      33800017
+         ST    RF,PRELSTAD                                              33900018
+         LA    RF,PRELSTAD                                              34000018
+         XCTL  SF=(E,(15))         TRANSFER CONTROL TO NEXT MODULE.     34400017
+PREOBH   EQU   *                                                        38600017
+         STM   R2,RC,PRESAVE                                            38800017
+         L     R2,PRENXB           LOAD ADDR OF NEXT BYTE IN BUFFER     39000017
+         L     R8,PRENOB           LOAD NUMBER OF BYTES LEFT IN BUFFER. 39200017
+         STH   R9,0(R2)            MOVE CODE TO BUFFER.                 39400017
+         CH    R9,CODDNT                TEST FOR A DDNT RECORD   Y02076 39450002
+         BE    DDNT                     GO MOVE DDNT TO BUFFER @OZ07204 39500037
+         CH    R9,COSIOT           SIOT PROCESSING ?           @OZ07204 39530037
+         BE    SIOTWR              YUP GO WRITE SIOT           @OZ07204 39560037
+         B     *+4(R9)             BRANCH TABLE ON RECORD CODE          39600018
+         B     PREOJF              GO TO MOVE JFCB AND UCB INFO TO BUF. 39800017
+         B     PREJFX              GO TO WRITE OUT JFCBX.               40000017
+         B     PREJFX              GO TO WRITE OUT GDG BIAS COUNT TABLE 40200017
+         B     PREJFX              GO TO WRITE OUT DSENQ TABLE.         40400017
+PRECOM3  EQU   *                                                        40600017
+         LA    R1,CKDECB1          GET DECB ADDR.                       40800017
+         WRITE (R1),SF,,,,,,MF=E   WRITE OUT A DSDR.                    41000017
+         LA    R1,CKDECB1                                               41200017
+         CHECK (R1)                                                     41400017
+         TM    CKFLAG1,CKTAPE      CHKPT DATA SET ON TAPE               41410017
+         BO    PRETAEOV            BRANCH IF YES                        41420017
+         L     RF,CKDCBAD          GET DCB ADDRESS FOR CHKPT DATA SET   41430017
+         DROP  R2                                                       41440017
+         USING IHADCB,RF                                                41450017
+         L     RF,DCBDEBAD         GET DEB ADDRESS                      41460017
+         USING DEBBASIC,RF                                              41470000
+         USING IHADCB,R2                                                41480017
+         CLC   CKTSTEOV(ONE),DEBNMEXT    HAS THE NUMBER OF EXTENTS      41490000
+*                                        CHANGED                        41500000
+         BNE   PREOVER             BRANCH IF YES-EOV ON D.A. ERROR      41510017
+         B     PREIOCHK            CHECK FOR I/O ERROR                  41520017
+PRETAEOV EQU   *                                                        41530017
+         L     RF,CKTSTEOV         GET POINTER TO EOV INFO              41600017
+         CLC   ZERO(LNWORD,RF),CKEOVCMR      DID END OF VOLUME OCCUR    41800018
+         BNE   PREOV               YES                                  42000017
+PREIOCHK EQU   *                                                        42100017
+         TM    CKRETCD1,CKIOERR    WAS THERE AN I/O ERROR               42200018
+         BO    PREQERRW             YES-GO TO I/O ERROR EXIT ROUTINE.   42400017
+         STH   R9,CODE(R2)         MOVE RECORD CODE TO BUFFER           42600018
+         BR    RA                  RETURN                               42800018
+PREOJF   EQU   *                                                        43000017
+         CH    R8,PREUPR           IS THERE ROOM FOR ANOTHER RECORD     43200017
+         BH    PREMVJ              YES-DO NOT WRITE BUFFER YET          43400017
+         BAL   RA,PREWR            NO-GO TO WRITE OUT BUFFER            43600017
+PREMVJ   EQU   *                                                        43800017
+         MVC   CDL(JFCL,R2),INFMJFCB  MOVE JFCB TO BUFFER               44000017
+         MVC   VLSQP(VLSQL,R2),PREVLHLD MOVE VOLSEQ TO BUF      Z30JSSR 44050003
+         L     RF,TIOTUCB          GET ADDR OF UCB                      44300018
+         LA    RF,ZERO(RF)         CLEAR HIGH ORDER BYTE                44370018
+         LTR   RF,RF               IS THIS A DUMMY DATA SET             44440017
+         BNZ   PRENODMY            BRANCH IF NOT                        44460018
+         XC    UCBP(TYPL,R2),UCBP(R2)      ZERO DEVTYP BYTES IN DSDR    44480017
+         B     PREUPDAT            GO TO UPDATE BUFFER POINTERS         44500018
+PRENODMY EQU   *                                                        44520017
+         USING UCBSECT,RF                                               44610018
+         MVC   UCBP(TYPL,R2),UCBTYP MOVE UCB INFO INTO DSDR.            46200017
+PREUPDAT EQU   *                                                        46300017
+*********************************************************************** 46350002
+*  INITIALIZE FOR READING IN SIOT FROM SWA THEN READ IT IN       Y02076 46360002
+*********************************************************************** 46370002
+         L     R0,DSABRS01              GET SVA PTR FROM DSAB    Y02076 46380002
+         SLL   R0,HIORDER               SHFT SWA ADDR LEFT 8BITS Y02076 46390002
+         USING QMIOP,R1                                          Y02076 46392002
+         L     R1,CKQMPARM              GET ADDR OF QMNGRIO PL   Y02076 46394002
+         XC    QMITCBAD(LPL),QMITCBAD   CLEAR QMNGRIO PARM LIST  Y02076 46394402
+         ST    R0,QMIDSKAD              ST SVA SIOT ADDR IN PL   Y02076 46396002
+         LA    R0,LPL                   GET OFFSET TO WORK AREA  Y02076 46398002
+         AR    R0,R1                    CALC ADDR OF WORK AREA   Y02076 46398402
+         ST    R0,QMIWRKAD              ST WA ADDR IN P.L.       Y02076 46398802
+         L     R0,SIOTRDIN              ADDR OF SIOT 'READ IN' @OZ07204 46399237
+         ST    R0,QMIRECAD              ST READ IN ADDR IN P.L.  Y02076 46399602
+         L     R0,CKTCBAD               GET ADDR OF TCB          Y02076 46399702
+         ST    R0,QMITCBAD              STORE TCB ADR IN P.LIST  Y02076 46409702
+         LA    R0,LNJFCB                GET LENGTH OF SIOTS      Y02076 46419702
+         STH   R0,QMIRECL               STORE IN QMNGRIO P.LIST  Y02076 46419802
+         MVI   QMIFLAGS,QMIOREAD        SET FLAGS FOR READ       Y02076 46419902
+         QMNGRIO                        READ SIOT FROM SWA       Y02076 46429902
+         LTR   RF,RF                    TEST FOR ERRORS          Y02076 46431902
+         BNZ   PREQERRX                 IF ERROR BR TO SET CODE  Y02076 46433902
+*********************************************************************** 46439902
+*  PROCESS SIOT FIELDS FOR DSDR ENTRIES                          Y02076 46449902
+*********************************************************************** 46459902
+         USING INDMSIOT,R5                                       Y02076 46469902
+         L     R5,SIOTRDIN              LOAD BASE REG FOR SIOT @OZ07204 46479937
+         NI    CKFLAG2,TURNOFS          TURN OFF SIOT 'WRITE'    Y02076 46489902
+         TM    SIOTBYT1,SIODUNAL        D/S DYNAMIC UNALLOC    @ZA09977 46491937
+         BO    PREUPA                   BR IF YES              @ZA09977 46492037
+         TM    SCTSBYT3,SCTALCHK        SIOT ALLOCATED         @ZA09977 46492137
+         BO    PREUPC                   BR IF YES              @ZA09977 46492237
+         OI    SCTSBYT3,SCTALCHK        SET SIOT ALLOC'D BIT   @ZA09977 46492337
+         B     PREUPB                                          @ZA09977 46492437
+PREUPA   TM    SCTSBYT3,SCTALCHK        WAS SIOT ALLOCATED     @ZA09977 46492537
+         BZ    PREUPC                   BR IF NO               @ZA09977 46492637
+         NI    SCTSBYT3,255-SCTALCHK    TURN OFF SIOT ALLOC'D  @ZA09977 46492737
+PREUPB   OI    CKFLAG2,UPDSIOT          TURN ON SIOT 'WRITE'   @ZA09977 46492837
+PREUPC   LH    R3,DSABOPCT              GET D/S OPEN AT CHKPT  @ZA09977 46492937
+         LTR   R3,R3                    WAS IT OPEN AT CHKPT     Y02076 46493902
+         BNZ   PREUP1                   BRANCH IF OPEN           Y02076 46495902
+         TM    SIOTBYT1,SIOTOCKP        IS OPEN IND=0 IN SIOT    Y02076 46497902
+         BZ    PREUP2                   BRANCH IS YES            Y02076 46498302
+         NI    SIOTBYT1,TURNOFO         TURN OFF OPEN BIT        Y02076 46498702
+         OI    CKFLAG2,UPDSIOT          SET FLAG TO WRITE SIOT   Y02076 46499102
+         B     PREUP2                                            Y02076 46499502
+PREUP1   OI    SIOTBYT1,SIOTOCKP        SET D/S OPEN AT CHKPT    Y02076 46499602
+         OI    CKFLAG2,UPDSIOT          SET FLAG TO WRITE SIOT   Y02076 46499702
+PREUP2   MVC   DDNMP(DDL,R2),SCTDDNAM   MVE DDNAME FROM SIOT     Y02076 46499802
+         MVC   SIOTFP(K1,R2),SCTSDISP   MVE SCTSDISP TO DSDR     Y02076 46533202
+         LA    R2,K1(R2)                INCREASE PTR BY 1        Y02076 46543202
+         MVC   SIOTFP(K1,R2),SCTSBYT3   MVR SCTSBYT3 TO DSDR     Y02076 46553202
+         LA    R2,K1(R2)                INCREASE BUFR PTR BY 1   Y02076 46563202
+         MVC   SIOTFP(K1,R2),SIOTALTD   MVE SIOTALTD FIELD       Y02076 46565202
+         LA    R2,K1(R2)                INCREASE BUFR PTR BY 1   Y02076 46565602
+         XC    SIOTFP(K1,R2),SIOTFP(R2) CLEAR FLAG BYTE          Y02076 46565702
+         TM    SIOTBYT1,SIOTOCKP        DATA SET OPEN AT CHKPT   Y02076 46566002
+         BZ    PREUP3                   BRANCH IF NOT            Y02076 46566402
+         OI    SIOTFP(R2),DSDROCKP      SET DSDRFLAG W DSOPEN    Y02076 46566502
+PREUP3   TM    DSABFLG1,DSABDALC        TEST DYNAMIC ALLO        Y02076 46577602
+         BZ    PREUP4                   BRANCH IF NOT            Y02076 46587602
+         OI    SIOTFP(R2),DSDRDALC      SET DSDRFLAG             Y02076 46588002
+PREUP4   TM    DSABFLG1,DSABCATM        TEST DYNAMIC CONCAT.     Y02076 46588402
+         BZ    PREUP5                   BRANCH IF NOT            Y02076 46588802
+         L     RF,DSABTIOT              POINT TO TIOT ENTRY      YM7323 46590802
+         USING TIOENTRY,RF              ADDRESS DD ENTRY IN TIOT YM7323 46591202
+         CLI   TIOEDDNM,BLANK           IS THIS DDNAME BLANK?    YM7323 46591602
+         BNE   PREUP5                   BRANCH IF NOT BLANK      YM7323 46592002
+         DROP  RF                                                YM7323 46592402
+         OI    SIOTFP(R2),DSDRCCAT      SET DYN CONCAT FLG       Y02076 46592502
+PREUP5   LA    R2,K1(R2)                INCREASE BUFR PTR BY 1   Y02076 46594502
+         TM    CKFLAG2,UPDSIOT          WAS SIOT UPDATED         Y02076 46594902
+         BZ    PREUP6                   BRANCH IF NO             Y02076 46595302
+         MVI   QMIFLAGS,QMIOWRTE        SET FUNCTION TO WRITE    Y02076 46595702
+         QMNGRIO                        WRITE SIOT TO SWA        Y02076 46596102
+         LTR   RF,RF                    TEST FOR ERRORS          Y02076 46636802
+         BNZ   PREQERRX                 IF ERROR BR TO SET CODE  Y02076 46646802
+PREUP6   EQU   *                        INIT. FOR NEXT WRITE     Y02076 46677902
+         LA    R2,PREUPJ(R2)       UPDATE BUFFER POINTER.               46718602
+         SH    R8,=H'195'          UPD.NO. OF BYTES LEFT IN BUF.Z30JSSR 46759303
+PRECOM2  ST    R2,PRENXB           SAVE BUFFER POINTER.                 46800017
+         ST    R8,PRENOB           SAVE NUMBER OF BYTES LEFT IN BUF.    47000017
+PRERET   EQU   *                                                        47200017
+         LM    R2,RC,PRESAVE                                            47400017
+         BR    RA                  RETURN TO CALLER.                    47600017
+PREWR    EQU   *                                                        47800017
+         LA    RF,BLKEND           MOVE END OF BLOCK CODE TO BUFFER.    48000017
+         STH   RF,CODE(R2)         PUT END OF BLOCK CODE IN BUFFER      48200018
+         LR    R2,RC               COMPUTE                              48400017
+         A     R2,CKBFOFST         BUFFER ADDRESS                       48600017
+         ST    R2,PRENXB           UPDATE POINTER TO NEXT AVAIL. BYTE.  49000017
+         MVC   PRENOB(LNWORD),DSDRLN    UPDATE NO. OF BYTES LEFT IN BUF 49200018
+         L     R8,PRENOB           GET NO. OF BYTES LEFT IN BUFFER.     49400017
+         B     PRECOM3             GO TO WRITE OUT DSDR                 49600018
+DDNT     EQU   *                                               @OZ07204 49620037
+         CH    R8,PREUPX           IS THERE ROOM FOR A RECORD  @OZ07204 49640037
+         BH    DDNT1               YES DONT WRITE BUFFER YET   @OZ07204 49660037
+         BAL   RA,PREWR             NO OUTPUT BUFFER FIRST     @OZ07204 49680037
+DDNT1    EQU   *                                               @OZ07204 49700037
+         MVC   K0(JFCL,R2),INFMJFCB  MOVE INTO BUFFER          @OZ07204 49720037
+         LA    RA,JFCL             SET UP DDNT LENGTH          @OZ07204 49740037
+         B     PREDDNT                                         @OZ07204 49760037
+PREJFX   EQU   *                                                        49800017
+         CH    R8,PREUPX           IS THERE ROOM FOR ANOTHER RECORD     50000017
+         BH    PREMVJX             YES-DO NOT WRITE OUT BUFFER YET.     50200017
+         BAL   RA,PREWR            NO-GO TO WRITE OUT BUFFER.           50400017
+PREMVJX  EQU   *                                                        50600017
+         MVC   CDL(JFCL,R2),INFMJFCB  MOVE JFCBX TO BUFFER              50800017
+         LA    RA,JFCL             ANTICIPATE DDNT LENGTH        YM7578 50850002
+         LA    RA,K2(,RA)          BUMP BY 2 FOR JFCBX           YM7578 51000002
+PREDDNT  EQU   *                   DDNT ENTRY                    YM7578 51050002
+         AR    R2,RA               UPDATE BUFFER POINTER         YM7578 51100002
+         SR    R8,RA               UPDATE AVAIL BYTE COUNT       YM7578 51150002
+         B     PRECOM2             GO TO SAVE BUFFER POINTERS AND RET   51400018
+PREOV    EQU   *                                                        51600017
+         TM    CKFLAG2,CKEOV  Q. HAS EOV OCCURRED BEFORE                51800017
+         BO    PREOVER        YES                                       52000017
+         OI    CKFLAG2,CKEOV  TURN ON EOV INDICATOR                     52600017
+         MVC   PRESV(LNMODNAM),PREXMN   SET UP XCTL PARM LIST           52800018
+         MVI   PREWD2,CHAR2        IGC0206C                             53000018
+         B     PREOUT              GO TO EXECUTE XCTL                   53200018
+PREOVER  EQU   *                                                        53400017
+         MVI   CKRETCD1,CKPGMERR   INDICATE PROGRAMMER ERROR            53600018
+         LA    RA,CKERIO7          GET EOV ERROR CODE                   53800017
+         STH   RA,CKMSGCOD         STORE IN WORK AREA                   54000017
+         B     PREQMFG             GO TO TRANSFER CONTROL TO IGC0N06C   54200018
+PRESYNAD EQU   *                                                        54300018
+         MVI   CKRETCD1,CKIOERR    MOVE ERROR CODE INTO W.A.            54400018
+         BR    RE                                                       54600017
+PREQERRW EQU   *                                                        56200017
+         LA    RA,CKERIO3          I/O ERROR WRITING CHKPT DATA SET     56400017
+         STH   RA,CKMSGCOD         STORE ERROR CODE IN WORK AREA        56600017
+         B     PREQERR             GO TO GET RETURN CODE                56800018
+PREQERRX EQU   *                                                        57000017
+         LA    RA,CKERIO4          I/O ERROR READING/WRITING SWA        57200002
+         STH   RA,CKMSGCOD         STORE IN WORK AREA                   57400017
+PREQERR  EQU   *                                                        57600017
+         MVI   CKRETCD1,CKIOERR    MOVE RETURN CODE TO WA               57800018
+PREQMFG  EQU   *                                                        58000017
+         MVC   PRESV(LNMODNAM),PREIORE  MOVE IORESUME'S NAME TO XCTLST  58200018
+         B     PREOUT             GO TO TRANSFER CONTROL                58400017
+PREJFCBX EQU   *                                                        58500018
+*********************************************************************** 58550002
+*  SET UP FOR READING JFCB EXTENTION VIA QMNGRIO                 Y02076 58600002
+*********************************************************************** 58650002
+         USING QMIOP,R1                                          Y02076 58700002
+         L     R1,CKQMPARM              GET ADDR QMNGRIO PARM LSTY02076 58750002
+         XC    QMITCBAD(LPL),QMITCBAD   CLEAR GMNGRIO PARM LIST  Y02076 58760002
+         ST    R0,QMIDSKAD              SVA ADDR OF JFCBX IN P^  Y02076 58800002
+         LA    R0,LPL                   GET OFFSET TO WORK AREA  Y02076 58850002
+         AR    R0,R1                    CALC ADDR OF WORK AREA   Y02076 58900002
+         ST    R0,QMIWRKAD              ST WRK AREA ADDR IN P.L. Y02076 58950002
+         LA    R0,INFMJFCB              ADDR OF JFCBX READ IN    Y02076 58960002
+         ST    R0,QMIRECAD              ST READ IN ADDR IN P.L.  Y02076 58970002
+         L     R0,CKTCBAD               GET ADDR OF TCB          Y02076 58972002
+         ST    R0,QMITCBAD              STORE TCB ADDR IN P.LIST Y02076 58974002
+         LA    R0,LNJFCB                GET LENGTH OF JFCBX      Y02076 58976002
+         STH   R0,QMIRECL               STORE IN PARM LIST       Y02076 58978002
+         MVI   QMIFLAGS,QMIOREAD        SET FLAG FOR 'READ'      Y02076 58980002
+         QMNGRIO                        READ IN JFCB EXTENTION   Y02076 58990002
+         LTR   RF,RF                    TEST FOR ERRORS          Y02076 58992002
+         BNZ   PREQERRX                 IF ERROR BR TO SET CODE  Y02076 58994002
+         LA    R9,COJFCBX          LOAD RECORD CODE.                    59000017
+         BAL   RA,PREOBH           WRITE RCD TO CHKPT D.S.              59200018
+         L     R0,INFMJFCB         GET TTR OF NEXT JFCBX                59400017
+         IC    R0,PREZERO          FILL IN CONCATENATION NUMBER.        59600017
+         LTR   R0,R0               IS THERE ANOTHER JFCBX.              59800017
+         BNZ   PREJFCBX            YES-GO TO READ IN NEXT JFCBX.        60000017
+         B     PRENXTI             NO-GO TO EXAMINE NEXT JFCB.          60200017
+SIOTWR   EQU   *                                               @OZ07204 60210037
+         CH    R8,PRESIOT          IS THERE ROOM FOR SIOT      @OZ07204 60220037
+         BH    SIOTMOVE            YES GO MOVE IT IN           @OZ07204 60230037
+         BAL   RA,PREWR            NO PUT OUT BUFFER FIRST     @OZ07204 60240037
+SIOTMOVE EQU   *                                               @OZ07204 60250037
+         L     RA,SIOTRDIN         LOAD ADDRESS OF SIOT        @OZ07204 60260037
+         MVC   CDL(JFCL,R2),0(RA)      MOVE IT INTO BUFFER     @OZ07204 60270037
+         LA    RA,SIOTLG           SIOT LENGHT PLUS CODE BYTES @OZ07204 60280037
+         AR    R2,RA               SET UP BUFFER POINTER       @OZ07204 60290037
+         SR    R8,RA               UPDATE BYTE COUNT           @OZ07204 60300037
+         B     PRECOM2             SAVE POINTERS AND RETURN    @OZ07204 60310037
+COSIOT   DC    X'000C'             SIOT CODE DSDR              @OZ07204 60320037
+PRESIOT  DC    H'180'                                          @OZ07204 60330037
+SIOTLG   EQU   178                                             @OZ07204 60340037
+CKERIO3  EQU   X'0317'             WRITE UNSUCCESSFUL                   60400017
+CKERIO4  EQU   X'0316'             SWA READ/WRITE UNSUCCESSFUL          60600002
+CKERIO7  EQU   X'031B'             INVALID EOV                          60800017
+DSDRL    EQU   400  LENGTH OF CHR AND DSDRS                             61000017
+SP253    DC    AL1(253)                 SUBPOOL 253                     61050002
+PREUPZ   EQU   178                                                      61400017
+DSDRLN   DC    F'400'    LENGTH OF A DSDR                               61600017
+*                                                                     * 61650018
+*        LENGTHS OF RECORDS USED TO UPDATE BUFFER POINTER             * 61700003
+*                                                                     * 61750018
+PREUPX   DC    H'180'                                                   61800017
+PREUPJ   EQU   191                                              Z30JSSR 62000003
+PREUPR   DC    H'197'                                           Z30JSSR 62200003
+PREZERO  DC    X'00'                                                    62400017
+*                                                                       62450018
+*        MODULE NAMES USED IN XCTL PARM LIST                            62500018
+*                                                                       62550018
+PREXMN   DC    C'IGC0F06C'                                              62600017
+PREIORE  DC    C'IGC0N06C'                                              62800017
+QMNGWALN DC    AL3(280)                256 BYTE QMNGRIO WA+24(PL)Y02076 62850002
+DDNTFULL EQU   22                       FULL COUNT OF DD ENTRIES Y02076 62900002
+DDNTSWAS EQU   99                       SWITCH FOR DDNTS IN SWA  Y02076 62950002
+COJFCBX  EQU   4    CODE FOR JFCBX                                      63000017
+COGDG    EQU   8    CODE FOR GDG BIAS COUNT TABLE                       63200017
+CODSENQ  EQU   12   CODE FOR DSENQ TABLE                                63400017
+CODDNT   DC    H'1'                     CODE FOR DDNT TABLE      Y02076 63450002
+DSDREND  EQU   X'10'     CODE TO LAST DSDR.                             63600017
+BLKEND   EQU   X'14'     CODE TO INDICATE END OF A DSDR.                63800017
+BLKL     EQU   2    LENGTH OF DCBBLKSI FIELD                            64000017
+SUBALOC  EQU   130       TIOESTTC FIELD-INDICATES SUBALLOCATE REQUESTED 64200017
+INPUT    EQU   X'0F'                                                    64300017
+SUREAD   EQU   X'7F'     RETURN CODE FOR SUCCESSFUL I/O COMPLETION.     64400017
+JFCL     EQU   176       LENGTH OF JFCB TO BE WRITTEN OUT.              64600017
+CDL      EQU   2    LENGTH OF CODE FIELD IN DSDR.                       64800017
+DDL      EQU   8         LENGTH OF TIOEDDNM FIELD                       65000017
+UCBTL    EQU   4                        DSDR UCBTYP FIELD LENGTH Y02076 65050002
+SIOTL    EQU   4                   LENGTH OF SIOT               Z30JSSR 65100003
+VLSQL    EQU   1                   LENGTH OF VOLUME SEQUENCE    Z30JSSR 65150003
+UCBP     EQU   CDL+JFCL+DDL   OFFSET TO UCB INFO IN A DSDR.             65200017
+SIOTFP   EQU   CDL+JFCL+DDL+UCBTL       OFFSET TO SIOT INFO-DSDR Y02076 65250002
+VLSQP    EQU   CDL+JFCL+DDL+UCBTL+SIOTL OFFSET TO VOLSEQ        Z30JSSR 65300003
+QSAMBSAM EQU   X'40'                                                    65400017
+NOTTAPDA EQU   X'5F'                                                    65600017
+PRETAPE  EQU   X'80'                                                    65800017
+RDBACK   EQU   X'0E'                                                    66000017
+DDNMP    EQU   CDL+JFCL  OFFSET TO DDNAME FIELD IN A DSDR.              66200017
+TYPL     EQU   4         LENGTH OF UCBTYP FIELD                         66400017
+CKMSG2   EQU   64    INDICATES WTO MSG-INVALID-ERROR WHILE CREATING     66600017
+*                   CHKPT D.S.                                          66800017
+CKCHR    EQU   128  INDICATES CHR WRITTEN                               67000017
+DEBVLSQ  EQU   0         USED TO REFERENCE VOLUME SEQUENCE NO. IN DEB   67104018
+VLSQ     EQU   36        OFFSET OF VOLSEQ NO IN DEB                     67108018
+DEBVSQ   EQU   1                                                        67112018
+CODE     EQU   0         OFFSET INTO BUFFER FOR RECORD CODE             67116018
+NOTPRGD  EQU   X'FF'                                                    67120017
+IOBECBAD EQU   4                                                        67140017
+INDSEQ   EQU   X'80'                                                    67160017
+PURGEOPT EQU   X'C0'                                                    67180017
+LNJFCB   EQU   176                      LNGTH OF JFCB/X          Y02076 67190402
+LNDDNT   EQU   176                      LNGTH OF DDNT            Y02076 67190802
+LPL      EQU   24                       LNGTH OF PARM LIST       Y02076 67191202
+UPDSIOT  EQU   X'10'                    SIOT UPDATED CODE        Y02076 67191602
+TURNOFO  EQU   X'7F'                    TURN OFF OPEN BIT        Y02076 67191802
+TURNOFS  EQU   X'EF'                    TURN OFF SIOT WRTE BIT   Y02076 67191902
+K0       EQU   0                        CONSTANT 0               Y02076 67196802
+K1       EQU   1                        CONSTANT 1               Y02076 67198802
+K2       EQU   2                        CONSTANT 2               Y02076 67201102
+K6       EQU   6                                                  M2192 67206602
+K8       EQU   8                        CONSTANT 8               Y02076 67212502
+K16      EQU   16                       VALUE 16                 YM7371 67218002
+DEBPRFLN EQU   16                       LN OF DEB PREFIX         Y02049 67223502
+ISAMDEB  EQU   X'80'                    DEB AMTYP FOR ISAM       YM7371 67229002
+*                                                                     * 67234502
+*        MAINTENANCE SPACE                                            * 67240002
+*                                                                     * 67245502
+PATCH    DC    XL((*-IGC0D06C)/20)'00'   FIVE PERCENT MAINTENANCE SPACE 67251002
+*                                                                     * 67256502
+DDNTREC  DSECT                          DDNT RECORD FORMAT       Y02076 67262002
+DDNTIDNT DS    H                        DDNT ID = 0001           Y02076 67267502
+DDNTUSCT DS    H                        NEXT AVAIL SLOT IN TBL   Y02076 67273002
+DDNTLINK DS    F                        SVA OF NEXT DDNT         Y02076 67278502
+DDNTDDNM DS    2F                       FIRST DDNAME             Y02076 67284002
+         IEFQMIOP                                                       67289502
+         IEFJESCT                                                       67295002
+         IEFASIOT                                                       67300502
+         IEZJSCB                                                 Y02076 67306002
+         IHAQDB                                                  Y02076 67311502
+         IHADSAB                                                 Y02076 67317002
+         IEFZB429                                                Y02076 67322502
+         IEFASCTB                                                Y02076 67328002
+         IEEVCHWA   VER=3                                               67333502
+PURGDEB  EQU   CKREGSAV                                                 67339002
+PURGWD2  EQU   PURGDEB+4                                                67344502
+PURGLST  EQU   PURGWD2+4                                                67350017
+CKTSTEOV EQU   CKUNIT                                                   67400017
+CKEOVCMR EQU   CKUNIT+4                                                 67600017
+*                                                                     * 68250018
+*        PRESERVE'S WORK AREA                                         * 68300018
+*                                                                     * 68350018
+PRESV    DS    F         XCTL PARAMETER LIST -                          68400018
+PREWD2   DS    F              FIRST 2 WORDS CONTAIN MODULE NAME         68450018
+PRELSTAD DS    F              POINTER TO MODULE NAME                    68500018
+PRENXB   DS    F                   NEXT BYTE IN BUFFER.                 68600017
+PRENOB   DS    F                   NUMBER OF BYTES LEFT IN BUFFER.      68800017
+PREAD    DS    CL1       SAVE AREA USED FOR ADDRESSES          @ZA30810 68900037
+PREAD3   DS    CL3                                                      69100018
+PREADEOV DS    0F   SAVE AREA FOR INFO FOR EOV TEST             Z30JSSR 69200003
+PREVLHLD DS    CL1                 VOLUME SEQUENCE HOLD AREA    Z30JSSR 69250003
+         DS    CL3                                              Z30JSSR 69300003
+PRNEOV   DS    F                                                        69400017
+PRESAVE  DS    12F  REGISTER SAVE AREA.                                 69600017
+PRELNGTH EQU   *    END OF PRESERVE'S W.A.                              69800017
+         IEFJFCBN                                                       69810000
+*                                                                     * 69850018
+*        WORK AREA USED BY QUEUE MANAGER                              * 69900018
+*                                                                     * 69950018
+QJOB     DSECT                                                          70000017
+SCALADCB DS    13F                                                      70200017
+SCADEB   DS    12F                                                      70400017
+SCATALLY DS    F                                                        70600017
+SCASTRKS DS    H    TT OF FIRST TRACT IN Q.                             70800017
+SCALTRKS DS    H    TT OF LAST TRACK IN Q.                              71000017
+SCARECPT DS    CL1  NUMBER OF RECORDS PER PHYSICAL TRACK.               71200017
+*                                                                     * 71220018
+*        MAPPING OF ECB                                               * 71240018
+*                                                                     * 71260018
+ECBSECT  DSECT                                                          71280018
+CMPCODE  DS    CL1            I/O COMPLETION CODE                       71300018
+RBADDR   DS    CL3            ADDR OF RB WAITING ON I/O                 71320018
+UCBSECT  DSECT                                                          71400017
+         IEFUCBOB                                                       71600017
+TIOTSECT DSECT                                                          71800017
+         IEFTIOT1                                                       72000017
+CVTSECT  DSECT                                                          72200000
+         CVT                                                            72250000
+         IKJTCB                                                         72252000
+         IEZDEB                                                         72254000
+         DCBD  DSORG=(BS,PO),DEVD=(DA,TA)                               72400017
+UCBINNO  EQU   SRTEJBNR       BIN NO IN SUB-UCB                         72408018
+CKRETCD1 EQU   CKRETCOD+1     RETURN CODE FIELD IN CHKWA                72416018
+GDGTAB   EQU   INFMJFCB+4     TTR OF NEXT GDG TABLE                     72424018
+DCBSYND  EQU   DCBSYNAD+1          ADDRESSING SYNAD ADDRESS IN DCB      72432018
+TIOTUCB  EQU   TIOEFSRT-1     UCB ADDRESS IN TIOT ENTRY                 72440018
+CKDCB1   EQU   CKDCBAD+1      CHKPT DCB ADDR IN CHKWA                   72456018
+JFCBVSQ1 EQU   JFCBVLSQ+1     VOLSEQ NO. IN JFCB                        72464018
+MAINUCB  EQU   X'FF'          FLAG FOR MAIN UCB                         72472018
+LNADDR   EQU   3              LENGTH OF ADDRESS                         72480018
+ZERO     EQU   X'00'                                                    72488018
+LNVLSQNO EQU   2              LENGTH OF VOLUME SEQUENCE NO IN DEB       72496018
+EQUX16   EQU   4              SHIFT NUMBER IN REG LEFT 4=MULTIPLY BY 16 72504018
+INCVLSQN EQU   32             INCREMENT TO DEB VOLSQ NO FROM DEBLINK    72512018
+ONE      EQU   1                                                        72520018
+FIRSTVOL EQU   X'01'          FOR 1ST VOL, DEBVLSQ NO. = 1              72528018
+DEFMOUNT EQU   X'20'          DEFERRED MOUNT BIT IN JFCB CAUSES DSDR TO 72536018
+*                             MARK SIOT FOR REPIO TO MOUNT CORRECT VOL  72544018
+LNWORD   EQU   4              LENGTH OF WORD                            72552018
+LNMODNAM EQU   8              LENGTH OF MODULE NAME IN XCTL PARMLST     72560018
+LMAINUCB EQU   56             LENGTH OF MAIN UCB                        72568018
+ADDRBYTS EQU   7              ICM MASK FOR LOW ORDER THREE BYTES        72570000
+M14      EQU   14             ICM MASK FOR HI-ORDER THREE BYTES  YM5777 72572002
+M1       EQU   1              ICM MASK FOR LOW-ORDER BYTE      @ZA20785 72574037
+CHAR2    EQU   C'2'           CHAR TO ALTER MOD NAME TO IGC0206C        72576018
+JFCBMSK6 EQU   JFCBMASK+6                                               72584018
+CKQMPARM EQU   CKERAS02                 ADR OF SPACE FOR QMNGRIO Y02076 72594002
+SIOTAREA EQU   INFMJFCB                 SIOT READ IN OVER JFCB   Y02076 72596002
+HIORDER  EQU   8                        HI ORDER BYTE ADDRESS    Y02076 72598002
+DSDROCKP EQU   X'20'                    OPEN AT CHECKPOINT       Y02076 72598402
+DSDRDALC EQU   X'80'                    DYNAMIC ALLOCATION       Y02076 72598802
+DSDRCCAT EQU   X'40'                    DYNAMIC CONCATENATION    Y02076 72599202
+SIOTRDIN EQU   CKERAS03                 ADDR OF SIOT READ INAREA Y02076 72599602
+BLANK    EQU   X'40'                    BLANK CHARACTER          YM7323 72599702
+ END                                                                    72600017

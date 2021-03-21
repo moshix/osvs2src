@@ -1,0 +1,617 @@
+         TITLE 'IEEVMNT1--MOUNT SYNTAX CHECK'                           00020002
+*********************************************************************** 00070002
+*                                                                       00120002
+*  MODULE NAME = IEEVMNT1                                               00170002
+*                                                                       00220002
+*  DESCRIPTIVE NAME = MOUNT COMMAND SYNTAX CHECK ROUTINE                00270002
+*                                                                       00320002
+*  COPYRIGHT = NONE                                                     00370002
+*                                                                       00420002
+*  STATUS = OS/VS2 RELEASE 2                                            00470002
+*                                                                       00520002
+*  FUNCTION = SYNTAX CHECK THE MOUNT COMMAND AND BUILD A START          00570002
+*             DESCRIPTOR TABLE (SDT) CONTAINING THE INTERNAL JCL        00620002
+*             FOR INITIATING THE MOUNT PROCESSOR.                       00670002
+*                                                                       00720002
+*    OPERATION = GET CSCB POINTER FROM THE ASCB.                 Y02669 00770002
+*                                                                       00820002
+*              . ISSUE GETMAIN FOR THE START DESCRIPTOR TABLE.          00870002
+*                                                                       00920002
+*              . SET RESERVED CHARACTER, JCL FLAGS, AND THE LENGTH      00970002
+*                FIELDS IN THE SDT TO ZERO; INITIALIZE REST OF SDT      01020002
+*                WITH BLANKS.                                           01070002
+*                                                                       01120002
+*              . CHECK IF ANY MOUNT COMMAND PARAMETERS WERE SPECIFIED.  01170002
+*                IF NO PARAMETERS, SET ERROR CODE AND GO TO ERROR       01220002
+*                EXIT ROUTINE.                                          01270002
+*                                                                       01320002
+*              . SYNTAX CHECK MOUNT COMMAND PARAMETERS.  FOR ERROR      01370002
+*                CONDITIONS, ENTER ERROR EXIT ROUTINE.                  01420002
+*                                                                       01470002
+*              . IF NO ERRORS ARE DETECTED:                             01520002
+*                -GET CORE FOR AND INITIALIZE THE COMMAND INPUT         01570002
+*                 BUFFER (CIB).                                         01620002
+*                                                                       01670002
+*                -UPDATE THE SDT WITH INFORMATION FROM MOUNT            01720002
+*                 COMMAND PARAMETERS IN THE CSCB.  UPDATE CONTINUES     01770002
+*                 UNTIL BLANK IS FOUND IN COMMAND PARAMETERS.           01820002
+*                                                                       01870002
+*              . AT THE END OF THE PARAMETER SCAN:                      01920002
+*                -STORE JCL-RELATED INFORMATION IN THE SDT.             01970002
+*                                                                       02020002
+*                -UPDATE CSCB WITH MOUNT COMMAND RELATED INFORMATION.   02070002
+*                 ENQUEUE ON THE CSCB RESOURCE WHEN UPDATING THE Y02651 02120002
+*                 POINTER TO THE CIB IN THE CSCB.                Y02651 02170002
+*                                                                       02220002
+*                -SET POINTER TO THE CSCB JOBNAME FIELD (JOBNAME Y02677 02270002
+*                 IS THE MOUNT COMMAND PROCNAME - IEEVMPCR) IN   Y02677 02320002
+*                 THE ASCB.                                      Y02677 02370002
+*                                                                       02420002
+*                -SET THE CHAIN ECB TO ZERO.                            02422002
+*                                                                       02424002
+*                -SET THE CANCEL ECB TO ZERO.                           02426002
+*                                                                       02428002
+*                -INITIALIZE THE CHAIN ECB POINTER.                     02428402
+*                                                                       02428802
+*                -GET AND INITIALIZE IEEVJCL PARAMETER LIST      Y02669 02429202
+*                                                                       02429602
+*                -BRANCH TO IEEVJCL - THE JOB CONTROL LANGUAGE          02429702
+*                 SET BUILD ROUTINE, WITH REGISTER 1 POINTING    Y02669 02429802
+*                 TO THE PARAMETER LIST.                         Y02669 02429902
+*                                                                       02433202
+*              . IF AN ERROR HAS BEEN DETECTED WHILE SYNTAX CHECKING    02435202
+*                MOUNT COMMAND PARAMETERS, THE ERROR EXIT ROUTINE:      02435602
+*                -STORES THE ERROR CODE IN THE EXTENDED SAVE AREA       02436002
+*                 (XSA), WHICH OVERLAYS THE CORE GOTTEN FOR THE SDT.    02436402
+*                                                                       02436502
+*                -MOVES THE VERB (MOUNT) INTO THE XSA FOR MESSAGE FILL. 02436602
+*                                                                       02442402
+*                -LINKS TO IEE0503D MESSAGE MODULE TO ISSUE MESSAGE.    02444402
+*                                                                       02446402
+*                -FREES THE START DESCRIPTOR TABLE.                     02446802
+*                                                                       02447202
+*                -XCTLS TO IEEPRTN2 FREE REGION ROUTINE TO CLEAN UP     02447602
+*                 STARTED TASK CONTROL RESOURCES.  REGISTER 1    Y02669 02448002
+*                 POINTS TO THE ASCB FOR THIS MEMORY.            Y02669 02448102
+*                                                                       02448202
+*  NOTES:                                                               02448302
+*    DEPENDENCIES = CSCB ENQUEUE RESOURCE SYSIEFSD/Q10           Y02651 02454202
+*      CHARACTER-CODE DEPENDENCIES = NONE                               02456202
+*    RESTRICTIONS = NONE                                                02458202
+*    REGISTER CONVENTIONS = STANDARD (SEE CODE FOR REGISTER EQUATES)    02460202
+*                           IEEVMNT1 DOES NOT SAVE OR RESTORE REGISTERS 02460302
+*    PATCH LABEL = STCPATCH - RESERVED FOR FUTURE USE.                  02462202
+*                                                                       02464202
+*  MODULE TYPE = CSECT                                                  02464602
+*    PROCESSOR = ASSEMBLER                                              02465002
+*    MODULE SIZE = APPROXIMATELY 500 (HEX) BYTES                        02465402
+*    ATTRIBUTES = PAGED LPA, KEY ZERO, SUPERVISOR STATE,                02465802
+*                 REENTRANT, REFRESHABLE                                02465902
+*                                                                       02475102
+*  ENTRY POINT = IEEVMNT1                                               02477102
+*    PURPOSE = SEE FUNCTION ABOVE                                       02479102
+*    LINKAGE = XCTL FROM IEEPRWI2 - STC GET REGION ROUTINE              02481102
+*    INPUT = REGISTER 1 POINTS TO ASCB FOR STC'S MEMORY          Y02669 02483102
+*                                                                       02483502
+*  EXIT-NORMAL = IEEVJCL, JCLS BUILD ROUTINE, VIA BRANCH                02483902
+*    CONDITIONS = VALID MOUNT COMMAND WITH INTERNAL JCL BUILT           02484302
+*                 IN SDT.                                               02484702
+*    OUTPUT = REGISTER 1 POINTS TO PARAMETER LIST CONTAINING:    Y02669 02486402
+*              WORD 1 - SUBPOOL NUMBER AND PARAMETER LIST LENGTH Y02669 02488402
+*              WORD 2 - ASCB POINTER                             Y02669 02488802
+*              WORD 3 - SDT POINTER                              Y02669 02489202
+*              WORD 4 - RESERVED                                 Y02669 02489602
+*    RETURN CODES = NONE                                                02489702
+*                                                                       02489802
+*  EXIT-ERROR = IEEPRTN2, STC FREE REGION ROUTINE, VIA XCTL             02489902
+*    CONDITIONS = MOUNT COMMAND SYNTAX ERROR.  EXIT TO CLEAN            02497602
+*                 UP STC RESOURCES.                                     02499602
+*    OUTPUT = REGISTER 1 POINTS TO ASCB FOR STC'S MEMORY.        Y02669 02505202
+*    RETURN CODES = NONE                                                02505602
+*                                                                       02506002
+*  EXTERNAL REFERENCES:                                                 02508102
+*    ROUTINES = IEE0503D, MESSAGE MODULE, VIA LINK                      02510102
+*               ISSUE MOUNT COMMAND ERROR MESSAGES.                     02512102
+*    DATA AREAS = PARAMETER LIST PASSED TO IEEVJCL (SUBPOOL 0)   Y02669 02512202
+*    CONTROL BLOCKS = ASCB  - READ                               Y02669 02512302
+*                     CSCB  - READ, WRITE                               02514102
+*                     CIB   - CREATE(SUBPOOL 245), WRITE                02516102
+*                     SDT   - CREATE(SUBPOOL   0), WRITE, DELETE(ERROR) 02516502
+*                     XSA   - WRITE                                     02516902
+*                     CVT   - READ                                      02517302
+*  TABLES = XSA MAPS SDT CORE AS WORK AREA FOR MESSAGE PROCESSING       02517702
+*                                                                       02517802
+*  MACROS = GETMAIN, FREEMAIN, LINK, XCTL, ENQUEUE, DEQUEUE      Y02651 02517902
+*    SERIALIZATION = SYSIEFSD/Q10 (CSCB ENQUEUE RESOURCE)        Y02651 02518802
+*                                                                       02519202
+*  CHANGE ACTIVITY = Y02669, Y02651, Y02677                             02519602
+*                                                                       02520002
+*  MESSAGES = IEE3081 MOUNT TERM LENGTH ERROR                           02520402
+*             IEE309I MOUNT UNIDENTIFIABLE KEYWORD                      02520502
+*             IEE311I MOUNT PARAMETER MISSING                           02522202
+*             IEE335I MOUNT VOL PARAMETER MISSING                       02524202
+*                                                                       02524602
+*  ABEND CODES = NONE                                                   02525002
+*                                                                       02525402
+*********************************************************************** 02525502
+         EJECT                                                          02575502
+IEEVMNT1 CSECT                                                          03640001
+         SPACE 2                                                        03680000
+*********************************************************************** 03700000
+*  REGISTER ASSIGNMENTS                                                 03720000
+*********************************************************************** 03740000
+R0       EQU   0                  PARAMETER PASS REGISTER.              03760000
+R1       EQU   1                  INPUT PTR TO CHAIN.                   03780000
+R2       EQU   2                  ASCB POINTER                   Y02669 03800002
+R3       EQU   3                  WORK REGISTER.                        03820000
+R4       EQU   4                  WORK REGISTER.                        03840000
+R5       EQU   5                  WORK REGISTER.                        03860000
+R6       EQU   6                  WORK REGISTER.                        03880000
+R7       EQU   7                  WORK REGISTER.                        03900000
+R8       EQU   8                   POINTER TO THE CIB                   03920014
+R9       EQU   9                  WORK REGISTER.                        03940000
+R10      EQU   10                 SDT BASE REGISTER.                    03960000
+R11      EQU   11                 CHAIN BASE REGISTER.                  03980000
+R12      EQU   12                 BASE REGISTER.                        04000000
+R13      EQU   13                                                  I272 04020019
+R14      EQU   14                 RETURN REGISTER                       04040000
+R15      EQU   15                 LINK REGISTER.                        04060000
+D0       EQU   0                                                   I272 04060719
+D2       EQU   2                                                        04061102
+D3       EQU   3                                                   I272 04061419
+D4       EQU   4                                                   I272 04062119
+D5       EQU   5                                                   I272 04062819
+D8       EQU   8                                                   I272 04063519
+D24      EQU   24                                                  I272 04064219
+D256     EQU   256                                                 I272 04064919
+D7       EQU   7                                                  M2407 04070018
+D1       EQU   1                                                  M4165 04071018
+D73      EQU   73                                                 M4165 04072018
+D221     EQU   221                                                M4165 04073018
+BLANK    EQU   C' '                                               M4165 04074018
+         EJECT                                                          04080002
+         BALR  R12,0              BASE                                  04100000
+         USING *,R12                   REGISTER.                        04120000
+         MODID BR=YES                                            Y01886 04122001
+STARTA   DS    0H                                                 20032 04135020
+         SPACE                                                          04140000
+         LR    R2,R1              SET ASCB POINTER               Y02669 04150002
+         USING ASCB,R2            SET ADDRESSABILITY             Y02669 04160002
+         L     R11,ASCBCSCB       SET CSCB POINTER               Y02669 04170002
+         USING CHAIN,R11               REGISTER.                        04180000
+         DROP  R2                                                Y02669 04230002
+         SPACE 1                                                        04318014
+         LA    R4,SDTLN            LENGTH OF SDT FOR GETMAIN      M4165 04322018
+         GETMAIN R,LV=(R4)         GET SDT IN SUBPOOL 0           M4165 04326018
+         SPACE 1                                                        04330014
+         SPACE                                                          04360000
+         LR    R10,R1             START DESCRIPTER TABLE                04380000
+         USING SDTSD,R10           BASE REGISTER                        04400014
+         SPACE                                                          04420000
+*********************************************************************** 04440000
+*  INITIALIZATION OF THE SDT                                            04460000
+*        .RESERVED CHAR AND IN CORE JCL FLAGS ARE SET TO ZERO         * 04480014
+*        .SETS ALL SDT LENGTH SLOTS TO ZERO                             04500000
+*        .SETS REST OF GOTTEN CORE TO BLANKS                            04520000
+*********************************************************************** 04540000
+         STH   R4,SDTSIZE          SET SDT LENGTH FIELD           M4165 04550018
+         MVI   SDTJCLS1,BLANK      BLANK OUT SDT                  M4165 04560018
+         MVC   SDTJCLS1+D1(D221),SDTJCLS1    PROPOGATE BLANKS     M4165 04570018
+         MVI   SDTJCLS4,BLANK      *                              M4165 04580018
+         MVC   SDTJCLS4+D1(D221),SDTJCLS4    *                    M4165 04590018
+         MVI   SDTJCLS7,BLANK      *                              M4165 04600018
+         MVC   SDTJCLS7+D1(D73),SDTJCLS7     *                    M4165 04610018
+         SR    R3,R3               CLEAR REG TO SET FLAG FIELDS   M4165 04620018
+         STH   R3,SDTJCLS1         CLEAR FLAG FIELD               M4165 04630018
+         STH   R3,SDTJCLS2         *                              M4165 04640018
+         STH   R3,SDTJCLS3         *                              M4165 04650018
+         STH   R3,SDTJCLS4         *                              M4165 04660018
+         STH   R3,SDTJCLS5         *                              M4165 04670018
+         STH   R3,SDTJCLS6         *                              M4165 04680018
+         STH   R3,SDTJCLS7         *                              M4165 04690018
+         ST    R2,SDTWORK         SAVE ASCB ADDRESS              Y02669 04740002
+         EJECT                                                          04780002
+*********************************************************************** 04800000
+*  CHECK ROUTINE FOR COMMAND PARAMETERS MISSING                         04820000
+*********************************************************************** 04840000
+         CLI   CHBUF,C' '         DOES COMMAND HAVE PARAMETERS.         04860000
+         BE    VMTERR1            NO. PARAMETERS MISSING.               04880000
+         SPACE                                                          04900000
+*********************************************************************** 04920000
+*  CHECK COMMAND OPERAND FOR COMMA OR BLANK                             04940000
+*  IF COMMA IS THE FIRST THING AFTER MOUNT, BRANCH TO ERROR             04960000
+*  ROUTINE FOR PARAMETER MISSING                                        04980000
+*  IF BLANK IS FOUND FOLLOWING MOUNT, UPDATE THE START DES-             05000000
+*  CRIPTOR TABLE (SDT) FROM INFORMATION FOUND IN THE OPERAND            05020000
+*  FIELD OF THE MOUNT COMMAND - THIS INFORMATION IS FOUND IN            05040000
+*  THE CSCB                                                             05060000
+*  THIS PROCEDURE OF UPDATING THE START DESCRIPTOR TABLE IS             05080000
+*  CONTINUED UNTIL A BLANK IS FOUND IN THE OPERAND FIELD OF             05100000
+*  THE MOUNT COMMAND                                                    05120000
+*  WHEN BLANK IS FOUND, GO TO END SCAN ROUTINE                          05140000
+*  DURING THE PROCESS OF UPDATING THE SDT, KEYWORDS ARE CHECKED         05160000
+*  FOR POSSIBLE MISPELLING - IF FOUND, BRANCH TO KEYWORD MISPEL-        05180000
+*  LED ERROR ROUTINE                                                    05200000
+*  A CHECK IS ALSO MADE ON POSSIBLE MISSING PARAMETERS - IF             05220000
+*  FOUND, BRANCH TO PARAMETER MISSING ERROR ROUTINE                     05240000
+*********************************************************************** 05260000
+         SR    R4,R4              LENGTH COUNT.                         05280000
+         LA    R6,1               INDEX.                                05300000
+         LA    R7,8                                                     05320000
+         LA    R3,CHBUF            LOAD R3 WITH BUFFER                  05340000
+         CLC   0(L'VMTUSE,R3),VMTUSE IS IT A USE PARAMETER              05360000
+         BE    VMTERR1             YES, PROCESS ERROR MESSAGE           05380000
+         CLC   0(L'VMTVOL,R3),VMTVOL NO, IS IT VOL PARAMETER            05400000
+         BE    VMTERR1             YES, BRANCH FOR ERROR MESSAGE        05420000
+         LA    R3,CHBUF-1         POINT R3 FOR INCREMENTING.            05440000
+VMT01    EQU   *                                                        05460000
+         LA    R3,1(R3,0)         INCREMENT POINTER TO BUFFER.          05480000
+         CLI   0(R3),C','         DELIMITED BY A COMMA.                 05500000
+         BE    VMT02              YES.                                  05520000
+         CLI   0(R3),C' '         DELIMITED BY A BLANK.                 05540000
+         BE    VMT03              YES.                                  05560000
+         BXLE  R4,R6,VMT01        INDEX & RETURN IF CC LESS THAN 8.     05580000
+         B     VMTERR2            ERROR IF CC GTR THAN 8.               05600000
+VMT02    EQU   *                                                        05620000
+         LTR   R4,R4              IS COMMA FIRST THING AFTER MOUNT.     05640000
+         BZ    VMTERR1            YES. PARAMETER MISSING.               05660000
+VMT03    EQU   *                                                        05680000
+         LA    R7,SDTJCL3          START OF DD CARD BUILD               05690014
+         MVC   0(VMTDDOCL,R7),VMTDDOC    PROC.DDNAME MOVED              05700014
+         LA    R5,VMTDDOCL                                              05710014
+         AR    R7,R5               POINT R7 AT NEXT STORE POS           05720014
+         LA    R5,L'VMTUNIT        TO UPDATE STORE POS                  05730014
+         MVC   0(L'VMTUNIT,R7),VMTUNIT MOVE 'UNIT=' TO SDT.             05740000
+         AR    R7,R5               POINT R7 AT NEXT STORE POS           05760014
+         BCTR  R4,D0               MINUS 1 FOR EXECUTE MOVE        I272 05780019
+         EX    R4,VMTMV1          MOVE UNIT/DEVICE NAME TO SDT.         05800000
+         LA    R7,D1(R4,R7)        POINT TO NEXT STORE SLOT        I272 05850019
+         CLI   0(R3),C' '         DELIMITER A BLANK.                    05900000
+         BE    VMTERR4            YES, VOL PARAM PARAM MISSING.    476  05920000
+         LA    R3,1(R3,0)         NO. POINT R3 AT NEXT CHARACTER IN BUF 05940000
+         CLC   0(L'VMTUSE,R3),VMTUSE IS IT USE PARAMETER                05960000
+         BE    VMTERR4            YES, VOL PARAM MISSING.          476  05980000
+         CLC   0(L'VMTS,R3),VMTS  VOL=(SL.                              06000000
+         BE    VMT04              YES.                                  06020000
+         CLC   D0(L'VMTA,R3),VMTA  VOL=(AL                        19200 06026019
+         BE    VMT03A              YES.                           19200 06032019
+         CLC   0(L'VMTN,R3),VMTN  VOL=(NL.                              06040000
+         BNE   VMTERR3            NO. KEYWORD MISPELLED.                06060000
+         LA    R9,VMTLABLN        LABEL=(,NL) ADDR TO R9.               06120000
+         LA    R4,L'VMTLABLN-1    LENGTH TO R4.                         06140000
+         B     VMT05                                                    06160000
+VMT03A   EQU   *                   PROCESS ASCI PARAM             19200 06161019
+         L     R9,CVTPTR           GET CVT ADDRESS               Y02669 06162002
+         USING VMTCVT,R9           CVT ADDRESSABILITY            Y02669 06163002
+         TM    CVTOPTA,CVTASCII        IS ANSI A SYSGEN OPTION    M4334 06164019
+         DROP  R9                  NO LONGER NEED CVT            Y02669 06165002
+         BNO   VMTERR3             NO. AL NOT ACCEPTABLE.         19200 06166019
+         LA    R9,VMTLABLA         LABEL=(,AL) ADDR TO R9         19200 06168019
+         LA    R4,L'VMTLABLA-D1    LENGTH TO R4                   19200 06169019
+         B     VMT05               GO TO CONSTRUCT LABEL PARM     19200 06170019
+VMT03C   EQU   *                                                        06180000
+         LA    R3,1(R3,0)         POINT R3 AT NEXT PARM FIELD.          06200000
+         CLC   0(L'VMTUSE,R3),VMTUSE IS 'USE=' THE KEYWORD              06280000
+         BNE   VMTERR3            NO, KEYWORD MISPELLED.                06300000
+         LA    R3,L'VMTUSE(R3,0)  POINT R3 AT NEXT BUFFER POSITION.     06360000
+         CLI   0(R3),C' '         IS THE USE PARAMETER MISSING.         06380000
+         BE    VMTERR1            YES, BRANCH TO PARM MISSING RTN.      06400000
+         CLC   0(L'VMTPRI,R3),VMTPRI DOES 'USE=PRIVATE'.                06420000
+         BE    VMT03E              YES,MOVE KEYWORD TO C.I.B.           06440014
+         CLC   0(L'VMTPUB,R3),VMTPUB DOES 'USE=PUBLIC'.                 06460000
+         BE    VMT03F              YES,MOVE KEYWORD TO C.I.B.           06480014
+         CLC   0(L'VMTSTOR,R3),VMTSTOR DOES 'USE=STORAGE'.              06500000
+         BNE   VMTERR3            NO, PARAMETER MISPELLED.              06520000
+         LA    R9,VMTSTOR         MOVE 'STORAGE' ADDRESS TO R9.         06560000
+         LA    R4,L'VMTSTOR-1     MOVE LENGTH TO R4 FOR EXEC.           06580000
+VMT03D   EQU   *                                                        06600000
+         EJECT                                                          06600502
+******************************************************************M4360 06601019
+*                                                                 M4360 06601519
+* AT THIS POINT, THE USE= KEYWORD HAS BEEN VALIDITY CHECKED.      M4360 06602019
+* THE KEYWORD OPERAND WILL BE MOVED INTO A CIB. THE MOUNT         M4360 06602519
+* COMMAND PROCESSOR WILL EXAMINE THE DATA.                        M4360 06603019
+*                                                                 M4360 06603519
+* BEFORE ISSUING A GETMAIN FOR THE CIB, AN ADDITIONAL CHECK       M4360 06604019
+* IS MADE ON THE COMMAND BUFFER. IF THE USE= KEYWORD OPERAND      M4360 06604519
+* ('PUBLIC', 'PRIVATE', OR 'STORAGE') IS NOT FOLLOWED BY A        M4360 06605019
+* BLANK, AN ERROR EXIT IS TAKEN. IF THE NEXT BYTE IS BLANK,       M4360 06605519
+* THE CIB IS BUILT, CONTAINING THE USE= OPERAND, TOTAL CIB        M4360 06606019
+* LENGTH IN DOUBLE WORDS, CONSOLE ID, MOUNT VERB CODE, AND        M4360 06606519
+* LENGTH OF THE USE= OPERAND (ZERO IS NO USE= PARAMETER ON CM).   M4360 06607019
+*                                                                 M4360 06607519
+******************************************************************M4360 06608019
+         SPACE                                                          06608519
+         LA    R8,D1(R3,R4)        PTR TO BYTE AFTER USE= DATA    M4360 06609019
+         CLI   D0(R8),BLANK        IS OPERAND FOLLOWED BY BLANK   M4360 06609519
+         BNE   VMTERR2             NO. TERM LENGTH ERROR          M4360 06610019
+*                                                                 M4360 06610519
+* BUILD CIB FOR MOUNT PROCESSOR.                                  M4360 06611019
+* CIB LN = DATA LN + LN OF CONTROL PROTION OF CIB                 M4360 06611519
+* DATA LN = R4 + 1 (R4 WAS DECREMENTED FOR EXECUTE)               M4360 06612019
+*                                                                 M4360 06612519
+VMT3G    EQU   *                       GET CIB ROUTINE            M3466 06612619
+         LA    R0,CIBDATA-CIBNEXT+D1(R4)     TOTAL CIB LENGTH     M4360 06613019
+         LR    R8,R0               SAVE LENGTH ACROSS GETMAIN     M4360 06613519
+         O     R0,SUBPOOL          INSERT SUBPOOL ID (245)        M4360 06614002
+         GETMAIN R,LV=(0)          GET CIB CORE                   M4360 06614519
+         LA    R0,D7(R8)           CALCULATE CIB LENGTH...        M4360 06615019
+         SRL   R0,D3               ...IN DOUBLE WORDS             M4360 06615519
+         LR    R8,R1               PTR TO CIB                     M4360 06616019
+         USING VMNT1CIB,R8         CIB ADDRESSABILITY             M4360 06616519
+         XC    CIBNEXT(CIBDATA-CIBNEXT),CIBNEXT                   M4360 06617019
+*                                  CLEAR CIB CONTROL FIELDS       M4360 06617519
+         STC   R0,CIBLEN           DBL WORD LN INTO CIB           M4360 06618019
+         LTR   R4,R4               IF R4 ZERO,NO USE= IN COMMAND A49098 06618401
+         BZ    VMT03D1             DO NOT MOVE GARBAGE INTO CIB  A49098 06618801
+         EX    R4,VMTMV3           MOVE USE PARM TO CIB                 06620014
+         LA    R4,D1(R4)           RESTORE LENGTH                  I272 06630019
+VMT03D1  EQU   *                                                 A49098 06640001
+         STH   R4,CIBDATLN         STORE EXACT LENGTH IN CIB            06660018
+         MVI   CIBVERB,CIBMOUNT    SET MOUNT VERB CODE                  06670018
+         MVC   CIBCONID,CHUCMP     SET CONSOLE ID IC CIB                06680018
+         B     VMT10              BRANCH TO CLEANUP AND EXIT.           06780000
+VMT03E   EQU   *                                                        06800000
+         LA    R9,VMTPRI          MOVE 'PRIVATE' ADDRESS TO R9.         06840000
+         LA    R4,L'VMTPRI-1      MOVE LENGTH OF KEYWORD FOR EXEC.      06860000
+         B     VMT03D              BRANCH + MOVE PARM FLD TO CIB        06880014
+VMT03F   EQU   *                                                        06900000
+         LA    R9,VMTPUB          MOVE PARM ADDRESS FOR EXEC.           06940000
+         LA    R4,L'VMTPUB-1      MOVE PARM LENGTH FOR EXEC INSTRUCT.   06960000
+         B     VMT03D              BRANCH + MOVE PARM FLD TO CIB        06980014
+VMT04    EQU   *                                                        07000000
+         LA    R9,VMTLABLS        LABEL=(,SL) ADDR TO R9.               07040000
+         LA    R4,L'VMTLABLS-1    LENGTH TO R4.                         07060000
+VMT05    EQU   *                                                        07080000
+         MVI   0(R7),C','         PLACE COMMA AFTER UNIT/DEVICE NAME.   07100000
+         LA    R7,1(R7,0)         POINT R7 AT NEXT STORE POSITION.      07120000
+         EX    R4,VMTMV2          MOVE LABEL= PARM TO SDT.              07140000
+         LA    R7,L'VMTLABLS(R7,0)     POINT R7 AT NEXT STORE POSITION. 07160000
+         LA    R3,L'VMTS(R3,0)    POINT R3 AT NEXT BUFFER POSITION.     07260000
+         CLI   0(R3),C')'         VOLUME SERIAL NBR. GIVEN.             07280000
+         BE    VMTERR1            NO. PARAMETER MISSING.                07300000
+         SR    R6,R6              LENGTH COUNT.                         07320000
+         LA    R5,6                                                     07340000
+         LA    R4,1               INDEX.                                07360019
+         LR    R9,R3              POINT R9 AT BUF SCAN POSITION.        07380000
+         BCTR  R3,D0               SET UP FOR INDEXING             I272 07400019
+VMT07    EQU   *                                                        07420000
+         LA    R3,1(R3,0)         INCREMENT POINTER TO BUFFER.          07440000
+         CLI   0(R3),C')'         DELIMITED BY A RIGHT PARENTHESIS.     07460000
+         BE    VMT08              YES. GO TO STORE VOLUME=SER=NBR.      07480000
+         BXLE  R6,R4,VMT07        INDEX & RETURN IF CC LESS THAN 6.     07500000
+         B     VMTERR2            CC GTR THAN 6.TERM LENGTH ERROR.      07520000
+VMT08    EQU   *                                                        07540000
+         LR    R4,R6              MOVE CHARACTER COUNT TO R4.           07560000
+         MVI   0(R7),C','         PUT COMMA AFTER LABEL=(,PARM).        07580000
+         MVI   SDTJCL3+SEVENONE,XXX    CONTINUATION CHAR          M2301 07585020
+         OI    SDTJCLS4,SDTCONT4       SET UP CONT DD CARD        M2301 07590020
+         LA    R7,SDTJCL4              UPDATE SDT FOR CONT.       M2301 07595020
+         MVC   0(L'VMTVOLS,R7),VMTVOLS MOVE VOLUME=SER=  TO SDT.        07620000
+         LA    R7,L'VMTVOLS(R7,0) POINT R7 AT NEXT STORE POSITION.      07640000
+         BCTR  R4,D0               MINUS 1 FOR EXECUTE MOVE        I272 07690019
+         EX    R4,VMTMV2          MOVE VOL SER NBR TO SDT.              07740000
+         LA    R7,1(R4,R7)             POINT TO NEXT STORE        M2301 07745020
+         MVI   0(R7),C')'         PUT RIGHT PAREN AFTER VOLSER   A33492 07750020
+         LA    R7,1(R7,0)         POINT TO NEXT STORE POSITION   A33492 07752020
+         OI    SDTJCLS3,SDTDD3     SET DD IDENT IN JCL FLAGS            07760014
+         LA    R3,1(R3,0)         INCREMENT POINTER TO BUFFER.          07780000
+         CLI   0(R3),C','         DELIMITED BY COMMA.                   07800000
+         BE    VMT03C             YES, PROCESS USE PARAMETER.           07820000
+         CLI   0(R3),C' '         ARE THERE PARAMETERS LEFT.            07840000
+         BNE   VMTERR2            YES, ERROR.                           07860000
+         XR    R4,R4              PASS CORRECT LENGTH TO CIB     A49098 07870001
+         B     VMT3G                   GO GET A CIB               M3466 07910019
+         SPACE                                                          07960000
+VMTMV1   MVC   0(1,R7),CHBUF                                            07980000
+VMTMV2   MVC   0(1,R7),0(R9)                                            08000000
+VMTMV3   MVC   CIBDATA-CIBNEXT(1,R8),0(R9)                              08010018
+         EJECT                                                          08020002
+*********************************************************************** 08040000
+*  SCAN CLEANUP ROUTINE - THIS ROUTINE IS USED WHEN THE SCAN            08060000
+*  PROCEDURE IS COMPLETED - IT-                                         08080019
+*      .STORES RELEVANT INFORMATION IN THE START DESCRIPTOR             08100000
+*       TABLE                                                           08120000
+*      .UPDATES CSCB WITH INFORMATION PERTAINING TO THE MOUNT           08140000
+*       COMMAND                                                         08160000
+*      .SETS CHAIN ECB TO ZERO                                          08180000
+*      .SETS CHAIN ECB PTR.                                        I272 08185019
+*      .SETS CANCEL ECB TO ZEROES.                                 I272 08190019
+*      .SETS UNITNAME FIELD TO BLANKS.                             I272 08195019
+*      .SETS UP IEEVJCL PARAMETER LIST                           Y02669 08245002
+*      .ISSUES A BRANCH TO IEEVJCL (JOB CONTROL LANGUAGE BUILD          08280002
+*       MODULE) WITH REGISTER 1 POINTING TO THE PARAMETER        Y02669 08300002
+*       LIST                                                     Y02669 08320002
+*********************************************************************** 08340000
+VMT10    EQU   *                                                        08360000
+         LA    R4,SDTJCL1                                               08370014
+         MVC   0(VMTJOBCL,R4),VMTJOBC    JOB JCL MOVED TO SDT           08380014
+         OI    SDTJCLS1,SDTJOB1    SET JOB IDENT IN JCL FLAGS           08390014
+         LA    R4,SDTJCL2                                               08400014
+         MVC   0(VMTEXCL,R4),VMTEXC     EXEC JCL MOVED TO SDT           08410014
+         OI    SDTJCLS2,SDTEXEC2    SET EXEC IDENT IN JCL FLAGS         08420014
+         XC    CHSWT,CHSWT         CLEAR COMMUNICATIONS SWITCHES   I272 08450019
+         XC    CHACT,CHACT         ...AND FLAGS                    I272 08480019
+         XC    CHECB,CHECB         CLEAR COMMUNICATIONS ECB        I272 08524019
+         XC    CHSTS,CHSTS          CLEAR STATUS FLAGS           A40890 08526001
+         XC    CHTYPE,CHTYPE        CLEAR STATUS FLAGS           Y01012 08528001
+         XC    CHCECB,CHCECB       CLEAR CANCEL ECB                I272 08532019
+         LA    R5,CHECB            GET PTR TO CHAIN ECB...       Y02669 08536002
+         ST    R5,CHECBP           ...AND PUT IT INTO CSCB       Y02669 08540002
+*                                                                Y02651 08542002
+*  ENQUEUE ON CSCB RESOURCE FOR UPDATING THE CIB POINTER         Y02651 08542402
+*                                                                Y02651 08542802
+         LA    R0,ENQLNG          SET ENQ/DEQ LIST SIZE          Y02651 08543202
+         GETMAIN R,LV=(0)                                        Y02651 08543602
+         SPACE                                                          08543702
+         LR    R5,R1              SAVE GOTTEN CORE ADDRESS       Y02651 08543802
+         MVC   D0(ENQLNG,R5),ENQLIST MOVE ENQUEUE LIST           Y02651 08543902
+         ENQ   ,MF=(E,(1))        ENQUEUE ON CSCB CHAIN          Y02651 08554902
+         SPACE                                                          08564902
+         ST    R8,CHCIBP           CIB PTR INTO CSCB               I272 08566002
+         MVC   D0(DEQLNG,R5),DEQLIST MOVE DEQUEUE LIST           Y02651 08576002
+         LR    R1,R5              SET PARAMETER LIST POINTER     Y02651 08576402
+         DEQ   ,MF=(E,(1))        RELEASE CSCB RESOURCE          Y02651 08576802
+         SPACE                                                          08576902
+         LR    R1,R5              SET GOTTEN CORE ADDRESS        Y02651 08580602
+         LA    R0,ENQLNG                                                08582602
+         FREEMAIN R,LV=(0),A=(1)  FREE LIST                      Y02651 08583002
+         SPACE                                                          08583402
+         XC    CHRGNSZ,CHRGNSZ  CLEAR FIELD FOR REGION SIZE     YM01581 08583802
+         XC    CHRGNAD,CHRGNAD  CLEAR FIELD FOR REGION ADDRESS  YM01581 08584202
+         MVC   CHCLS,VMTPROC       PROCNAME IEEVMPCR               I272 08584302
+         L     R4,SDTWORK         GET ASCB POINTER               Y02669 08584702
+         USING ASCB,R4                                           Y02669 08585102
+         LA    R5,CHCLS           SET POINTER TO MOUNT PROCNAME  Y02677 08586302
+         ST    R5,ASCBJBNS        SAVE FOR GTF RECORD PROCESSING Y02677 08586702
+         MVC   CHUNIT(D3),BLANKS   BLANK OUT UNITNAME              I272 08588002
+         MVC   CHKEY(8),VMTSTART  MOVE STARTING TO CSCB                 08610014
+         SPACE                                                          08680000
+*                                                                Y02669 08730002
+*  GET (SUBPOOL 0) AND INITIALIZE IEEVJCL PARAMETER LIST.  LIST  Y02669 08780002
+*  WILL BE FREED BY IEEVJCL.                                     Y02669 08830002
+*                                                                Y02669 08880002
+         LA    R0,STCSIZE         SET PARAMETER LIST SUBPOOL(0)  Y02669 08890002
+*                                 AND SIZE                       Y02669 08900002
+         GETMAIN R,LV=(0)         GET PARAMETER LIST             Y02669 08910002
+         SPACE                                                          08912002
+         USING STCPARM,R1         SET ADDRESSABILITY             Y02669 08914002
+         XC    STCBEGIN(STCSIZE),STCBEGIN CLEAR AREA             Y02669 08916002
+         MVI   STCLEN+D2,STCSIZE  SET PARM LIST LENGTH           Y02669 08918002
+         ST    R4,STCASCB         SET ASCB POINTER               Y02669 08918402
+         ST    R10,STCSDT         SET SDT POINTER                Y02669 08918802
+         DROP  R1                                                Y02669 08919202
+         DROP  R4                                                Y02669 08919602
+         SPACE                                                          08920000
+         L     R15,VMTVJCL         GO TO JCL RTN                        08928014
+         BR    15                                                       08944014
+         EJECT                                                          08960000
+*********************************************************************** 09000000
+*  ERROR ROUTINES FOR -                                                 09020000
+*      .PARAMETER MISSING                                               09040000
+*      .TERM LENGTH ERROR                                               09060000
+*      .KEYWORD MISPELLED                                               09080000
+*********************************************************************** 09100000
+VMTERR1  EQU   *                  PARAMETER MISSING.                    09120000
+         LA    R4,11              ERROR CODE TO R4.                     09140000
+         B     VMTERXT                                                  09160000
+         SPACE                                                          09180000
+VMTERR2  EQU   *                  TERM LENGTH ERROR.                    09200000
+         LA    R4,8               ERROR CODE TO R4.                     09220000
+         B     VMTERXT                                                  09240000
+         SPACE                                                          09260000
+VMTERR3  EQU   *                   UNIDENTIFIABLE KEYWORD          I272 09280019
+         LA    R4,9               ERROR CODE TO R4.                     09300000
+         B     VMTERXT                                                  09320000
+         SPACE                                                          09340000
+VMTERR4  EQU   *                   VOL PARAMETER MISSING           I272 09360019
+         LA    R4,35              ERROR CODE TO R4.                476  09380000
+         SPACE                                                     476  09420000
+*********************************************************************** 09440000
+*  ERROR EXIT ROUTINE THIS ROUTINE IS ENTERED FROM ONE OF THE           09460000
+*  THREE ERROR ROUTINES - IT-                                           09480019
+*      .STORES THE ERROR CODE IN THE EXTENDED SAVE AREA                 09500000
+*      .MOVES THE VERB INTO THE MESSAGE MODULE WORK SPACE               09520000
+*      .LINKS TO IEE0503D (MESSAGE MODULE)                              09540000
+*             -IEE0503D DESTROYS REGISTERS 0,1,3,4,5                    09550002
+*             -INPUT = REGISTER 2 POINTS TO THE XSA                     09552002
+*      .FREES THE START DESCRIPTOR TABLE (SDT)                          09560000
+*      .DELETES THE CSCB ASSOCIATED WITH THIS COMMAND FROM              09580000
+*       THE CHAIN                                                       09600000
+*      .RETURNS                                                         09620000
+*********************************************************************** 09640000
+VMTERXT  EQU   *                  ERROR EXIT ROUTINE.                   09660000
+         LR    R2,R10             USE SDT FOR ERROR MSG MODULE   Y02669 09680002
+         USING VMTXSA,R2          WORK SPACE                     Y02669 09700002
+         STC   R4,XAE             ERROR CODE TO MSG MOD WORK SPACE.     09720000
+         MVC   XAV(8),VMTVERB     STORE VERB.                           09740000
+         XC    XAA(2),XAA         CLEAR ASID FIELD               Y02669 09746002
+         MVC   XAU(1),CHUCMP      SET UP CONSOLE ID FOR MSG MOD   M0317 09752020
+         SPACE                                                          09760000
+         LINK  EP=IEE0503D        LINK TO MESSAGE MODULE.               09780000
+         SPACE                                                          09800000
+         L     R4,SDTWORK         SAVE ASCB ADDRESS              Y02669 09810002
+         LR    R1,R10             SDT ADDRESS.                          09820000
+         FREEMAIN R,LV=SDTLN,A=(1)    FREE SDT                          09840002
+* PTM 4360 ALSO ANSWERS APAR 27672.                                     09850019
+         SPACE                                                          09860000
+         XC    CHECB,CHECB         CLEAR ECB                      M4360 09862019
+         LA    R8,CHECB            SET ECB PTR...                 M4360 09866019
+         ST    R8,CHECBP           ...IN CSCB                     M4360 09868019
+         SPACE 1                                                        09876014
+         XC    CHSTS(2),CHSTS                                           09880000
+         LR    R1,R4                    SET ASCB POINTER         Y02669 09940002
+         DROP  R2                                                Y02669 09950002
+         DROP  R10                                               Y02669 09960002
+         XCTL  EP=IEEPRTN                                          476  09980000
+         EJECT                                                          09982002
+         DS    0F                                                  I272 09990019
+SUBPOOL  DC    X'F5000000'         SUBPOOL 245                    20030 10020020
+VMTVJCL  DC    V(IEEVJCL)                                               10055014
+VMTJOBC  DC    C'//MOUNT   JOB MSGLEVEL=1,PRTY=11'               A35921 10061020
+VMTJOBCL EQU   L'VMTJOBC                                                10067014
+VMTEXC   DC    C'//STARTING EXEC PROC=IEEVMPCR'                         10073014
+VMTEXCL  EQU   L'VMTEXC                                                 10079014
+VMTDDOC  DC    C'//IEFPROC.IEFRDER DD '                                 10085014
+VMTDDOCL EQU   L'VMTDDOC                                                10091014
+VMTVERB  DC    CL8'MOUNT   '      VERB.                                 10100000
+VMTUNIT  DC    CL5'UNIT='                                               10120000
+VMTVOLS  DC    CL25'// VOLUME=(PRIVATE,,,SER='                    M2301 10140020
+VMTLABLN DC    CL11'LABEL=(,NL)'                                        10160000
+VMTLABLS DC    CL11'LABEL=(,SL)'                                        10180000
+VMTLABLA DC    CL11'LABEL=(,AL)'   ASCI DD PARAMETER              19200 10190019
+VMTN     DC    CL8'VOL=(NL,'                                            10200000
+VMTS     DC    CL8'VOL=(SL,'                                            10220000
+VMTA     DC    CL8'VOL=(AL,'       USED TO TEST FOR AL IN M CM    19200 10230019
+VMTSTART DC    CL8'STARTING'                                            10240014
+VMTUSE   DC    CL4'USE='                                                10260000
+VMTVOL   DC    CL4'VOL='                                                10280000
+VMTPUB   DC    CL6'PUBLIC'                                              10300000
+VMTPRI   DC    CL7'PRIVATE'                                             10320000
+VMTSTOR  DC    CL7'STORAGE'                                             10340000
+         DS    0F                                                  I272 10350019
+VMTPROC  DC    CL8'IEEVMPCR'       MOUNT PROCEDURE NAME            I272 10360019
+BLANKS   DC    C'   '              BLANKS FOR PADDING              I272 10370019
+CF4      DC    F'4'                WORK CONSTANT                   I272 10380019
+CF256    DC    F'256'              WORK CONSTANT                   I272 10390019
+XXX      EQU   C'X'                                               M2301 10393020
+SEVENONE EQU   71                                                 M2301 10396020
+         EJECT                                                          10400002
+*                                                                Y02651 10410002
+*  ENQUEUE/DEQUEUE PARAMETER LISTS FOR UPDATING CIB POINTER IN   Y02651 10412002
+*  THE CSCB.                                                     Y02651 10414002
+*                                                                Y02651 10416002
+         DS    0D                                                       10418002
+ENQLIST  ENQ   (SYSNAME,RNAME,E,3,SYSTEM),RET=HAVE,MF=L          Y02651 10418402
+ENQEND   EQU   *                                                 Y02651 10418802
+         DS    0D                                                       10419202
+DEQLIST  DEQ   (SYSNAME,RNAME,3,SYSTEM),RET=HAVE,MF=L            Y02651 10419602
+DEQEND   EQU   *                                                 Y02651 10419702
+         SPACE                                                          10419802
+ENQLNG   EQU   ENQEND-ENQLIST     ENQUEUE LIST LENGTH            Y02651 10419902
+DEQLNG   EQU   DEQEND-DEQLIST     DEQUEUE LIST LENGTH            Y02651 10423202
+         SPACE                                                          10425202
+SYSNAME  DC    C'SYSIEFSD'        MAJOR NAME                     Y02651 10425602
+RNAME    DC    C'Q10'             MINOR NAME                     Y02651 10426002
+         SPACE                                                          10426402
+STCPATCH DC    CL40'* * * * IEEVMNT1 * * * *'                           10426502
+         TITLE 'ASCB MAPPING'                                           10427402
+         IHAASCB                                                        10429402
+         TITLE 'IEEVMNT1--CVT MAP'                                      10430402
+VMTCVT   DSECT                                                          10431202
+         CVT                                                            10432002
+         TITLE 'IEEVMNT1--XSA MAP'                                      10438402
+VMTXSA   DSECT                                                          10438802
+         IEEXSA                                                         10439202
+         TITLE 'IEEVMNT1--CSCB MAP'                                     10439602
+VMTRCHAN DSECT                                                          10439702
+         IEECHAIN                                                       10439802
+         TITLE 'IEEVMNT1--SDT MAP'                                      10473302
+SDTSD    DSECT                                                          10489902
+         IEESDT                                                         10499902
+         TITLE 'COMMAND INPUT BUFFER'                                   10509902
+VMNT1CIB DSECT                                                          10519902
+         IEZCIB                                                         10529902
+         TITLE 'IEEVJCL PARAMETER LIST'                                 10533902
+         IEEZB800                                                       10535902
+         END                                                            10539902

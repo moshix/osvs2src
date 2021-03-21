@@ -1,0 +1,1514 @@
+         TITLE 'AMDSASVI  SVC INTERRUPT HANDLER                        *00001000
+                       '                                                00002000
+AMDSASVI CSECT                                                          00003000
+         STM   R0,R15,SVISAVE         SAVE REGISTERS IN LOW CORE        00004000
+         BALR  BASEREG,0              SET UP ADDRESSABILITY             00005000
+         USING *,BASEREG                                                00006000
+*   VCCTREG = CTVCCT;               /* ESTABLISH ADDRESSABILITY TO 0201 00007000
+*                                      VCCT                          */ 00008000
+         LH    @03,@CH00754                                        0201 00009000
+         L     VCCTREG,CTVCCT(,@03)                                0201 00010000
+*   R13 = ADDR(SVINAME);            /* POINT TO MODULE ID            */ 00011000
+*                                                                  0202 00012000
+         LA    R13,SVINAME                                         0202 00013000
+*   /*****************************************************************/ 00014000
+*   /*                                                               */ 00015000
+*   /* ENSURE THAT SVC WAS NOT ISSUED WITHIN ONE OF THE ASM MODULES. */ 00016000
+*   /* CHECK FOR INVALID OR RESERVED SVC NUMBER. IF EITHER ARE TRUE, */ 00017000
+*   /* AN ERROR CONDITION EXISTS.                                    */ 00018000
+*   /*                                                               */ 00019000
+*   /*****************************************************************/ 00020000
+*/* D (YES,,NO,%SVIMAX) VCTASMIC ON                                  */ 00021000
+*/* N ERROR - AN ASM ROUTINE HAS ISSUED SVC                          */ 00022000
+*/* P RESET VCTASMIC                                                 */ 00023000
+*/* P TURN ON VCTSADMP REQUESTING DUMP                               */ 00024000
+*/* P SET ERROR CODE                                                 */ 00025000
+*/* P RESTORE REGISTERS 0-15                                         */ 00026000
+*/* R AMDSAAUD: PERFORM ERROR RECOVERY                               */ 00027000
+*/*%SVIMAX: D (YES,,NO,SVIERROR) FLCSVCN <= MAX. SVC NO.             */ 00028000
+*/* D (NO,,YES,SVIERROR) ENTRY POINT ADDRESS = 0                     */ 00029000
+*/* P UPDATE TRACE TABLE WITH SVC NUMBER                             */ 00030000
+*                                                                  0203 00031000
+*   IF VCTASMIC = ON THEN           /* DID ONE OF THE ASM MODULES  0203 00032000
+*                                      ISSUE THE SVC                 */ 00033000
+         TM    VCTASMIC(VCCTREG),B'00100000'                       0203 00034000
+         BNO   @RF00203                                            0203 00035000
+*     DO;                           /* YES                           */ 00036000
+*       VCTASMIC = OFF;             /* RESET ASM IN CONTROL BIT      */ 00037000
+*       VCTSADMP = ON;              /* REQUEST DUMP                  */ 00038000
+         OI    VCTSADMP(VCCTREG),B'10000000'                       0206 00039000
+         NI    VCTASMIC(VCCTREG),B'11011111'                       0206 00040000
+*       VCTAUDIT = SVIASMER;        /* SET UP ERROR CODE             */ 00041000
+         MVC   VCTAUDIT(2,VCCTREG),@CH00947                        0207 00042000
+*       FLCPOPSW = FLCSOPSW;        /* SAVE PSW FOR DUMP             */ 00043000
+         MVC   FLCPOPSW(8),FLCSOPSW                                0208 00044000
+*       GEN(LM    R0,R15,SVISAVE);  /* RESTORE REGISTERS 0-15        */ 00045000
+         LM    R0,R15,SVISAVE                                           00046000
+*       SVC (AUDSVC);               /* GO TO AMDSAAUD FOR ERROR    0210 00047000
+*                                      RECOVERY - CONTROL WILL BE  0210 00048000
+*                                      RETURNED TO THE FIRST RCB EXIT*/ 00049000
+         SVC   13                                                  0210 00050000
+*     END;                                                         0211 00051000
+*   IF FLCSVCN >= DIM(SVCSADMP) THEN /* IS SVC NUMBER VALID          */ 00052000
+@RF00203 LH    @03,FLCSVCN                                         0212 00053000
+         CH    @03,@CH00889                                        0212 00054000
+         BNL   @RT00212                                            0212 00055000
+*     GO TO SVIERROR;               /* NO - ERROR                    */ 00056000
+*   SVCEPADD = SVCSADMP(FLCSVCN + 1); /* GET ENTRY POINT ADDRESS     */ 00057000
+         LR    @15,@03                                             0214 00058000
+         SLA   @15,2                                               0214 00059000
+         L     SVCEPADD,SVCSADMP(@15)                              0214 00060000
+*   IF SVCEPADD = 0 THEN            /* RESERVED SVC ISSUED           */ 00061000
+         LTR   SVCEPADD,SVCEPADD                                   0215 00062000
+         BZ    @RT00215                                            0215 00063000
+*     GO TO SVIERROR;               /* NO - ERROR                    */ 00064000
+*   TRCENTRY = FLCSVCN;             /* SVC NUMBER TO TRACE TABLE     */ 00065000
+         L     @15,VCTDSCE(,VCCTREG)                               0217 00066000
+         L     @14,DSCETCUR(,@15)                                  0217 00067000
+         STC   @03,TRCENTRY(,@14)                                  0217 00068000
+*   DSCETCUR = DSCETCUR+1;          /* UPDATE NEXT TRACE POINTER     */ 00069000
+         AH    @14,@CH00037                                        0218 00070000
+         ST    @14,DSCETCUR(,@15)                                  0218 00071000
+*   IF DSCETCUR >= DSCETEND THEN    /* END OF TRACE TABLE            */ 00072000
+         C     @14,DSCETEND(,@15)                                  0219 00073000
+         BL    @RF00219                                            0219 00074000
+*     DSCETCUR = DSCETBEG;          /* YES - WRAP AROUND             */ 00075000
+         MVC   DSCETCUR(4,@15),DSCETBEG(@15)                       0220 00076000
+*                                                                  0221 00077000
+*   /*****************************************************************/ 00078000
+*   /*                                                               */ 00079000
+*   /* CHECK IF SWITCHING FROM TRANSLATED TO UNTRANSLATED MODE IS    */ 00080000
+*   /* REQUESTED.  IF SO, GET AN MDCB AND HANDLE AS A MEMORY SWITCH. */ 00081000
+*   /* SVCS WHICH MUST EXECUTE UNTRANSLATED ARE IN THE NODATAB.      */ 00082000
+*   /*                                                               */ 00083000
+*   /*****************************************************************/ 00084000
+*/* D (YES,,NO,%CHKSTOR) CALLER IN DAT MODE                          */ 00085000
+*/* D (YES,,NO,%CHKSTOR) REQUESTED SVC IN NODATAB                    */ 00086000
+*/* P (,AMDSAMSW) INDICATE SWITCH TO NON-DAT SVC                     */ 00087000
+*                                                                  0221 00088000
+*   RESPECIFY I RESTRICTED;                                        0221 00089000
+@RF00219 DS    0H                                                  0222 00090000
+*   IF PSWDAT = ON THEN             /* CALLER IN TRANSLATED MODE     */ 00091000
+         LA    @08,FLCSOPSW                                        0222 00092000
+         TM    PSWDAT(@08),B'00000100'                             0222 00093000
+         BNO   @RF00222                                            0222 00094000
+*     DO I = DIM(NODATAB) TO 1 BY -1; /* YES - CHECK NODATAB         */ 00095000
+         LA    I,6                                                 0223 00096000
+@DL00223 DS    0H                                                  0224 00097000
+*       IF FLCSVCN = NODATAB(I) THEN /* REQUESTED SVC IN TABLE       */ 00098000
+         LR    @08,I                                               0224 00099000
+         AR    @08,@08                                             0224 00100000
+         LA    @03,NODATAB-2(@08)                                  0224 00101000
+         CLC   FLCSVCN(2),0(@03)                                   0224 00102000
+         BNE   @RF00224                                            0224 00103000
+*         DO;                       /* YES -                         */ 00104000
+*           NODATSVC = ON;          /* INDICATE SWITCH TO NON-DAT SVC*/ 00105000
+         OI    NODATSVC,B'10000000'                                0226 00106000
+*           GO TO AMDSAMSW;         /* HANDLE AS MEMORY SWITCH       */ 00107000
+         B     AMDSAMSW                                            0227 00108000
+*         END;                                                     0228 00109000
+*     END;                                                         0229 00110000
+@RF00224 BCTR  I,0                                                 0229 00111000
+         LTR   I,I                                                 0229 00112000
+         BP    @DL00223                                            0229 00113000
+*   RESPECIFY I UNRESTRICTED;                                      0230 00114000
+@RF00222 DS    0H                                                  0231 00115000
+*                                                                  0231 00116000
+*   /*****************************************************************/ 00117000
+*   /*                                                               */ 00118000
+*   /* CHECK FOR MEMORY SWITCH.  IF NOT, THEN SET UP TO GIVE CONTROL */ 00119000
+*   /* TO REQUESTED FUNCTION BY LOGICALLY CONVERTING THE SVC TO A    */ 00120000
+*   /* BALR 14,15.                                                   */ 00121000
+*   /*                                                               */ 00122000
+*   /*****************************************************************/ 00123000
+*/*%CHKSTOR: D (YES,%NOMEMSW,NO,) VCTSTOR = 0                        */ 00124000
+*/* D (YES,,NO,AMDSAMSW) AMDSAAUD REQUESTED                          */ 00125000
+*/*%NOMEMSW: P SET R14 IN SVISAVE TO PSWIA IN FLCSOPSW               */ 00126000
+*/* P SET PSWIA IN FLCSOPSW TO SVCSADMP (FLCSVCN+1)                  */ 00127000
+*/* D (YES,,NO,%DATCHK) AMDSAAUD REQUESTED                           */ 00128000
+*/* P (,%SVIRET1) TURN DAT OFF                                       */ 00129000
+*/*%DATCHK: D (YES,,NO,%SVIRET1) PSWDAT ON IN FLCSOPSW               */ 00130000
+*/* P ADD VCTLPA TO PSWIA IN FLCSOPSW TO PROVIDE VIRT ADDR           */ 00131000
+*/*%SVIRET1: P SET GPR 15 = PSWIA                                    */ 00132000
+*/* P RESTORE REGISTERS FROM SVISAVE                                 */ 00133000
+*/* R LPSW FLCSOPSW                                                  */ 00134000
+*                                                                  0231 00135000
+*   IF VCTSTOR = 0 | FLCSVCN = AUDSVC THEN /* NO MEMORY SWITCH OR  0231 00136000
+*                                      AMDSAAUD REQUESTED            */ 00137000
+         ICM   @03,15,VCTSTOR(VCCTREG)                             0231 00138000
+         BZ    @RT00231                                            0231 00139000
+         CLC   FLCSVCN(2),@CH00780                                 0231 00140000
+         BNE   @RF00231                                            0231 00141000
+@RT00231 DS    0H                                                  0232 00142000
+*     DO;                           /* YES                           */ 00143000
+*       RESPECIFY REGLOCAL BASED(ADDR(SVISAVE));                   0233 00144000
+*       VCTSTOR = 0;                /* FORCE NO MEMORY SWITCH        */ 00145000
+         SR    @03,@03                                             0234 00146000
+         ST    @03,VCTSTOR(,VCCTREG)                               0234 00147000
+*       REGL14 = PSWIA;             /* SAVE NEXT SEQUENTIAL INSTRUCTION 00148000
+*                                      ADDRESS                       */ 00149000
+         LA    @03,SVISAVE                                         0235 00150000
+         LA    @15,FLCSOPSW                                        0235 00151000
+         MVC   REGL14(4,@03),PSWIA(@15)                            0235 00152000
+*       PSWIA = SVCEPADD;           /* REAL ADDR OF CALLED ROUTINE   */ 00153000
+         ST    SVCEPADD,PSWIA(,@15)                                0236 00154000
+*       IF FLCSVCN = AUDSVC THEN    /* AMDSAAUD REQUESTED            */ 00155000
+         CLC   FLCSVCN(2),@CH00780                                 0237 00156000
+         BNE   @RF00237                                            0237 00157000
+*         PSWDAT = OFF;             /* ENSURE IT RECEIVES CONTROL  0238 00158000
+*                                      UNTRANSLATED                  */ 00159000
+         NI    PSWDAT(@15),B'11111011'                             0238 00160000
+*       ELSE                                                       0239 00161000
+*         IF PSWDAT = ON THEN       /* CALLER RUNNING TRANSLATED     */ 00162000
+         B     @RC00237                                            0239 00163000
+@RF00237 LA    @03,FLCSOPSW                                        0239 00164000
+         TM    PSWDAT(@03),B'00000100'                             0239 00165000
+         BNO   @RF00239                                            0239 00166000
+*           PSWIA = SVCEPADD + VCTLPA; /* YES - GET VIRTUAL ADDRESS  */ 00167000
+         LR    @15,SVCEPADD                                        0240 00168000
+         A     @15,VCTLPA(,VCCTREG)                                0240 00169000
+         ST    @15,PSWIA(,@03)                                     0240 00170000
+*       REGL15 = PSWIA;             /* SET R15 TO ENTRY POINT ADDR   */ 00171000
+@RF00239 DS    0H                                                  0241 00172000
+@RC00237 LA    @03,SVISAVE                                         0241 00173000
+         LA    @15,FLCSOPSW                                        0241 00174000
+         MVC   REGL15(4,@03),PSWIA(@15)                            0241 00175000
+*       GEN(LM    R0,R15,SVISAVE);  /* RESTORE REGISTERS             */ 00176000
+         LM    R0,R15,SVISAVE                                           00177000
+*       LPSW (FLCSOPSW);            /* TRANSFER CONTROL TO REQUESTED    00178000
+*                                      ROUTINE - CONTROL IS RETURNED    00179000
+*                                      DIRECTLY TO ISSUER OF SVC     */ 00180000
+         LPSW  FLCSOPSW                                            0243 00181000
+*     END;                                                         0244 00182000
+*   NODATSVC = OFF;                 /* RESET SVC MODE INDICATOR      */ 00183000
+@RF00231 NI    NODATSVC,B'01111111'                                0245 00184000
+*                                                                  0246 00185000
+*   /*****************************************************************/ 00186000
+*   /*                                                               */ 00187000
+*   /* MEMORY SWITCH REQUESTED. INITIALIZE MDCB TO SAVE CALLER'S     */ 00188000
+*   /* STATUS                                                        */ 00189000
+*   /*                                                               */ 00190000
+*   /*****************************************************************/ 00191000
+*/*AMDSAMSW: N MEMORY SWITCH REQUESTED                               */ 00192000
+*/* P OBTAIN MDCE ADDR FROM VCTMDCE                                  */ 00193000
+*/* D (NO,,YES,SVIERROR) MDCEAVIL = 0                                */ 00194000
+*/* P DEQUEUE MDCB FROM AVAILABLE QUEUE                              */ 00195000
+*/* P ENQUEUE MDCB ON ACTIVE QUEUE                                   */ 00196000
+*/* P MOVE REGS FROM SVISAVE TO MDCBGRS                              */ 00197000
+*/* P SAVE CONTROL REG 1 IN MDCBSTOR                                 */ 00198000
+*/* P SAVE FLCSOPSW IN MDCBPSW                                       */ 00199000
+*/* P SET MDCBPI TO 0                                                */ 00200000
+*/* P SET MDCBFLGS TO 0                                              */ 00201000
+*                                                                  0246 00202000
+*                                                                  0246 00203000
+*AMDSAMSW:                                                         0246 00204000
+*   IF MDCEAVIL = 0 THEN            /* MDCB AVAILABLE                */ 00205000
+AMDSAMSW L     @03,VCTMDCE(,VCCTREG)                               0246 00206000
+         L     @15,MDCEAVIL(,@03)                                  0246 00207000
+         LTR   @15,@15                                             0246 00208000
+         BZ    @RT00246                                            0246 00209000
+*     GO TO SVIERROR;               /* NO - ERROR                    */ 00210000
+*   MDCBADDR = MDCEAVIL;            /* GET FIRST AVAILABLE MDCB      */ 00211000
+         LR    MDCBADDR,@15                                        0248 00212000
+*   MDCEAVIL = MDCBNEXT;            /* MAKE NEXT MDCB AVAILABLE      */ 00213000
+         MVC   MDCEAVIL(4,@03),MDCBNEXT(MDCBADDR)                  0249 00214000
+*   MDCBNEXT = MDCEACTV;            /* QUEUE MDCB TO ACTIVE QUEUE    */ 00215000
+         MVC   MDCBNEXT(4,MDCBADDR),MDCEACTV(@03)                  0250 00216000
+*   MDCEACTV = MDCBADDR;            /* MAKE MDCB ACTIVE              */ 00217000
+         ST    MDCBADDR,MDCEACTV(,@03)                             0251 00218000
+*   MDCBGRS = SVISAVE;              /* MOVER REGISTERS TO MDCB       */ 00219000
+         MVC   MDCBGRS(64,MDCBADDR),SVISAVE                        0252 00220000
+*   GENERATE REFS(R1,R1) SETS(WORKSTOR) (STCTL R1,R1,WORKSTOR); /*STORE 00221000
+*                                      CONTROL REG 1                 */ 00222000
+         STCTL R1,R1,WORKSTOR                                           00223000
+*   MDCBSTOR = WORKSTOR;            /* SAVE CONTROL REG 1 IN MDCB    */ 00224000
+         MVC   MDCBSTOR(4,MDCBADDR),WORKSTOR                       0254 00225000
+*   MDCBPSW = FLCSOPSW;             /* SAVE PSW IN MDCB              */ 00226000
+         MVC   MDCBPSW(8,MDCBADDR),FLCSOPSW                        0255 00227000
+*   MDCBPI = 0;                     /* SET INTERRUPT CODE TO 0       */ 00228000
+         SR    @03,@03                                             0256 00229000
+         STH   @03,MDCBPI(,MDCBADDR)                               0256 00230000
+*   MDCBFLGS = 0;                   /* RESET MDCB FLAGS              */ 00231000
+         MVI   MDCBFLGS(MDCBADDR),X'00'                            0257 00232000
+*                                                                  0258 00233000
+*   /*****************************************************************/ 00234000
+*   /*                                                               */ 00235000
+*   /* SET UP DAT FOR NEW MEMORY                                     */ 00236000
+*   /*                                                               */ 00237000
+*   /*****************************************************************/ 00238000
+*/* P LOAD CONTROL REG 1 WITH VCTSTOR                                */ 00239000
+*/* P PURGE HARDWARE TABLE LOOK- ASIDE BUFFER                        */ 00240000
+*/* P SET VCTSTOR TO 0                                               */ 00241000
+*                                                                  0258 00242000
+*   WORKSTOR = VCTSTOR;             /* REQUESTED MEMORY              */ 00243000
+         MVC   WORKSTOR(4),VCTSTOR(VCCTREG)                        0258 00244000
+*   GENERATE REFS(WORKSTOR) SETS(R1) (LCTL  R1,R1,WORKSTOR); /* LOAD    00245000
+*                                      CR 1 WITH NEW SEGMENT TABLE   */ 00246000
+         LCTL  R1,R1,WORKSTOR                                           00247000
+*   GENERATE(PTLB);                 /* PURGE HARDWARE TABLE        0260 00248000
+*                                      LOOK-ASIDE BUFFER             */ 00249000
+         PTLB                                                           00250000
+*   VCTSTOR = 0;                    /* RESET REQUESTED MEMORY ADDRESS*/ 00251000
+         SR    @03,@03                                             0261 00252000
+         ST    @03,VCTSTOR(,VCCTREG)                               0261 00253000
+*                                                                  0262 00254000
+*   /*****************************************************************/ 00255000
+*   /*                                                               */ 00256000
+*   /* GET SAVE AREA AND INITIALIZE IT.                              */ 00257000
+*   /*                                                               */ 00258000
+*   /*****************************************************************/ 00259000
+*/* L AMDSAGTM: ISSUE SVC 4 TO OBTAIN STORAGE                        */ 00260000
+*/* D (YES,%SVIINT1,NO,%SVIER1) STORAGE OBTAINED                     */ 00261000
+*/*%SVIER1: P (,MODRET2) SET RETURN CODE OF 4 IN MDCBGR15            */ 00262000
+*/*%SVIINT1: P INITIALIZE SAVE AREA                                  */ 00263000
+*                                                                  0262 00264000
+*   RESPECIFY (R1,R13) RESTRICTED;                                 0262 00265000
+*   SVC(GTMSVC);                    /* GO TO AMDSAGTM TO GET STORAGE */ 00266000
+         SVC   4                                                   0263 00267000
+*   RESPECIFY RETCODE RESTRICTED;                                  0264 00268000
+*   IF RETCODE ^= 0 THEN            /* STORAGE OBTAINED              */ 00269000
+         LTR   RETCODE,RETCODE                                     0265 00270000
+         BZ    @RF00265                                            0265 00271000
+*     DO;                           /* NO                            */ 00272000
+*       MDCBGR15 = 4;               /* INDICATE REQUESTED FUNCTION 0267 00273000
+*                                      FAILED                        */ 00274000
+         MVC   MDCBGR15(4,MDCBADDR),@CF00039                       0267 00275000
+*       GO TO MODRET2;              /* CLEAN UP AND RETURN           */ 00276000
+         B     MODRET2                                             0268 00277000
+*     END;                                                         0269 00278000
+*   RESPECIFY RETCODE UNRESTRICTED;                                0270 00279000
+@RF00265 DS    0H                                                  0271 00280000
+*   RESPECIFY (R8,R15) RESTRICTED;                                 0271 00281000
+*   R8 = R1;                        /* GET WORK AREA POINTER         */ 00282000
+         LR    R8,R1                                               0272 00283000
+*   GENERATE REFS(R8) (USING @DATD,R8); /* MAKE WORK AREA ADDRESSABLE*/ 00284000
+         USING @DATD,R8                                                 00285000
+*   GENERATE SETS(R13) (LA    R13,@SA00001); /* POINT TO SAVE AREA   */ 00286000
+         LA    R13,@SA00001                                             00287000
+*   RESPECIFY R1 UNRESTRICTED;                                     0275 00288000
+*   SAVENAME = SVINAME(2:4);        /* PLACE NAME IN SAVE AREA       */ 00289000
+         MVC   SAVENAME(3,R13),SVINAME+1                           0276 00290000
+*                                                                  0277 00291000
+*   /*****************************************************************/ 00292000
+*   /*                                                               */ 00293000
+*   /* INITIALIZE NEW MEMORY PAGE TABLES. SET UP LINKAGE TO REQUESTED*/ 00294000
+*   /* ROUTINE.                                                      */ 00295000
+*   /*                                                               */ 00296000
+*   /*****************************************************************/ 00297000
+*/* P BUILD AN RCB IN THE SAVE/ WORK AREA                            */ 00298000
+*/* P (NORM,,RCB,MODERROR) ENQUEUE ON RCB QUEUE                      */ 00299000
+*/* P MOVE RESUME PSW TO LOW CORE                                    */ 00300000
+*/* P SET PSWIA IN FLCSOPSW TO SVCSADMP (FLCSVCN+1)                  */ 00301000
+*/* D (YES,,NO,%SVIMSW) NON-DAT SVC                                  */ 00302000
+*/* P AMDSAMSW R14 TO REAL ADDR OF LPSW INSTR                        */ 00303000
+*/* P (,%SVIASM) TURN PSWDAT OFF IN FLCSOPSW                         */ 00304000
+*/*%SVIMSW: S AMDSAREL: RELOCATE AMDSADMP                            */ 00305000
+*/* P AMDSAMSW R14 TO VIRT ADDR OF LPSW INSTR                        */ 00306000
+*/* P ADD VCTLPA TO R13 TO GIVE VIRT ADDR OF SAVE AREA               */ 00307000
+*/* P ADD VCTLPA TO PSWIA TO PROVIDE VIRT ADDR                       */ 00308000
+*/* P SET R12 TO VCTVCCTV                                            */ 00309000
+*/* P TURN ON PSWDAT IN FLCSOPSW                                     */ 00310000
+*/*%SVIASM: P SET R1 TO MDCBGR1 AND R0 TO MDCBGR0                    */ 00311000
+*/* P SET GPR 15 = PSWIA                                             */ 00312000
+*/* L (,MODRET) LOAD FLCSOPSW TO TRANSFER CONTROL TO MODULE          */ 00313000
+*                                                                  0277 00314000
+*   RESPECIFY (R15,RETREG) RESTRICTED;                             0277 00315000
+*   RESPECIFY RCB BASED(ADDR(DYNRCB));                             0278 00316000
+*   RCBNEXT = VCTRCB;               /* QUEUE RCB TO RCB CHAIN        */ 00317000
+         LA    @09,DYNRCB                                          0279 00318000
+         MVC   RCBNEXT(4,@09),VCTRCB(VCCTREG)                      0279 00319000
+*   RCBSAVE = R13;                  /* POINT TO SAVE AREA            */ 00320000
+         ST    R13,RCBSAVE(,@09)                                   0280 00321000
+*   RCBBASE = BASEREG;              /* SET UP BASE REGISTER VALUE    */ 00322000
+         ST    BASEREG,RCBBASE(,@09)                               0281 00323000
+*   RCBEXIT = ADDR(MODERROR);       /* EXIT ADDRESS                  */ 00324000
+         LA    @03,MODERROR                                        0282 00325000
+         ST    @03,RCBEXIT(,@09)                                   0282 00326000
+*   VCTRCB = ADDR(RCB);             /* MAKE RCB CURRENT              */ 00327000
+         ST    @09,VCTRCB(,VCCTREG)                                0283 00328000
+*   SVIRPSW = SVIRPSWI;             /* MOVE RESUME PSW TO LOW CORE TO   00329000
+*                                      TURN DAT OFF AND GIVE CONTROL    00330000
+*                                      TO NEXT INSTRUCTION           */ 00331000
+         MVC   SVIRPSW(8),SVIRPSWI                                 0284 00332000
+*   PSWIA = SVCEPADD;               /* REAL ADDR ENTRY POINT         */ 00333000
+         LA    @09,FLCSOPSW                                        0285 00334000
+         ST    SVCEPADD,PSWIA(,@09)                                0285 00335000
+*   IF NODATSVC = ON THEN           /* TRANSFER TO UNTRANSLATED MOD  */ 00336000
+         TM    NODATSVC,B'10000000'                                0286 00337000
+         BNO   @RF00286                                            0286 00338000
+*     DO;                           /* YES -                         */ 00339000
+*       RETREG = ADDR(MODRET);      /* REAL RETURN ADDRESS           */ 00340000
+         LA    RETREG,MODRET                                       0288 00341000
+*       PSWDAT = OFF;               /* NON-TRANSLATED MODE           */ 00342000
+         NI    PSWDAT(@09),B'11111011'                             0289 00343000
+*     END;                                                         0290 00344000
+*   ELSE                            /* NO - RELOCATE REGISTERS       */ 00345000
+*     DO;                                                          0291 00346000
+         B     @RC00286                                            0291 00347000
+@RF00286 DS    0H                                                  0292 00348000
+*       CALL AMDSAREL;              /* RELOCATE SADMP AND SET UP PAGE   00349000
+*                                      TABLES                        */ 00350000
+         BAL   @14,AMDSAREL                                        0292 00351000
+*       RETREG = ADDR(MODRET) + VCTLPA; /* VIRTUAL RETURN ADDRESS    */ 00352000
+         LA    RETREG,MODRET                                       0293 00353000
+         L     @09,VCTLPA(,VCCTREG)                                0293 00354000
+         AR    RETREG,@09                                          0293 00355000
+*       R13 = R13 + VCTLPA;         /* RELOCATE SAVE AREA POINTER    */ 00356000
+         AR    R13,@09                                             0294 00357000
+*       PSWIA = SVCEPADD + VCTLPA;  /* VIRTUAL ENTRY POINT ADDRESS   */ 00358000
+         LA    @03,FLCSOPSW                                        0295 00359000
+         AR    @09,SVCEPADD                                        0295 00360000
+         ST    @09,PSWIA(,@03)                                     0295 00361000
+*       PSWDAT = ON;                /* TURN DAT BIT ON FOR NEW PSW   */ 00362000
+         OI    PSWDAT(@03),B'00000100'                             0296 00363000
+*       VCCTREG = VCTVCCTV;         /* VIRTUAL ADDRESS OF VCCT       */ 00364000
+         L     VCCTREG,VCTVCCTV(,VCCTREG)                          0297 00365000
+*     END;                                                         0298 00366000
+*   RESPECIFY R10 UNRESTRICTED;                                    0299 00367000
+@RC00286 DS    0H                                                  0300 00368000
+*   RESPECIFY (R0,R1) RESTRICTED;                                  0300 00369000
+*   R0 = MDCBGR0;                   /* PASS ANY PARAMETERS           */ 00370000
+         L     R0,MDCBGR0(,MDCBADDR)                               0301 00371000
+*   R1 = MDCBGR1;                   /* PASS ANY PARAMETERS           */ 00372000
+         L     R1,MDCBGR1(,MDCBADDR)                               0302 00373000
+*   R15 = PSWIA;                    /* SET R15 TO ENTRY POINT ADDR   */ 00374000
+         LA    @09,FLCSOPSW                                        0303 00375000
+         L     R15,PSWIA(,@09)                                     0303 00376000
+*   LPSW (FLCSOPSW);                /* TRANSFER CONTROL TO REQUESTED    00377000
+*                                      MODULE-RETURN POINT IS MODRET */ 00378000
+         LPSW  FLCSOPSW                                            0304 00379000
+*   RESPECIFY (R0,R1) RESTRICTED;                                  0305 00380000
+*                                                                  0306 00381000
+*   /*****************************************************************/ 00382000
+*   /*                                                               */ 00383000
+*   /* RCB EXIT - RECEIVES CONTROL IF ANY MODULE FOLLOWING A         */ 00384000
+*   /* MEMORY SWITCH HAS NO RCB.  SET UP ERROR RETURN CODE.          */ 00385000
+*   /*                                                               */ 00386000
+*   /*****************************************************************/ 00387000
+*/*MODERROR: P SET UP RETURN CODE OF 4                               */ 00388000
+*                                                                  0306 00389000
+*                                                                  0306 00390000
+*MODERROR:                                                         0306 00391000
+*   RETCODE = 4;                    /* SET UP ERROR RETURN CODE      */ 00392000
+MODERROR LA    RETCODE,4                                           0306 00393000
+*                                                                  0307 00394000
+*   /*****************************************************************/ 00395000
+*   /*                                                               */ 00396000
+*   /* RETURN POINT FROM MODULES. DAT IS TURNED OFF, THE MDCB IS     */ 00397000
+*   /* MADE AVAILABLE, AND THE SAVE AREA FREED.                      */ 00398000
+*   /*                                                               */ 00399000
+*   /*****************************************************************/ 00400000
+*/*MODRET: N THIS IS RETURN POINT FROM MODULES                       */ 00401000
+*/* P ENTER UNTRANSLATED MODE                                        */ 00402000
+*/* P RE-ESTABLISH ADDRESSABILITY TO VCCT                            */ 00403000
+*/* P SET MDCBGR15 TO R15 TO SAVE RET. CODE                          */ 00404000
+*/* P SAVE RETURN PARAMETER REGISTERS 0 AND 1                        */ 00405000
+*/* P RESET ASM IN CONTROL BIT (VCTASMIC)                            */ 00406000
+*/* P DEQUEUE RCB                                                    */ 00407000
+*/* L AMDSAFRM: ISSUE SVC 5 TO FREE SAVE AREA                        */ 00408000
+*                                                                  0307 00409000
+*                                                                  0307 00410000
+*MODRET:                                                           0307 00411000
+*   LPSW (SVIRPSW);                 /* ENTER UNTRANSLATED MODE       */ 00412000
+*                                                                  0307 00413000
+MODRET   LPSW  SVIRPSW                                             0307 00414000
+*MODRET1:                                                          0308 00415000
+*   RESPECIFY (R0,R1) RESTRICTED;                                  0308 00416000
+MODRET1  DS    0H                                                  0309 00417000
+*   VCCTREG = CTVCCT;               /* SET UP ADDRESSABILITY TO VCCT */ 00418000
+         LH    @09,@CH00754                                        0309 00419000
+         L     VCCTREG,CTVCCT(,@09)                                0309 00420000
+*   MDCBGR15 = RETCODE;             /* SAVE RETURN CODE FROM CALLED     00421000
+*                                      MODULE                        */ 00422000
+         ST    RETCODE,MDCBGR15(,MDCBADDR)                         0310 00423000
+*   MDCBGR0 = R0;                   /* SAVE RETURN PARAMETERS        */ 00424000
+         ST    R0,MDCBGR0(,MDCBADDR)                               0311 00425000
+*   MDCBGR1 = R1;                   /* SAVE RETURN PARAMETERS        */ 00426000
+         ST    R1,MDCBGR1(,MDCBADDR)                               0312 00427000
+*   VCTASMIC = OFF;                 /* RESET ASM IN CONTROL BIT      */ 00428000
+         NI    VCTASMIC(VCCTREG),B'11011111'                       0313 00429000
+*   VCTRCB = RCBNEXT;               /* DEQUEUE RCB                   */ 00430000
+         LA    @09,DYNRCB                                          0314 00431000
+         MVC   VCTRCB(4,VCCTREG),RCBNEXT(@09)                      0314 00432000
+*   R1 = R8;                        /* ADDRESS OF AREA TO BE FREED   */ 00433000
+         LR    R1,R8                                               0315 00434000
+*   SVC(FRMSVC);                    /* FREE STORAGE (AMDSAFRM)       */ 00435000
+         SVC   5                                                   0316 00436000
+*   RESPECIFY (R0,R1,R15,RETREG) UNRESTRICTED;                     0317 00437000
+*                                                                  0317 00438000
+*   /*****************************************************************/ 00439000
+*   /*                                                               */ 00440000
+*   /* THE MDCB IS RETURNED TO THE AVAILABLE QUEUE AND CONTROL IS    */ 00441000
+*   /* RETURNED TO THE ISSUER OF THE SVC.                            */ 00442000
+*   /*                                                               */ 00443000
+*   /*****************************************************************/ 00444000
+*/*MODRET2: P SET FLCSOPSW TO MDCBPSW                                */ 00445000
+*/* P DEQUEUE MDCB FROM ACTIVE QUEUE                                 */ 00446000
+*/* P ENQUEUE MDCB ON AVAILABLE QUEUE                                */ 00447000
+*/* P SET CONTROL REG 1 TO MDCBSTOR                                  */ 00448000
+*/* P PURGE HARDWARE TABLE LOOK- ASIDE BUFFER                        */ 00449000
+*/* P RESTORE REGS FROM MDCBGRS                                      */ 00450000
+*/* N LOAD FLCSOPSW TO RETURN CONTROL TO ISSUER OF SVC               */ 00451000
+*/* R LPSW                                                           */ 00452000
+*                                                                  0318 00453000
+*                                                                  0318 00454000
+*MODRET2:                                                          0318 00455000
+*   FLCSOPSW = MDCBPSW;             /* RESTORE PSW OF INTERRUPTED  0318 00456000
+*                                      PROGRAM                       */ 00457000
+MODRET2  MVC   FLCSOPSW(8),MDCBPSW(MDCBADDR)                       0318 00458000
+*   MDCEACTV = MDCBNEXT;            /* DEQUEUE MDCB FROM ACTIVE QUEUE*/ 00459000
+         L     @09,VCTMDCE(,VCCTREG)                               0319 00460000
+         MVC   MDCEACTV(4,@09),MDCBNEXT(MDCBADDR)                  0319 00461000
+*   MDCBNEXT = MDCEAVIL;            /* QUEUE MDCB TO AVAILABLE QUEUE */ 00462000
+         MVC   MDCBNEXT(4,MDCBADDR),MDCEAVIL(@09)                  0320 00463000
+*   MDCEAVIL = MDCBADDR;            /* MAKE MDCB AVAILABLE           */ 00464000
+         ST    MDCBADDR,MDCEAVIL(,@09)                             0321 00465000
+*   WORKSTOR = MDCBSTOR;            /* GET ORIGINAL SEGMENT TABLE  0322 00466000
+*                                      ORIGIN                        */ 00467000
+         MVC   WORKSTOR(4),MDCBSTOR(MDCBADDR)                      0322 00468000
+*   GENERATE REFS(WORKSTOR) SETS(R1) (LCTL  R1,R1,WORKSTOR); /* LOAD    00469000
+*                                      ORIGINAL SEGMENT TABLE ORIGIN */ 00470000
+         LCTL  R1,R1,WORKSTOR                                           00471000
+*   GENERATE(PTLB);                 /* PURGE HARDWARE TABLE        0324 00472000
+*                                      LOOK-ASIDE BUFFER             */ 00473000
+         PTLB                                                           00474000
+*   GEN(LM    R0,R15,MDCBGRS(MDCBADDR)); /* RESTORE REGISTERS        */ 00475000
+         LM    R0,R15,MDCBGRS(MDCBADDR)                                 00476000
+*   LPSW (FLCSOPSW);                /* RETURN CONTROL TO THE CALLER  */ 00477000
+         LPSW  FLCSOPSW                                            0326 00478000
+*                                                                  0327 00479000
+*   /*****************************************************************/ 00480000
+*   /*                                                               */ 00481000
+*   /* HANDLE INVALID SVC NUMBER OR MDCB UNAVAILABLE. REQUEST DUMP   */ 00482000
+*   /* AND SET RETURN CODE OF 4 TO CALLER                            */ 00483000
+*   /*                                                               */ 00484000
+*   /*****************************************************************/ 00485000
+*/*SVIERROR: P ENQUEUE RCB TO VCTRCB                                 */ 00486000
+*/* P TURN ON VCTSADMP TO REQUEST DUMP                               */ 00487000
+*/* P TURN OFF VCTASMIC                                              */ 00488000
+*/* P SAVE REGS FROM SVISAVE AND PSW FROM FLCSOPSW                   */ 00489000
+*/* N THIS IS NEEDED DUE TO RECURSION BY AMDSAAUD THROUGH SVI        */ 00490000
+*/* P SET UP ERROR CODE                                              */ 00491000
+*/* L (RCB,) CALL AMDSAAUD                                           */ 00492000
+*                                                                  0327 00493000
+*                                                                  0327 00494000
+*SVIERROR:                                                         0327 00495000
+*   RESPECIFY RCB BASED(ADDR(SVIRCB));                             0327 00496000
+SVIERROR DS    0H                                                  0328 00497000
+*   RCBNEXT = VCTRCB;               /* QUEUE RCB TO RCB CHAIN        */ 00498000
+         LA    @09,SVIRCB                                          0328 00499000
+         MVC   RCBNEXT(4,@09),VCTRCB(VCCTREG)                      0328 00500000
+*   RCBBASE = BASEREG;              /* SET UP BASE REGISTER VALUE    */ 00501000
+         ST    BASEREG,RCBBASE(,@09)                               0329 00502000
+*   VCTRCB = ADDR(SVIRCB);          /* MAKE RCB CURRENT              */ 00503000
+         ST    @09,VCTRCB(,VCCTREG)                                0330 00504000
+*   VCTSADMP = ON;                  /* REQUEST DUMP                  */ 00505000
+*   VCTASMIC = OFF;                 /* RESET ASM IN CONTROL BIT      */ 00506000
+         OI    VCTSADMP(VCCTREG),B'10000000'                       0332 00507000
+         NI    VCTASMIC(VCCTREG),B'11011111'                       0332 00508000
+*   SVIREG2 = SVISAVE;              /* SAVE CALLER'S REGISTERS       */ 00509000
+         MVC   SVIREG2(64),SVISAVE                                 0333 00510000
+*   SVIPSW2 = FLCSOPSW;             /* SAVE PSW                      */ 00511000
+         MVC   SVIPSW2(8),FLCSOPSW                                 0334 00512000
+*   VCTAUDIT = SVCINVLD;            /* SET UP ERROR CODE             */ 00513000
+         MVC   VCTAUDIT(2,VCCTREG),@CH00949                        0335 00514000
+*   FLCPOPSW = FLCSOPSW;            /* SAVE PSW FOR DUMP             */ 00515000
+         MVC   FLCPOPSW(8),FLCSOPSW                                0336 00516000
+*   SVC (AUDSVC);                   /* HANDLE ERROR RECOVERY         */ 00517000
+*                                                                  0337 00518000
+         SVC   13                                                  0337 00519000
+*   /*****************************************************************/ 00520000
+*   /*                                                               */ 00521000
+*   /* EXIT RECEIVES CONTROL FROM AMDSAAUD                           */ 00522000
+*   /*                                                               */ 00523000
+*   /*****************************************************************/ 00524000
+*/*SVIERR2: P DEQUEUE RCB                                            */ 00525000
+*/* P MOVE SAVED PSW TO FLCSOPSW                                     */ 00526000
+*/* P MOVE REGISTERS BACK TO SVISAVE                                 */ 00527000
+*/* P SET RC = 4 IN SAVE AREA                                        */ 00528000
+*/* P RESTORE REGISTERS FROM SVISAVE                                 */ 00529000
+*/* R LPSW FLCSOPSW                                                  */ 00530000
+*                                                                  0338 00531000
+*                                                                  0338 00532000
+*SVIERR2:                                                          0338 00533000
+*   VCTRCB = RCBNEXT;               /* DEQUEUE RCB FROM CHAIN        */ 00534000
+SVIERR2  LA    @09,SVIRCB                                          0338 00535000
+         MVC   VCTRCB(4,VCCTREG),RCBNEXT(@09)                      0338 00536000
+*   FLCSOPSW = SVIPSW2;             /* RESTORE PSW                   */ 00537000
+         MVC   FLCSOPSW(8),SVIPSW2                                 0339 00538000
+*   SVISAVE(1:64) = SVIREG2;        /* RESTORE REGISTERS TO SAVE AREA*/ 00539000
+         MVC   SVISAVE(64),SVIREG2                                 0340 00540000
+*   REGL15 = 4;                     /* SET FAILING RETURN CODE       */ 00541000
+         LA    @09,SVISAVE                                         0341 00542000
+         MVC   REGL15(4,@09),@CF00039                              0341 00543000
+*   GEN(LM    R0,R15,SVISAVE);      /* RESTORE REGISTERS             */ 00544000
+         LM    R0,R15,SVISAVE                                           00545000
+*   LPSW (FLCSOPSW);                /* RETURN CONTROL TO CALLER      */ 00546000
+         LPSW  FLCSOPSW                                            0343 00547000
+*                                                                  0344 00548000
+*   /*****************************************************************/ 00549000
+*   /*                                                               */ 00550000
+*   /* THIS ROUTINE RELOCATES SADMP TO THE SYSTEM LPA AND MODIFIES   */ 00551000
+*   /* THE NEW MEMORY TO INVALIDATE THE STORAGE OCCUPIED BY SADMP AND*/ 00552000
+*   /* SADMP BUFFERS.                                                */ 00553000
+*   /*                                                               */ 00554000
+*   /*****************************************************************/ 00555000
+*/*AMDSAREL: E AMDSAREL                                              */ 00556000
+*/* N THIS ROUTINE SETS UP THE SEG. AND PAGE TABLES                  */ 00557000
+*/* P GO TO PAGE TABLE FOR 1ST SEGMENT                               */ 00558000
+*/* P MARK LOC. X'1000' TO X'10000' INVALID                          */ 00559000
+*                                                                  0344 00560000
+*                                                                  0344 00561000
+*AMDSAREL:                                                         0344 00562000
+*   PROC OPTIONS(NOSAVE,NOSAVEAREA);                               0344 00563000
+         B     @PB00002                                            0344 00564000
+AMDSAREL DS    0H                                                  0345 00565000
+*   GENERATE                                                       0345 00566000
+*     REFS(R0,R1,R2,R3,R4,R5,R6,R7,R8,R9,R10,R11,R12,R13,R14,R15); 0345 00567000
+         STM   R14,R12,12(R13)         SAVE CALLERS REGISTERS           00568000
+*   STEPTR = WORKSTOR;              /* GET FIRST SEG TBL ENTRY       */ 00569000
+         L     STEPTR,WORKSTOR                                     0346 00570000
+*   PTEPTR = SGTSTE & PGEADMSK;     /* GET PAGE TABLE ADDRESS        */ 00571000
+         L     PTEPTR,SGTSTE(,STEPTR)                              0347 00572000
+         N     PTEPTR,PGEADMSK                                     0347 00573000
+*   PGTPTE = PGTELOC0;              /* SET UP VALID ENTRY FOR LOC 0  */ 00574000
+         MVC   PGTPTE(2,PTEPTR),@CB00939                           0348 00575000
+*   RESPECIFY I RESTRICTED;                                        0349 00576000
+*   DO I = 15 TO 1 BY -1;           /* UPDATE PAGE TABLES FOR FIRST     00577000
+*                                      SEGMENT EXCEPT FOR LOCATION 0 */ 00578000
+         LA    I,15                                                0350 00579000
+@DL00350 DS    0H                                                  0351 00580000
+*     PTEPTR = PTEPTR + LENGTH(PGTPTE); /* GET NEXT PAGE TABLE ENTRY */ 00581000
+         AH    PTEPTR,@CH00044                                     0351 00582000
+*     PGTPVM = ON;                  /* MARK PAGE INVALID             */ 00583000
+         OI    PGTPVM(PTEPTR),B'00001000'                          0352 00584000
+*   END;                                                           0353 00585000
+*                                                                  0353 00586000
+         BCTR  I,0                                                 0353 00587000
+         LTR   I,I                                                 0353 00588000
+         BP    @DL00350                                            0353 00589000
+*   /*****************************************************************/ 00590000
+*   /*                                                               */ 00591000
+*   /* IF MORE THAN ONE SEGMENT IS AVAILABLE, MARK THE EXTRA PAGES   */ 00592000
+*   /* INVALID SO THAT VIRTUAL DUMP CAN USE THEM FOR BUFFERS.        */ 00593000
+*   /*                                                               */ 00594000
+*   /*****************************************************************/ 00595000
+*/* D (YES,,NO,%LPAUPD) ANY PAGES IN 2ND SEGMENT                     */ 00596000
+*/* P OBTAIN NUMBER OF EXTRA PAGES FROM VCCT                         */ 00597000
+*/*%PGTEUPD: P MARK PGTE INVALID FOR ADDR                            */ 00598000
+*/* P DECREMENT NUMBER OF PAGES TO BE UPDATED                        */ 00599000
+*/* D (YES,%PGTEUPD,NO,) ANY MORE PAGES TO UPDATE                    */ 00600000
+*                                                                  0354 00601000
+*   STEPTR = STEPTR + LENGTH(SGTSTE); /* GET 2ND SEG TBL ENTRY       */ 00602000
+         AH    STEPTR,@CH00039                                     0354 00603000
+*   PTEPTR = SGTSTE & PGEADMSK;     /* GET PAGE TABLE ADDRESS        */ 00604000
+         L     PTEPTR,SGTSTE(,STEPTR)                              0355 00605000
+         N     PTEPTR,PGEADMSK                                     0355 00606000
+*   IF VCTEXTRA ^= 0 THEN           /* ANY EXTRA PAGES               */ 00607000
+         LH    @05,VCTEXTRA(,VCCTREG)                              0356 00608000
+         LTR   @05,@05                                             0356 00609000
+         BZ    @RF00356                                            0356 00610000
+*     DO I = VCTEXTRA TO 1 BY -1;   /* UPDATE REMAINING PAGE TABLE 0357 00611000
+*                                      ENTRIES                       */ 00612000
+         LR    I,@05                                               0357 00613000
+         B     @DE00357                                            0357 00614000
+@DL00357 DS    0H                                                  0358 00615000
+*       PGTPVM = ON;                /* MARK PAGE INVALID             */ 00616000
+         OI    PGTPVM(PTEPTR),B'00001000'                          0358 00617000
+*       PTEPTR = PTEPTR + LENGTH(PGTPTE); /* NEXT PAGE TABLE ENTRY   */ 00618000
+         AH    PTEPTR,@CH00044                                     0359 00619000
+*     END;                                                         0360 00620000
+         BCTR  I,0                                                 0360 00621000
+@DE00357 LTR   I,I                                                 0360 00622000
+         BP    @DL00357                                            0360 00623000
+*   RESPECIFY I UNRESTRICTED;                                      0361 00624000
+@RF00356 DS    0H                                                  0362 00625000
+*                                                                  0362 00626000
+*   /*****************************************************************/ 00627000
+*   /*                                                               */ 00628000
+*   /* POINT SEGMENT TABLE ENTRIES FOR LPA TO VIRTUAL DUMP PAGE      */ 00629000
+*   /* TABLES, PROVIDING THE RELOCATION REQUIRED.                    */ 00630000
+*   /*                                                               */ 00631000
+*   /*****************************************************************/ 00632000
+*/*%LPAUPD: P GET SEGMENT TABLE ENTRY FOR LPA USING VCTLPA           */ 00633000
+*/* P SET ADDR IN SEGMENT TABLE TO VCTPGT FOR 2 SEGMENTS             */ 00634000
+*/* R RETURN TO CALLER                                               */ 00635000
+*                                                                  0362 00636000
+*   STEPTR = VCTLPA / SEGSIZE * LENGTH(SGTSTE) + WORKSTOR; /* ADDRESS   00637000
+*                                      OF SEGMENT TABLE ENTRY FOR LPA*/ 00638000
+         L     STEPTR,VCTLPA(,VCCTREG)                             0362 00639000
+         SRL   STEPTR,16                                           0362 00640000
+         SLA   STEPTR,2                                            0362 00641000
+         A     STEPTR,WORKSTOR                                     0362 00642000
+*   SGTSTE = VCTPGT;                /* POINT TO VIRTUAL DUMP PAGE  0363 00643000
+*                                      TABLES                        */ 00644000
+         L     @09,VCTPGT(,VCCTREG)                                0363 00645000
+         ST    @09,SGTSTE(,STEPTR)                                 0363 00646000
+*   STEPTR = STEPTR + LENGTH(SGTSTE); /* POINT TO NEXT SEG TBL ENTRY */ 00647000
+         AH    STEPTR,@CH00039                                     0364 00648000
+*   SGTSTE = VCTPGT + LENGTH(PGTPTE) * PGEPRSEG; /* POINT TO NEXT  0365 00649000
+*                                      VIRTUAL DUMP PAGE TABLE       */ 00650000
+         AH    @09,@CH00158                                        0365 00651000
+         ST    @09,SGTSTE(,STEPTR)                                 0365 00652000
+*   GENERATE                                                       0366 00653000
+*     SETS(R0,R1,R2,R3,R4,R5,R6,R7,R8,R9,R10,R11,R12,R13,R14,R15); 0366 00654000
+         LM    R14,R12,12(R13)         RESTORE CALLERS REGISTERS        00655000
+*   END AMDSAREL;                                                  0367 00656000
+@EL00002 DS    0H                                                  0367 00657000
+@EF00002 DS    0H                                                  0367 00658000
+@ER00002 BR    @14                                                 0367 00659000
+@PB00002 DS    0H                                                  0367 00660000
+*/*AMDSASVI: END                                                     */ 00661000
+*   END AMDSASVI                                                   0368 00662000
+*/* THE FOLLOWING INCLUDE STATEMENTS WERE FOUND IN THIS PROGRAM.      * 00663000
+*/*%INCLUDE SYSLIB  (IHASGTE )                                        * 00664000
+*/*%INCLUDE SYSLIB  (IHAPGTE )                                        * 00665000
+*/*%INCLUDE SYSLIB  (IHAPSA  )                                        * 00666000
+*/*%INCLUDE SYSLIB  (AMDSARMK)                                        * 00667000
+*;                                                                 0368 00668000
+@DATA    DS    0H                                                       00669000
+@CH00037 DC    H'1'                                                     00670000
+@CH00044 DC    H'2'                                                     00671000
+@CH00780 DC    H'13'                                                    00672000
+@CH00158 DC    H'32'                                                    00673000
+@CH00889 DC    H'35'                                                    00674000
+@CH00754 DC    H'28672'                                                 00675000
+@CH00947 DC    XL2'F100'                                                00676000
+@CH00949 DC    XL2'F200'                                                00677000
+@DATD    DSECT                                                          00678000
+         DS    0F                                                       00679000
+@SA00001 DS    18F                                                      00680000
+AMDSASVI CSECT                                                          00681000
+         DS    0F                                                       00682000
+@CF00039 DC    F'4'                                                     00683000
+@CH00039 EQU   @CF00039+2                                               00684000
+@DATD    DSECT                                                          00685000
+         DS    0D                                                       00686000
+DYNRCB   DS    CL20                                                     00687000
+         ORG   *+1-(*-@DATD)/(*-@DATD) INSURE DSECT DATA                00688000
+@ENDDATD EQU   *                                                        00689000
+AMDSASVI CSECT                                                          00690000
+         NOPR  ((@ENDDATD-@DATD)/257*16)                                00691000
+         DS    0F                                                       00692000
+@SIZDATD DC    AL1(0)                                                   00693000
+         DC    AL3(@ENDDATD-@DATD)                                      00694000
+@CV00960 DC    V(AMDSASIO)                                              00695000
+@CV00961 DC    V(AMDSAWAT)                                              00696000
+@CV00962 DC    V(AMDSATAP)                                              00697000
+@CV00963 DC    V(AMDSACON)                                              00698000
+@CV00964 DC    V(AMDSAGTM)                                              00699000
+@CV00965 DC    V(AMDSAFRM)                                              00700000
+@CV00966 DC    V(AMDSAASM)                                              00701000
+@CV00967 DC    V(AMDSAERM)                                              00702000
+@CV00968 DC    V(AMDSASIN)                                              00703000
+@CV00969 DC    V(AMDSAUPD)                                              00704000
+@CV00970 DC    V(AMDSATER)                                              00705000
+@CV00971 DC    V(AMDSACSA)                                              00706000
+@CV00972 DC    V(AMDSAAID)                                              00707000
+@CV00973 DC    V(AMDSAAUD)                                              00708000
+@CV00974 DC    V(AMDSABUF)                                              00709000
+@CV00975 DC    V(AMDSADER)                                              00710000
+@CV00976 DC    V(AMDSAARD)                                              00711000
+@CV00977 DC    V(AMDSAMDM)                                              00712000
+@CV00978 DC    V(AMDSARSM)                                              00713000
+@CV00979 DC    V(AMDSAAMR)                                              00714000
+@CV00980 DC    V(AMDSAERB)                                              00715000
+@CV00981 DC    V(AMDSAERP)                                              00716000
+@CV00982 DC    V(AMDSAGTF)                                              00717000
+@CV00983 DC    V(AMDSAERI)                                              00718000
+@CV00984 DC    V(AMDSAUCB)                                              00719000
+@CV00985 DC    V(AMDSAVCK)                                              00720000
+@CV00986 DC    V(AMDSASPQ)                                              00721000
+@CV00987 DC    V(AMDSAIOB)                                              00722000
+@CV00988 DC    V(AMDSABIN)                                              00723000
+@CV00989 DC    V(AMDSAINR)                                              00724000
+@CV00990 DC    V(AMDSAVRT)                                              00725000
+         DS    0D                                                       00726000
+WORKSTOR DC    F'0'                                                     00727000
+@CB00939 DC    X'0000'                                                  00728000
+         DS    CL2                                                      00729000
+SVIRCB   DS    CL20                                                     00730000
+         ORG   SVIRCB                                                   00731000
+SVIRNEXT DC    A(0)                                                     00732000
+SVIRSTOR DC    A(0)                                                     00733000
+SVIRSAVE DC    AL4(SVINAME)                                             00734000
+SVIREXIT DC    AL4(SVIERR2)                                             00735000
+SVIRBASE DC    A(0)                                                     00736000
+         ORG   SVIRCB+20                                                00737000
+PGEADMSK DC    X'00FFFFF8'                                              00738000
+SVIPSW2  DS    CL8                                                      00739000
+SVIREG2  DS    CL64                                                     00740000
+SVIRPSWI DS    CL8                                                      00741000
+         ORG   SVIRPSWI                                                 00742000
+@NM00067 DC    XL4'010C0000'                                            00743000
+@NM00068 DC    AL4(MODRET1)                                             00744000
+         ORG   SVIRPSWI+8                                               00745000
+SADMPPGT DS    CL64                                                     00746000
+         ORG   SADMPPGT                                                 00747000
+PGTBL1   DC    X'000800100020003000400050006000700080009000A000B000C000C00748000
+               D000E000F0'                                              00749000
+PGTBL2   DC    X'010801180128013801480158016801780188019801A801B801C801C00750000
+               D801E801F8'                                              00751000
+         ORG   SADMPPGT+64                                              00752000
+NODATAB  DC    H'0'                                                     00753000
+         DC    H'1'                                                     00754000
+         DC    H'2'                                                     00755000
+         DC    H'3'                                                     00756000
+         DC    H'9'                                                     00757000
+         DC    H'14'                                                    00758000
+SVCSADMP DC    VL4(AMDSASIO)                                            00759000
+         DC    VL4(AMDSAWAT)                                            00760000
+         DC    VL4(AMDSATAP)                                            00761000
+         DC    VL4(AMDSACON)                                            00762000
+         DC    VL4(AMDSAGTM)                                            00763000
+         DC    VL4(AMDSAFRM)                                            00764000
+         DC    VL4(AMDSAASM)                                            00765000
+         DC    VL4(AMDSAERM)                                            00766000
+         DC    VL4(AMDSASIN)                                            00767000
+         DC    VL4(AMDSAUPD)                                            00768000
+         DC    VL4(AMDSATER)                                            00769000
+         DC    VL4(AMDSACSA)                                            00770000
+         DC    VL4(AMDSAAID)                                            00771000
+         DC    VL4(AMDSAAUD)                                            00772000
+         DC    VL4(AMDSABUF)                                            00773000
+         DC    VL4(AMDSADER)                                            00774000
+         DC    VL4(AMDSAARD)                                            00775000
+         DC    VL4(AMDSAMDM)                                            00776000
+         DC    VL4(AMDSARSM)                                            00777000
+         DC    VL4(AMDSAAMR)                                            00778000
+         DC    VL4(AMDSAERB)                                            00779000
+         DC    VL4(AMDSAERP)                                            00780000
+         DC    VL4(AMDSAGTF)                                            00781000
+         DC    VL4(AMDSAERI)                                            00782000
+         DC    VL4(AMDSAUCB)                                            00783000
+         DC    VL4(AMDSAVCK)                                            00784000
+         DC    VL4(AMDSASPQ)                                            00785000
+         DC    VL4(AMDSAIOB)                                            00786000
+         DC    VL4(AMDSABIN)                                            00787000
+         DC    VL4(AMDSAINR)                                            00788000
+         DC    VL4(AMDSAVRT)                                            00789000
+         DC    4A(0)                                                    00790000
+SVIPATCH DC    15F'0'                                                   00791000
+@00      EQU   00                      EQUATES FOR REGISTERS 0-15       00792000
+@01      EQU   01                                                       00793000
+@02      EQU   02                                                       00794000
+@03      EQU   03                                                       00795000
+@04      EQU   04                                                       00796000
+@05      EQU   05                                                       00797000
+@06      EQU   06                                                       00798000
+@07      EQU   07                                                       00799000
+@08      EQU   08                                                       00800000
+@09      EQU   09                                                       00801000
+@10      EQU   10                                                       00802000
+@11      EQU   11                                                       00803000
+@12      EQU   12                                                       00804000
+@13      EQU   13                                                       00805000
+@14      EQU   14                                                       00806000
+@15      EQU   15                                                       00807000
+PTEPTR   EQU   @04                                                      00808000
+STEPTR   EQU   @03                                                      00809000
+VCCTREG  EQU   @12                                                      00810000
+RETREG   EQU   @14                                                      00811000
+RETCODE  EQU   @15                                                      00812000
+BASEREG  EQU   @11                                                      00813000
+R0       EQU   @00                                                      00814000
+R1       EQU   @01                                                      00815000
+R2       EQU   @02                                                      00816000
+R3       EQU   @03                                                      00817000
+R4       EQU   @04                                                      00818000
+R5       EQU   @05                                                      00819000
+R6       EQU   @06                                                      00820000
+R7       EQU   @07                                                      00821000
+R8       EQU   @08                                                      00822000
+R9       EQU   @09                                                      00823000
+R10      EQU   @10                                                      00824000
+R11      EQU   @11                                                      00825000
+R12      EQU   @12                                                      00826000
+R13      EQU   @13                                                      00827000
+R14      EQU   @14                                                      00828000
+R15      EQU   @15                                                      00829000
+MDCBADDR EQU   @02                                                      00830000
+SVCEPADD EQU   @10                                                      00831000
+I        EQU   @09                                                      00832000
+         ENTRY SVCSADMP                                                 00833000
+         ENTRY SADMPPGT                                                 00834000
+PSA      EQU   0                                                        00835000
+FLCRNPSW EQU   PSA                                                      00836000
+FLCROPSW EQU   PSA+8                                                    00837000
+FLCICCW2 EQU   PSA+16                                                   00838000
+FLCSOPSW EQU   PSA+32                                                   00839000
+FLCPOPSW EQU   PSA+40                                                   00840000
+PSAEEPSW EQU   PSA+132                                                  00841000
+PSAESPSW EQU   PSA+136                                                  00842000
+FLCSVILC EQU   PSAESPSW+1                                               00843000
+FLCSVCN  EQU   PSAESPSW+2                                               00844000
+PSAEPPSW EQU   PSA+140                                                  00845000
+FLCPIILC EQU   PSAEPPSW+1                                               00846000
+FLCPICOD EQU   PSAEPPSW+2                                               00847000
+PSAPICOD EQU   FLCPICOD+1                                               00848000
+FLCTEA   EQU   PSAEPPSW+4                                               00849000
+FLCPER   EQU   PSA+152                                                  00850000
+FLCMCLA  EQU   PSA+168                                                  00851000
+FLCIOEL  EQU   FLCMCLA+4                                                00852000
+FLCIOA   EQU   FLCMCLA+16                                               00853000
+FLCFSA   EQU   FLCMCLA+80                                               00854000
+PSASUPER EQU   PSA+552                                                  00855000
+PSASUP1  EQU   PSASUPER                                                 00856000
+PSASUP2  EQU   PSASUPER+1                                               00857000
+PSASUP3  EQU   PSASUPER+2                                               00858000
+PSASUP4  EQU   PSASUPER+3                                               00859000
+PSACLHT  EQU   PSA+640                                                  00860000
+PSALKSA  EQU   PSA+696                                                  00861000
+PSAHLHI  EQU   PSA+760                                                  00862000
+PSADSSFL EQU   PSA+836                                                  00863000
+PSADSSF1 EQU   PSADSSFL                                                 00864000
+PSADSSF3 EQU   PSADSSFL+2                                               00865000
+PSADSSF4 EQU   PSADSSFL+3                                               00866000
+PSARSVT  EQU   PSA+896                                                  00867000
+SADMPLSD EQU   3312                                                     00868000
+SVIRPSW  EQU   SADMPLSD+8                                               00869000
+SVINAME  EQU   SADMPLSD+160                                             00870000
+SVISAVE  EQU   SADMPLSD+164                                             00871000
+SGTSTE   EQU   0                                                        00872000
+SGTLK    EQU   SGTSTE                                                   00873000
+SGTPTO   EQU   SGTSTE+1                                                 00874000
+SGTBYTE  EQU   SGTPTO+2                                                 00875000
+PGTPTE   EQU   0                                                        00876000
+PGTRSA   EQU   PGTPTE                                                   00877000
+PGTBITS  EQU   PGTRSA+1                                                 00878000
+PGTPVM   EQU   PGTBITS                                                  00879000
+ARB      EQU   0                                                        00880000
+BCTH     EQU   0                                                        00881000
+BCT      EQU   0                                                        00882000
+BCTLPID  EQU   BCT+28                                                   00883000
+BCTFLGT  EQU   BCT+44                                                   00884000
+BCTFLGI  EQU   BCT+45                                                   00885000
+CCT      EQU   0                                                        00886000
+CTFLG1   EQU   CCT+1                                                    00887000
+CTFLG2   EQU   CCT+2                                                    00888000
+CTLOWFLG EQU   CCT+48                                                   00889000
+CTDMPTYP EQU   CCT+52                                                   00890000
+CTIOTYPE EQU   CTDMPTYP                                                 00891000
+CTCONFLG EQU   CTDMPTYP+2                                               00892000
+CTBUFTYP EQU   CTDMPTYP+3                                               00893000
+CTVCCT   EQU   CTDMPTYP+20                                              00894000
+CTPRMT1  EQU   CTDMPTYP+24                                              00895000
+CTPRMT2  EQU   CTDMPTYP+26                                              00896000
+CCW      EQU   0                                                        00897000
+CCWFLAGS EQU   CCW+4                                                    00898000
+CSW      EQU   0                                                        00899000
+CSWKEY00 EQU   CSW                                                      00900000
+CSWUSTAT EQU   CSW+4                                                    00901000
+CSWCSTAT EQU   CSW+5                                                    00902000
+DSCE     EQU   0                                                        00903000
+DSCETBEG EQU   DSCE+12                                                  00904000
+DSCETCUR EQU   DSCE+16                                                  00905000
+DSCETEND EQU   DSCE+20                                                  00906000
+IODB     EQU   0                                                        00907000
+IODBFLAG EQU   IODB+8                                                   00908000
+IODBCCHH EQU   IODB+32                                                  00909000
+IODBSRCH EQU   IODBCCHH+3                                               00910000
+MDCE     EQU   0                                                        00911000
+MDCEACTV EQU   MDCE+4                                                   00912000
+MDCEAVIL EQU   MDCE+8                                                   00913000
+MDCB     EQU   0                                                        00914000
+MDCBNEXT EQU   MDCB+4                                                   00915000
+MDCBPSW  EQU   MDCB+8                                                   00916000
+MDCBGRS  EQU   MDCB+16                                                  00917000
+MDCBGR0  EQU   MDCBGRS                                                  00918000
+MDCBGR1  EQU   MDCBGRS+4                                                00919000
+MDCBGR15 EQU   MDCBGRS+60                                               00920000
+MDCBSTOR EQU   MDCB+80                                                  00921000
+MDCBPI   EQU   MDCB+84                                                  00922000
+MDCBFLGS EQU   MDCB+86                                                  00923000
+PSW      EQU   0                                                        00924000
+PSWSM    EQU   PSW                                                      00925000
+PSWDAT   EQU   PSWSM                                                    00926000
+@NM00058 EQU   PSW+1                                                    00927000
+PSWCCPM  EQU   PSW+2                                                    00928000
+@NM00061 EQU   PSW+3                                                    00929000
+PSWIA    EQU   PSW+4                                                    00930000
+PTRT     EQU   0                                                        00931000
+PTRTRSA  EQU   0                                                        00932000
+RCB      EQU   0                                                        00933000
+RCBNEXT  EQU   RCB                                                      00934000
+RCBSAVE  EQU   RCB+8                                                    00935000
+RCBEXIT  EQU   RCB+12                                                   00936000
+RCBBASE  EQU   RCB+16                                                   00937000
+VCCT     EQU   0                                                        00938000
+VCTRCB   EQU   VCCT+4                                                   00939000
+VCTRECSN EQU   VCCT+8                                                   00940000
+VCTFLGS  EQU   VCCT+9                                                   00941000
+VCTSADMP EQU   VCTFLGS                                                  00942000
+VCTASMIC EQU   VCTFLGS                                                  00943000
+VCTMDCE  EQU   VCCT+12                                                  00944000
+VCTSTOR  EQU   VCCT+16                                                  00945000
+VCTDSCE  EQU   VCCT+20                                                  00946000
+VCTBCTH  EQU   VCCT+24                                                  00947000
+VCTAUDIT EQU   VCCT+62                                                  00948000
+VCTCBID  EQU   VCCT+64                                                  00949000
+VCTLPA   EQU   VCCT+84                                                  00950000
+VCTPGT   EQU   VCCT+88                                                  00951000
+VCTEXTRA EQU   VCCT+100                                                 00952000
+VCTVCCTV EQU   VCCT+108                                                 00953000
+SDL      EQU   0                                                        00954000
+REGLOCAL EQU   0                                                        00955000
+REGL14   EQU   REGLOCAL+56                                              00956000
+REGL15   EQU   REGLOCAL+60                                              00957000
+SAVEFORM EQU   0                                                        00958000
+SAVENAME EQU   SAVEFORM+1                                               00959000
+TRCENTRY EQU   0                                                        00960000
+PGTEND   EQU   0                                                        00961000
+PTRTVSA  EQU   0                                                        00962000
+SGTEND   EQU   0                                                        00963000
+PSARSVTE EQU   PSARSVT                                                  00964000
+CTLOWDMP EQU   CTDMPTYP                                                 00965000
+SVILOWCR EQU   SVISAVE                                                  00966000
+SVISWTCH EQU   SVILOWCR+72                                              00967000
+NODATSVC EQU   SVISWTCH                                                 00968000
+FLC      EQU   PSA                                                      00969000
+         AGO   .@UNREFD                START UNREFERENCED COMPONENTS    00970000
+@NM00066 EQU   SVILOWCR                                                 00971000
+CTADDRE  EQU   CTLOWDMP+4                                               00972000
+CTADDRS  EQU   CTLOWDMP                                                 00973000
+PSARSAV  EQU   PSARSVTE+60                                              00974000
+PSARSTK  EQU   PSARSVTE+56                                              00975000
+PSAESAV3 EQU   PSARSVTE+52                                              00976000
+PSAESTK3 EQU   PSARSVTE+48                                              00977000
+PSAESAV2 EQU   PSARSVTE+44                                              00978000
+PSAESTK2 EQU   PSARSVTE+40                                              00979000
+PSAESAV1 EQU   PSARSVTE+36                                              00980000
+PSAESTK1 EQU   PSARSVTE+32                                              00981000
+PSAPSAV  EQU   PSARSVTE+28                                              00982000
+PSAPSTK  EQU   PSARSVTE+24                                              00983000
+PSAMSAV  EQU   PSARSVTE+20                                              00984000
+PSAMSTK  EQU   PSARSVTE+16                                              00985000
+PSASSAV  EQU   PSARSVTE+12                                              00986000
+PSASSTK  EQU   PSARSVTE+8                                               00987000
+PSANSTK  EQU   PSARSVTE+4                                               00988000
+PSACSTK  EQU   PSARSVTE                                                 00989000
+SAVER12  EQU   SAVEFORM+68                                              00990000
+SAVER11  EQU   SAVEFORM+64                                              00991000
+SAVER10  EQU   SAVEFORM+60                                              00992000
+SAVER9   EQU   SAVEFORM+56                                              00993000
+SAVER8   EQU   SAVEFORM+52                                              00994000
+SAVER7   EQU   SAVEFORM+48                                              00995000
+SAVER6   EQU   SAVEFORM+44                                              00996000
+SAVER5   EQU   SAVEFORM+40                                              00997000
+SAVER4   EQU   SAVEFORM+36                                              00998000
+SAVER3   EQU   SAVEFORM+32                                              00999000
+SAVER2   EQU   SAVEFORM+28                                              01000000
+SAVER1   EQU   SAVEFORM+24                                              01001000
+SAVER0   EQU   SAVEFORM+20                                              01002000
+SAVER15  EQU   SAVEFORM+16                                              01003000
+SAVER14  EQU   SAVEFORM+12                                              01004000
+SAVENEXT EQU   SAVEFORM+8                                               01005000
+SAVEBACK EQU   SAVEFORM+4                                               01006000
+SAVEID   EQU   SAVEFORM                                                 01007000
+REGL13   EQU   REGLOCAL+52                                              01008000
+REGL12   EQU   REGLOCAL+48                                              01009000
+REGL11   EQU   REGLOCAL+44                                              01010000
+REGL10   EQU   REGLOCAL+40                                              01011000
+REGL9    EQU   REGLOCAL+36                                              01012000
+REGL8    EQU   REGLOCAL+32                                              01013000
+REGL7    EQU   REGLOCAL+28                                              01014000
+REGL6    EQU   REGLOCAL+24                                              01015000
+REGL5    EQU   REGLOCAL+20                                              01016000
+REGL4    EQU   REGLOCAL+16                                              01017000
+REGL3    EQU   REGLOCAL+12                                              01018000
+REGL2    EQU   REGLOCAL+8                                               01019000
+REGL1    EQU   REGLOCAL+4                                               01020000
+REGL0    EQU   REGLOCAL                                                 01021000
+SDLSPN   EQU   SDL+1                                                    01022000
+SDLNUM   EQU   SDL                                                      01023000
+VCTCCTV  EQU   VCCT+104                                                 01024000
+@NM00065 EQU   VCCT+102                                                 01025000
+VCTCPOUT EQU   VCCT+96                                                  01026000
+VCTSVCTB EQU   VCCT+92                                                  01027000
+VCTCBADR EQU   VCCT+80                                                  01028000
+VCTJBNME EQU   VCCT+72                                                  01029000
+VCTCBIDN EQU   VCTCBID+7                                                01030000
+@NM00064 EQU   VCTCBID                                                  01031000
+VCTASID  EQU   VCCT+60                                                  01032000
+VCTPTRT  EQU   VCCT+56                                                  01033000
+VCTMASCB EQU   VCCT+52                                                  01034000
+VCTASCB  EQU   VCCT+48                                                  01035000
+VCTCPUC  EQU   VCCT+46                                                  01036000
+VCTWKC   EQU   VCCT+45                                                  01037000
+VCTWKHI  EQU   VCCT+44                                                  01038000
+VCTSUBPL EQU   VCCT+40                                                  01039000
+VCTARB   EQU   VCCT+36                                                  01040000
+VCTIODB  EQU   VCCT+32                                                  01041000
+VCTBCTC  EQU   VCCT+28                                                  01042000
+VCTRECVA EQU   VCCT+10                                                  01043000
+@NM00063 EQU   VCTFLGS                                                  01044000
+VCTLRCLM EQU   VCTFLGS                                                  01045000
+VCTARCLM EQU   VCTFLGS                                                  01046000
+VCTMEMIN EQU   VCTFLGS                                                  01047000
+@NM00062 EQU   VCTRECSN                                                 01048000
+VCTRSMR  EQU   VCTRECSN                                                 01049000
+VCTEXIR  EQU   VCTRECSN                                                 01050000
+VCTUPDR  EQU   VCTRECSN                                                 01051000
+VCTPGIR  EQU   VCTRECSN                                                 01052000
+VCTVCT   EQU   VCCT                                                     01053000
+RCBSTOR  EQU   RCB+4                                                    01054000
+PTRTVS   EQU   PTRT+1032                                                01055000
+PTRTRS   EQU   PTRT+8                                                   01056000
+PTRTLGID EQU   PTRT+4                                                   01057000
+PTRTPTRT EQU   PTRT                                                     01058000
+PSWEND   EQU   PSW+8                                                    01059000
+PSWSP    EQU   @NM00061                                                 01060000
+PSWSIG   EQU   PSWCCPM                                                  01061000
+PSWEU    EQU   PSWCCPM                                                  01062000
+PSWDO    EQU   PSWCCPM                                                  01063000
+PSWFPO   EQU   PSWCCPM                                                  01064000
+@NM00060 EQU   PSWCCPM                                                  01065000
+@NM00059 EQU   PSWCCPM                                                  01066000
+PSWPRBLM EQU   @NM00058                                                 01067000
+PSWAIT   EQU   @NM00058                                                 01068000
+PSWMCH   EQU   @NM00058                                                 01069000
+PSWMODE  EQU   @NM00058                                                 01070000
+PSWKEY   EQU   @NM00058                                                 01071000
+PSWXTRNL EQU   PSWSM                                                    01072000
+PSWIO    EQU   PSWSM                                                    01073000
+@NM00057 EQU   PSWSM                                                    01074000
+@NM00056 EQU   PSWSM                                                    01075000
+@NM00055 EQU   PSWSM                                                    01076000
+PSWPER   EQU   PSWSM                                                    01077000
+@NM00054 EQU   PSWSM                                                    01078000
+@NM00053 EQU   MDCB+87                                                  01079000
+@NM00052 EQU   MDCBFLGS                                                 01080000
+MDCBDUMP EQU   MDCBFLGS                                                 01081000
+MDCBASMI EQU   MDCBFLGS                                                 01082000
+MDCBGR14 EQU   MDCBGRS+56                                               01083000
+MDCBGR13 EQU   MDCBGRS+52                                               01084000
+MDCBGR12 EQU   MDCBGRS+48                                               01085000
+MDCBGR11 EQU   MDCBGRS+44                                               01086000
+MDCBGR10 EQU   MDCBGRS+40                                               01087000
+MDCBGR9  EQU   MDCBGRS+36                                               01088000
+MDCBGR8  EQU   MDCBGRS+32                                               01089000
+MDCBGR7  EQU   MDCBGRS+28                                               01090000
+MDCBGR6  EQU   MDCBGRS+24                                               01091000
+MDCBGR5  EQU   MDCBGRS+20                                               01092000
+MDCBGR4  EQU   MDCBGRS+16                                               01093000
+MDCBGR3  EQU   MDCBGRS+12                                               01094000
+MDCBGR2  EQU   MDCBGRS+8                                                01095000
+MDCBMDCB EQU   MDCB                                                     01096000
+MDCEMDCE EQU   MDCE                                                     01097000
+IODBSENS EQU   IODB+40                                                  01098000
+IODBR    EQU   IODBCCHH+7                                               01099000
+IODBHH   EQU   IODBSRCH+2                                               01100000
+IODBCC   EQU   IODBSRCH                                                 01101000
+IODBSEEK EQU   IODBCCHH+1                                               01102000
+IODBM    EQU   IODBCCHH                                                 01103000
+IODBCSW  EQU   IODB+24                                                  01104000
+IODBCAW  EQU   IODB+20                                                  01105000
+IODBBCT  EQU   IODB+16                                                  01106000
+IODBCPU  EQU   IODB+14                                                  01107000
+IODBTYPE EQU   IODB+13                                                  01108000
+IODBCLAS EQU   IODB+12                                                  01109000
+IODBDEV  EQU   IODB+10                                                  01110000
+@NM00051 EQU   IODBFLAG+1                                               01111000
+IODBSTRT EQU   IODBFLAG                                                 01112000
+IODBCONW EQU   IODBFLAG                                                 01113000
+IODBACTV EQU   IODBFLAG                                                 01114000
+IODBHALT EQU   IODBFLAG                                                 01115000
+IODBIOC  EQU   IODBFLAG                                                 01116000
+IODBINT  EQU   IODBFLAG                                                 01117000
+IODBPTRM EQU   IODBFLAG                                                 01118000
+IODBTERM EQU   IODBFLAG                                                 01119000
+IODBIDEN EQU   IODB+4                                                   01120000
+IODBIODB EQU   IODB                                                     01121000
+DSCENEXT EQU   DSCE+8                                                   01122000
+DSCEBEGN EQU   DSCE+4                                                   01123000
+DSCEDSCE EQU   DSCE                                                     01124000
+CSWCNT   EQU   CSW+6                                                    01125000
+CSWCHC   EQU   CSWCSTAT                                                 01126000
+CSWICC   EQU   CSWCSTAT                                                 01127000
+CSWCCC   EQU   CSWCSTAT                                                 01128000
+CSWCDC   EQU   CSWCSTAT                                                 01129000
+CSWPTC   EQU   CSWCSTAT                                                 01130000
+CSWPGC   EQU   CSWCSTAT                                                 01131000
+CSWIL    EQU   CSWCSTAT                                                 01132000
+CSWPCI   EQU   CSWCSTAT                                                 01133000
+CSWUE    EQU   CSWUSTAT                                                 01134000
+CSWUC    EQU   CSWUSTAT                                                 01135000
+CSWDE    EQU   CSWUSTAT                                                 01136000
+CSWCE    EQU   CSWUSTAT                                                 01137000
+CSWBUSY  EQU   CSWUSTAT                                                 01138000
+CSWCUE   EQU   CSWUSTAT                                                 01139000
+CSWSTMOD EQU   CSWUSTAT                                                 01140000
+CSWATTN  EQU   CSWUSTAT                                                 01141000
+CSWCADDR EQU   CSW+1                                                    01142000
+@NM00050 EQU   CSWKEY00                                                 01143000
+CSWKEY   EQU   CSWKEY00                                                 01144000
+CCWCNT   EQU   CCW+6                                                    01145000
+@NM00049 EQU   CCW+5                                                    01146000
+@NM00048 EQU   CCWFLAGS                                                 01147000
+CCWIDA   EQU   CCWFLAGS                                                 01148000
+CCWPCI   EQU   CCWFLAGS                                                 01149000
+CCWSKIP  EQU   CCWFLAGS                                                 01150000
+CCWSLI   EQU   CCWFLAGS                                                 01151000
+CCWCC    EQU   CCWFLAGS                                                 01152000
+CCWDC    EQU   CCWFLAGS                                                 01153000
+CCWDADDR EQU   CCW+1                                                    01154000
+CCWCMD   EQU   CCW                                                      01155000
+CTHWMAX  EQU   CTDMPTYP+29                                              01156000
+CTHWM    EQU   CTDMPTYP+28                                              01157000
+CTPRMT2X EQU   CTPRMT2+1                                                01158000
+CTPRMT2Y EQU   CTPRMT2                                                  01159000
+CTPRMT1X EQU   CTPRMT1+1                                                01160000
+CTPRMT1Y EQU   CTPRMT1                                                  01161000
+CTEOR    EQU   CTDMPTYP+16                                              01162000
+CTCOMMIO EQU   CTDMPTYP+12                                              01163000
+CTLWKAD  EQU   CTDMPTYP+8                                               01164000
+CTCONSOL EQU   CTDMPTYP+4                                               01165000
+@NM00047 EQU   CTBUFTYP                                                 01166000
+CTDUMP   EQU   CTBUFTYP                                                 01167000
+CTLSQA   EQU   CTBUFTYP                                                 01168000
+CTASM    EQU   CTBUFTYP                                                 01169000
+CTPGT    EQU   CTBUFTYP                                                 01170000
+CTWKFLE  EQU   CTBUFTYP                                                 01171000
+@NM00046 EQU   CTBUFTYP                                                 01172000
+@NM00045 EQU   CTCONFLG                                                 01173000
+CTREAD   EQU   CTCONFLG                                                 01174000
+CTMSGOUT EQU   CTCONFLG                                                 01175000
+@NM00044 EQU   CTDMPTYP+1                                               01176000
+@NM00043 EQU   CTIOTYPE                                                 01177000
+CTIORSET EQU   CTIOTYPE                                                 01178000
+CTIOINT  EQU   CTIOTYPE                                                 01179000
+CTIOCON  EQU   CTIOTYPE                                                 01180000
+CTIOWK   EQU   CTIOTYPE                                                 01181000
+CTIODA   EQU   CTIOTYPE                                                 01182000
+CTIOOUT  EQU   CTIOTYPE                                                 01183000
+CTIOTERM EQU   CTIOTYPE                                                 01184000
+CTEBCOPR EQU   CCT+49                                                   01185000
+@NM00042 EQU   CTLOWFLG                                                 01186000
+CTWKSTUS EQU   CTLOWFLG                                                 01187000
+CTINIT   EQU   CTLOWFLG                                                 01188000
+CTFP     EQU   CTLOWFLG                                                 01189000
+CTVIRTD  EQU   CTLOWFLG                                                 01190000
+CTEBCOPD EQU   CCT+45                                                   01191000
+CTCONTYP EQU   CCT+44                                                   01192000
+CTOUTAD  EQU   CCT+42                                                   01193000
+CTCPUI   EQU   CCT+40                                                   01194000
+CTERBCON EQU   CCT+36                                                   01195000
+CTERBTPE EQU   CCT+32                                                   01196000
+CTERBDA  EQU   CCT+28                                                   01197000
+CTCCHHW  EQU   CCT+24                                                   01198000
+CTCCHHE  EQU   CCT+20                                                   01199000
+CTCCHHS  EQU   CCT+16                                                   01200000
+CTPGECNT EQU   CCT+15                                                   01201000
+CTCCHHR  EQU   CCT+8                                                    01202000
+CTINADDR EQU   CCT+6                                                    01203000
+CTSENSE  EQU   CCT+4                                                    01204000
+CTDEVTYP EQU   CCT+3                                                    01205000
+@NM00041 EQU   CTFLG2                                                   01206000
+CTALTCON EQU   CTFLG2                                                   01207000
+CTWKDONE EQU   CTFLG2                                                   01208000
+CTVIRTR  EQU   CTFLG2                                                   01209000
+CTNOSTAT EQU   CTFLG2                                                   01210000
+CTPGEFLT EQU   CTFLG2                                                   01211000
+CTSTOR   EQU   CTFLG2                                                   01212000
+CTDUPSW  EQU   CTFLG2                                                   01213000
+CTERREC  EQU   CTFLG1                                                   01214000
+CTMP     EQU   CTFLG1                                                   01215000
+@NM00040 EQU   CTFLG1                                                   01216000
+CTDEFO   EQU   CTFLG1                                                   01217000
+CTWORK   EQU   CTFLG1                                                   01218000
+CTMORTPE EQU   CTFLG1                                                   01219000
+CTDEVICE EQU   CTFLG1                                                   01220000
+CTERROR  EQU   CTFLG1                                                   01221000
+CTWAIT   EQU   CCT                                                      01222000
+@NM00039 EQU   BCT+46                                                   01223000
+BCTRECLM EQU   BCTFLGI                                                  01224000
+BCTIOERR EQU   BCTFLGI                                                  01225000
+BCTALLOC EQU   BCTFLGI                                                  01226000
+BCTCOMP  EQU   BCTFLGI                                                  01227000
+@NM00038 EQU   BCTFLGT                                                  01228000
+BCTPGTF  EQU   BCTFLGT                                                  01229000
+BCTDUMP  EQU   BCTFLGT                                                  01230000
+BCTLSQA  EQU   BCTFLGT                                                  01231000
+BCTASM   EQU   BCTFLGT                                                  01232000
+BCTPGT   EQU   BCTFLGT                                                  01233000
+BCTWKFLE EQU   BCTFLGT                                                  01234000
+@NM00037 EQU   BCTFLGT                                                  01235000
+BCTRBA   EQU   BCT+40                                                   01236000
+BCTAMB   EQU   BCT+36                                                   01237000
+@NM00036 EQU   BCTLPID+4                                                01238000
+BCTLGN   EQU   BCTLPID                                                  01239000
+BCTMDCB  EQU   BCT+24                                                   01240000
+BCTPGTE  EQU   BCT+20                                                   01241000
+BCTRADDR EQU   BCT+16                                                   01242000
+BCTVADDR EQU   BCT+12                                                   01243000
+BCTASID  EQU   BCT+10                                                   01244000
+BCTKEY2  EQU   BCT+9                                                    01245000
+BCTKEY1  EQU   BCT+8                                                    01246000
+BCTNEXT  EQU   BCT+4                                                    01247000
+BCTBCT   EQU   BCT                                                      01248000
+BCTHLAST EQU   BCTH+8                                                   01249000
+BCTHFRST EQU   BCTH+4                                                   01250000
+BCTHBCTH EQU   BCTH                                                     01251000
+ARBADDRE EQU   ARB+4                                                    01252000
+ARBADDRB EQU   ARB                                                      01253000
+PGTPAM   EQU   PGTBITS                                                  01254000
+@NM00011 EQU   PGTBITS                                                  01255000
+@NM00010 EQU   PGTBITS                                                  01256000
+@NM00009 EQU   PGTBITS                                                  01257000
+@NM00008 EQU   PGTBITS                                                  01258000
+@NM00007 EQU   PGTBITS                                                  01259000
+@NM00006 EQU   PGTBITS                                                  01260000
+PGTREAL  EQU   PGTRSA                                                   01261000
+SGTPAM   EQU   SGTBYTE                                                  01262000
+SGTEAC   EQU   SGTBYTE                                                  01263000
+@NM00005 EQU   SGTBYTE                                                  01264000
+@NM00004 EQU   SGTBYTE                                                  01265000
+@NM00003 EQU   SGTBYTE                                                  01266000
+@NM00002 EQU   SGTBYTE                                                  01267000
+@NM00001 EQU   SGTBYTE                                                  01268000
+SGTORG   EQU   SGTPTO                                                   01269000
+SGTKEY   EQU   SGTLK                                                    01270000
+SGTPTL   EQU   SGTLK                                                    01271000
+GTMSAVE  EQU   SADMPLSD+684                                             01272000
+GTMNAME  EQU   SADMPLSD+680                                             01273000
+FRMSAVE  EQU   SADMPLSD+580                                             01274000
+FRMNAME  EQU   SADMPLSD+576                                             01275000
+AUDSAVE  EQU   SADMPLSD+476                                             01276000
+AUDNAME  EQU   SADMPLSD+472                                             01277000
+IOISAVE  EQU   SADMPLSD+372                                             01278000
+IOINAME  EQU   SADMPLSD+368                                             01279000
+PGISAVE  EQU   SADMPLSD+268                                             01280000
+PGINAME  EQU   SADMPLSD+264                                             01281000
+LOWCRS   EQU   SADMPLSD+96                                              01282000
+LOWGRS   EQU   SADMPLSD+32                                              01283000
+SAVEDUMP EQU   SADMPLSD+24                                              01284000
+AUDPSW   EQU   SADMPLSD+16                                              01285000
+PSWSADMP EQU   SADMPLSD                                                 01286000
+@NM00035 EQU   PSA+3412                                                 01287000
+PSASTAK  EQU   PSA+3072                                                 01288000
+@NM00034 EQU   PSA+1024                                                 01289000
+PSAUSEND EQU   PSA+1024                                                 01290000
+PSARV060 EQU   PSA+1020                                                 01291000
+PSARV059 EQU   PSA+1018                                                 01292000
+PSASVC13 EQU   PSA+1016                                                 01293000
+PSALSFCC EQU   PSA+1012                                                 01294000
+PSASFACC EQU   PSA+1008                                                 01295000
+PSASTOP  EQU   PSA+992                                                  01296000
+PSASTART EQU   PSA+976                                                  01297000
+PSARSPSW EQU   PSA+968                                                  01298000
+PSASRPSW EQU   PSA+960                                                  01299000
+PSARV045 EQU   PSA+892                                                  01300000
+PSARV044 EQU   PSA+888                                                  01301000
+PSARV043 EQU   PSA+884                                                  01302000
+PSARV042 EQU   PSA+880                                                  01303000
+PSARV041 EQU   PSA+876                                                  01304000
+PSARV040 EQU   PSA+872                                                  01305000
+PSARV025 EQU   PSA+868                                                  01306000
+PSADSSED EQU   PSA+868                                                  01307000
+PSADSSPR EQU   PSA+864                                                  01308000
+PSADSSFW EQU   PSA+860                                                  01309000
+PSADSS14 EQU   PSA+856                                                  01310000
+PSADSSPP EQU   PSA+848                                                  01311000
+PSADSSRP EQU   PSA+840                                                  01312000
+PSADSS05 EQU   PSADSSF4                                                 01313000
+PSADSS10 EQU   PSADSSF4                                                 01314000
+PSADSSVE EQU   PSADSSF4                                                 01315000
+PSADSSDE EQU   PSADSSF4                                                 01316000
+PSADSSC0 EQU   PSADSSF4                                                 01317000
+PSADSSIE EQU   PSADSSF4                                                 01318000
+PSADSS12 EQU   PSADSSF4                                                 01319000
+PSADSSRC EQU   PSADSSF4                                                 01320000
+PSARV057 EQU   PSADSSF3                                                 01321000
+PSARV056 EQU   PSADSSF3                                                 01322000
+PSARV055 EQU   PSADSSF3                                                 01323000
+PSARV054 EQU   PSADSSF3                                                 01324000
+PSADSSRW EQU   PSADSSF3                                                 01325000
+PSADSSNM EQU   PSADSSF3                                                 01326000
+PSADSSES EQU   PSADSSF3                                                 01327000
+PSADSSGP EQU   PSADSSF3                                                 01328000
+PSADSSF2 EQU   PSADSSFL+1                                               01329000
+PSADSSPI EQU   PSADSSF1                                                 01330000
+PSADSSOI EQU   PSADSSF1                                                 01331000
+PSADSSSP EQU   PSADSSF1                                                 01332000
+PSADSSTP EQU   PSADSSF1                                                 01333000
+PSADSSDW EQU   PSADSSF1                                                 01334000
+PSADSSDD EQU   PSADSSF1                                                 01335000
+PSADSSDM EQU   PSADSSF1                                                 01336000
+PSADSSMV EQU   PSADSSF1                                                 01337000
+PSADSSTS EQU   PSA+816                                                  01338000
+PSADSSWK EQU   PSA+812                                                  01339000
+PSADSSR3 EQU   PSA+808                                                  01340000
+PSADSSR2 EQU   PSA+804                                                  01341000
+PSADSSRS EQU   PSA+800                                                  01342000
+PSASTOR  EQU   PSA+796                                                  01343000
+PSARV058 EQU   PSA+794                                                  01344000
+PSAVSTAP EQU   PSA+792                                                  01345000
+PSAWKVAP EQU   PSA+788                                                  01346000
+PSAWKRAP EQU   PSA+784                                                  01347000
+PSAMCHIC EQU   PSA+783                                                  01348000
+PSAMODE  EQU   PSA+782                                                  01349000
+PSASYMSK EQU   PSA+781                                                  01350000
+PSAMCHFL EQU   PSA+780                                                  01351000
+PSACR0   EQU   PSA+776                                                  01352000
+PSAPSWSV EQU   PSA+768                                                  01353000
+PSALITA  EQU   PSA+764                                                  01354000
+PSACLHS  EQU   PSAHLHI                                                  01355000
+PSALKR15 EQU   PSALKSA+60                                               01356000
+PSALKR14 EQU   PSALKSA+56                                               01357000
+PSALKR13 EQU   PSALKSA+52                                               01358000
+PSALKR12 EQU   PSALKSA+48                                               01359000
+PSALKR11 EQU   PSALKSA+44                                               01360000
+PSALKR10 EQU   PSALKSA+40                                               01361000
+PSALKR9  EQU   PSALKSA+36                                               01362000
+PSALKR8  EQU   PSALKSA+32                                               01363000
+PSALKR7  EQU   PSALKSA+28                                               01364000
+PSALKR6  EQU   PSALKSA+24                                               01365000
+PSALKR5  EQU   PSALKSA+20                                               01366000
+PSALKR4  EQU   PSALKSA+16                                               01367000
+PSALKR3  EQU   PSALKSA+12                                               01368000
+PSALKR2  EQU   PSALKSA+8                                                01369000
+PSALKR1  EQU   PSALKSA+4                                                01370000
+PSALKR0  EQU   PSALKSA                                                  01371000
+PSARV023 EQU   PSACLHT+52                                               01372000
+PSALOCAL EQU   PSACLHT+48                                               01373000
+PSACMSL  EQU   PSACLHT+44                                               01374000
+PSAOPTL  EQU   PSACLHT+40                                               01375000
+PSATPACL EQU   PSACLHT+36                                               01376000
+PSATPDNL EQU   PSACLHT+32                                               01377000
+PSATPNCL EQU   PSACLHT+28                                               01378000
+PSAIOSLL EQU   PSACLHT+24                                               01379000
+PSAIOSUL EQU   PSACLHT+20                                               01380000
+PSAIOSCL EQU   PSACLHT+16                                               01381000
+PSAIOSSL EQU   PSACLHT+12                                               01382000
+PSASALCL EQU   PSACLHT+8                                                01383000
+PSAASML  EQU   PSACLHT+4                                                01384000
+PSADISPL EQU   PSACLHT                                                  01385000
+PSASRSA  EQU   PSA+636                                                  01386000
+PSARV050 EQU   PSA+634                                                  01387000
+PSADSSGO EQU   PSA+633                                                  01388000
+PSARECUR EQU   PSA+632                                                  01389000
+PSAHLHIS EQU   PSA+628                                                  01390000
+PSAIPCSA EQU   PSA+624                                                  01391000
+@NM00033 EQU   PSA+621                                                  01392000
+PSAIPCDM EQU   PSA+620                                                  01393000
+PSAIPCD  EQU   PSA+616                                                  01394000
+@NM00032 EQU   PSA+613                                                  01395000
+PSAIPCRM EQU   PSA+612                                                  01396000
+PSAIPCR  EQU   PSA+608                                                  01397000
+PSAMCHEX EQU   PSA+600                                                  01398000
+PSAMPSW  EQU   PSA+592                                                  01399000
+PSAEXPS2 EQU   PSA+584                                                  01400000
+PSAEXPS1 EQU   PSA+576                                                  01401000
+PSAPIREG EQU   PSA+572                                                  01402000
+PSARSREG EQU   PSA+568                                                  01403000
+PSAGPREG EQU   PSA+556                                                  01404000
+PSARV022 EQU   PSASUP4                                                  01405000
+PSARV021 EQU   PSASUP4                                                  01406000
+PSARV020 EQU   PSASUP4                                                  01407000
+PSARV019 EQU   PSASUP4                                                  01408000
+PSARV018 EQU   PSASUP4                                                  01409000
+PSARV017 EQU   PSASUP4                                                  01410000
+PSARV016 EQU   PSASUP4                                                  01411000
+PSARV015 EQU   PSASUP4                                                  01412000
+PSARV014 EQU   PSASUP3                                                  01413000
+PSARV013 EQU   PSASUP3                                                  01414000
+PSARV012 EQU   PSASUP3                                                  01415000
+PSARV011 EQU   PSASUP3                                                  01416000
+PSARV010 EQU   PSASUP3                                                  01417000
+PSARV009 EQU   PSASUP3                                                  01418000
+PSARV008 EQU   PSASUP3                                                  01419000
+PSAIOSUP EQU   PSASUP3                                                  01420000
+PSALCR   EQU   PSASUP2                                                  01421000
+PSARTM   EQU   PSASUP2                                                  01422000
+PSAACR   EQU   PSASUP2                                                  01423000
+PSAIPCE2 EQU   PSASUP2                                                  01424000
+PSAIPCES EQU   PSASUP2                                                  01425000
+PSAIPCEC EQU   PSASUP2                                                  01426000
+PSAGTF   EQU   PSASUP2                                                  01427000
+PSAIPCRI EQU   PSASUP2                                                  01428000
+PSAIPCRP EQU   PSASUP1                                                  01429000
+PSAIPCDR EQU   PSASUP1                                                  01430000
+PSADISP  EQU   PSASUP1                                                  01431000
+PSALOCK  EQU   PSASUP1                                                  01432000
+PSAPI    EQU   PSASUP1                                                  01433000
+PSAEXT   EQU   PSASUP1                                                  01434000
+PSASVC   EQU   PSASUP1                                                  01435000
+PSAIO    EQU   PSASUP1                                                  01436000
+PSAAOLD  EQU   PSA+548                                                  01437000
+PSAANEW  EQU   PSA+544                                                  01438000
+PSATOLD  EQU   PSA+540                                                  01439000
+PSATNEW  EQU   PSA+536                                                  01440000
+PSALCCAR EQU   PSA+532                                                  01441000
+PSALCCAV EQU   PSA+528                                                  01442000
+PSAPCCAR EQU   PSA+524                                                  01443000
+PSAPCCAV EQU   PSA+520                                                  01444000
+PSACPULA EQU   PSA+518                                                  01445000
+PSACPUPA EQU   PSA+516                                                  01446000
+PSAPSA   EQU   PSA+512                                                  01447000
+FLCHDEND EQU   PSA+512                                                  01448000
+FLCCRSAV EQU   FLCMCLA+280                                              01449000
+FLCGRSAV EQU   FLCMCLA+216                                              01450000
+FLCFPSAV EQU   FLCMCLA+184                                              01451000
+FLCFLA   EQU   FLCMCLA+88                                               01452000
+FLCRGNCD EQU   FLCMCLA+84                                               01453000
+FLCFSAA  EQU   FLCFSA+1                                                 01454000
+@NM00031 EQU   FLCFSA                                                   01455000
+@NM00030 EQU   FLCMCLA+72                                               01456000
+FLCMCIC  EQU   FLCMCLA+64                                               01457000
+@NM00029 EQU   FLCMCLA+20                                               01458000
+FLCIOAA  EQU   FLCIOA+1                                                 01459000
+@NM00028 EQU   FLCIOA                                                   01460000
+@NM00027 EQU   FLCMCLA+15                                               01461000
+@NM00026 EQU   FLCMCLA+14                                               01462000
+@NM00025 EQU   FLCMCLA+12                                               01463000
+FLCLCL   EQU   FLCMCLA+8                                                01464000
+FLCIOELA EQU   FLCIOEL+1                                                01465000
+@NM00024 EQU   FLCIOEL                                                  01466000
+FLCCHNID EQU   FLCMCLA                                                  01467000
+@NM00023 EQU   PSA+160                                                  01468000
+FLCMTRCD EQU   PSA+157                                                  01469000
+@NM00022 EQU   PSA+156                                                  01470000
+FLCPERA  EQU   FLCPER+1                                                 01471000
+@NM00021 EQU   FLCPER                                                   01472000
+@NM00020 EQU   PSA+151                                                  01473000
+FLCPERCD EQU   PSA+150                                                  01474000
+FLCMCNUM EQU   PSA+149                                                  01475000
+@NM00019 EQU   PSA+148                                                  01476000
+FLCTEAA  EQU   FLCTEA+1                                                 01477000
+@NM00018 EQU   FLCTEA                                                   01478000
+PSAPIPC  EQU   PSAPICOD                                                 01479000
+PSAPIMC  EQU   PSAPICOD                                                 01480000
+PSAPIPER EQU   PSAPICOD                                                 01481000
+PSARV049 EQU   FLCPICOD                                                 01482000
+FLCPILCB EQU   FLCPIILC                                                 01483000
+@NM00017 EQU   FLCPIILC                                                 01484000
+@NM00016 EQU   PSAEPPSW                                                 01485000
+FLCSILCB EQU   FLCSVILC                                                 01486000
+@NM00015 EQU   FLCSVILC                                                 01487000
+@NM00014 EQU   PSAESPSW                                                 01488000
+FLCEICOD EQU   PSAEEPSW+2                                               01489000
+PSASPAD  EQU   PSAEEPSW                                                 01490000
+@NM00013 EQU   PSA+128                                                  01491000
+FLCINPSW EQU   PSA+120                                                  01492000
+FLCMNPSW EQU   PSA+112                                                  01493000
+FLCPNPSW EQU   PSA+104                                                  01494000
+FLCSNPSW EQU   PSA+96                                                   01495000
+FLCENPSW EQU   PSA+88                                                   01496000
+FLCTRACE EQU   PSA+84                                                   01497000
+FLCTIMER EQU   PSA+80                                                   01498000
+FLCCVT2  EQU   PSA+76                                                   01499000
+FLCCAW   EQU   PSA+72                                                   01500000
+FLCCSW   EQU   PSA+64                                                   01501000
+FLCIOPSW EQU   PSA+56                                                   01502000
+FLCMOPSW EQU   PSA+48                                                   01503000
+FLCEOPSW EQU   PSA+24                                                   01504000
+@NM00012 EQU   FLCICCW2+4                                               01505000
+FLCCVT   EQU   FLCICCW2                                                 01506000
+FLCICCW1 EQU   FLCROPSW                                                 01507000
+FLCIPPSW EQU   FLCRNPSW                                                 01508000
+.@UNREFD ANOP                          END UNREFERENCED COMPONENTS      01509000
+@RT00212 EQU   SVIERROR                                                 01510000
+@RT00215 EQU   SVIERROR                                                 01511000
+@RT00246 EQU   SVIERROR                                                 01512000
+@ENDDATA EQU   *                                                        01513000
+         END   AMDSASVI,(C'PL/S-II',0502,73230)                         01514000

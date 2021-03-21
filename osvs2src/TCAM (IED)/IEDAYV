@@ -1,0 +1,1325 @@
+         TITLE 'IEDAYV OUTPUT EDIT ROUTINE FOR 3705 TERMINALS'          00070005
+IEDAYV   CSECT                                                          00140005
+         SPACE 3                                                        00170058
+*********************************************************************** 00210005
+*                                                                     * 00280005
+* MODULE NAME=IEDAYV  (TCAM,TSO)                               @Y17XAYP 00350000
+*                                                                     * 00420005
+* DESCRIPTIVE NAME = TSO 3705 OUTPUT EDIT                             * 00490005
+*                                                                     * 00560005
+* COPYRIGHT = NONE                                                    * 00630005
+*                                                                     * 00700005
+* STATUS = VERSION 10.0                                        @G36XRYP 00770000
+*                                                                     * 00840005
+* FUNCTION = IEDAYV MOVES DATA FROM TIOC BUFFERS OR MSGGEN DATA AREAS * 00910005
+*            INTO TCAM BUFFERS FOR START/STOP TERMINALS(2741,1050,TWX)* 00980005
+*            THAT ARE CONNECTED TO TSO VIA A 3705 CONTROL UNIT.       * 01050005
+*            IEDAYV CAN BE DIVIDED INTO SEVERAL SEPARATE FUNCTIONAL   * 01120005
+*            PARTS:                                                   * 01190005
+*            1. TSO MESSAGE SET UP.                                   * 01260005
+*            2. MSGGEN MESSAGE SET UP.                                * 01330005
+*            3. CALCULATIONS BEFORE DATA MOVEMENT.                    * 01400005
+*            4. DATA MOVEMENT, INSPECTION, AND EDITING.               * 01470005
+*            5. CLEANUP AFTER DATA MOVEMENT.                          * 01540005
+*            6. SUBROUTINES:                                          * 01610005
+*            A.  INSERTNL- USED TO ADD ENDING CONTROL CHARACTERS.     * 01680005
+*            B.  SIMATTN-  USED TO COUNT LINES.                       * 01750005
+*            C.  QTIPRET-  USED TO UPDATE INPUT BUFFER COUNTS.        * 01820005
+*            D.  IDLES010- USED TO INSERT IDLES WHERE NEEDED.         * 01890005
+*            E.  MSGGEN18- USED TO PREVENT MULTI-LINE MSGGENS.        * 01960005
+*            CONTROL IS RECEIVED IN IEDAYV FROM IEDAYE AS A RESULT OF * 02030005
+*            AN OUTPUT EDIT REQUEST FROM EITHER MSGGEN(IEDAYM) OR     * 02100005
+*            TSOUTPUT(IEDAYO).                                        * 02170005
+*            PROCESSING BEGINS BY DETERMINING WHETHER THE EDIT REQUEST* 02240005
+*            IS FROM MSGGEN(IEDAYM) OR TSOUTPUT(IEDAYO). ONCE THIS IS * 02310005
+*            DECIDED CONTROL IS THEN PASSED TO THE APPROPRIATE SET-UP * 02380005
+*            ROUTINE. THE TWO SET-UP ROTTINES PERFORM THE SAME JOB.   * 02450005
+*            THEY SET UP THE PROPER COUNTS, POINTERS, AND FLAGS SO THE* 02520005
+*            RIGHT AMOUNT OF DATA CAN BE MOVED TO THE TCAM BUFFER AND * 02590005
+*            THE PROPER ACTION WILL BE TAKEN WHEN A TCAM BUFFER IS    * 02660005
+*            FILLED OR AN END OF LINE IS REACHED.                     * 02730005
+*            AFTER THE SET UP IS COMPLETED, CONTROL IS PASSED TO A    * 02800005
+*            ROUTINE THAT DECIDES WHETHER OR NOT THERE WILL BE ROOM IN* 02870005
+*            THE CURRENT TCAM BUFFER AND ON THE CURRENT LINE TO MOVE  * 02940005
+*            ALL THE DATA. A SWITCH IN THE EDIT WORK AREA(GMAIN) IS   * 03010005
+*            SET TO INDICATE FOLLOWING:                               * 03080005
+*            X'04' - ENTIRE MESSAGE MOVED.                            * 03150005
+*            X'08' - TCAM BUFFER FILLED.                              * 03220005
+*            X'0C' - TERMINAL LINE FILLED.                            * 03290005
+*            ONCE THE SWITCH IS SET THE ACTUAL EDIT FUNCTION IS DONE  * 03360005
+*            AND THE DATA IS ACTUALLY MOVED FROM THE INPUT AREA INTO  * 03430005
+*            THE TCAM BUFFERS.                                        * 03500005
+*            AFTER THE DATA HAS BEEE MOVED, ONE OF THE CLEAN-UP       * 03570005
+*            ROUTINES WILL GET CONTROL BASED ON THE SETTING OF THE    * 03640005
+*            SWITCH IN GMAIN. THESE ROUTINES WILL ADD THE NECESSARY   * 03710005
+*            CARRAIGE CONTROL CHARACTERS AND DETERMINE WHICH OF THE   * 03780005
+*            FOLLOWING EXITS TO TAKE:                                 * 03850005
+*            X'00' - MESSAGE COMPLETELY MOVED. TSOUTPUT AND MSGGEN.   * 03920005
+*            X'0C' - TCAM BUFFER FILLED.       TSOUTPUT AND MSGGEN.   * 03990005
+*            X'10' - TERMINAL LINE FILLED.     TSOUTPUT ONLY.         * 04060005
+*                                                                     * 04130005
+* NOTES = IF THIS ROUTINE DETERMINES THAT THE MSGGEN REQUEST IS LONGER* 04200005
+*         THAN ONE PHYSICAL LINE FOR THE TERMINAL THE MSGGEN DATA WILL* 04270005
+*         BE TRUNCATED AND THE MSGGEN ROUTINE(IEDAYM) WILL RECEIVE    * 04340005
+*         CONTROL BACK WITH A X'00' RETURN CODE INSTEAD OF A X'10'.   * 04410005
+*                                                                     * 04480005
+*    DEPENDENCIES = THE OPERATION OF THIS MODULE DOES NOT DEPEND UPON * 04550005
+*                   A PARTICULAR REPRESENTATION OF THE                * 04620005
+*                   EXTERNAL CHARACTER SET.                           * 04690005
+*                                                                     * 04760005
+*    RESTRICTIONS = NONE.                                             * 04830005
+*                                                                     * 04900005
+*    REGISTER CONVENTIONS = REGISTER 2 POINTS TO THE INPUT DATA AREA  * 04970005
+*                           REGISTER 3 POINTS TO THE SCB              * 05040005
+*                           REGISTER 4 POINTS TO THE LCB              * 05110005
+*                           REGISTER 5 POINTS TO THE QCB              * 05180005
+*                           REGISTER 7 POINTS TO THE OUTPUT DATA AREA * 05250005
+*                           REGISTER B POINTS TO THE EDIT WORK AREA   * 05320005
+*                           REGISTER D POINTS TO AVTSAVE2             * 05390005
+*                                                                     * 05460005
+*    PATCH LABEL = AYVPATCH                                           * 05530005
+*                                                                     * 05600005
+* MODULE TYPE = EDIT                                                  * 05670005
+*                                                                     * 05740005
+*    PROCESSOR = ASSEMBLER XF                                         * 05810005
+*                                                                     * 05880005
+*    MODULE SIZE = 1000 HEX BYTES                                     * 05950005
+*                                                                     * 06020005
+*    ATTRIBUTES = SERIALLY REUSABLE, REFRESHABLE, ENABLED, RESIDENT,  * 06090005
+*                 PROBLEM PROGRAM MODE                                * 06160005
+*                                                                     * 06230005
+* ENTRY POINT = IEDAYV                                                * 06300005
+*                                                                     * 06370005
+*    PURPOSE = SEE FUNCTION.                                          * 06440005
+*                                                                     * 06510005
+*    LINKAGE = SEE INPUT AND OUTPUT BELOW.                            * 06580005
+*                                                                     * 06650005
+* INPUT = REGISTER 2 POINTS TO THE INPUT DATA AREA.                   * 06720005
+*         REGISTER 3 POINTS TO THE SCB.                               * 06790005
+*         REGISTER 4 POINTS TO THE LCB.                               * 06860005
+*         REGISTER 5 POINTS TO THE QCB.                               * 06930005
+*         REGISTER 6 POINTS TO THE INPUT DATA AREA.                   * 07000005
+*         REGISTER 7 POINTS TO THE OUTPUT DATA AREA.                  * 07070005
+*         REGISTER B POINTS TO THE EDIT WORK AREA(GMAIN).             * 07140005
+*         REGISTER C POINTS TO THE BASE OF IEDAYE.                    * 07210005
+*         REGISTER D POINTS TO AVTSAVE2.                              * 07280005
+*         REGISTER F POINTS TO THE ENTRY POINT OF IEDAYV.             * 07350005
+*                                                                     * 07420005
+* OUTPUT = REGISTER 1 CONTAINS A COUNT OF THE DATA MOVED.             * 07490005
+*                   E CONTAINS THE RETURN ADDRESS IN TSOUTPUT OR MSGGE* 07560005
+*                   F CONTAINS THE RETURN CODE.                       * 07630005
+*                   *************************************************** 07700005
+*                   * IF THE RETURN CODE IS ZERO FOR MSGGENS THE LEFT * 07770005
+*                   * HALF OF REGISTER F CONTAINS THE TOTAL COUNT OF  * 07840005
+*                   * THE DATA MOVED TO THA TCAM BUFFERS.             * 07910005
+*                   *************************************************** 07980005
+*                                                                     * 08050005
+* EXIT-NORMAL = TO THE TSOUTPUT ROUTINE(IEDAYO).                      * 08120005
+*               TO THE MSGGEN ROUTINE(IEDAYM).                        * 08190005
+*                                                                     * 08260005
+* EXIT-ERROR = NONE.                                                  * 08330005
+*                                                                     * 08400005
+* EXTERNAL REFERENCES = SEE BELOW.                                    * 08470005
+*                                                                     * 08540005
+*    ROUTINES = SVC 101(QTIP).                                        * 08610005
+*               IEDAYS(SIMULATED ATTENTION).                          * 08680005
+*                                                                     * 08750005
+*    DATA AREAS = TIOC BUFFER.                                        * 08820005
+*                 MSGGEN INPUT DATA.                                  * 08890005
+*                 TCAM BUFFER.                                        * 08960005
+*                                                                     * 09030005
+*    CONTROL BLOCK = AVT.                                             * 09100005
+*                    TIOC BUFFER PREFIX.                              * 09170005
+*                    LCB.                                             * 09240005
+*                    TCAM BUFFER PREFIX.                              * 09310005
+*                    QCB.                                             * 09380005
+*                    SCB.                                             * 09450005
+*                    TRM.                                             * 09520005
+*                    TSINPUT QCB.                                     * 09590005
+*                                                                     * 09660005
+*    MACROS = IEDHJN.                                                 * 09730005
+*             QTIP.                                                   * 09800005
+*                                                                     * 09870005
+*CHANGE ACTIVITY AS FOLLOWS                                           * 09940057
+*                                                                     * 09940157
+*C327600,330400,331800                                         @SA69640 09940257
+* C510300-511000                                               @YA06291 09940358
+*C631400                                                       @YA08763 09940458
+*A632800                                                       @YA08763 09940558
+*C631400-631800                                                @YA09299 09940658
+*D633100                                                       @YA09299 09940758
+*A863100                                                       @SA75159 09940858
+*A606200-607600                                                @Y17XAYP 09946800
+*C186200,187600,441700,443100,593600,606200                    @Y17XAYP 09952800
+*                                                              @G36XRYP 09961800
+*A890400,596400                                                @G36XRYP 09970800
+*A268800                                                       @OY15612 09974800
+*C171500,198100,209300,253400,273700,387100,443800,483700      @G36XRYP 09979800
+*C528500,536900,543200,609700,665700                           @G36XRYP 09988800
+*D147000,597100                                                @G36XRYP 09997800
+*C520800                                                       @OZ31891 09997986
+*                                                                     * 10010005
+*********************************************************************** 10080005
+         EJECT                                                          10150005
+* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * 10220005
+* * * * *     R E G I S T E R  E Q U A T E S  * * * * * * * * * * * * * 10290005
+* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * 10360005
+RZERO    EQU   0                        REGISTER ZERO                   10430005
+RNDX     EQU   1                        REGISTER 1                      10500005
+RTIOC    EQU   2                        TSO BUFFER                      10570005
+RTHREE   EQU   3                        REGISTER THREE                  10640005
+RLCB     EQU   4                        LCB                             10710005
+RQCB     EQU   5                        QCB                             10780005
+RTSBUF   EQU   6                        TSO BUFFER ADDRESS              10850005
+RTCBUF   EQU   7                        TCAM BUFFER ADDRESS             10920005
+RTEMP    EQU   8                        RTEMP/RTEMPA MUST BE EVN/ODD    10990005
+RTEMPA   EQU   9                        WORK REGISTER                   11060005
+RDCB     EQU   10                       DCB                             11130005
+RMAIN    EQU   11                       SAVE AREA                       11200005
+RBASE    EQU   12                       BASE REGISTER                   11270005
+RAVT     EQU   13                       AVT SAVE AREA                   11340005
+RLINK    EQU   14                       LINK REGISTER                   11410005
+RRTN     EQU   15                       RETURN REGISTER                 11480005
+* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * 11550005
+         EJECT                                                          11620005
+* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * 11690005
+* * * * * * * * *  M I S C E L L A N E O U S  E Q U A T E S * * * * * * 11760005
+* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * 11830005
+ZERO     EQU   0                        ZERO                     S21903 11900005
+ONE      EQU   1                        ONE                      S21903 11970005
+TWO      EQU   2                        TWO                      S21903 12040005
+THREE    EQU   3                        THREE                           12110005
+FOUR     EQU   4                        FOUR                     S21903 12180005
+EIGHT    EQU   8                        EIGHT                    S21903 12250005
+ELEVEN   EQU   11                       ELEVEN                          12320005
+TWELVE   EQU   12                       TWELVE                   S21903 12390005
+THIRTEEN EQU   13                       THIRTEEN                        12460005
+FIFTEEN  EQU   15                       FIFTEEN                         12530005
+SIXTEEN  EQU   16                       SIXTEEN                  S21903 12600005
+TWENTY   EQU   20                       TWENTY                          12670005
+BSP      EQU   X'16'                    BACKSPACE                       12740005
+BYP      EQU   X'24'                    BYPASS CHAR                     12810005
+COLON    EQU   C':'                     COLON                           12880005
+CNTLCHAR EQU   X'3F'                    CONTROL CHARACTER DELIMITER     12950005
+CR       EQU   X'0D'                    CARR RTN                        13020005
+EOB      EQU   X'26'                    CIRCLE B                        13090005
+EOT      EQU   X'37'                    CIRCLE C                        13160005
+HTAB     EQU   X'05'                    HORIZ TAB                       13230005
+ICMASK   EQU   12                       INSERT CHARACTER MASK           13300005
+IDLECHAR EQU   X'17'                    IDLE                            13370005
+NULLCHAR EQU   0                        NULL FOR SNA           @Y17XAYP 13400000
+IDLEFLAG EQU   X'F0'                    IDLE FLAG                       13440005
+LC       EQU   X'06'                    DOWN SHIFT                      13510005
+LF       EQU   X'25'                    TTY LINE FEED                   13580005
+NEEDBOTH EQU   X'E2'                    NEED LINE FEED AND CARR RETURN  13650005
+NEEDLF   EQU   X'C2'                    LINE FEED NEEDED                13720005
+NLCHAR   EQU   X'15'                    NEW LINE                        13790005
+NOBFCODE EQU   X'F8'                    MSGGEN NO BUFFER RETURN CODE    13860005
+PRE      EQU   X'27'                    PREFIX                          13930005
+RC0      EQU   0                        RETURN CODE 0                   14420005
+RC12     EQU   12                       RETURN CODE X'C'                14490005
+RC16     EQU   16                       RETURN CODE X'10'               14560005
+RES      EQU   X'14'                    RESTORE CHAR                    14630005
+* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * 14770005
+         EJECT                                                          14840005
+* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * 14910005
+* * * * * *  A D D R E S S A B I L I T Y  * * * * * * * *               14980005
+* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * 15050005
+         USING IEDAYV,RBASE             ESTABLISH BASE           Y06327 15120005
+         USING AVTSAVE2,RAVT            ESTABLISH SAVE AREA      S21903 15190005
+         USING IEDQQCB,RQCB             ESTABLISH QCB ADDRESS    S21903 15260005
+         USING IEDQLCB,RLCB             ESTABLISH LCB ADDRESS    S21903 15330005
+         USING IEDQSCB,RTHREE           SCB ADDRESSABILITY              15400005
+         USING IHADCB,RDCB              ESTABLISH DCB ADDRESS    S21903 15470005
+         USING TIOCBUF,RTIOC            TSO BUFFER DSECT         S21903 15540005
+         USING TSBUFR,RMAIN             SAVE AREA ADDRESS        S21903 15610005
+* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * 15680005
+         EJECT                                                          15750005
+         LR    RBASE,RRTN                SET BASE REGISTER              15820005
+IEDAYV   IEDHJN AYV00000                                                15890005
+         TM    WFLGS,TSOASIS+CONTROLM   IS THIS A FULL SCREEN TPUT      15960005
+         BNO   AYV00010                 NO, CONTINUE                    16030005
+         NI    WFLGS,AVTEFF-CONTROLM    MAKE IT ASIS MODE               16100005
+         SPACE 2                                                        16170005
+AYV00010 EQU   *                                                        16240005
+         TM    WFLGS,TSOMSG             IS THIS A MSGGEN                16310005
+         BZ    MSGGEN00                 YES, BRANCH TO SET UP FOR IT    16380005
+         LTR   RTSBUF,RTSBUF            IS THERE ANY INPUT DATA         16450005
+         BNZ   AYV00030                 YES, GO SET UP TO MOVE IT       16520005
+         TM    QCBRETCT,QCBNL           ARE NEW LINE BITS ON            16590005
+         BNZ   AYV00020                 YES, NO NEED TO CHECK CARR. CNT 16660005
+         LA    RLINK,AYV00020           SET RETURN REGISTER             16730005
+         CLC   QCBCARCT,LINESV+ONE      DOES CARRIAGE COUNT EQUAL LINE  16800005
+         BE    INSERTNL                 YES, GO PUT IN A NEW LINE       16870005
+         SPACE 2                                                        16940005
+AYV00020 EQU   *                                                        17010005
+         LA    RLINK,AYV90000           SET RETURN REGISTER             17080005
+         TM    AVTPARM3+TWO,DCTTWX      IS THIS A TWX          @G36XRYP 17150000
+         BZ    IDLES010                 NO, BRANCH TO INSERT IDLES      17220005
+         LA    RTEMPA,ONE               PREVENT RETURN COUNT OF ZERO    17290005
+         B     IDLES080                 GO PUT IN ONE IDLE              17360005
+         SPACE 2                                                        17430005
+AYV00030 EQU   *                                                        17500005
+         L     RLINK,BUFFTRLR-ONE       PICK TSO BUFFER TRAILER ADDR    17570005
+         LA    RLINK,AVTEZERO(,RLINK)   CLEAR FLAG BYTE                 17640005
+         LTR   RLINK,RLINK              SEE IF ANY TRAILER BUFFER       17710005
+         BNZ   AYV00100                 BRANCH IF TRAILER EXISTS        17780005
+         NI    FLAG1,AVTEFF-TRAILER     INDICATE NO TRAILER             17850005
+         B     AYV00200                 CONTINUE PROCESSING             17920005
+         SPACE 2                                                        17990005
+AYV00100 EQU   *                                                        18060005
+         OI    FLAG1,TRAILER            INDICATE TRAILER EXISTS         18130005
+         SPACE 2                                                        18200005
+AYV00200 EQU    *                                                       18270005
+         SR    RTEMP,RTEMP              CLEAR REGISTER                  18340005
+         IC    RTEMP,BUFFOFST           GET OFFSET TO DATA              18410005
+         AR    RTSBUF,RTEMP             POINT TO FIRST BYTE OF DATA     18480005
+         MVC   BLNTH+ONE(ONE),BUFFLNTH  SET AMOUNT OF DATA IN BUFFER    18550005
+         TM    QCBRETCT,QCBEND          ENTRY TO INSERT NEW LN @Y17XAYP 18580000
+         BZ    AYV00300                 NO, BRANCH                      18690005
+         NI    QCBRETCT,AVTEFF-QCBEND   TURN OFF BIT           @Y17XAYP 18720000
+         MVI   MOVED+ONE,ONE            UPDATE MOVED COUNT              18830005
+         BAL   RLINK,QTIPRET            GO UPDATE BUFFER                18900005
+         TM    FLAG1,TRAILER            IS THERE A TRAILER BUFFER       18970005
+         BZ    AYV00250                 BRANCH IF NOT                   19040005
+         BAL   RLINK,INSERTNL           GO INSERT NEW LINE CHAR         19110005
+         XC    CARCT,CARCT              CLEAR OUT CARRAIGE COUNT        19180005
+         BAL   RLINK,SIMATTN            GO CALL SIM ATTN ROUTINE        19250005
+         L     RTSBUF,BUFFTRLR-ONE      YES, GET ITS ADDRESS            19320005
+         LA    RTSBUF,ZERO(,RTSBUF)     CLEAR HIGH BYTE                 19390005
+         ST    RTSBUF,TSCURR            SET UP AS CURRENT BUFFER        19460005
+         LR    RTIOC,RTSBUF             SAVE START ADDRESS OF BUFFER    19530005
+         B     AYV00030                 CONTINUE EDITING                19600005
+         SPACE 2                                                        19670005
+AYV00250 EQU   *                                                        19740005
+         TM    AVTPARM3+TWO,DCTTWX      IS THIS DEVICE A TWX   @G36XRYP 19810000
+         BZ    AYV00260                 NO, BRANCH                      19880005
+         NI    QCBRETCT,QCBNL           TURN OFF THE NEW LINE IND       19950005
+         MVI   ZERO(RTCBUF),CR          PUT IN A CARRAIGE RETURN        20020005
+         BAL   RLINK,INSRTNL1           GO COUNT IT                     20090005
+         B     AYV00270                 GO TO LINE COUNTING EXIT        20160005
+         SPACE 2                                                        20230005
+AYV00260 EQU   *                                                        20300005
+         BAL   RLINK,INSERTNL           GO INSERT A NEW LINE CHAR       20370005
+         SPACE 2                                                        20440005
+AYV00270 EQU   *                                                        20510005
+         BAL   RLINK,SIMATTN            GO COUNT A LINE                 20580005
+         XC    CARCT,CARCT              CLEAR OUT CARRAIGE COUNT        20650005
+         B     AYV90000                 EXIT                            20720005
+         SPACE 2                                                        20790005
+AYV00300 EQU   *                                                        20860005
+         TM    AVTPARM3+TWO,DCTTWX      IS THIS A TWX          @G36XRYP 20930000
+         BO    AYV00350                 YES, BRANCH                     21000005
+         NI    QCBRETCT,AVTEFF-QCBNL    RESET NEW LINE INDICATOR        21070005
+         SPACE 2                                                        21140005
+AYV00350 EQU   *                                                        21210005
+         CLI   CARCT+ONE,AVTEFF         MISSING CR OR LF ON INPUT       21280005
+         BE    AYV00500                 YES, GO SEE WHAT IS NEEDED      21350005
+         LA    RLINK,AYV00400           SET UP RETURN ADDRESS           21420005
+         CLI   CARCT+ONE,NEEDLF         LINE FEED NEEDED                21490005
+         BE    INSRTNL0                 YES, GO INSERT IT               21560005
+         CLI   CARCT+ONE,NEEDBOTH       CR AND LF BOTH NEEDED           21630005
+         BE    AYV00800                 YES, GO INSERT THEM             21700005
+         SPACE 2                                                        21770005
+AYV00400 EQU   *                                                        21840005
+         LH    RLINK,LINESV             GET LINE SIZE                   21910005
+         SH    RLINK,CARCT              COMPUTE ROOM LEFT ON LINE       21980005
+         BP    AYV00900                 BRANCH POSITIVE                 22050005
+         TM    WFLGS,CONTROLM           CONTROL MODE                    22120005
+         BZ    AYV00800                 NO, BRANCH                      22190005
+         LH    RLINK,LINESV             RESTORE TERMINAL LINE SIZE      22260005
+         B     AYV00900                 CONTINUE                        22330005
+         SPACE 2                                                        22400005
+AYV00500 EQU   *                                                        22470005
+         XC    CARCT,CARCT              CLEAR OUT CARRAIGE COUNT        22540005
+         TM    QCBRETCT,QCBCR+QCBLF     CHECK FOR CR OR LF NEEDED       22610005
+         BZ    AYV00800                 GO INSERT BOTH                  22680005
+         TM    QCBRETCT,QCBCR           WAS CR RECEIVED                 22750005
+         BO    AYV00700                 YES GO ADD LINE FEED            22820005
+         MVI   ZERO(RTCBUF),CR          INSERT CARRAIGE RETURN          22890005
+         BAL   RLINK,INSRTNL1           GO COUNT IT                     22960005
+         NI    QCBRETCT,AVTEFF-QCBNL    TURN OFF NEW LINE               23030005
+         B     AYV00400                 CONTINUE                        23100005
+         SPACE 2                                                        23170005
+AYV00700 EQU   *                                                        23240005
+         LA    RLINK,AYV00400           SET UP RETURN ADDRESS           23310005
+         NI    QCBRETCT,AVTEFF-QCBNL    RESET NEW LINE FLAGS            23380005
+         B     INSRTNL0                 GO PUT IN LINE FEED             23450005
+         SPACE 2                                                        23520005
+AYV00800 EQU   *                                                        23590005
+         BAL   RLINK,INSERTNL           INSERT NEW LINE                 23660005
+         XC    CARCT,CARCT              CLEAR OUT CARRAIGE COUNT        23730005
+         TM    WFLGS+ONE,ONE            WAS THERE ROOM FOR THE NEW LINE 23800005
+         BO    AYV90200                 NO, BRANCH                      23870005
+         LH    RLINK,LINESV             YES, START COUNT AT ZERO AGAIN  23940005
+         SPACE 2                                                        24010005
+AYV00900 EQU   *                                                        24080005
+         STH   RLINK,LINE               SET REMAINING LINE SIZE         24150005
+         SPACE 2                                                        24220005
+CALC0100 EQU   *                                                        24290005
+         NC    WBUFSZ,WBUFSZ            ANY ROOM LEFT IN TCAM           24360005
+         BZ    AYV90200                NO ROOM LEFT, BRANCH             24430005
+         LH    RNDX,BLNTH               GET CURRENT TSO BUFFER SIZE     24500005
+         BCTR  RNDX,ZERO                SUBTRACT ONE                    24570005
+         IC    RDCB,ZERO(RNDX,RTSBUF)   PICK UP LAST CHARACTER          24640005
+         STC   RDCB,SAVX2               SAVE IT                         24710005
+         CLC   BLNTH,MSGLEN             BUFFER LENGTH EQ MSG LENGTH     24780005
+         BNE   CALC0300                 NO, BRANCH                      24850005
+         TM    WFLGS,TSOMSG             IS THIS A MSGGEN                24920005
+         BZ    CALC0150                 YES, BRANCH                     24990005
+         TM    BUFFFL1,BUFFNLCR         IS THIS THE LAST BUFFER         25060005
+         BZ    CALC0300                 NO, BRANCH                      25130005
+         SPACE 2                                                        25200005
+CALC0150 EQU   *                                                        25270005
+         TM    AVTPARM3+TWO,DCTTWX      IS THIS A TWX          @G36XRYP 25340000
+         BZ    CALC0200                 NO, BRANCH                      25410005
+         LH    RNDX,WBUFSZ              GET SIZE OF TCAM BUFFER         25480005
+         BCTR  RNDX,ZERO                REDUCE BY ONE                   25550005
+         CH    RNDX,MSGLEN              IS MSG LENGTH EQ TO BUF-1       25620005
+         BE    CALC0400                 YES, BRANCH                     25690005
+         SPACE 2                                                        25760005
+CALC0200 EQU   *                                                        25830005
+         CLC   MSGLEN,WBUFSZ            MESSAGE SIZE EQ TO TCAM BUFFER  25900005
+         BE    CALC0400                 YES, BRANCH                     25970005
+         SPACE 2                                                        26040005
+CALC0300 EQU   *                                                        26110005
+         CLC   BLNTH,WBUFSZ             COMPARE SPACE AVAILABLE TO MSG  26180005
+         BH    CALC0600                 BRANCH IF HIGH                  26250005
+         LH    RNDX,BLNTH               LET ENTIRE MSG GO               26320005
+         CH    RNDX,LINE                CHECK FOR ENOUGH ROOM ON LINE   26390005
+         BH    CALC0500                 BRANCH IF LINE WILL BE FILLED   26460005
+         MVI   SWT2,FOUR                SET BRANCH SWITCH               26530005
+         B     CALC0800                 CONTINUE                        26600005
+         SPACE 2                                                        26670005
+CALC0400 EQU   *                                                        26740005
+         TM    WFLGS,TSOASIS+CONTROLM   IS THIS ASIS OR CONTROL MODE    26810005
+         BM    CALC0300                 YES, BRANCH                     26880005
+         TM    WFLGS,TSOMSG             MSGGEN?                @OY15612 26900000
+         BZ    CALC0300                 YES                    @OY15612 26920000
+         TM    FLAG1,TRAILER            IS A TRAILER BUFFER PRESENT     26950005
+         BO    CALC0300                  YES, BRANCH                    27020005
+         CLC   MSGLEN,LINE              IS THE MESSAGE LONGER THAN LINE 27090005
+         BH    CALC0300                 YES, BRANCH                     27160005
+         TM    BUFFFL1,BUFFNLCR         IS THIS END OF MESSAGE          27230005
+         BZ    CALC0300                 NO, BRANCH                      27300005
+         TM    AVTPARM3+TWO,DCTTWX      IS THIS A TWX          @G36XRYP 27370000
+         BO    CALC0450                 YES, BRANCH                     27440005
+         OI    QCBRETCT,QCBEND          SET SPECIAL RETURN FLG @Y17XAYP 27470000
+         LH    RNDX,WBUFSZ              GET TCAM BUFFER SIZE            27580005
+         BCTR  RNDX,ZERO                REDUCE BY ONE                   27650005
+         STH   RNDX,WBUFSZ              STORE IT BACK                   27720005
+         OI    SAVX1,TWO                INDICATE REDUCTION HAS OCCURED  27790005
+         B     CALC0300                 CONTINUE CALCULATIONS           27860005
+         SPACE 2                                                        27930005
+CALC0450 EQU   *                                                        28000005
+         CLC   MSGLEN,WBUFSZ            IS MESSAGE EQUAL TO BUF SIZE    28070005
+         BE    CALC0475                 YES, BRANCH                     28140005
+         L     RNDX,TOR                 GET MOVED TO COUNT              28210005
+         LA    RNDX,TWO(,RNDX)          ADD TWO TO IT                   28280005
+         ST    RNDX,TOR                 STORE IT BACK                   28350005
+         LH    RNDX,WBUFSZ              GET TCAM BUFFER SIZE            28420005
+         BCTR  RNDX,ZERO                REDUCE IT BY ONE                28490005
+         BCTR  RNDX,ZERO                REDUCE IT BY ANOTHER ONE        28560005
+         STH   RNDX,WBUFSZ              STORE IT BACK                   28630005
+         LTR   RNDX,RNDX                DID BUFFER SIZE GO TO ZERO      28700005
+         BZ    AYV90200                 YES, GO GET ANOTHER ONE         28770005
+         LA    RDCB,ZERO(RTCBUF,RNDX)   POINT TO NEW END OF BUFFER      28840005
+         MVI   ZERO(RDCB),IDLECHAR      PUT IN AN IDLE                  28910005
+         MVI   ONE(RDCB),IDLECHAR       PUT IN ANOTHER IDLE             28980005
+         B     CALC0300                 CONTINUE CALCULATIONS           29050005
+         SPACE 2                                                        29120005
+CALC0475 EQU   *                                                        29190005
+         L     RNDX,TOR                  GET MOVED TO COUNT             29260005
+         LA    RNDX,ONE(,RNDX)          ADD ONE TO IT                   29330005
+         ST    RNDX,TOR                 STORE IT BACK                   29400005
+         LH    RNDX,WBUFSZ              GET CURRENT BUFFER SIZE         29470005
+         BCTR  RNDX,ZERO                REDUCE IT BY ONE                29540005
+         STH   RNDX,WBUFSZ              STORE IT BACK                   29610005
+         LTR   RNDX,RNDX                WAS IT REDUCED TO ZERO          29680005
+         BZ    AYV90200                 YES GO GET ANOTHER BUFFER       29750005
+         LA    RDCB,ZERO(RTCBUF,RNDX)   POINT TO NEW END OF BUFFER      29820005
+         MVI   ZERO(RDCB),IDLECHAR      MOVE IN AN IDLE                 29890005
+         B     CALC0300                 CONTINUE CALCULATION            29960005
+         SPACE 2                                                        30030005
+CALC0500 EQU   *                                                        30100005
+         MVI   SWT2,TWELVE              SET SWITCH TO TWELVE            30170005
+         LH    RNDX,LINE                SET COUNT TO LINE SIZE          30240005
+         B     CALC0800                 CONTINUE                        30310005
+         SPACE 2                                                        30380005
+CALC0600 EQU   *                                                        30450005
+         LH    RNDX,WBUFSZ              SET COUNT TO TCAM BUFFER SIZE   30520005
+         CH    RNDX,LINE                COMPARE COUNT TO LINE SIZE      30590005
+         BNL   CALC0500                 INDICATE PARTIAL LINE/MESSAGE   30660005
+         MVI   SWT2,EIGHT               SET SWITCH TO EIGHT             30730005
+         SPACE 2                                                        30800005
+CALC0800 EQU   *                                                        30870005
+         TM    QCBRETCT,QCBEND          SPECIAL ENTRY FLAG ON  @Y17XAYP 30900000
+         BZ    EDIT0200                 NO,BRANCH                       31010005
+         LA    RNDX,ONE(,RNDX)          ADD ONE BACK TO AMT OF DATA TO  31080005
+*                                       BE MOVED                        31150005
+         SPACE 2                                                        31220005
+EDIT0200 EQU   *                                                        31290005
+         LR    RTEMP,RNDX               SAVE COUNT                      31360005
+         XC    DEND(FOUR),DEND          CLEAR FIELD                     31430005
+         BCTR  RNDX,ZERO                REDUCE COUNT FOR EXECUTE        31500005
+         EX    RNDX,MOVDATA             EXECUTE MOVE CHARACTERS INS.    31570005
+*                                       WITH RNDX CONTAINING THE LENGTH 31640005
+         LR    RTEMPA,RTCBUF            SET SCAN ADDRESS                31710005
+         TM    WFLGS,CONTROLM           IS THIS CONTROL MODE            31780005
+         BO    EDIT0900                 YES, BRANCH                     31850005
+         TM    WFLGS,TSOMSG             IS THIS A MSGGEN                31920005
+         BO    EDIT0300                 NO, EDIT THE DATA               31990005
+         AR    RTEMPA,RTEMP             POINT PAST ALL THE DATA         32060005
+         SR    RTEMP,RTEMP              CLEAR REGISTER                  32130005
+         B     EDIT0800                 GO UPDATE THE COUNTS            32200005
+         SPACE 2                                                        32270005
+EDIT0300 EQU   *                                                        32340005
+         CLI   ZERO(RTEMPA),CNTLCHAR    IS CHARACTER IN CONTROL RANGE   32410005
+         BH    EDIT0700                 NO,BRANCH                       32480005
+         CLI   ZERO(RTEMPA),EOT         IS CHARACTER AN EOT             32550005
+         BE    EDIT0600                 YES, REPLACE WITH A COLON       32620005
+         CLI   ZERO(RTEMPA),LC          IS CHARACTER A DOWN SHIFT       32690005
+         BE    EDIT1550                 YES, BUMP NON-PRINT    @SA69640 32760057
+         TM    WFLGS,TSOASIS            IS THIS ASIS MODE               32830005
+         BZ    EDIT0500                 NO, BRANCH                      32900005
+         CLI   ZERO(RTEMPA),IDLECHAR    IS CHARACTER AN IDLE            32970005
+         BE    EDIT1550                 YES, BUMP NON-PRINT    @SA69640 33040057
+         CLI   ZERO(RTEMPA),LF          IS CHARACTER A LINE FEED        33110005
+         BE    EDIT1550                 YES, BUMP NON-PRINT    @SA69640 33180057
+         CLI   ZERO(RTEMPA),RES         IS CHARACTER A RESTORE          33250005
+         BE    EDIT1550                 YES, BRANCH                     33320005
+         CLI   ZERO(RTEMPA),BYP         IS CHARACTER A BYPASS           33390005
+         BE    EDIT1550                 YES, BRANCH                     33460005
+         CLI   ZERO(RTEMPA),PRE         IS CHARACTER AN ESCAPE          33530005
+         BE    EDIT1550                 YES, BRANCH                     33600005
+         CLI   ZERO(RTEMPA),HTAB        IS CHARACTER A HORIZONTAL TAB   33670005
+         BE    EDIT0700                 YES, BRANCH                     33740005
+         SPACE 2                                                        33810005
+EDIT0500 EQU   *                                                        33880005
+         CLI   ZERO(RTEMPA),BSP         IS CHARACTER A BACKSPACE        33950005
+         BE    EDIT1400                 YES, BRANCH                     34020005
+         CLI   ZERO(RTEMPA),CR          IS CHARACTER A CARRIAGE RETURN  34090005
+         BE    EDIT1600                 YES, BRANCH                     34160005
+         CLI   ZERO(RTEMPA),NLCHAR      IS CHARACTER A NEW LINE CHAR    34230005
+         BE    EDIT1700                 YES, BRANCH                     34300005
+         SPACE 2                                                        34370005
+EDIT0600 EQU   *                                                        34440005
+         MVI   ZERO(RTEMPA),COLON       REPLACE CHARACTER WITH A COLON  34510005
+         SPACE 2                                                        34580005
+EDIT0700 EQU   *                                                        34650005
+         LA    RTEMPA,ONE(,RTEMPA)      SCAN TO NEXT CHARACTER          34720005
+         BCT   RTEMP,EDIT0300           CONTINUE IF MORE DATA TO SCAN   34790005
+         SPACE 2                                                        34860005
+EDIT0800 EQU   *                                                        34930005
+         IC    RTEMP,ZERO(RNDX,RTSBUF)  GET LAST CHARACTER MOVED        35000005
+         STC   RTEMP,TSBUFR             SAVE IT FOR LATER               35070005
+         LA    RNDX,ONE(,RNDX)          RESTORE MOVED COUNT             35140005
+         AR    RTCBUF,RNDX              UPDATE TCAM POINTER             35210005
+         LH    RDCB,LINE                GET AVAILABLE LINE SIZE         35280005
+         SR    RDCB,RNDX                SUBTRACT MESSAGE LENGTH         35350005
+         AH    RDCB,DEND+TWO            SUBTRACT NON-PRINT COUNT        35420005
+         STH   RDCB,LINE                UPDATE LINE SIZE                35490005
+         LH    RDCB,WBUFSZ              GET CURRENT TCAM BUFFER SIZE    35560005
+         SR    RDCB,RNDX                SUBTRACT NUMBER OF CHARS. MOVED 35630005
+         STH   RDCB,WBUFSZ              UPDATE CURRENT TCAM BUFFER SIZE 35700005
+         L     RDCB,TOR                 GET 'TO' COUNT                  35770005
+         AR    RDCB,RNDX                ADD NUMBER MOVED THIS TIME      35840005
+         ST    RDCB,TOR                 UPDATE 'TO' COUNT               35910005
+         LH    RDCB,CARCT               GET CURRENT CARRAIGE COUNT      35980005
+         AR    RDCB,RNDX                ADD NUMBER MOVED THIS TIME      36050005
+         SH    RDCB,DEND+TWO            SUBTRACT NON-PRINT COUNT        36120005
+         BP    EDIT0850                 BRANCH IF POSITIVE COUNT        36190005
+         SR    RDCB,RDCB                FORCE COUNT TO ZERO             36260005
+         SPACE 2                                                        36330005
+EDIT0850 EQU   *                                                        36400005
+         STH   RDCB,CARCT               UPDATE CARRAIGE COUNT           36470005
+         AR    RTSBUF,RNDX              UPDATE TSO BUFFER POINTER       36540005
+         LH    RDCB,MSGLEN              GET ORIGINAL MESSAGE LENGTH     36610005
+         SR    RDCB,RNDX                SUBTRACT NUMBER OF CHARS. MOVED 36680005
+         STH   RDCB,MSGLEN              UPDATE MESSAGE LENGTH           36750005
+         L     RDCB,FROMR               GET NUMBER MOVED FROM TS BUFFER 36820005
+         AR    RDCB,RNDX                ADD NUMBER MOVED THIS TIME      36890005
+         ST    RDCB,FROMR               UPDATE NUMBER MOVED FROM TS BUF 36960005
+         LH    RDCB,BLNTH               GET NUMBER OF CHARS. IN TS BUF. 37030005
+         SR    RDCB,RNDX                SUBTRACT NUMBER MOVED           37100005
+         STH   RDCB,BLNTH               UPDATE NUMBER OF CHARS IN BUF   37170005
+         LH    RDCB,MOVED               GET TOTAL MOVED COUNT           37240005
+         AR    RDCB,RNDX                ADD NUMBER MOVED THIS TIME      37310005
+         STH   RDCB,MOVED               UPDATE TOTAL MOVED COUNT        37380005
+         B     CALC0900                 CONTINUE PROCESSING             37450005
+         SPACE 2                                                        37520005
+EDIT0900 EQU   *                                                        37590005
+         EX    RNDX,CNTLTRAN            TRANSLATE AND TEST CONT.CHARS.  37660005
+         LR    RRTN,RTEMP               GET CHARACTER COUNT             37730005
+         SPACE 2                                                        37800005
+EDIT1000 EQU   *                                                        37870005
+         CLI   ZERO(RTEMPA),COLON       IS CHARACTER A COLON            37940005
+         BNE   EDIT1100                 NO, BRANCH                      38010005
+         BCTR  RRTN,ZERO                DECREMENT NON-PRINT COUNT       38080005
+         SPACE 2                                                        38150005
+EDIT1100 EQU   *                                                        38220005
+         LA    RTEMPA,ONE(,RTEMPA)      SCAN TO NEXT CHARACTER          38290005
+         BCT   RTEMP,EDIT1000           BRANCH IF MORE DATA TO SCAN     38360005
+         STH   RRTN,DEND+TWO            STORE NON-PRINT COUNT           38430005
+         B     EDIT0800                 GO TO RETURN TO CALLER          38500005
+         SPACE 2                                                        38570005
+EDIT1400 EQU   *                                                        38640005
+         TM    AVTPARM3+TWO,DCTTWX      IS THIS DEVICE A TWX   @G36XRYP 38710000
+         BO    EDIT1500                 YES, BRANCH                     38780005
+         LH    RLINK,DEND+TWO           PICK NON PRINT COUNT            38850005
+         LA    RLINK,TWO(,RLINK)        UPDATE COUNT BY TWO             38920005
+         STH   RLINK,DEND+TWO           STORE BACK NEW COUNT            38990005
+         B     EDIT0700                 GO TO SCAN NEXT CHARACTER       39060005
+         SPACE 2                                                        39130005
+EDIT1500 EQU   *                                                        39200005
+         MVI   ZERO(RTEMPA),IDLECHAR    REPLACE BACKSPACE WITH IDLE     39270005
+         SPACE 2                                                        39340005
+EDIT1550 EQU   *                                                        39410005
+         LH    RLINK,DEND+TWO           GET NON-PRINT COUNT             39480005
+         LA    RLINK,ONE(,RLINK)        ADD ONE TO IT                   39550005
+         STH   RLINK,DEND+TWO           STORE BACK NON-PRINT COUNT      39620005
+         B     EDIT0700                 GO TO SCAN NEXT CHARACTER       39690005
+         SPACE 2                                                        39760005
+EDIT1600 EQU   *                                                        39830005
+         MVI   ZERO(RTEMPA),NLCHAR      REPLACE CARR. RET. WITH NEWLINE 39900005
+         SPACE 2                                                        39970005
+EDIT1700 EQU   *                                                        40040005
+         CH    RTEMP,HALFONE            IS THIS THE LAST CHARACTER      40110005
+         BNE   EDIT0600                 NO, BRANCH                      40180005
+         CLI   SWT2,TWELVE              END OF LINE                     40250005
+         BE    EDIT0700                 YES, BRANCH                     40320005
+         LH    RLINK,BLNTH              GET DATA LENGTH                 40390005
+         SR    RLINK,RNDX               SUBTRACT AMOUNT MOVED           40460005
+         BCTR  RLINK,ZERO               SUBTRACT ONE MORE               40530005
+         LTR   RLINK,RLINK              IS THIS THE LAST CHARACTER      40600005
+         BNZ   EDIT0600                 NO, BRANCH                      40670005
+         L     RLINK,TSBUFR             GET ADDRESS OF TSO BUFFER       40740005
+         TM    BUFFFL1-BUFFFL1(RLINK),BUFFHDR WAS IT A HEADER           40810005
+         BZ    EDIT0600                 NO, BRANCH                      40880005
+         TM    BUFFFL2-BUFFFL1(RLINK),BUFFPART WAS IT A PARTIAL MESSAGE 40950005
+         BZ    EDIT1800                 NO, BRANCH                      41020005
+         NI    WFLGS,AVTEFF-TSOASIS     RESET FLAG                      41090005
+         B     EDIT0700                 GO SCAN NEXT CHARACTER          41160005
+         SPACE 2                                                        41230005
+EDIT1800 EQU   *                                                        41300005
+         TM    BUFFFL1,BUFFNLCR         END OF MESSAGE                  41370005
+         BO    EDIT0700                 YES, BRANCH                     41440005
+         B     EDIT0600                 CONTINUE                        41510005
+         SPACE 2                                                        41580005
+CALC0900 EQU   *                                                        41650005
+         BAL   RLINK,QTIPRET            UPDATE TSO BUFFER FIELDS        41720005
+         SR    RTEMP,RTEMP              CLEAR REGISTER                  41790005
+         IC    RTEMP,SWT2               PICK WTG INDEX                  41860005
+         SPACE 2                                                        41930005
+AYV01000 EQU   *                                                        42000005
+         B     AYV01000(RTEMP)          BRANCH ON THE INDEX             42070005
+         B     AYV01200                 EMPTIED INPUT BUFFER            42140005
+         B     AYV02600                 FILLED OUTPUT BUFFER            42210005
+         B     AYV02700                 FILLED TERMINAL LINE            42280005
+         SPACE 2                                                        42350005
+*********************************************************************** 42420005
+*  THIS SECTION OF CODE IS ENTERED VIA THE BRANCH TABLE AT AYV01000 IF* 42490005
+*  SWT2 HAS BEEN SET TO X'04' INDICATING THAT THE CURRENT INPUT BUFFER* 42560005
+*  HAS PROBABLY BEEN EMPTIED                                          * 42630005
+*********************************************************************** 42700005
+AYV01200 EQU   *                                                        42770005
+         NC    LINE,LINE                HAS END OF LINE BEEN REACHED    42840005
+         BNZ   AYV01300                 NO, BRANCH                      42910005
+         CLI   WBUFSZ+ONE,ZERO          ANY ROOM LEFT IN TCAM BUFFER    42980005
+         BNE   AYV01300                 YES,BRANCH                      43050005
+         OI    QCBRETCT,QCBEND          SET SPECIAL RETURN     @Y17XAYP 43080000
+         B     AYV90200                 GO GET ANOTHER TCAM BUFFER      43190005
+         SPACE 2                                                        43260005
+AYV01300 EQU   *                                                        43330005
+         LH    RTEMP,MSGLEN             GET REMAINING INPUT COUNT       43400005
+         LTR   RTEMP,RTEMP              ANY CHARACTERS LEFT             43470005
+         BZ    AYV01350                 NO, BRANCH                      43540005
+         NC    LINE,LINE                ANY MORE ROOM ON THE LINE       43610005
+         BNZ   AYV01310                 YES, BRANCH                     43680005
+         BAL   RLINK,SIMATTN            GO COUNT A LINE                 43750005
+         XC    CARCT,CARCT              CLEAR OUT CARRAIGE COUNT        43820005
+         BAL   RLINK,INSERTNL           GO INSERT A NEW LINE            43890005
+         B     AYV90100                 TAKE LINE FULL EXIT             43960005
+         SPACE 2                                                        44030005
+AYV01310 EQU   *                                                        44100005
+         TM    QCBRETCT,QCBEND          SPECIAL CASE FLAG ON   @Y17XAYP 44130000
+         BZ    AYV01320                 NO, BRANCH                      44240005
+         NI    QCBRETCT,AVTEFF-QCBEND   TURN OFF FLAG          @Y17XAYP 44270000
+         TM    AVTPARM3+TWO,DCTTWX      IS THIS A TWX          @G36XRYP 44380000
+         BZ    AYV90200                 NO, GO GET ANOTHER TCAM BUFFER  44450005
+         MVI   ZERO(RTCBUF),LF          PUT LINE FEED IN BUFFER         44520005
+         BAL   RLINK,INSRTNL1           GO COUNT LINE FEED CHARACTER    44590005
+         B     AYV90200                 GO GET ANOTHER TCAM BUFFER      44660005
+         SPACE 2                                                        44730005
+AYV01320 EQU   *                                                        44800005
+         NC    WBUFSZ,WBUFSZ            ANY ROOM LEFT IN TCAM BUFFER    44870005
+         BZ    AYV90200                 NO, GO GET ANOTHER TCAM BUFFER  44940005
+         TM    FLAG1,TRAILER            IS A TSO TRAILER BFR PRESENT    45010005
+         BZ    AYV90200                 NO, GO GET ANOTHER TCAM BUFFER  45080005
+         L     RTSBUF,BUFFTRLR-ONE      GET THE TRAILER BUFFER ADDRESS  45150005
+         LA    RTSBUF,ZERO(,RTSBUF)     CLEAR FLAG BYTE                 45220005
+         ST    RTSBUF,TSCURR            SET UP AS CURRENT BUFFER        45290005
+         LR    RTIOC,RTSBUF             SAVE NEW START ADDRESS          45360005
+         B     AYV00030                 CONTINUE EDIT                   45430005
+         SPACE 2                                                        45500005
+AYV01350 EQU   *                                                        45570005
+         TM    WFLGS,TSOMSG             IS THIS A MSGGEN                45640005
+         BZ    AYV01400                 YES, BRANCH                     45710005
+         TM    BUFFFL1,BUFFNLCR         IS THIS THE LAST TSO BUFFER     45780005
+         BO    AYV01400                 YES,BRANCH                      45850005
+         NC    LINE,LINE                ANY MORE ROOM ON THE LINE       45920005
+         BZ    AYV01400                 NO, BRANCH                      45990005
+         NI    QCBRETCT,AVTEFF-QCBNL    TURN OFF NL/CR BITS             46060005
+         B     AYV01500                 BYPASS LINE COUNTING            46130005
+         SPACE 2                                                        46200005
+AYV01400 EQU   *                                                        46270005
+         TM    WFLGS,CONTROLM+TSOASIS   IS THIS CONTROL OR ASIS MODE    46340005
+         BM    AYV01800                 YES, DONT COUNT A LINE          46410005
+         BAL   RLINK,SIMATTN            COUNT A LINE                    46480005
+         SPACE 2                                                        46550005
+AYV01500 EQU   *                                                        46620005
+         CLI   TSBUFR,NLCHAR            IS LAST CHARACTER A NEW LINE    46690005
+         BE    AYV01700                 YES, BRANCH                     46760005
+         TM    SCBERR2,SCBALN           IS THIS AUTO LINE NUMBERING     46830005
+*                                       OR AUTO PROMPTING               46900005
+         BZ    AYV01600                 NO, BRANCH                      46970005
+         DROP  RTHREE                   DROP ADDRESSABOLITY             47040005
+         CLI   MSGLEN+ONE,EIGHT         IS THIS THE LINE NUMBER         47110005
+*                                       YES BRANCH                      47180005
+         BNH   AYV90000                 YES, EXIT                       47250005
+         SPACE 2                                                        47320005
+AYV01600 EQU   *                                                        47390005
+         TM    WFLGS,TSOMSG             IS THIS A MSGGEN                47460005
+         BZ    AYV90000                 YES, BRANCH                     47530005
+         TM    BUFFFL1,BUFFNLCR         IS THIS END OF MESSAGE          47600005
+         BZ    AYV90000                 NO, EXIT SUCCESSFULLY           47670005
+         NC    WBUFSZ,WBUFSZ            ANY ROOM LEFT IN TCAM BUFFER    47740005
+         BZ    AYV90100                 NO, TAKE LINE FULL EXIT         47810005
+         BAL   RLINK,INSRTNL3           GO INSERT A NEW LINE CHARACTER  47880005
+         TM    WFLGS+ONE,ONE            WAS INSERTION SUCCESSFUL        47950005
+         BO    AYV90200                 NO, GO GET ANOTHER BUFFER       48020005
+         B     AYV90000                 EXIT                            48090005
+         SPACE 2                                                        48160005
+AYV01700 EQU   *                                                        48230005
+         XC    CARCT,CARCT              CLEAR CARRIAGE COUNT            48300005
+         TM    AVTPARM3+TWO,DCTTWX      IS THIS A TWX          @G36XRYP 48370000
+         BZ    AYV90000                 NO, EXIT                        48440005
+         BCTR  RTCBUF,ZERO              BACK UP ONE POSITION            48510005
+         MVI   ZERO(RTCBUF),CR          PUT IN CARRIAGE RETURN          48580005
+         LA    RTCBUF,ONE(,RTCBUF)      RE-POSITION TCAM BUFFER POINTER 48650005
+         NC    WBUFSZ,WBUFSZ            ANY ROOM LEFT IN TCAM BUFFER    48720005
+         BZ    AYV01750                 NO BRANCH                       48790005
+         LA    RLINK,AYV90000           GET EXIT ADDRESS                48860005
+         B     INSRTNL0                 GO INSERT NEW LINE              48930005
+         SPACE 2                                                        49000005
+AYV01750 EQU   *                                                        49070005
+         MVI   CARCT+ONE,NEEDLF         SET INCOMPLETE MOVE FLAG.       49140005
+         B     AYV90000                 EXIT                            49210005
+         SPACE 2                                                        49280005
+AYV01800 EQU   *                                                        49350005
+         CLI   TSBUFR,NLCHAR            IS THE LAST CHAR A NEW LINE     49420005
+         BNE   AYV90000                 NO LEAVE IT ALONE               49490005
+         B     AYV01700                 GO FIX UP THE N.L. IF TWX       49560005
+         EJECT                                                          49630005
+*********************************************************************** 49700005
+*  THIS SECTION OF CODE IS ENTERED VIA THE BRANCH TABLE AT AYV01000 IF* 49770005
+*  SWT2 HAS BEEN SET TO X'08' INDICATING THAT THE CURRENT TCAM BUFFER * 49840005
+*  UNIT HAS BEEN FILLED                                               * 49910005
+*********************************************************************** 49980005
+AYV02600 EQU   *                                                        50050005
+         TM    SAVX1,TWO                WAS BUFFER SIZE REDUCED         50120005
+         BO    AYV90200                 YES, GO GET ANOTHER ONE         50190005
+         NC    LINE,LINE                HAS LINE BEEN FILLED            50260005
+         BNZ   AYV90200                 NO, GO GET ANOTHER TCAM BUFFER  50330005
+         BAL   RLINK,SIMATTN            GO COUNT A LINE                 50400005
+         B     AYV90100                 EXIT WITH LINE FULL INDICATION  50470005
+         EJECT                                                          50540005
+*********************************************************************** 50610005
+*  THIS SECTION OF CODE IS ENTERED VIA THE BRANCH TABLE AT AYV01000 IF* 50680005
+*  SWT2 HAS BEEN SET TO X'0C' INDICATING THAT THE TERMINAL OUTPUT LINE* 50750005
+*  HAS PROBABLY BEEN FILLED                                           * 50820005
+*********************************************************************** 50890005
+AYV02700 EQU   *                                                        50960005
+         TM    SAVX1,TWO                WAS BUFFER SIZE REDUCED@YA06291 51030058
+         BO    AYV90200                 YES, GO GET ANOTHER TCAM BUFFER 51170005
+         NC    LINE,LINE                ANY ROOM LEFT ON THE LINE       51240005
+         BZ    AYV02800                 NO, BRANCH                      51310005
+         NC    WBUFSZ,WBUFSZ            ANY ROOM LEFT IN THE TCAM BUF   51380005
+         BNZ   CALC0100                 YES, GO SEE HOW MUCH            51450005
+         B     AYV90200                 GO GET ANOTHER TCAM BUFFER      51520005
+         SPACE 2                                                        51590005
+AYV02800 EQU   *                                                        51660005
+         BAL   RLINK,SIMATTN            GO COUNT A LINE                 51730005
+         CLI   TSBUFR,NLCHAR            WAS THE LAST CHAR. A NEW LINE   51800005
+         BE    AYV03100                 YES, BRANCH                     51870005
+         TM    WFLGS,TSOMSG             IS THIS A MSGGEN                51940005
+         BZ    AYV90100                 YES, EXIT                       52010005
+         LA    RLINK,AYV90100           GET EXIT ADDRESS       @OZ31891 52080086
+         NC    WBUFSZ,WBUFSZ            ANY ROOM LEFT IN TCAM BUFFER    52150005
+         BZ    AYV03000                 NO DONT TRY TO INSERT NL        52220005
+         B     INSRTNL3                 YES, BRANCH                     52290005
+         SPACE 2                                                        52360005
+AYV03000 EQU   *                                                        52430005
+         MVI   CARCT+ONE,AVTEFF         CAUSE A NEW LINE NEXT TIME      52500005
+         NI    QCBRETCT,AVTEFF-QCBNL    INDICATE NO NEW LINE YET        52570005
+         B     AYV90100                 EXIT WITH LINE FULL INDICATION  52640005
+         SPACE 2                                                        52710005
+AYV03100 EQU   *                                                        52780005
+         TM    AVTPARM3+TWO,DCTTWX      IS THIS A TWX          @G36XRYP 52850000
+         BZ    AYV90100                 NO, BRANCH TO LINE FULL EXIT    52920005
+         BCTR  RTCBUF,ZERO              BACK UP ONE IN TCAM BUFFER      52990005
+         MVI   ZERO(RTCBUF),CR          PUT IN CARRAIGE RETURN          53060005
+         LA    RTCBUF,ONE(,RTCBUF)      RE-POSITION TCAM BUFFER POINTER 53130005
+         LA    RLINK,AYV90100           GET EXIT ADDRESS                53200005
+         NC    WBUFSZ,WBUFSZ            ANY ROOM LEFT IN TCAM BUFFER    53270005
+         BNZ   INSRTNL0                 GO INSERT LINE FEED             53340005
+         MVI   CARCT+ONE,NEEDLF         INDICATE LINE FEED NEEDED       53410005
+         B     AYV90100                 EXIT WITH LINE FULL INDICATION  53480005
+         EJECT                                                          53550005
+INSERTNL EQU   *                                                        53620005
+         TM    AVTPARM3+TWO,DCTTWX      IS THIS A TWX          @G36XRYP 53690000
+         BZ    INSRTNL4                 NO, BRANCH                      53760005
+         MVI   CARCT+ONE,NEEDBOTH       SET TO IND NO ROOM FOR CR/LF    53830005
+         SPACE 2                                                        53900005
+INSRTNL4 EQU   *                                                        53970005
+         NC    WBUFSZ,WBUFSZ            TEST TCAM BUFFER SIZE           54040005
+         BZ    INSRTNL5                 IF EMPTY GO TO RETURN           54110005
+         SPACE 2                                                        54180005
+INSRTNL3 EQU   *                                                        54250005
+         TM    AVTPARM3+TWO,DCTTWX      IS THIS A TWX          @G36XRYP 54320000
+         BO    INSRTNL2                 YES, BRANCH                     54390005
+         MVI   0(RTCBUF),NLCHAR         INSERT NEW LINE CHARACTER       54460005
+         B     INSRTNL1                 GO COUNT IT AND RETURN          54530005
+         SPACE 2                                                        54600005
+INSRTNL0 EQU   *                                                        54670005
+         MVI   ZERO(RTCBUF),LF          INSERT LINE FEED CHARCATER      54740005
+         SPACE 2                                                        54810005
+INSRTNL1 EQU   *                                                        54880005
+         XC    CARCT,CARCT              CLEAR OUT CARRAIGE COUNT        54950005
+         LA    RTCBUF,ONE(,RTCBUF)      INCREMENT TCAM BUFFER POINTER   55020005
+         L     RTEMP,TOR                GET 'TO' COUNT                  55090005
+         LA    RTEMP,ONE(,RTEMP)        ADD ONE                         55160005
+         ST    RTEMP,TOR                STORE IT BACK                   55230005
+         TM    WFLGS,TSOMSG             IS THIS A MSGGEN                55300005
+         BO    INSRTNL6                 NO, BRANCH                      55370005
+         LTR   RTSBUF,RTSBUF            IS THIS THE CARR ADJUST MSGGEN  55440005
+         BNZ   INSRTNL6                 NO, DONT COUNT CR OR LF NOW     55510005
+         LH    RTEMP,MSGNLNTH           GET TOTAL MOVED COUNT           55580005
+         LA    RTEMP,ONE(,RTEMP)        ADD ONE                         55650005
+         STH   RTEMP,MSGNLNTH           STORE IT BACK                   55720005
+         SPACE 2                                                        55790005
+INSRTNL6 EQU   *                                                        55860005
+         LH    RTEMP,WBUFSZ             GET SIZE OF TCAM BUFFER         55930005
+         BCTR  RTEMP,ZERO               DECR FOR NEW LINE CHARACTER     56000005
+         STH   RTEMP,WBUFSZ             UPDATE TCAM BUFFER SIZE         56070005
+         BR    RLINK                    RETURN                          56140005
+         SPACE 2                                                        56210005
+INSRTNL2 EQU   *                                                        56280005
+         MVI   ZERO(RTCBUF),CR          INSERT CARRAIGE RETURN          56350005
+         LR    RNDX,RLINK               SAVE RETURN REGISTER            56420005
+         BAL   RLINK,INSRTNL1           UPDATE COUNT ETC.               56490005
+         LR    RLINK,RNDX               RETRIEVE RETURN REGISTER        56560005
+         NC    WBUFSZ,WBUFSZ            ANY ROOM LEFT                   56630005
+         BNZ   INSRTNL0                 YES, BRANCH                     56700005
+         MVI   CARCT+ONE,NEEDLF         INDICATE LF STILL NEEDED        56770005
+         SPACE 2                                                        56840005
+INSRTNL5 EQU   *                                                        56910005
+         OI    WFLGS+ONE,ONE            INDICATE INCOMPLETE REQUEST     56980005
+         BR    RLINK                    RETURN                          57050005
+         EJECT                                                          57120005
+SIMATTN  EQU   *                                                        57190005
+         STM   RLINK,RRTN,AVTDOUBL      SAVE LINK REGISTERS             57260005
+         TM    WFLGS,TSOMSG             IS THIS A MSGGEN                57330005
+         BZ    SIMATTN1                 YES DONT GO COUNT THE LINE      57400005
+         L     RRTN,AVTTSOPT            POINT TO WORK AREA              57470005
+         USING IEDQTSI,RRTN             ESTABLISH ADDRESSABILITY        57540005
+         L     RRTN,TSISIMAT            GET ADDRESS OF IEDAYS           57610005
+         DROP  RRTN                                                     57680005
+         LA    RRTN,ZERO(,RRTN)         CLEAR HIGH BYTE                 57750005
+         LTR   RRTN,RRTN                SEE IF SIM ATTN USED            57820005
+         BZ    SIMATTN1                 BRANCH IF NOT                   57890005
+         BAL   RLINK,SIXTEEN(RRTN)      GO TO IEDAYS                    57960005
+         SPACE 2                                                        58030005
+SIMATTN1 EQU   *                                                        58100005
+         LM    RLINK,RRTN,AVTDOUBL      RESTORE LINK REGISTERS          58170005
+         BR    RLINK                    RETURN                          58240005
+         EJECT                                                          58310005
+QTIPRET  EQU   *                                                        58380005
+         STM   RZERO,RNDX,AVTDOUBL      SAVE PARM REGISTERS             58450005
+         STM   RLINK,RRTN,AVTSAVE2      SAVE LINK REGISTERS             58520005
+         TM    WFLGS,TSOMSG             IS THIS A MSGGEN                58590005
+         BO    QTIPRET1                 NO, GO ISSUE THE REAL QTIP      58660005
+         L     RRTN,TOR                 GET COUNT OF DATA MOVED TO TCAM 58730005
+         SR    RZERO,RZERO              CLEAR REGISTER                  58800005
+         LH    RZERO,MSGNLNTH           GET CURRENT LENGTH OF MESSAGE   58870005
+         AR    RZERO,RRTN               UPDATE THE LENGTH               58940005
+         STH   RZERO,MSGNLNTH           STORE BACK THE NEW LENGTH       59010005
+         B     QTIPRET3                 GO TO RETURN                    59080005
+         SPACE 2                                                        59150005
+QTIPRET1 EQU   *                                                        59220005
+         LH    RRTN,MOVED               GET MOVED COUNT                 59290005
+         TM    QCBRETCT,QCBEND          DOES MESSAGE EQUAL BFR @Y17XAYP 59320000
+         BZ    QTIPRET2                 NO, BRANCH                      59430005
+         BCTR  RRTN,ZERO                DECREMENT BY ONE                59500005
+         SPACE 2                                                        59570005
+QTIPRET2 EQU   *                                                        59640005
+************************************************************** @G36XRYP 59646000
+*    CHANGE DATA OFFSET AND LENGTH FIELD IN TSO BUFFER         @G36XRYP 59652000
+************************************************************** @G36XRYP 59658000
+         SR    RZERO,RZERO              CLEAR FOR IC           @G36XRYP 59664000
+         IC    RZERO,BUFFOFST           GET OFFSET TO DATA     @G36XRYP 59670000
+         AR    RZERO,RRTN               ADD AMOUNT MOVED       @G36XRYP 59676000
+         STC   RZERO,BUFFOFST           UPDATE DATA OFFSET     @G36XRYP 59682000
+         IC    RZERO,BUFFLNTH           GET DATA LENGTH        @G36XRYP 59688000
+         SR    RZERO,RRTN               SUBTRACT AMOUNT MOVED  @G36XRYP 59694000
+         STC   RZERO,BUFFLNTH           UPDATE DATA LENGTH     @ZM46789 59700000
+         SPACE 2                                                        59780005
+QTIPRET3 EQU   *                                                        59850005
+         XC    MOVED,MOVED                                              59920005
+         LM    RZERO,RNDX,AVTDOUBL      RESTORE PARM REGISTERS          59990005
+         LM    RLINK,RRTN,AVTSAVE2      RESTORE LINK REGISTERS          60060005
+         BR    RLINK                    RETURN                          60130005
+         EJECT                                                          60200005
+MSGGEN00 EQU   *                                                        60270005
+         LH    RLINK,AVTKEYLE           GET TCAM UNIT SIZE              60340005
+         TM    WFLGS,FRSTMGEN           IS THIS FIRST MSGGEN PASS       60410005
+         BZ    MSGGEN10                 NO, BRANCH                      60480005
+         XC    MSGNLNTH(TWO),MSGNLNTH   CLEAR OUT MSGGEN COUNTER        60550005
+         XC    FROMR,FROMR              CLEAR OUT FROM COUNT            60580005
+         LA    RNDX,AVTHDRSZ            GET SIZE OF HDR PREFIX @Y17XAYP 60620000
+         SR    RLINK,RNDX               GET USEABLE SIZE       @Y17XAYP 60630000
+         SPACE 2                                                        60690005
+MSGGEN10 EQU   *                                                        60760005
+         STH   RLINK,WBUFSZ             SET UP TCAM BUFFER SIZE         60830005
+         NI    QCBRETCT,AVTEFF-QCBFLGS  TURN OFF SPECIAL OUTPUT FLAGS   60900005
+         TM    AVTPARM3+TWO,DCTTWX      IS THIS A TWX          @G36XRYP 60970000
+         BZ    MSGGEN30                 NO, BRANCH                      61040005
+         TM    QCBRETCT,QCBNL           CHECK FOR LINE FEED CARR.RET.   61110005
+         BZ    MSGGEN40                 NEITHER RECEIVED BRANCH         61180005
+         BO    MSGGEN30                 BOTH RECEIVED BRANCH            61250005
+         MVI   ZERO(RTCBUF),LF          PUT LINE FEED IN THE BUFFER     61320005
+         TM    QCBRETCT,QCBCR           DO WE NEED CARR RET INSTEAD     61390005
+         BO    MSGGEN20                NO, BRANCH                       61460005
+         MVI   ZERO(RTCBUF),CR          REPLACE LF WITH CR              61530005
+         SPACE 2                                                        61600005
+MSGGEN20 EQU   *                                                        61670005
+         LA    RLINK,MSGGEN50           SET UP RETURN POINT             61740005
+         B     INSRTNL1                 GO COUNT THE ONE MOVED IN       61810005
+         SPACE 2                                                        61880005
+MSGGEN30 EQU   *                                                        61950005
+         LTR   RTSBUF,RTSBUF            IS THIS ENTRY FOR LEFT ADJUST   62020005
+         BNZ   MSGGEN40                 NO, BRANCH                      62090005
+         CLI   CARCT+ONE,AVTEZERO       IS LEFT ADJUSTMENT NEEDED       62160005
+         BE    MSGGEN35                 NO BRANCH                       62230005
+         BAL   RLINK,INSERTNL           GO ADD NEW LINE                 62300005
+         CLI   CARCT+ONE,AVTEFF         REQUEST TO RETURN CARRAIGE      62370005
+         BE    MSGGEN60                 YES, LEAVE MOVE COUNT ALONE     62440005
+         LA    RLINK,MSGGEN60           SET UP RETURN ADDRESS           62510005
+         B     SIMATTN                  GO COUNT A LINE                 62580005
+         SPACE 2                                                        62650005
+MSGGEN35 EQU   *                                                        62720005
+         MVI   TOR+THREE,ZERO           SET RETURN COUNT TO ZERO        62790005
+         B     MSGGEN60                 CONTINUE PROCESSING             62860005
+         SPACE 2                                                        62930005
+MSGGEN40 EQU   *                                                        63000005
+         CLI   CARCT+ONE,AVTEZERO       IS LEFT ADJUSTMENT NEEDED       63070005
+         BE    MSGGEN50                 NO, BRANCH             @YA09299 63140058
+         CLI   CARCT+ONE,AVTEFF         REQUEST TO RETURN CARRIAGE      63210005
+         BNE    MSGGEN45                NO, BRANCH                      63280005
+         BAL   RLINK,INSERTNL           GO ADD NEW LINE                 63350005
+MSGGEN45 EQU   *                                                        63420005
+         BAL   RLINK,SIMATTN            GO COUNT A LINE                 63490005
+         SPACE 2                                                        63560005
+MSGGEN50 EQU   *                                                        63630005
+         NI    QCBRETCT,AVTEFF-QCBNL    TURN OFF NEW LINE FLAGS         63700005
+         XC    CARCT,CARCT              CLEAR OUT CARRAIGE COUNT        63770005
+         LTR   RTSBUF,RTSBUF            IS THIS ENTRY FOR LEFT ADJUST   63840005
+         BZ    MSGGEN60                 YES, BRANCH                     63910005
+         SR    RLINK,RLINK              CLEAR REGISTER                  63980005
+         SR    RNDX,RNDX                CLEAR REGISTER                  64050005
+         MVC   LINE,LINESV              SET UP LINE SIZE                64120005
+         IC    RLINK,ZERO(RTSBUF)       GET MESSAGE COUNT               64190005
+         TM    WFLGS,FRSTMGEN           IS THIS FIRST MSGGEN PASS       64260005
+         BO    MSGGEN55                 YES, DONT ADD IN MOVED COUNT    64330005
+         L     RNDX,FROMR               GET COUNT OF DATA ALREADY MOVED 64400005
+         SR    RLINK,RNDX               SUBTRACT FROM TOTAL LENGTH      64470005
+MSGGEN55 EQU   *                                                        64540005
+         CLI   ONE(RTSBUF),LC           IS THIS A LOWER CASE   @YM07292 64548000
+*                                       SHIFT CHARACTER        @YM07292 64556000
+         BNE   NOLCS                    NO BRANCH              @YM07292 64564000
+         LA    RTSBUF,ONE(RTSBUF)       SKIP LOWER CASE SHIFT  @YM07292 64572000
+         BCTR  RLINK,RZERO              REDUCE THE MSGGEN LNGTH@YM07292 64580000
+*                                       TO SKIP LOWER CASE     @YM07292 64588000
+NOLCS    EQU   *                                               @YM07292 64596000
+         STC   RLINK,BLNTH+ONE          SET UP INPUT BUFFER SIZE        64610005
+         STC   RLINK,MSGLEN+ONE         SET UP MESSAGE SIZE             64680005
+         LA    RTSBUF,ONE(RTSBUF)       SKIP TO FIRST BYTE OF DATA      64750005
+         AR    RTSBUF,RNDX              ADD AMOUNT MOVED TO GET OFFSET  64820005
+         L     RLINK,LCBSCBA-ONE        GET SCB ADDRESS                 64890005
+         USING IEDQSCB,RLINK            SET ADDRESSABILITY              64960005
+         TM    SCBERR2,SCBALN           AUTO LINE NUMBERING             65030005
+         BZ    CALC0100                 NO, BRANCH                      65100005
+         CLI   MSGLEN+ONE,EIGHT         IS THIS THE LINE NUMBER         65170005
+         BH    CALC0100                 NO, BRANCH                      65240005
+         MVC   DEND+EIGHT(EIGHT),ZERO(RTSBUF) SAVE LINE NUMBER          65310005
+         LA    RTSBUF,DEND+EIGHT        POINT TO NEW LOCATION OF DATA   65380005
+         B     CALC0100                 GO PERFORM SIZE CALCULATIONS    65450005
+         SPACE 2                                                        65520005
+MSGGEN60 EQU   *                                                        65590005
+         L     RLINK,TOR                GET NUMBER OF CHARS MOVED       65660005
+         ST    RLINK,FROMR              REARRANGE RETURN REGISTERS      65730005
+         MVC   MSGNLNTH(TWO),TOR+TWO    SET UP MOVED COUNT FOR EXIT     65800005
+         B     AYV90000                 EXIT                            65870005
+         SPACE 2                                                        65940005
+MSGGEN18 EQU   *                                                        66010005
+         L     RTCBUF,DEND+EIGHT        PICK UP TCAM BUFFER POSITION    66080005
+         SPACE 2                                                        66150005
+MSGGEN25 EQU   *                                                        66220005
+         LH    RTHREE,MSGNLNTH          GET DATA COUNT ALREADY MOVED    66290005
+         LH    RTEMP,WBUFSZ             GET ROOM LEFT IN TCAM BUFFER    66360005
+         LA    RLINK,AYV90000           POINT TO SUCCESSFUL EXIT        66430005
+         BCTR  RTCBUF,RZERO             POINT TO LAST CHAR IN TCAM BUF  66500005
+         TM    AVTPARM3+TWO,DCTTWX      IS THIS A TWX          @G36XRYP 66570000
+         BZ    MSGGEN22                 NO, BRANCH                      66640005
+         BCTR  RTCBUF,RZERO             BACK UP ONE MORE CHARACTER      66710005
+         CLI   CARCT+ONE,NEEDLF         IS CARR RET ALREADY IN BUFFER   66780005
+         BNE   MSGGEN23                 NO, BRANCH                      66850005
+         XC    CARCT,CARCT              CLEAR OUT CARRAIGE COUNT        66920005
+         B     MSGGEN24                 GO PUT CARR RET/LINE FEED IN    66990005
+         SPACE 2                                                        67060005
+MSGGEN23 EQU   *                                                        67130005
+         CLC   ZERO(TWO,RTCBUF),CRLFCR  ARE LAST TWO CHARS CR AND LF    67200005
+         BCR   EIGHT,RLINK              IF YES EXIT SUCCESSFULLY        67270005
+         CLC   ZERO(TWO,RTCBUF),CRLFCR+ONE ARE LAST TWO CHARS LF AND CR 67340005
+         BCR   EIGHT,RLINK              IF YES EXIT SUCCESSFULLY        67410005
+         CH    RTEMP,AVTHA2             IS REMAINING BUFSIZE LT TWO     67480005
+         BL    MSGGEN19                 NO, BRANCH                      67550005
+         LA    RTCBUF,TWO(RZERO,RTCBUF) POINT TO NEXT POS IN TCAM BUF   67620005
+         LA    RTHREE,TWO(RZERO,RTHREE) ADD TWO TO TOTAL MOVED COUNT    67690005
+         STH   RTHREE,MSGNLNTH          UPDATE TOTAL MOVED COUNT        67760005
+         B     INSERTNL                 GO PUT IN LINE FEED CARR RET    67830005
+         SPACE 2                                                        67900005
+MSGGEN19 EQU   *                                                        67970005
+         LTR   RTEMP,RTEMP              ANY ROOM AT ALL IN TCAM         68040005
+         BNZ   MSGGEN26                 YES, MUST BE ONLY ONE SPACE     68110005
+         SPACE 2                                                        68180005
+MSGGEN24 EQU   *                                                        68250005
+         AH    RTEMP,AVTHA2             ADD TWO TO TCAM BUFSIZE LEFT    68320005
+         STH   RTEMP,WBUFSZ             UPDATE TCAM BUFFER SIZE LEFT    68390005
+         B     INSERTNL                 GO PUT IN LF/CR OR NEWLINE      68460005
+         SPACE 2                                                        68530005
+MSGGEN26 EQU   *                                                        68600005
+         LA    RTHREE,ONE(RZERO,RTHREE) ADD ONE TO TOTAL MOVED COUNT    68670005
+         STH   RTHREE,MSGNLNTH          UPDATE TOTAL MOVED COUNT        68740005
+         LA    RTCBUF,ONE(RZERO,RTCBUF) RE-POSITION TCAM BUF POINTER    68810005
+         SPACE 2                                                        68880005
+MSGGEN21 EQU   *                                                        68950005
+         LA    RTEMP,ONE(RZERO,RTEMP)   ADD ONE TO SPACE LEFT IN TCAM   69020005
+         STH   RTEMP,WBUFSZ             UPDATE SPACE LEFT IN TCAM       69090005
+         B     INSERTNL                 GO UP IN LF/CR OR NEWLINE       69160005
+         SPACE 2                                                        69230005
+MSGGEN22 EQU   *                                                        69300005
+         CLI   ZERO(RTCBUF),NLCHAR      IS LAST CHAR A NEW LINE         69370005
+         BCR   EIGHT,RLINK              IF YES EXIT SUCCESSFULLY        69440005
+         CLI   WBUFSZ+ONE,ONE           IS THERE ROOM IN TCAM FOR A NL  69510005
+         BNL   MSGGEN26                 YES, GO PUT IT IN               69580005
+         B     MSGGEN21                 NO, GO MAKE ROOM THEN PUT IT IN 69650005
+         EJECT                                                          69720005
+IDLES010 EQU   *                                                        69790005
+         TM    SAVX1,ONE                WERE ANY HORIZONTAL TABS FOUND  69860005
+*                                       BY THE EDIT ROUTINE             69930005
+         BZ    IDLES020                 NO, BRANCH                      70000005
+         MVC   CARCT,LINESV             SET TO USE MAXIMUM IDLES        70070005
+         NI    SAVX1,AVTEFF-ONE         RESET INDICATOR                 70140005
+         SPACE 2                                                        70210005
+IDLES020 EQU   *                                                        70280005
+         NC    WBUFSZ,WBUFSZ            ANY ROOM LEFT IN TCAM           70350005
+         BNZ   IDLES050                 YES, BRANCH                     70420005
+         OI    WFLGS+ONE,ONE            INDICATE NOT ENOUGH ROOM        70490005
+         LH    RTEMPA,CARCT             GET CURRENT CARRIAGE POSITION   70560005
+         SR    RTEMP,RTEMP              CLEAR REGISTER                  70630005
+         LA    RDCB,ELEVEN              SET UP THE DIVISOR              70700005
+         DR    RTEMP,RDCB               DIVIDE THE NUMBER OF CHARACTERS 70770005
+*                                       ON THE LINE BY ELEVEN TO FIND   70840005
+*                                       OUT HOW MANY IDLES ARE NEEDED   70910005
+         LTR   RTEMP,RTEMP              DID THE DIVIDE PRODUCE A        70980005
+*                                       REMAINDER                       71050005
+         BZ    IDLES030                 NO, THEN NO NEED TO ROUND UP    71120005
+         LA    RTEMPA,ONE(,RTEMPA)      ROUND UP FOR THE REMAINDER      71190005
+         SPACE 2                                                        71260005
+IDLES030 EQU   *                                                        71330005
+         LA    RTEMP,FIFTEEN            SET REGISTER FOR COMPARE        71400005
+         CR    RTEMPA,RTEMP             ARE MORE THAN FIFTEEN IDLES     71470005
+*                                       INDICATED                       71540005
+         BNH   IDLES040                 NO, BRANCH                      71610005
+         LR    RTEMPA,RTEMP             YES, ONLY ALLOW FIFTEEN         71680005
+         SPACE 2                                                        71750005
+IDLES040 EQU   *                                                        71820005
+         STH   RTEMPA,CARCT             PUT NUMBER OF IDLES INTO CARR.  71890005
+         OI    CARCT+ONE,IDLEFLAG       INDICATE THE CARRIAGE COUNT     71960005
+*                                       IS NUMBER OF IDLES              72030005
+         BR    RLINK                    RETURN                          72100005
+         SPACE 2                                                        72170005
+IDLES050 EQU   *                                                        72240005
+         TM    FLAG2,X1050              IS THE DEVICE A 1050            72310005
+         BZ    IDLES060                 NO, MUST BE A 2741              72380005
+         LTR   RTIOC,RTIOC              IF 1050 IS IT ENTRY TO RETURN   72450005
+*                                       CARRIAGE                        72520005
+         BNZ   IDLES060                 NO, TREAT NORMALLY              72590005
+         MVI   ZERO(RTCBUF),IDLECHAR    PUT IN ONE IDLE                 72660005
+         MVC   ONE(ELEVEN,RTCBUF),ZERO(RTCBUF) PUT IN ELEVEN MORE       72730005
+         MVI   TWELVE(RTCBUF),EOT       FINISH UP WITH EOT              72800005
+         LA    RNDX,THIRTEEN            SET TOTAL COUNT MOVED           72870005
+         B     IDLES130                 GO UPDATE COUNTS AND POINTERS   72940005
+         SPACE 2                                                        73010005
+IDLES060 EQU   *                                                        73080005
+         LH    RTEMPA,CARCT             GET CURRENT CARRIAGE COUNT      73150005
+         SR    RNDX,RNDX                CLEAR COUNT REGISTER            73220005
+         CLI   CARCT+ONE,IDLEFLAG       IS THIS A FLAG OR A COUNT       73290005
+         BE    IDLES130                 BRANCH IF A FLAG                73360005
+         BH    IDLES080                 BRANCH IF BOTH                  73430005
+         LTR   RTEMPA,RTEMPA            ARE ANY IDLES NEEDED            73500005
+         BZ    IDLES130                 NO, BRANCH                      73570005
+         SR    RTEMP,RTEMP              CLEAR REGISTER                  73640005
+         LA    RDCB,ELEVEN              SET UP THE DIVISOR              73710005
+         DR    RTEMP,RDCB               DIVIDE THE NUMBER OF CHARACTERS 73780005
+*                                       ON THE LINE BY ELEVEN TO FIND   73850005
+*                                       OUT HOW MANY IDLES ARE NEEDED   73920005
+         LTR   RTEMP,RTEMP              DID THE DIVIDE PRODUCE A        73990005
+*                                       REMAINDER                       74060005
+         BZ    IDLES070                 NO, THEN NO NEED TO ROUND UP    74130005
+         LA    RTEMPA,ONE(,RTEMPA)      ROUND UP ONE FOR REMAINDER      74200005
+         SPACE 2                                                        74270005
+IDLES070 EQU   *                                                        74340005
+         LA    RTEMP,FIFTEEN            SET REGISTER FOR COMPARE        74410005
+         CR    RTEMPA,RTEMP             ARE MORE THAN FIFTEEN IDLES     74480005
+*                                       INDICATED                       74550005
+         BNH   IDLES080                 NO, BRANCH                      74620005
+         LR    RTEMPA,RTEMP             YES, ONLY ALLOW FIFTEEN         74690005
+         SPACE 2                                                        74760005
+IDLES080 EQU   *                                                        74830005
+         N     RTEMPA,FULLWD15          GET ACTUAL NUMBER OF IDLES      74900005
+         LR    RNDX,RTEMPA              SAVE IDLES COUNT                74970005
+         CH    RNDX,WBUFSZ              IS THERE ROOM IN THE CURRENT    75040005
+*                                       TCAM BUFFER FOR ALL THE IDLES   75110005
+         BH    IDLES100                 NO, ONLY SEND SOME OF THEM      75180005
+         NI    WFLGS+ONE,AVTEFF-ONE     INDICATE THAT ALL WILL FIT      75250005
+         SPACE 2                                                        75320005
+IDLES090 EQU   *                                                        75390005
+         MVI   ZERO(RTCBUF),IDLECHAR    INSERT FIRST IDLE               75460005
+         TM    LCBSTAT5,LCBLUNIT        LU?                    @YM06885 75470000
+         BNO   IDLES091                 SEND IDLES             @Y17XAYP 75480000
+         MVI   ZERO(RTCBUF),NULLCHAR    INSERT NULL FOR SNA    @Y17XAYP 75490000
+IDLES091 EQU   *                                               @Y17XAYP 75500000
+         BCT   RNDX,IDLES110            BRANCH IF MORE THAN ONE NEEDED  75530005
+         B     IDLES120                 MUST NEED ONLY ONE              75600005
+         SPACE 2                                                        75670005
+IDLES100 EQU   *                                                        75740005
+         OI    WFLGS+ONE,ONE            INDICATE NOT ROOM FOR ALL       75810005
+         LH    RNDX,WBUFSZ              SET TO FILL UP CURRENT BUFFER   75880005
+         B     IDLES090                 GO PUT THEM IN                  75950005
+         SPACE 2                                                        76020005
+IDLES110 EQU   *                                                        76090005
+         BCTR  RNDX,RZERO               DECREMENT COUNT FOR MOVE        76160005
+         EX    RNDX,INSRTIDL            PUT IN REMAINING IDLES          76230005
+         LA    RNDX,ONE(,RNDX)          RESTORE ACCURATE COUNT          76300005
+         SPACE 2                                                        76370005
+IDLES120 EQU   *                                                        76440005
+         LA    RNDX,ONE(,RNDX)          ADD ONE FOR THE FIRST ONE       76510005
+         AR    RTCBUF,RNDX              POINT PAST THE IDLES            76580005
+         SR    RTEMPA,RNDX              WAS THERE ROOM                  76650005
+         LTR   RTEMPA,RTEMPA            FOR ALL OF THEM                 76720005
+         BZ    IDLES130                 YES, BRANCH                     76790005
+         STC   RTEMPA,CARCT+ONE         STORE NUMBER OF IDLES NOT MOVED 76860005
+         OI    CARCT+ONE,IDLEFLAG       INDICATE THAT COUNT IS IDLES    76930005
+         B     IDLES140                 DONT CLEAR CARRIAGE COUNT       77000005
+         SPACE 2                                                        77070005
+IDLES130 EQU   *                                                        77140005
+         XC    CARCT,CARCT              CLEAR OUT CARRIAGE COUNT        77210005
+         SPACE 2                                                        77280005
+IDLES140 EQU   *                                                        77350005
+         LH    RTEMPA,WBUFSZ                                            77420005
+         LH    RTEMPA,WBUFSZ            GET TCAM BUFFER SIZE            77490005
+         SR    RTEMPA,RNDX              SUBTRACT NUMBER OF IDLES MOVED  77560005
+         STH   RTEMPA,WBUFSZ            STORE BACK UPDATED COUNT        77630005
+         L     RTEMPA,TOR               GET NUMBER OF CHARACTERS MOVED  77700005
+         AR    RTEMPA,RNDX              ADD NUMBER OF IDLES MOVED       77770005
+         ST    RTEMPA,TOR               STORE BACK TOTAL MOVED          77840005
+         BR    RLINK                    RETURN                          77910005
+         EJECT                                                          77980005
+AYV90000 EQU   *                                                        78050005
+         L     RRTN,TOR                 GET MOVED TO COUNT              78120005
+         CH    RRTN,MSGNLNTH            IS IT GREATER THAN MSGGEN COUNT 78190005
+         BNH   AYV90001                 NO, CONTINUE                    78260005
+         STH   RRTN,MSGNLNTH            YES, MUST HAVE ADDED SOME MORE  78330005
+         SPACE 2                                                        78400005
+AYV90001 EQU   *                                                        78470005
+         LA    RRTN,RC0                 SUCCESS RETURN CODE             78540005
+         TM    WFLGS,TSOMSG             IS THIS A MSGGEN                78610005
+         BO    AYV99900                 NO, EXIT                        78680005
+         ICM   RRTN,ICMASK,MSGNLNTH     SET UP MOVED COUNT              78750005
+         B     AYV99900                 GO TO EXIT                      78820005
+         SPACE 2                                                        78890005
+AYV90100 EQU   *                                                        78960005
+         TM    WFLGS,TSOMSG             IS THIS A MSGGEN                79030005
+         BZ    MSGGEN25                 YES DONT EXIT WITH LINE FULL    79100005
+         LA    RRTN,RC16                END OF LINE RETURN CODE         79170005
+         B     AYV99900                 GO TO EXIT                      79240005
+         SPACE 2                                                        79310005
+AYV90200 EQU   *                                                        79380005
+         LA    RRTN,RC12                INCOMPLETE MOVE RETURN CODE     79450005
+         ST    RTCBUF,DEND+EIGHT        SAVE TCAM BUFFER POSITION       79520005
+         SPACE 2                                                        79590005
+AYV99900 EQU   *                                                        79660005
+         MVC   QCBCARCT,CARCT+ONE       RESTORE CARRIAGE COUNT          79730005
+         MVC   TWENTY(TWELVE,RAVT),TOR  SAVE LINK REG                   79800005
+         ST    RRTN,SIXTEEN(RAVT)       SAVE RETURN CODE                79870005
+         RETURN (14,12)                                                 79940005
+         EJECT                                                          80010005
+CNTLTRAN TR    ZERO(ZERO,RTEMPA),CTLTAB TRANSLATE INSTRUCTION           80080005
+MOVDATA  MVC   ZERO(ZERO,RTCBUF),ZERO(RTSBUF) TCAM FROM TIOC            80150005
+INSRTIDL MVC   ONE(ZERO,RTCBUF),ZERO(RTCBUF) PROPAGATE THE IDLES        80220005
+CTLTAB   EQU   *                        *                               80290005
+         DC    CL1':'                   *                               80360005
+         DC    XL4'01020304'            *                               80430005
+         DC    CL1':'                   *                               80500005
+         DC    XL2'0607'                T                               80570005
+         DC    6CL1':'                  R                               80640005
+         DC    XL2'0E0F'                A                               80710005
+         DC    CL1':'                   N                               80780005
+         DC    XL1'11'                  S                               80850005
+         DC    2CL1':'                  L                               80920005
+         DC    XL1'14'                  A                               80990005
+         DC    2CL1':'                  T                               81060005
+         DC    XL1'17'                  E                               81130005
+         DC    12CL1':'                 *                               81200005
+         DC    XL1'24'                  T                               81270005
+         DC    2CL1':'                  A                               81340005
+         DC    XL1'27'                  B                               81410005
+         DC    7CL1':'                  L                               81480005
+         DC    XL1'2F'                  E                               81550005
+         DC    4CL1':'                  *                               81620005
+         DC    XL3'343536'              *                               81690005
+         DC    201CL1':'                *                               81760005
+CRLFCR   DC    X'0D250D'                TWX ENDING POSSIBILITIES        81830005
+AYVPATCH DC    20F'0'                   PATCH AREA                      81900005
+HALFONE  DC    H'0001'                  HALFWORD ONE                    81970005
+BTULNGTH DC    H'0019'                  BTU AND OFFSET LENGTH IN BUF    82040005
+FULLWD15 DC    F'15'                    FULL WORD OF FIFTEEN            82110005
+         EJECT                                                          82180005
+GMAIN    DSECT                                                          82250005
+TSBUFR   DS    F                        TSO BUF OR MSGGEN ADDRESS       82320005
+TCBUFR   DS    F                        TCAM/SCB ADDRESS                82390005
+MOVED    DS    H                        DATA MOVED                      82460005
+LINE     DS    H                        LINE SIZE REMAINING             82530005
+BLNTH    DS    H                        TSO BUFFER DATA SIZE            82600005
+MSGLEN   DS    H                        MESSAGE SIZE                    82670005
+WBUFSZ   DS    H                        TCAM BUFFER SIZE                82740005
+*                                                                     * 82810005
+CARCT    DS    H                        QCBCARCT                        82880005
+*                             BIT DEFINITIONS                         * 82950005
+SBASCND  EQU   X'F0'                    SECOND ENTRY OFFSET             83020005
+CUR1SCND EQU   X'F1'                    SECOND ENTRY OFFSET             83090005
+CUR2SCND EQU   X'F2'                    SECOND ENTRY OFFSET             83160005
+STFDSCND EQU   X'F3'                    SECOND ENTRY OFFSET             83230005
+RDATSCND EQU   X'F4'                    SECOND ENTRY OFFSET             83300005
+INCSCND  EQU   X'F5'                    SECOND ENTRY OFFSET             83370005
+ETXSCND  EQU   X'F6'                    SECOND ENTRY OFFSET             83440005
+EOTSCND  EQU   X'F7'                    SECOND ENTRY OFFSET             83510005
+*                                                                     * 83580005
+LINESV   DS    H                        FROM TSB OR DEFAULT             83650005
+*                                                                     * 83720005
+LINENUM  EQU   LINESV                   DISPLAY NUMBER OF LINES         83790005
+LINESIZE EQU   LINESV+1                 DISPLAY LINE SIZE               83860005
+*                                                                     * 83930005
+SWT1     DS    X                        SWITCH 1                        84000005
+*                             BIT DEFINITIONS                         * 84070005
+CUR2FLAG EQU   X'80'                    SECOND CURSOR FLAG              84140005
+CUR1FLAG EQU   X'40'                    FIRST CURSOR FLAG               84210005
+RDATTNLF EQU   X'20'                    READ ATTRIBUTE BYTE FLAG        84280005
+SFATTSW  EQU   X'10'                    START FIELD FLAG                84350005
+BYPFLAG  EQU   X'08'                    BYPASS FLAG                     84420005
+CRNL     EQU   X'04'                    CARRIAGE RETURN/NEWLINE FLAG    84490005
+SBAENDSW EQU   X'02'                    SET BUFFER ADDRESS FLAG         84560005
+INCSW    EQU   X'01'                    INSERT CURSOR FLAG              84630005
+*                                                                     * 84700005
+SWT2     DS    X                        SWITCH 2                        84770005
+*                             BIT DEFINITIONS                         * 84840005
+RETCOD4  EQU   4                        CALCSIZE RETURN CODE 4          84910005
+RETCOD8  EQU   8                        CALCSIZE RETURN CODE OF 8       84980005
+RETCOD12 EQU   12                       CALCSIZE RETURN CODE OF 12      85050005
+RETCOD16 EQU   16                       CALCSIZE RETURN CODE OF 16      85120005
+RETCOD40 EQU   40                       CALCSIZE RETURN CODE NO ROOM    85190005
+*                                                                     * 85260005
+WFLGS    DS    H                        TSO FLAGS                       85330005
+*                             BIT DEFINITIONS                         * 85400005
+TSOMSG   EQU   X'80'                    TSO ENTRY                       85470005
+CONTROLM EQU   X'40'                    CONTROL MODE                    85540005
+TSOASIS  EQU   X'20'                    TSO TPUT ASIS                   85610005
+FRSTMGEN EQU   X'10'                    FIRST TIME IN EDIT ON MSGGEN    85680005
+NOLEFT   EQU   X'06'                    NO LEFT JUSTIFICATION REQUEST   85750005
+LEFT     EQU   X'05'                    LEFT JUSTIFICATION REQUEST      85820005
+*                                                                     * 85890005
+SAVX1    DS    H                        SCREEN CURSOR ADDRESS           85960005
+*                                                                     * 86030005
+FLAG1    DS    X                        FLAG BYTE 1                     86100005
+*                             BIT DEFINITIONS                         * 86170005
+TRAILER  EQU   X'80'                    TRAILER BUFFER FLAG             86240005
+FLASHBCK EQU   X'40'                    FLASHBACK REQUESTED FLAG        86310005
+RESTSW   EQU   X'20'                    RESTORE CHAR FLAG      @SA73817 86320058
+RECALC   EQU   X'10'                    USED LOCALLY IN AYB.   @SA75159 86330058
+*                                       BYPASS CODE AND RESET  @SA75159 86340058
+EOTSW    EQU   X'02'                    EOT FLAG                        86380005
+ETXSW    EQU   X'01'                    ETX FLAG                        86450005
+*                                                                     * 86520005
+FLAG2    DS    X                        FLAG BYTE 2                     86590005
+*                             BIT DEFINITIONS                         * 86660005
+X3705    EQU   X'80'                    TERMINAL ON A 3705       Y06327 86730005
+X1050    EQU   X'40'                    DEVICE IS A 1050         Y06237 86800005
+NLCRFLAG EQU   X'10'                    NL/CR COUNT FLAG                86870005
+NWLNCNT  EQU   X'08'                    LINE COUNT FLAG                 86940005
+CARRDATT EQU   X'04'                    READ ATTRIBUTE LINE POS FLAG    87010005
+HEADERFG EQU   X'02'                    FIRST BASIC UNIT FLAG           87080005
+NOMOVECT EQU   X'01'                    NO MOVECOUNT FLAG               87150005
+*                                                                     * 87220005
+SAVX2    DS    H                        FIRST/LAST CHARACTER            87290005
+TOR      DS    F                        DATA COUNT                      87360005
+FROMR    DS    F                        DATA COUNT MOVED                87430005
+TSCURR   DS    F                        CURRENT TSO BUFFER              87500005
+MSGNLNTH DS    H                        LENGTH OF MSGGEN DATA           87570005
+DEND     DS    D                        DOUBLE SAVE                     87640005
+SIZE     EQU   *-GMAIN                  GMAIN LENGTH                    87710005
+         EJECT                                                          87780005
+         TTNTD                                                          87850005
+         EJECT                                                          87920005
+         TTRMD                                                          87990005
+         EJECT                                                          88060005
+         TTSID                                                          88130005
+         EJECT                                                          88200005
+         TPRFD                                                          88270005
+         EJECT                                                          88340005
+         TLCBD                                                          88410005
+         EJECT                                                          88480005
+         TQCBD                                                          88550005
+QCBFLGS  EQU   QCBIEND+QCBEND           SPECIAL QCB FLAGS      @Y17XAYP 88560000
+         EJECT                                                          88620005
+         TSCBD                                                          88690005
+AYOSRCE  EQU   SCBSRCE+16               CONFORM WITH IEDAYO      A56230 88760005
+         EJECT                                                          88780000
+         TTSWD                                                          88800000
+         EJECT                                                          88830005
+         TAVTD                                                          88900005
+         EJECT                                                          88970005
+         DCBD  DSORG=TX                                                 89040005
+         EJECT                                                          89060000
+         TDCTD                                                          89080000
+         EJECT                                                          89110005
+         IKJTSB                                                         89180005
+         EJECT                                                          89250005
+         TPRIOR                                                  A53617 89320005
+         EJECT                                                          89390005
+         IKJTIOCB                                                       89460005
+         EJECT                                                          89530005
+         IKJTIOCP                                                       89600005
+         EJECT                                                          89670005
+         END                                                            89740005

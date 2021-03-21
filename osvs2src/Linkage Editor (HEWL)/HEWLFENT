@@ -1,0 +1,329 @@
+          TITLE   'HEWLFENT  ENTRY POINT PROCESSOR'                     00020021
+*********************************************************************** 00040021
+*              HEWLFENT - ENTRY POINT PROCESSOR - ALIAS TABLE BUILDER * 00060021
+*********************************************************************** 00080021
+*                                                                       00100021
+*              ENTRY POINT - HEWLFENT - CONTROL SECTION NAME          * 00120021
+*                                                                       00140021
+*              INPUT--                                                  00160037
+*                  A)  1) COMPOSITE EXTERNAL DICTIONARY                 00180021
+*                      2) RELOCATION CONSTANT TABLE                     00200021
+*                      4) ENTRY POINT SYMBOL OR ASSEMBLED ADD AND ESDID 00220021
+*                      3) INDICATION IF ENTRY POINT HAS BEEN RECIEVED   00240021
+*                      4)ALIAS TABLE                                    00260021
+*                                                                       00280021
+*                 B)   1) GP REGISTER  2 -ADDRESS OF ALL PURPOSE TABLE  00300021
+*                      2) GP REGISTER 13 -ADDRESS OF A REG SAVE AREA    00320021
+*                      3) GP REGISTER 14 -CALLER RETURN ADDRESS         00340021
+*                                                                       00360021
+*********************************************************************** 00380021
+*********************************************************************** 00400021
+*                   DETERMINE ENTRY POINT  AND ASSOCIATED ESDID       * 00420021
+*                                                                     * 00440021
+*              PROCEDURE:                                             * 00460021
+*                                                                     * 00480021
+*               (A) BUILD ALIAS TABLE USING ALIAS CHAIN IN CESD       * 00500021
+*               (B) HAS AN ENTRY POINT BEEN DEFINED ?                 * 00520021
+*                  (1)YES - IS IT SYMBOLIC ?                          * 00540021
+*                     (A)YES-FIND SYMBOL IN CESD  (NOT FOUND IS ERROR)* 00560021
+*                            IS SYMBOL TYPE = SD OR LR (NO IS ERROR)  * 00580021
+*                            IS SYMBOL IN SEGMENT 1 (NO IS AN ERROR)  * 00600021
+*                     (B)NO - ENTRY POINT IS AN ASSEMBLED ADDRESS     * 00620021
+*                            USING GIVEN ESDID FIND LINKED ADDRESS    * 00640021
+*                            USING ESDID CHECK ADDRESS TO BE IN SEG 1 * 00660021
+*                             (NOT IN SEGMENT 1 IS AN ERROR)          * 00680021
+*                  (2)NO  -  FIND LOWEST LINKED ADDRESS FOR TYPE SD OR* 00700021
+*                            PC (NOT DELETE) IN CESD IN SEGMENT 1     * 00720021
+*                            (NOT FOUND IS AN ERROR)                  * 00740021
+*                                                                     * 00760021
+*                                                                     * 00780021
+*********************************************************************** 00800021
+*                                                                       00820021
+*              REGISTER USAGE                                           00840021
+*                                                                       00860021
+HEWLFENT CSECT                                                          00880021
+ERRCODRG EQU   0                                                   REGS 00920021
+ERRSYM   EQU   1                        ERROR SYMBOL ADDRESS       REGS 00940021
+ALIASTBL EQU   3                       ADDRESS OF ALIAS TABLE           00960021
+WORK1    EQU   5                       WORK REG                         00980021
+APT      EQU   2                        APT                        REGS 01000021
+CESDCT   EQU   11                       CESD CURR CT               REGS 01020021
+BASE     EQU   12                                                  REGS 01040021
+WORK2    EQU   13                                                       01060021
+RCTADD   EQU   8                       ADDRESS OF RCT              REGS 01080021
+RETURN   EQU   14                                                  REGS 01100021
+TEMP4    EQU   9                                                        01120021
+TEMP3    EQU   10                                                       01140021
+EVEN     EQU   14                      EVEN REG OF AN EVEEN /ODD PAIR   01160021
+TEMP1    EQU   6                        TEMPORARY WORK                  01180021
+ALIASADD EQU   7                        ADDRESS OF ALIAS ENTRY IN CESD  01200021
+BRANCH   EQU   15                                                  REGS 01220021
+CESDADD  EQU   8                        CESD ADDRESS             REGS   01240021
+ENTRYCD  EQU   X'02'                    ENTRY CARD RECIEVED- MASK       01260021
+OVERLYBT EQU   X'20'                    OVERLAY MASK               DISP 01280021
+ENTPTSYM EQU   X'04'                    SYMBOLIC ENTRY PT MASK          01300021
+ENTPTRCD EQU   X'08'                    ENTRY PT RECVD IND.             01320021
+NULL     EQU   X'07'                                               DISP 01340021
+DISP     EQU   0                        REL DISP TO SAVE CALLERS REGS   01360021
+*                                                                       01380021
+*********************************************************************** 01400021
+*              SAVE ALL REGISTERS                                     * 01420021
+*********************************************************************** 01440021
+         STM   14,12,DISP(13)                                           01460021
+         USING ENT00050+2,BASE                                          01480021
+         USING APTDSECT,APT                                             01500021
+ENT00050 BALR  BASE,0                                                   01520021
+         BC    15,MODID+6              BRANCH AROUND MODULE IDENT       01540021
+MODID    DC    C'01MENT'                                                01560021
+         ST    13,SAVERG13                                              01580021
+         NI    WORKBYTE,X'00'           INITIALIZE WORKBYTE TO ZERO     01600021
+*********************************************************************** 01620021
+*              CHAIN THROUGH CESD FINDING ALIASES - SCAN CESD FOR A   * 01640021
+*               SYMBOL MATCH                                          * 01660021
+*                  1) MATCH - SAVE ESD ID IN ALIAS TABLE              * 01680021
+*                  2) NO MATCH - PUT 0 FOR ESDID IN ALIAS TABLE       * 01700021
+*********************************************************************** 01720021
+*********************************************************************** 01740021
+*              ALIAS  TABLE  BUILDER                                    01760021
+*********************************************************************** 01780021
+*              THE FOLLOWING EXPLAINS THE ALIAS TABLE BUILDING TECH   * 01800021
+*                                                                     * 01820021
+*                1) THE ALIAS SYMBOL IS PLACED IN THE ALIAS TABLE  IN * 01840021
+*                   BYTE LOCATIONS 1-8                                * 01860021
+*                2) IF A MATCH BETWEEN THE ALIAS SYMBOL AND AN SD OR  * 01880021
+*                   LR SYMBOL IN SEG 1 IS NOT FOUND - A 0 IS PUT BYTES* 01900021
+*                   9 AND 10 OF THE ALIAS TABLE                       * 01920021
+*                3) IF A MATCH IS FOUND THE ESD ID OF THIS SYMBOL IN  * 01940021
+*                   THE ALIAS CHAIN IS SAVED IN BYTES 9 AND 10 OF THE * 01960021
+*                   ALIAS TABLE - THIS ESDID (OR POINTER TO THE CESD) * 01980021
+*                   POINTS TO A LINE OF ESD TYPE NULL (07 HEX)FOUND IN* 02000021
+*                   BYTE 8 OF THE CESD ENTRY - IN BYTES 10-12 THE     * 02020021
+*                   ADDRESS OF LR OR SD IS SAVED - BYTES 13 AND 14 ARE* 02040021
+*                   NOT USED - BYTES 15-16 CONTAIN THE ESD ID OF THE  * 02060021
+*                   SD WHICH THE ALIAS SYMBOL MATCHED OR THE SD IN    * 02080021
+*                   WHICH THE LR(WHICH THE ALIAS SYMBOL MATCHED) RESID* 02100021
+*                   ES -  THIS ESD ID IS SAVED FOR SCATTER LOADING    * 02120021
+*                4) THE CESD ENTRIES WHICH WERE CHAINED TOGETHER IN THE 02140021
+*                   FIRST PASS TO RECORD ALIAS SYMBOLS ARE NOW USED TO* 02160021
+*                   RECORD THE SYMBOL'S ADDRESS AND ID WHEN NEEDED.   * 02180021
+*                5) THE INFORMATION IS USED BY THE FINAL PROCESSOR IN * 02200021
+*                   STOWING ALIASES                                   * 02220021
+*********************************************************************** 02240021
+*                                                                       02260021
+ENT00150 L     ALIASADD,ALCB       ADDRESS OF FIRST ALIAS ITEM          02280021
+         L     ALIASTBL,ALAS       ADDRESS OF ALIAS TABLE               02300021
+         L     TEMP1,CHESD         ADDRESS OF CESD                      02320021
+         LH    TEMP3,ENCDC         CESD CT                              02340021
+ENT00155 LR    CESDADD,TEMP1            RESTORE CESD ADD                02360021
+         LR    CESDCT,TEMP3             RESTORE CESD CT                 02380021
+ENT00160 LTR   ALIASADD,ALIASADD        ARE  THERE ANY MORE ALIASES     02400021
+         BC    8,ENT00200               NO /GO TO FIND ENTRY ADDRESS    02420021
+         MVC   0(8,ALIASTBL),0(ALIASADD) MV ALIAS SYMBOL TO ALIAS TABLE 02440021
+         MVI   8(ALIASADD),NULL           SET THIS CESD LINE- TYPE NULL 02460021
+         L     WORK1,8(ALIASADD)       ADDREAS OF NEXT ALIAS SYMBOL     02480021
+ENT00190 LA    CESDADD,16(CESDADD)      INCREMENT TO FIRST(NEXT) ENTRY  02500021
+         CLC   0(8,CESDADD),0(ALIASTBL) DOES ALIAS SYM = THIS CESD SYM  02520021
+         BC    7,ENT00192               NO /BRANCH TO TEST END CESDLOOP 02540021
+         LR    ERRSYM,CESDADD           ADDRESS OF ALIAS TABLE          02560021
+         MVC   9(7,ALIASADD),9(CESDADD) MOVE ADD OF LR OR SD TO NULL    02580021
+*                                       LINE,ALSO MOVE ID/L FIELD       02600021
+         LA    WORK2,ENT00192           RETURN ADDRESS IF TYPE NE SD,LR 02620021
+         LA    TEMP4,ENT01191           RETURN IF TYPE = LR             02640021
+         BAL   RETURN,ENT01800          GO TO TEST TYPE FOR SD OR LR    02660021
+         SR    CESDADD,TEMP1           RELATIVE CESD ADD OF SYMBOL      02680021
+         SRL   CESDADD,4               ID OF SYMBOL                     02700021
+         STH   CESDADD,14(ALIASADD)    PUT ID OF SD IN LD LINE          02720021
+ENT01191 CLI   12(ERRSYM),X'01'         IS  SD OR LR IN SEG 1           02740021
+         BC    7,ENT00198               NO / GO TO PRINT ERROR MESSAGE  02760021
+         SR    ALIASADD,TEMP1           RELATIVE ADD OF AE LINE         02780021
+         SRL   ALIASADD,4               ID OF AE LINE                   02800021
+ENT00191 STH   ALIASADD,8(ALIASTBL)     PUT ID OF AE LINE IN ALIAS TBL  02820021
+         LA    ALIASTBL,10(ALIASTBL)    INCREMENT TO NEXT ALIAS SYMBOL  02840021
+         LA    ALIASADD,0(WORK1)        RESTORE ADD OF NEXT ALIAS SYM   02860021
+         BC    15,ENT00155              BRANCH TO TEST END OF ALIASLOOP 02880021
+ENT00192 BCT   CESDCT,ENT00190          BRANCH IF CESD LOOP NOT DONE    02900021
+ENT00197 SR    ALIASADD,ALIASADD                                        02920021
+         BC    15,ENT00191              BRANCH STORE 0 ID - CONTINUE    02940021
+*                                                                       02960021
+ENT00198 LH    ERRCODRG,ERRPARM9        ERROR- ALIAS SYMBOL NOT IN SEG1 02980021
+         LA    RETURN,ENT00197          RETURN ADDRESS                  03000021
+         BC    15,ENT00500              GO TO /GO TO ERROR ROUT.        03020021
+*********************************************************************** 03040021
+*              DETERMINE ENTRY POINT OF MODULE                          03060021
+*********************************************************************** 03080021
+ENT00200 TM    APT1,ENTPTRCD       ENTRY POINT RECEIVED                 03100021
+         BC    8,ENT01250               NO / GO FIND 1ST GOOD BYTE SEG1 03120021
+         TM    APT1,ENTPTSYM       ENTRY PT SYMBOLIC                    03140021
+         BC    8,ENT01200               NO - GO FIND ABSOLUTE           03160021
+*********************************************************************** 03180021
+*              ENTRY POINT IS SYMBOLIC                                * 03200021
+*********************************************************************** 03220021
+ENT00300 LA    CESDADD,16(CESDADD)      INC CESD ADD                    03240021
+         CLC   EPSM(8),0(CESDADD)  DOES ENTRY SYMBOL =  CESD SYMBOL     03260021
+         BC    8,ENT00600               YES / GO TO FIND ITS ADD        03280021
+ENT00350 BCT   CESDCT,ENT00300          BRANCH IF LOOP NOT DONE         03300021
+         LH    ERRCODRG,ERRPARM3       SYMBOL NOT SD,LR IN CESD-ENTRY   03320021
+         TM    APT1,ENTRYCD        HAS AN ENTRY CD BEEN RECEIVED        03340021
+         BC    1,ENT00400               YES                             03360021
+         LH    ERRCODRG,ERRPARM4       SYMBOL NOT SD,LR IN CESD-ENTRY   03380021
+ENT00400 LA    ERRSYM,EPSM         ADDRESS OF SYMBOL                    03400021
+ENT00450 LA    RETURN,ENT01100          RETURN ADDRESS                  03420021
+ENT00500 L     BRANCH,ERDIG        ADD OF ERROR DIAGNOSTIC ROUTINE      03440021
+         BCR   15,BRANCH                GO TO ERROR DIAGNOTIC ROUTINE   03460021
+ENT00600 MVC   LKDENTPT+1(3),9(CESDADD) SAVE ENTRY PT ADDRESS           03480021
+         LA    WORK2,ENT00350           RETURN IF TYPE NOT ACCEPTABLE   03500021
+         LA    TEMP4,ENT00800           RETURN IF TYPE = SD OR LR       03520021
+         BAL   RETURN,ENT01800          GO TO TEST TYPE- SD,LR,SD W RLD 03540021
+ENT00800 CLI   12(CESDADD),X'01'        ENTRY PT IN SEGMENT 1           03560021
+         BC    7,ENT01700               NO / INVALID ENTRY POINT        03580021
+ENT00900 SR    CESDADD,TEMP1            RELATIVE ADD                    03600021
+         SRL   CESDADD,4                CS  ID                          03620021
+         STH   CESDADD,LKDENTID         SAVE ID                         03640021
+         OC    LKDENTPT(3),LKDENTPT    IS ENTRY POINT ADD = 0           03660021
+         BC    8,ENT01000              YES                              03680021
+         NI    PDSE8,X'DF'         SET IND IN PDS - ADD NOT = 0         03700021
+ENT01000 MVC   PDSE16(2),LKDENTID   PUT ID IN PDS                       03720021
+         MVC   PDSE11(3),LKDENTPT+1 PUT ADD IN PDS                      03740021
+*********************************************************************** 03760021
+*              RESTORE ALL REGISTERS - RETURN TO CALLER               * 03780021
+*********************************************************************** 03800021
+ENT01100 L     13,SAVERG13              RESTORE ADD OF CALLERS SAVEREA  03820021
+         LM    14,12,DISP(13)           RESTORE USER REGISTERS          03840021
+         BCR   15,14                    RETURN TO CALLER                03860021
+*********************************************************************** 03880021
+*              ENTRY POINT  IS AN ASSEMBLED ADDRESS FROM AN END CARD  * 03900021
+*********************************************************************** 03920021
+ENT01200 MVC   LKDENTID(2),PDSE16  PUT ID ON BOUNDRY                    03940021
+         LH    CESDADD,LKDENTID         LOAD ID                         03960021
+         LH    ERRCODRG,ERRPARMA        INVALID ENTRY PT ID -NO PT ADD  03980021
+         LTR   TEMP4,CESDADD            SAVE ID AND TEST FOR ZERO       04000021
+         BC    8,ENT00450               GO PRINT ERROR - INVALID ID     04020021
+         CLR   TEMP4,TEMP3              DOES ID POINT INTO CESD         04040021
+         BC    2,ENT00450               NO-GO PRINT ERROR- INVALID ID   04060021
+         SLL   CESDADD,4               RELATIVE CESD ADD                04080021
+         AR    CESDADD,TEMP1           ADDRESS OF CESD ENTRY            04100021
+         MVN   WORKBYTE(1),8(CESDADD)  MOVE TYPE TO TEST IT             04120021
+         TM    WORKBYTE,X'03'          IS TYPE = SD,PC OR LR            04140021
+         BC    4,ENT00450              NO - ERROR ON ID                 04160021
+         SLL   TEMP4,2                  RCT RELATIVE ADD                04180021
+         A     TEMP4,RECNT         RCT ADD OF RC FOR THIS CS            04200021
+         TM    APTSWS,X'20'        IS END PT ADD TO BE RELOCATED        04220021
+         BC    8,ENT01230         ABSOLUTLY - NO                        04240021
+         LA    TEMP4,8(CESDADD)        REG POINTS TO TYPE- ADDRESS      04260021
+ENT01230 L     TEMP4,0(TEMP4)     LOAD RC OR CESD ADD TYPE              04280021
+         A     TEMP4,EPSM          ADD ASSEMBLED ADD TO RC              04300021
+         LA    TEMP4,0(TEMP4)          CLEAR HI ORDER BYTE              04320021
+         ST    TEMP4,LKDENTPT           SAVE ADD ON BOUNDRY             04340021
+         LH    ERRCODRG,ERRPARMB        INVALID ENTRY PT ADD-PRINT ADD  04360021
+         L     WORK1,8(CESDADD)         LINKED ADD OF CONTROL SEC       04380021
+         LA    WORK1,0(WORK1)           CLEAR HI BYTE TO ZERO           04400021
+         CR    TEMP4,WORK1              IS ENTRY PT ADD GTR CONT SEC AD 04420021
+         BC    4,ENT01240               NO,GO TO PRINT ERROR MESS       04440021
+         A     WORK1,12(CESDADD)        UPPER BOUND OF CONTROL SECTION  04460021
+         LA    WORK1,0(WORK1)           CLEAR HI BYTE TO ZERO           04480021
+         CLR   TEMP4,WORK1              IS ENTRY POINT LESS THAN UPP BD 04500021
+         BC    11,ENT01240              NO,GO TO PRINT ERROR MESSAGE    04520021
+         CLI   12(CESDADD),X'01'       IS ENTRY POINT IN SEG 1          04540021
+         BC    8,ENT00900               YES / GO TO SAVE ENTRY POINT    04560021
+         LH    ERRCODRG,ERRPARM7        ENTRY POINT NOT IN SEG 1 PARM   04580021
+ENT01240 MVI   LKDENTPT,X'00'           SET HI BYTE OF ADD TO ZERO      04600021
+         UNPK  EPSM(8),LKDENTPT(5) UNPACK 4 BYTE ADDRESS                04620021
+         TR    EPSM(8),TABLE-C'0'  TRANSLATE BINARY TO HEX              04640021
+         LM    EVEN,BRANCH,EPSM                                         04660021
+         SRDL  EVEN,8                                                   04680021
+         STM   EVEN,BRANCH,EPSM                                         04700021
+         MVI   EPSM,C'0'           SET HI BYTE TO ZERO                  04720021
+         BC    15,ENT00400              GO TO ERROR ROUTINE             04740021
+*********************************************************************** 04760021
+*              NO ENTRY POINT SPECIFIED BY PROBLEM PROGRAM            * 04780021
+*********************************************************************** 04800021
+ENT01250 MVC   LKDENTPT+1(3),THREEFS   SET LKDENTPT TO HIGHEST POS ADD  04820021
+         LR    TEMP4,TEMP1                                              04840021
+ENT01300 LA    TEMP4,16(TEMP4)          INC TEMP1 BY 16 (TEMP1 PTST     04860021
+         MVC   WORKBYTE(1),8(TEMP4)     MOVE TYPE TO WORKBYTE           04880021
+         NI    WORKBYTE,X'1F'           REMOVE TOP 3BITS -              04900021
+         CLI   WORKBYTE,X'0C'           IS TYPE NOT ACCEPTABLE          04920021
+         BC    2,ENT01400               YES / CONTINUE LOOP             04940021
+         TM    WORKBYTE,X'13'           IS TYPE = SD OR PC(NOT DELETE)  04960021
+         BC    5,ENT01400               NO/ GO TO TEST END OF LOOP      04980021
+         CLI   12(TEMP4),X'01'          IS CS  IN  SEG 1                05000021
+         BC    7,ENT01400               NO / GO TO TEST END OF LOOP     05020021
+         CLC   9(3,TEMP4),LKDENTPT+1   IS THIS CS ADD LESS PRV ADD      05040021
+         BC    11,ENT01400              NO / GO TEST END OF LOOP        05060021
+         LR    CESDADD,TEMP4            SAVE CESD ADD OF LOW CS ADD     05080021
+         MVC   LKDENTPT+1(3),9(TEMP4)   SAVE NEW LOW CS ADD             05100021
+ENT01400 BCT   CESDCT,ENT01300          BRANCH IF LOOP NOT DONE         05120021
+         CLC   LKDENTPT+1(3),THREEFS    HAS A CS BEEN FOUND             05140021
+         BC    7,ENT00900               YES / SAVE ADD AND ID           05160021
+         TM    PDSE7,OVERLYBT      IS PROGRAM IN OVERLAY                05180021
+         BC    8,ENT01100               NO/ GO TO GO TO ERROR ROUTINE   05200021
+         LH    ERRCODRG,ERRPARM8        NO ENTRY PT DEFINED IN SEG 1    05220021
+         BC    15,ENT00450              GO TO - GO TO ERROR DIAG        05240021
+*                                        NO ENTRY PT DEFINED BY PRB.PG. 05260021
+ENT01700 LH    ERRCODRG,ERRPARM5        SYMBOL FROM ENTRY CD NOT IN SG1 05280021
+         TM    APT1,ENTRYCD        HAS AN ENTRY CARD BEEN RECEIVED      05300021
+         BC    1,ENT00400               YES / GO TO PASS RETURN ADD     05320021
+         LH    ERRCODRG,ERRPARM6        SYMBOL FROM END CARD NOT IN SG1 05340021
+         BC    15,ENT00400              GO TO PASS RETURN ADDRESS       05360021
+*********************************************************************** 05380021
+*              TEST TYPE = HEX(08,03,08)                                05400021
+*********************************************************************** 05420021
+ENT01800 MVN   WORKBYTE(1),8(CESDADD)   MOVE LOW 4 BITS TO TEST TYPE    05440021
+         CLI   WORKBYTE,X'08'           IS TYPE AN ACCEPTABLE ONE       05460021
+         BCR   2,WORK2                  NO /  RETURN                    05480021
+         CLI   WORKBYTE,X'03'           IS TYPE = LR                    05500021
+         BCR   8,TEMP4                  YES / RETURN                    05520021
+         TM    WORKBYTE,X'07'           IS NOT SD OR SD WITH RLDS OR LR 05540021
+         BCR   5,WORK2                  YES / RETURN                    05560021
+         BCR   15,RETURN                RETURN - SD                     05580021
+THREEFS  DC    XL3'FFFFFF'                                              05600021
+LKDENTPT DS    F                        ENTRY POINT                     05620021
+LKDENTID DS    H                        ENTRY POINT ID                  05640021
+SAVERG13 DS    F                        SAVE AREA FOR ADDRESS OF CALL-  05660021
+*                                                                       05680021
+WORKBYTE DC    X'00'                    USED TO TEST TYPE OF ESDS       05700021
+*********************************************************************** 05720021
+*              ERROR  PARAMETERS -  ALL ARE SEVERITY 3 - NON EXECUTABLE 05740021
+*********************************************************************** 05760021
+*                                       DISP      SEVERITY   MESS.NO.   05780021
+ENT3     EQU   X'2305'                  2         3         05          05800021
+ENT4     EQU   X'2306'                  2         3         06          05820021
+ENT5     EQU   X'2307'                  2         3         07          05840021
+ENT6     EQU   X'2308'                  2         3         08          05860021
+ENT7     EQU   X'2309'                  2         3         09          05880021
+ENT8     EQU   X'030B'                  0         3         0B          05900021
+ENT9     EQU   X'222F'                  2         2         2F          05920021
+ENTA     EQU   X'0303'                  0         3         03          05940021
+ENTB     EQU   X'2303'                  2         3         03          05960021
+         DS    0F                                                       05980021
+ERRPARM3 DC    AL2(ENT3)                SYMBOL NOT AN EXTERNAL NAME-ENT 06000021
+ERRPARM4 DC    AL2(ENT4)                SYMBOL NOT AN EXTERNAL NAME-END 06020021
+ERRPARM5 DC    AL2(ENT5)                SYMBOL NOT DEFINED IN ROOT -ENT 06040021
+ERRPARM6 DC    AL2(ENT6)                SYMBOL NOT DEFINED IN ROOT -END 06060021
+ERRPARM7 DC    AL2(ENT7)                ENTRY POINT ADDRESS NOT IN ROOT 06080021
+ERRPARM8 DC    AL2(ENT8)               NO CONTROL SECTION IN ROOT       06100021
+ERRPARM9 DC    AL2(ENT9)                INVALID ALIAS ENTRY POINT \SEG1 06120021
+ERRPARMA DC    AL2(ENTA)               INVALID ENTRY PT - NO ADDRESS    06140021
+ERRPARMB DC    AL2(ENTB)               INVALID ENTRY PT -  ADDRESS      06160021
+*********************************************************************** 06180021
+*              TABLE OF HEX CHARACTERS - USED IN BINARY CONVERSION    * 06200021
+*********************************************************************** 06220021
+TABLE    DC    C'0'                                                     06240021
+         DC    C'1'                                                     06260021
+         DC    C'2'                                                     06280021
+         DC    C'3'                                                     06300021
+         DC    C'4'                                                     06320021
+         DC    C'5'                                                     06340021
+         DC    C'6'                                                     06360021
+         DC    C'7'                                                     06380021
+         DC    C'8'                                                     06400021
+         DC    C'9'                                                     06420021
+         DC    C'A'                                                     06440021
+         DC    C'B'                                                     06460021
+         DC    C'C'                                                     06480021
+         DC    C'D'                                                     06500021
+         DC    C'E'                                                     06520021
+         DC    C'F'                                                     06540021
+*                                                                       06560021
+         HEWAPT                                                         06580021
+         END                                                            06600021

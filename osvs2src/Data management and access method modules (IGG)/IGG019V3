@@ -1,0 +1,326 @@
+ TITLE   'IGG019V3 - 1419 AND 1275 CHECK ROUTINE'                       00300000
+IGG019V3 CSECT                                                          00600000
+*                                                                       00900000
+*                                                                       01200000
+*STATUS - CHANGE LVL 000   VERSION LVL 000   MODIFICATION LVL 000       01500000
+*                                                                       01800000
+*       CHANGES SINCE VS2-3.7                                  @ZA07621 01900037
+*C894000                                                       @ZA07621 01950037
+*A861500-863500,A894000                                        @ZA32068 02000037
+*FUNCTION - CHECK ROUTINE FOR 1419 AND 1275.                            02100000
+*            1-ZERO OUT ECB IN DECB'S.                                  02400000
+*            2-DETERMINE IF AN I/O OPERATION HAS BEEN POSTED COMPLETE   02700000
+*              FOR ANY OF THE CHAINED DECB'S.                           03000000
+*            3-IF NONE ARE POSTED-CONSTRUCT A PARAMETER LIST OF ECB     03300000
+*              ADDRESSES TO BE PASSED TO WAIT.                          03600000
+*            4-WAIT FOR AN I/O OPERATION TO BE POSTED.                  03900000
+*            5-DETERMINE WHICH DECB IT WAS POSTED FOR.                  04200000
+*            6-DETERMINE IF THE OPERATION COMPLETED WITHOUT AN ERROR    04500000
+*            7-IF AN I/O ERROR OCCURRED THEN:                           04800000
+*               A-DETERMINE IF IT WAS ON THE PCU OR SCU.                05100000
+*               B-IF NO SYNAD IS PRESENT CALL EOV (SVC 55) TO ABEND     05400000
+*               C-BRANCH TO USER'S SYNAD ROUTINE                        05700000
+*               D-ZERO MICBECB SO COMPLETE BIT WILL BE OFF              06000000
+*            8-IF THE I/O OPERATION COMPLETED SUCCESSFULLY THEN         06300000
+*              UPDATE THE MICB(READ) POINTER.                           06600000
+*                                                                       06900000
+*ENTRY POINT - IGG019V3 FROM THE CHECK MACRO EXPANSION                  07200000
+*              AN EXAMPLE OF THE EXPANSION IS:                          07500000
+*                LA  1,DECB       LOAD ADDR OF DECB                     07800000
+*                L   14,8(15)     PICK UP DCB ADDR                      08100000
+*                L  15,52(14)     PICK UP MODULE ADDR                   08400000
+*                BALR 14,15       BRANCH TO MODULE                      08700000
+*                                                                       09000000
+*INPUT - PARAMETER LIST OF DECB ADDRESSES                               09300000
+*        DECB                                                           09600000
+*         DECB+4 - POINTER TO NEXT DECB                                 09900000
+*         DECB+8 - DCB ADDRESS                                          10200000
+*        DCB                                                            10500000
+*         DCBECBLT - ADDRESS OF ECB LIST AREA                           10800000
+*         DCBIOBA - ADDRESS OF MICB                                     11100000
+*         DCBIOBAD - ADDRESS OF IOB                                     11400000
+*         DCBSYNAD - ADDRESS OF USER'S SYNAD ROUTINE                    11700000
+*        MICB                                                           12000000
+*         MICBNEXT - ADDRESS OF NEXT MICB                               12300000
+*         MICBECB  - X'7F' - SUCCESSFUL I/O OPERATION                   12600000
+*                    X'40' - ERROR ON THE I/O OPERATION                 12900000
+*         MICBECB+3- X'01'  ERROR POSTED IS ON SCU                      13200000
+*        BUFFER                                                         13500000
+*         BYTE 0 - X'18' - UNIT EXCEPTION OR INTERVENTION REQUIRED      13800000
+*                                                                       14100000
+*OUTPUT - DECB                                                          14400000
+*          DECB+0 - ECB POSTED                                          14700000
+*         DCB                                                           15000000
+*          DCBIOBA - ADDRESS OF MICB (UPDATED TO NEXT MICB)             15300000
+*         MICB                                                          15600000
+*          MICBECB - X'7F' SUCCESSFUL  I/O OPERATION (COMPLETION CODE)  15900000
+*                    X'40' ERROR ON THE I/O OPERATION (COMPLETION CODE) 16200000
+*                    X'01' LOW ORDER BIT IN ECB - ERROR ON SCU          16500000
+*          MICBFLAG - X'80' ENGAGE NECESSARY FOR THIS BUFFER BIT SET ON 16800000
+*                     X'10' - FIRST BUFFER AFTER ENGAGE BIT SET OFF     17100000
+*         RETURN CODES                                                  17400000
+*          X'00' - I/O OPERATION COMPLETED SUCCESSFULLY                 17700000
+*          X'04' - ERROR ON I/O OPERATION                               18000000
+*                                                                       18300000
+*EXTERNAL ROUTINES - SVC 55 (EOV)                                       18600000
+*                    SVC 01 (WAIT)                                      18900000
+*                    USER'S SYNAD ROUTINE                               19200000
+*                                                                       19500000
+*EXITS NORMAL - RETURN TO USER.                                         19800000
+*                                                                       20100000
+*EXITS ERROR - ABEND 001 IF THE USER FAILS TO SPECIFY A SYNAD ROUTINE.  20400000
+*                                                                       20700000
+*TABLES/WORKAREAS - NONE                                                21000000
+*                                                                       21300000
+*ATTRIBUTES - REENTERABLE                                               21600000
+*                                                                       21900000
+*NOTES - THE USER CAN ONLY HAVE A MAXIMUM OF 16 DEVICES CONNECTED TO    22200000
+*        ONE CPU.  HENCE IF MORE THAN 16 DECB'S ARE PRESENT ONLY THE    22500000
+*        FIRST 16 WILL BE PROCESSED.                                    22800000
+*                                                                       23100000
+*                                                                       23400000
+*                                                                       23700000
+*              SYMBOLIC DEFINITIONS OF REGISTERS                        24000000
+*                                                                       24300000
+REGZERO  EQU   0                                                        24600000
+PARMR    EQU   1                       CONTAINS ADDR OF FIRST DECB      24900000
+DCBR     EQU   2                       DCB ADDRESS                      25200000
+ECBR     EQU   3                       ADDRESS OF ECB PARAMETER LIST    25500000
+BASER    EQU   4                       BASE REGISTER                    25800000
+DECBR    EQU   5                       DECB ADDRESS                     26100000
+INDEXR   EQU   6                       INDEX REGISTER                   26400000
+MICBR    EQU   7                       MICB ADDRESS                     26700000
+REG8     EQU   8                                                        27000000
+REG9     EQU   9                                                        27300000
+REG10    EQU   10                                                       27600000
+SAVER    EQU   13                      ADDRESS OF SAVE AREA             27900000
+RETURNR  EQU   14                      RETURN ADDRESS                   28200000
+ENTRYR   EQU   15                      ENTRY POINT ADDR & RETURN CODES  28500000
+*                                                                       28800000
+*              SYMBOLIC DEFINITIONS FOR DISPLACEMENTS                   29100000
+*                                                                       29400000
+DECBADR  EQU   4                       DISP TO ADDR OF NEXT DECB        29700000
+DECBDCB  EQU   8                       DISP TO DCB ADDR IN DECB         30000000
+DECBIOB  EQU   16                      DISP TO IOB ADDR IN DECB         30300000
+IOBSENS  EQU   20                      DISP TO CSW SENSE INFO IN IOB    30600000
+REG1DSP  EQU   24                      DISP TO SAVE AREA OF REG 1       30900000
+RTNDSP   EQU   16                      DISP TO SET RETURN CODE          31200000
+SAVEDISP EQU   12                      DISP TO SAVE AREA                31500000
+SCUIOB   EQU   48                      DISP OF SCU IOB FROM PCU IOB     31800000
+SIXTY4   EQU   64                      DISP TO SAVE DECBR AND BASER     32100000
+SVEPRMS  EQU   20                      DISP TO SAVE SVC PARAMETERS      32400000
+TWNTY8   EQU   28                      DISP TO USER REGS FOR SYNAD      32700000
+ZEROD    EQU   0                       ZERO DISPLACEMENT                33000000
+*                                                                       33300000
+*              MISC DEFINITIONS                                         33600000
+*                                                                       33900000
+BUFFMPTY EQU   X'18'                   UNIT EXCPTN OR INTRVNTN REQ      34200000
+DCBALTER EQU   X'10'                   DCB ALTERED--SET ON FOR CLOSE    34500000
+FOUR     EQU   4                                                        34800000
+FRSTENG  EQU   X'EF'                   SET OFF FRST BUFF AFTER ENGAGE   35100000
+IOERROR  EQU   X'41'                                                    35400000
+INDXINCR EQU   4                       INDES REGISTER INCREMENT         35700000
+LISTEND  EQU   X'80'                   END OF PARAMETER LIST            36000000
+MAXDEVCE EQU   16                      MAXIMUM DEVICES SUPPORTED        36300000
+NOSYNAD  EQU   X'01'                   ABEND COMPLETION CODE - NO SYNAD 36600000
+PSTDCMPL EQU   X'40'                   ECB COMPLETE BIT ON              36900000
+SCUERROR EQU   X'01'                   ECB - ERROR ON SCU               37200000
+SETON    EQU   X'80'                   ENGAGE NECESSARY ON THIS BUFFER  37500000
+SHIFT12  EQU   12                      SHIFT ABEND COMPLETION CODE      37800000
+SIX4     EQU   64                                                       38100000
+SYNDRTN  EQU   X'01'                                                    38400000
+THREE    EQU   3                                                        38700000
+UNITEXCP EQU   X'FE'                   UNIT EXCEPTION BIT TO 0 FOR EOV  39000000
+X7FPSTD  EQU   X'7F'                   ECB - SUCCESSFUL COMPLETION      39300000
+ZERO     EQU   0                                                        39600000
+OFFREQ   EQU   X'DF'              TURN OFF USER REQUEST FLAG            39700000
+*                                                                       39900000
+*                                                                       40200000
+         USING IGG019V3,BASER                                           40500000
+         USING IHADCB,DCBR                                              40800000
+         USING MICBENTR,MICBR                                           41100000
+         STM   RETURNR,REG10,SAVEDISP(SAVER)  SAVE USER'S REGISTERS     41400000
+         LR    BASER,ENTRYR            ESTABLISH BASE REGISTER          41700000
+         SR    INDEXR,INDEXR           INITALIZE INDEX REGISTER         42000000
+         LR    DECBR,PARMR             LOAD THE DECB ADDR               42300000
+         LR    REG10,DECBR             SAVE THE ADDR OF THE FIRST DECB  42600000
+         L     DCBR,DECBDCB(DECBR)     PICK UP ADDR OF DCB FROM DECB    42900000
+         L     ECBR,DCBMRIND           PICK UP ADDR OF ECB LIST AREA    43200000
+         XC    ZERO(SIX4,ECBR),ZERO(ECBR)   ZERO ECB LIST AREA          43500000
+         SR    PARMR,PARMR             INITALIZE REGISTER               43800000
+         LA    REG9,MAXDEVCE           MAXIMUM MICR DEVICES SUPPORTED   44100000
+*                                                                       44400000
+CHCK010  EQU   *                                                        44700000
+*                                                                       45000000
+         ST    PARMR,ZEROD(DECBR)      ZERO OUT ECB IN THE DECB         45300000
+         L     MICBR,DCBIOBA           PICK UP ADDRESS OF MICB          45600000
+* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * 45900000
+*                                                                     * 46200000
+* IF THE ECB IS NOT POSTED COMPLETE FOR THE MICB - PUT ITS ADDRESS    * 46500000
+* IN THE ECB PARAMETER LIST AND WAIT FOR THE EVENT TO COMPLETE        * 46800000
+*                                                                     * 47100000
+* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * 47400000
+         TM    MICBECB,PSTDCMPL        EVENT POSTED COMPLETE            47700000
+         BO    CHCK040                 YES, BRANCH                      48000000
+         LA    REG8,MICBECB            NO, PICK UP MICB ECB ADDR        48300000
+         ST    REG8,ZEROD(INDEXR,ECBR) PUT THIS ADDR IN ECB ADDR LIST   48600000
+         C     PARMR,DECBADR(DECBR)    IS THIS THE LAST DECB            48900000
+         BE    CHCK020                 YES,BRANCH                       49200000
+         LA    INDEXR,INDXINCR(INDEXR) NO, UPDATE INDX FOR NEXT DECB    49500000
+         L     DECBR,DECBADR(DECBR)    PICK UP ADDR OF NEXT DECB        49800000
+         L     DCBR,DECBDCB(DECBR)     PICK UP DCB ADDR FROM DECB       50100000
+         BCT   REG9,CHCK010            MORE THAN 16 DEVICES NO, BRANCH  50400000
+*                                                                       50700000
+CHCK020  EQU   *                                                        51000000
+*                                                                       51300000
+         AR    INDEXR,ECBR             COMPUTE ADDR OF LAST ECB ADDR    51600000
+         MVI   ZEROD(INDEXR),LISTEND   SET HIGH-ORDER BIT TO ONE        51900000
+         LR    PARMR,ECBR              PUT ECB PARMLIST ADDR IN REG 1   52200000
+         WAIT  1,ECBLIST=(1)           WAIT FOR ONE EVENT TO COMPLETE   52500000
+         SR    INDEXR,INDEXR           INITALIZE INDEX REGISTER         52800000
+         LR    DECBR,REG10             LOAD ADDR OF FIRST DECB          53100000
+* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * 53400000
+*                                                                     * 53700000
+* DETERMINE WHICH ECB WAS POSTED COMPLETE                             * 54000000
+*                                                                     * 54300000
+* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * 54600000
+*                                                                       54900000
+CHCK030  EQU   *                                                        55200000
+*                                                                       55500000
+         L     REG8,ZEROD(INDEXR,ECBR) PICK UP MICB ECB ADDR            55800000
+         TM    ZEROD(REG8),PSTDCMPL    IS THIS ECB POSTED COMPLETE      56100000
+         BO    CHCK040                 YES, BRANCH                      56400000
+         LA    INDEXR,INDXINCR(INDEXR) NO, INCREMENT INDEX REGISTER AND 56700000
+         L     DECBR,DECBADR(DECBR)    PICK UP ADDR OF NEXT DECB        57000000
+         B     CHCK030                 BRANCH TO LOOK AT NEXT ECB       57300000
+*                                                                       57600000
+CHCK040  EQU   *                                                        57900000
+*                                                                       58200000
+         L     DCBR,DECBDCB(DECBR)     PICK UP DCB ADDR FROM DECB       58500000
+         L     MICBR,DCBIOBA           PICK UP MICB ADDR                58800000
+         NI    MICBFLAG,FRSTENG        SET OFF FIRST BUFF AFTER ENGAGE  59100000
+         MVC   ZEROD(FOUR,DECBR),MICBECB  MOVE ECB TO DECB FROM MICB    59400000
+         CLI   MICBECB,X7FPSTD         SUCCESSFULL COMPLETION POSTED    59700000
+         BNE   CHCK050                 NO, BRANCH                       60000000
+         L     REG9,MICBDATA           LOAD ADDR OF CURRENT BUFFER      60300000
+         TM    ZEROD(REG9),BUFFMPTY    UNIT EXCEP OR INTERVENTION REQ   60600000
+         BZ    CHCK041                 NO, BRANCH                       60900000
+         NI    DCBMRFLG,OFFREQ    TURN OFF FLAG FOR USER DISEN REQUEST  61000000
+         OI    MICBFLAG,SETON          SET ENGAGE NECESSARY BIT ON      61200000
+         XC    MICBECB(FOUR),MICBECB   ZERO ECB IN MICB                 61500000
+         B     CHCK042                 BRANCH TO SET RETURN CODE        61800000
+*                                                                       62100000
+CHCK041  EQU   *                                                        62400000
+*                                                                       62700000
+         L     REG8,MICBNEXT           PICK UP ADDR OF NEXT MICB        63000000
+         ST    REG8,DCBIOBA            STORE IT IN THE DCB              63300000
+*                                                                       63600000
+CHCK042  EQU   *                                                        63900000
+*                                                                       64200000
+         SR    ENTRYR,ENTRYR                                            64500000
+         ST    ENTRYR,RTNDSP(SAVER)    SET RETURN CODE - SUCCESSFUL     64800000
+         B     CHCK090                 BRANCH TO LOAD THE REGS AND EXIT 65100000
+* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * 65400000
+*                                                                     * 65700000
+*  DETERMINE IF I/O ERROR WAS ON PCU OR SCU.  IF IT WAS ON THE SCU    * 66000000
+*  CHANGE DCB AND DECB TO SCU IOB PREFIX ADDR AND SCU IOB ADDR.       * 66300000
+*                                                                     * 66600000
+* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * 66900000
+*                                                                       67200000
+CHCK050  EQU   *                                                        67500000
+*                                                                       67800000
+         OI    MICBFLAG,SETON          SET ENGAGE NECESSARY BIT ON      68100000
+         LR    PARMR,DCBR              SET UP DCB PARAMETER FOR SVC     68400000
+         L     REG8,DCBIOBAD           PICK UP PCU IOB ADDR             68700000
+         CLI   MICBECB+THREE,SCUERROR  ERROR ON SCU                     69000000
+         BNE   CHCK060                 NO, BRANCH ERROR IS ON PCU       69300000
+         LA    REG8,SCUIOB(REG8)       COMPUTE SCU IOB PREFIX ADDR      69600000
+         ST    REG8,DCBIOBAD           STORE SCU IOB PREFIX ADDR IN DCB 69900000
+         L     REG9,DECBIOB(DECBR)     LOAD PCU IOB ADDR FROM DECB      70200000
+         LA    REG9,SCUIOB(REG9)       COMPUTE SCU IOB ADDR             70500000
+         ST    REG9,DECBIOB(DECBR)     STORE SCU IOB ADDR IN DECB       70800000
+         OI    DCBMRIND,DCBALTER       SET BIT ON TO SHOW DCB ALTERED   71100000
+*                                                                       71400000
+CHCK060  EQU   *                                                        71700000
+*                                                                       72000000
+         CLI   DCBSYNAD+THREE,SYNDRTN  SYNAD ROUTINE PRESENT            72300000
+         BNE   CHCK070                 YES, BRANCH                      72600000
+* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * 72900000
+*                                                                     * 73200000
+*  IF NO SYNAD ROUTINE IS SPECIFIED GO TO EOV (SVC 55) TO ABNORMALLY  * 73500000
+*  TERMINATE THE JOB.                                                 * 73800000
+*                                                                     * 74100000
+* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * 74400000
+         LA    REGZERO,NOSYNAD         SET UP REG FOR ABEND - NO SYNAD  74600000
+         SLL   REGZERO,SHIFT12         SHIFT ABEND CODE 12 BITS FOR EOV 74800000
+         NI    IOBSENS(REG8),UNITEXCP  SET UNIT EXCEPTION BIT OFF       75000000
+         EOV   (1)                                                      75300000
+* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * 75600000
+*                                                                     * 75900000
+*  IF THE SYNAD IS SPECIFIED--SET UP PARAMTERS AND REGISTERS BEFORE   * 76200000
+*  BRANCHING TO THE SYNAD ROUTINE.  RESTORE IF USER RETURNS CONTROL.  * 76500000
+*                                                                     * 76800000
+* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * 77100000
+*                                                                       77400000
+CHCK070  EQU   *                                                        77700000
+*                                                                       78000000
+         MVI   FOUR(REG8),IOERROR      POST IOB ECB FOR SYNAD           78300000
+         LR    REGZERO,DECBR           DECB ADDR IN REG 0 FOR SYNAD     78600000
+         L     REG9,INPUTBIT           PICK UP FLAG FOR PARM REG        78900000
+         LR    PARMR,DCBR              DCB ADDR IN REG 1 FOR SYNAD      79200000
+         LA    PARMR,ZEROD(PARMR)      CLEAR HIGH ORDER BYTE IN REG 1   79500000
+         AR    PARMR,REG9              SET FLAGS ON IN HIGH ORDER BYTE  79800000
+         STM   BASER,DECBR,SIXTY4(SAVER)   SAVE DECB ADDR AND BASE REG  80100000
+         L     ENTRYR,DCBSYNAD         PICK UP ADDR OF SYNAD RTN        80400000
+         LM    DCBR,REG10,TWNTY8(SAVER)   LOAD USER REGS                80700000
+         BALR  RETURNR,ENTRYR          BRANCH TO USER SYNAD RTN         81000000
+         STM   DCBR,REG10,TWNTY8(SAVER)    SAVE USER REGS               81300000
+         LM    BASER,DECBR,SIXTY4(SAVER)   LOAD DECB ADDR AND BASE REG  81600000
+         L     DCBR,DECBDCB(DECBR)     LOAD DCB ADDR FROM DECB          81900000
+         TM    DCBMRIND,DCBALTER       ERROR ON SCU                     82200000
+         BZ    CHCK080                 NO, BRANCH                       82500000
+         L     REG8,DCBIOBAD           LOAD IOB PREFIX ADDR FRO  DCB    82800000
+         LA    REG9,SCUIOB             LOAD DISP FROM PCU TO SCU IOB    83100000
+         SR    REG8,REG9               COMPUTE ADDR OF PCU IOB          83400000
+         ST    REG8,DCBIOBAD           STORE PCU IOB PREFIX ADDR IN DCB 83700000
+         L     REG8,DECBIOB(DECBR)     LOAD IOB ADDR FROM DECB          84000000
+         SR    REG8,REG9               COMPUTE IOB ADDR FOR DECB        84300000
+         ST    REG8,DECBIOB(DECBR)     STORE PCU IOB ADDR IN DECB       84600000
+         XI    DCBMRIND,DCBALTER       SET BIT OFF TO SHOW DCB RESTORED 84900000
+*                                                                       85200000
+CHCK080  EQU   *                                                        85500000
+*                                                                       85800000
+         L     MICBR,DCBIOBA           LOAD ADDRESS OF MICB             85900000
+         XC    MICBECB(FOUR),MICBECB   ZERO ECB IN MICB                 86100000
+         L     REG8,MICBDATA           BUFFER ADDRESS          @ZA32068 86150037
+         CLC   0(6,REG8),ZEROES        BUFFER STATUS=ZERO?     @ZA32068 86200037
+         BNE   HAVESTAT                NO-GO AROUND            @ZA32068 86250037
+         OI    0(REG8),X'04'           INDICATE MISSED PCI     @ZA32068 86300037
+HAVESTAT EQU   *                                               @ZA32068 86350037
+         LA    ENTRYR,FOUR             LOAD RETURN CODE                 86400000
+         ST    ENTRYR,RTNDSP(SAVER)    SET RETURN CODE                  86700000
+*                                                                       87000000
+CHCK090  EQU   *                                                        87300000
+*                                                                       87600000
+         ST    DECBR,REG1DSP(SAVER)    PUT DECB ADDR IN REG 1 SAVE AREA 87900000
+         LM    RETURNR,REG10,SAVEDISP(SAVER)  LOAD THE USER'S REGS      88200000
+         BR    RETURNR                 RETURN TO USER                   88500000
+         DS    0F                                                       88800000
+INPUTBIT DC    X'80000000'             INPUT ERROR BIT SET ON IN 1      89100000
+ZEROES   DC    D'0'                    ZEROES FOR COMPARE      @ZA32068 89400037
+         DC    C'IGG019V3 OZ07621 03/05/76'  SIGHT INDICATOR   @ZA07621 89420037
+         DC    CL8'&SYSDATE'                 SIGHT INDICATOR   @ZA07621 89440037
+         DC    C'Z32068'                     SIGHT INDICATOR   @ZA07621 89460037
+PATCH    DC    XL30'00',D'0'                 PATCH AREA        @ZA07621 89500037
+         DCBD  DSORG=BS,DEVD=MR                                         89700000
+*        MICBD - DUMMY SECTION FOR THE MICB                             89750000
+MICBENTR DSECT                                                          89800000
+MICBNEXT DS    A                                                        89850000
+MICBECB  DS    A                                                        89900000
+MICBFLAG DS    AL1                                                      89950000
+MICBSENS DS    AL3                                                      90000000
+MICBECBA DS    A                                                        90050000
+MICBNM7  DS    A                                                        90100000
+MICBNM1  DS    A                                                        90150000
+MICBDATA DS    A                                                        90200000
+         END                                                            90300000

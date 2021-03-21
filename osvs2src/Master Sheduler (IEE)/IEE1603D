@@ -1,0 +1,644 @@
+         TITLE 'IEE1603D - LOG AND WRITELOG PROCESSOR'                  00100018
+         TITLE 'COMMAND HANDLER  LOG AND WRITELOG'                      00300013
+**********************************************************************  19550002
+*                                                                       19600002
+*   MODULE NAME=                                                        19650002
+*              IEE1603D                                                 19700002
+*                                                                       19750002
+*   DESCRIPTIVE NAME=                                                   19800002
+*              COMMANDS ROUTINE FOR  'LOG' AND 'WRITELOG'               19850002
+*                                                                       19900002
+*   COPYRIGHT=                                                          19950002
+*              MISSING                                                  20000002
+*                                                                       20050002
+*   STATUS=                                                             20060002
+*              OS/VS2 RELEASE 3                                @ZA07784 20062003
+*                                                                       20070002
+*   FUNCTION=                                                           20080002
+*              TO PROCESS THE COMMANDS :                                20090002
+*                        LOG 'TEXT'                                     20092002
+*                        WRITELOG                                       20094002
+*                        WRITELOG CLOSE / START / CLASS                 20096002
+*                                                                       20098002
+*      OPERATION=                                                       20098402
+*              ENTRY TO THIS MODULE IS VIA A BRANCH FROM                20148402
+*              IEE0403D - COMMAND ROUTER .                              20158402
+*              ADDRESSIBILITY TO CONTROL BLOCKS IS AS FOLLOWS -         20168402
+*              . EXTENDED SAVE AREA ( XSA ) - REG 2                     20178402
+*              . MASTER RESIDENT CORE ( BASEA ) - REG 10                20180402
+*              . LOG CONTROL TABLE ( LCA ) - REG 11                     20182402
+*              1- SET UP POINTERS TO XSA FIELDS -                       20184402
+*                 . BUFFER LENGTH                                       20186402
+*                 . COMMAND OPERAND                                     20186802
+*              2- CHECK IF LOG SUPPORTED - BASEA(BALOG) ^= ZERO .       20187202
+*                 . IF NOT SUPPORTED , PROCESS AT REF(11) TO            20187302
+*                   DETERMINE IF OPERAND IS 'START' .                   20187402
+*              3- CHECK FOR 'LOG' VERB IN XSA(XAN) = X'1C' .            20187502
+*                 . IF YES , PROCESS AT REF(10) .                       20189002
+*              4- THE VERB IS 'WRITELOG' . CHECK FOR OPERANDS .         20191002
+*                 . VALID COMBINATIONS OF OPERANDS ARE :                20193002
+*                   . WRITELOG CLOSE - REF(5)                           20193402
+*                   . WRITELOG CLASS - REF(6)                           20193502
+*                   . WRITELOG       - REF(6)                           20193602
+*                 . IF THE OPERAND IS  START  , IT WILL NOT BE          20193702
+*                   PROCESSED BECAUSE THE SYSTEM LOG IS ALREADY ACTIVE. 20193802
+*                   . SET MSG CODE = 52 .                               20194602
+*                   . PROCESS AT REF(12) .                              20196602
+*              5- CLOSE OPERAND PROCESSING .                            20198202
+*                 . CHECK FOR DELIMITER - (' ')- IF ERROR ,             20199002
+*                   SET MSG CODE = 7 , PROCESS AT REF(12) .             20199802
+*                 . IF LOG IS ALREADY PROCESSING TERMINATION -          20200602
+*                   LCA(POSTCLOZ) = ON , ISSUE WTO IEE033I ,            20201402
+*                   PROCESS AT REF(9) .                                 20202202
+*                 . VERIFY LOG = HARDCOPY STATUS .                      20203002
+*                   IF LOG = HARDCOPY - UCM(UCMSYSG) = ON ,             20203802
+*                   . SET UP , ISSUE WTO IEE532I ,                      20204602
+*                   . PROCESS AT REF(9) .                               20205402
+*                 . CHECK IF LCA(POSTCLOZ) = ON -                       20206202
+*                   . IF YES , BYPASS POST OF LOG TERMINATION ECB       20207002
+*                     PROCESS AT REF(9) .                               20207802
+*                 . SET LCA(POSTCLOZ) = ON .                            20208602
+*                 . POST LOG TERMINATION ECB - BASEA(MSLGCLOZ) .        20209402
+*                 . PROCESS AT REF(9) .                                 20210202
+*              6- CLASS OR NULL OPERAND PROCESSING .                    20211002
+*                 IF THE OPERAND FIELD IS NULL , PROCESS AT REF(7).     20211802
+*                 CHECK FOR DELIMITER - (' ') .                         20212602
+*                 . IF ERROR , SET MSG CODE = 7 ,                       20213402
+*                   PROCESS AT REF(12) .                                20214202
+*                 CHECK FOR VALID CLASS - (A-Z,0-9 ) .                  20215002
+*                 . IF INVALID , SET MSG CODE = 23 ,                    20215802
+*                   PROCESS AT REF(12) .                                20216602
+*                 STORE CLASS TYPE IN LCA(LCCLASS) FIELD .              20217402
+*              7- IF A 'WRITELOG' COMMAND IS ALREADY BEING PROCESSED -  20218202
+*                 OR A 'WRITELOG CLOSE' COMMAND IS BEING PROCESSED -    20219002
+*                 LCA(POSTWLOG , POSTCLOZ ) = ON , ISSUE                20219802
+*                 APPROPRIATE WTO :                                     20220602
+*                 . WRITELOG - IEE032I .                                20221402
+*                 . WRITELOG CLOSE - IEE033I .                          20222202
+*                 . PROCESS AT REF(9) .                                 20223002
+*              8- SET LCA(POSTWLOG) = ON .                              20223802
+*                 POST LOG DATA SET SWITCH ECB - BASEA(MSLGWLOG)        20224602
+*              9- RETURN TO CALLER .                                    20225402
+*             10- VERB='LOG' . SYNTAX CHECK THE TEXT INPUT              20226202
+*                 FOR THE FOLLOWING ERRORS , SET APPROPRIATE            20227002
+*                 ERROR MSG CODE IN XSA(XAE) ,                          20227802
+*                 . INVALID TEXT PTR - MSG CODE(11)                     20228602
+*                 . FIRST CHAR NOT A QUOTE - MSG CODE(19)               20229402
+*                 . IF ERROR , PROCESS AT REF(12) .                     20230202
+*                 GET CORE FOR WTL MSG BUFFER . SET UP 4 BYTE           20231002
+*                 HEADER FOR MSG LENGTH , MOVE MSG TO BUFFER VIA        20231802
+*                 SCAN LOOP OF TEXT , SET LENGTH IN HEADER .            20232602
+*                 . IF LENGTH = ZERO , FREE CORE ,                      20233402
+*                 . PROCESS AT REF(9) .                                 20234202
+*                 ISSUE WTL MACRO                                       20235002
+*                 FREE MSG CORE .                                       20235802
+*                 PROCESS AT REF(9) .                                   20236602
+*             11- WRITELOG 'START' PROCESSING .                         20237402
+*                 VERIFY WRITELOG VERB CODE - XSA(XAN) = X' '           20238202
+*                 . IF NOT , SET ERROR CODE = 26 ,                      20239002
+*                   PROCESS AT REF(12) .                                20239802
+*                 VERIFY OPERAND IS 'START' .                           20240602
+*                 . IF NOT , SET ERROR CODE = 11 ,                      20241402
+*                   PROCESS AT REF(12) .                                20242202
+*                 RE-ACTIVATE THE LOG RECORDING FUNCTION VIA A POST     20243002
+*                 OF THE WRITELOG START ECB - BASEA(        ) .         20243802
+*                 PROCESS AT REF(9) .                                   20244602
+*             12- SET UP TO BRANCH TO MSG MODULE IGC0503D .             20245402
+*                 . XSA(XAE) = ERROR MSG CODE .                         20246202
+*                 BRANCH TO IGC0503D .                                  20247002
+*                                                                       20247802
+*   NOTES                                                               20248602
+*                                                                       20249402
+*      CHARACTER CODE DEPENDENCIES=                                     20250202
+*              THIS MODULE HAS BEEN WRITTEN IN SUCH A WAY THAT          20251002
+*              IF THE CHARACTER CODE IS CHANGED FRON EBCDIC ,           20251802
+*              REASSEMBLY WILL YIELD A VALID MODULE .                   20252602
+*                                                                       20253402
+*      DEPENDENCIES=                                                    20254202
+*              REFER TO MACRO SECTION .                                 20255002
+*                                                                       20255802
+*      RESTRICTIONS=                                                    20256602
+*              NONE .                                                   20257402
+*                                                                       20258202
+*      REGISTER CONVENTIONS=                                            20259002
+*              REFER TO REG. CONTENTS SECTION .                         20259802
+*                                                                       20260602
+*      PATCH-LABEL=                                                     20261402
+*              PATCH                                                    20262202
+*                                                                       20263002
+*   MODULE TYPE=                                                        20263802
+*              CSECT                                                    20264602
+*                                                                       20265402
+*      PROCESSOR=                                                       20266202
+*              ASSEMBLER                                                20276202
+*                                                                       20286202
+*      MODULE SIZE=                                                     20288202
+*             1000 BYTES                                                20290202
+*                                                                       20292202
+*      ATTRIBUTES=                                                      20294202
+*              REENTRANT                                                20294602
+*              SELF-RELOCATING                                          20295002
+*              PAGED LPA                                                20295102
+*                                                                       20295402
+*   ENTRY POINT=                                                        20295802
+*              IEE1603D FROM COMMAND ROUTER  IEE0403D .                 20295902
+*                                                                       20296002
+*      PURPOSE=                                                         20296102
+*              TO PROCESS 'LOG' , 'WRITELOG' COMMANDS .                 20312802
+*                                                                       20322802
+*      LINKAGE=                                                         20324802
+*              VIA BRANCH REG 15 FROM IEE0403D .                        20326802
+*                                                                       20328802
+*      INPUT DATA=                                                      20329202
+*              REG 2 POINTS TO THE  XSA :                               20329302
+*                        XAR POINTS TO COMMAND BUFFER .                 20329402
+*                        XAN CONTAINS VERB CODE .                       20335002
+*                        XAL POINTS TO COMMAND PARM LIST .              20337002
+*                        XAV CONTAINS THE VERB .                        20339002
+*                                                                       20339402
+*      REGISTERS SAVED=                                                 20339802
+*              NONE .                                                   20340202
+*                                                                       20340302
+*      REGISTER CONTENTS DURING PROCESSING=                             20340402
+*              R0            WORK REG .                                 20340502
+*              R1            GETMAIN RETURN REG .                       20355302
+*              R2            XSA BASE .                                 20365302
+*              R3            CVT BASE .                                 20367302
+*              R4            WORK REG                                   20369302
+*              R5            WORK REG                                   20369702
+*              R6            WORK REG.                                  20370102
+*              R7            UCB TABLE STOPPER .                        20370202
+*              R8            WORK REG .                                 20370302
+*              R9            UNIT NAME PTR .                            20375202
+*              RA            MSRDA BASE .                               20377202
+*              RB            LCA PTR .                                  20379202
+*              RC            PROGRAM BASE .                             20379602
+*              RD            NOT REFERENCED .                           20380002
+*              RE            RETURN REG .                               20380102
+*              RF            BRANCH REG .                               20380202
+*                                                                       20385102
+*      REGISTERS RESTORED=                                              20387102
+*              NONE .                                                   20389102
+*                                                                       20389502
+*   EXIT - NORMAL=                                                      20389902
+*              RETURN TO CALLER                                         20390002
+*                                                                       20390102
+*      CONDITIONS=                                                      20440102
+*              NORMAL PROCESSING OF 'LOG' , 'WRITELOG' COMMANDS         20450102
+*                                                                       20460102
+*      OUTPUT DATA=                                                     20470102
+*              FOR 'LOG' ;  A WTL MESSAGE .                             20480102
+*              FOR 'WRITELOG':POST THE MSLGWLOG ECB .                   20482102
+*              FOR 'WRITELOG CLOSE' ;POST THE MSLGCLOZ ECB.             20482502
+*      RETURN CODES=                                                    20484102
+*              NONE .                                                   20486102
+*                                                                       20488102
+*   EXIT - ERROR=                                                       20488502
+*              IEE0503D  MSG MODULE , VIA BR 14 .                       20488902
+*                                                                       20489302
+*      CONDITIONS=                                                      20489702
+*              INVALID COMMAND OPERANDS .                               20489802
+*                                                                       20489902
+*      OUTPUT DATA=                                                     20490002
+*              ERROR MESSAGE CODES IN XSA FIELD  - XAE .                20506702
+*                CODE        ERROR MSG .                                20516702
+*                 7           'IEE307I  XXXXXXXX DELIMITER              20518702
+*                              ERROR.'                                  20520702
+*                11           'IEE311I CCCC PARAMETER                   20522702
+*                              MISSING .'                               20523102
+*                19           'IEE019I        QUOTES MISSING .'         20523202
+*                23           'IEE023I        CLASSNAME ERROR'          20525702
+*                26           'IEE026I        NOT SUPPORTED.'           20528302
+*                52           'IEE382I        CURRENTLY ACTIVE'         20530302
+*                                                                       20530802
+*      RETURN CODES=                                                    20533302
+*              NONE .                                                   20535802
+*                                                                       20538302
+*   EXTERNAL REFERENCES=                                                20540802
+*              IEEMB803  VIA POST                                       20543302
+*              IEE0503D  VIA VCON - BR 14                               20545802
+*                                                                       20548302
+*      ROUTINES=                                                        20550802
+*              NONE                                                     20553302
+*                                                                       20555802
+*      DATA AREAS=                          REFERENCES                  20558302
+*              LCA  - LOG CONTROL TABLE       U,M                       20560302
+*              XSA  - EXTENDED SAVE AREA      U,M                       20560702
+*              WTO MSG BUFFER                 U,M                       20561102
+*                                                                       20561502
+*      CONTROL BLOCKS=                                                  20561902
+*              CVT                            U                         20562002
+*              BASEA                          U,M                       20562102
+*              UCM                            U                         20564602
+*              UCB                            U                         20566602
+*                                                                       20567102
+*      TABLE=                                                           20569602
+*                                                                       20572102
+*      MACROS=                                                          20574602
+*              POST                                                     20579602
+*              GETMAIN / FREEMAIN                                       20582102
+*              WTL                                                      20584602
+*              WTO                                                      20587102
+*                                                                       20592102
+*      SERIALIZATION=                                                   20594602
+*              NONE .                                                   20596602
+*                                                                       20599602
+*      CHANGE LEVEL=                                                    20624602
+*              Y02669                                                   20626602
+*              ZA07784                                                  20630603
+*                                                                       20637403
+*      SYSGEN=                                                          20641403
+*              LOAD MODULE NAME - IGC0003D                              20645402
+*                                                                       20665202
+*      SYSTEM LIBRARIES=                                                20683802
+*              NONE .                                                   20693802
+*                                                                       20702402
+*   MESSAGES=                                                           20721002
+*              'IEE032I WRITELOG IS PENDING. CLASSNAME=  ',             20771002
+*              'IEE033I PREVIOUS HALT OR WRITELOG CLOSE COMMAND         20871002
+*               HAS BEEN ISSUED'                                        20881002
+*              'IEE532I SYSTEM LOG DEFINED AS HARDCOPY-WRITELOG         20881802
+*               CLOSE CMND REJECTED'                                    20883802
+*                                                                       20888402
+**********************************************************************  20907002
+IEE1603D CSECT                                                          20925602
+* LOGSTART (C)                                                 @ZA07784 20934603
+R0       EQU   0                                                        20944202
+R1       EQU   1                       GETMAIN RETURN REGISTER          20962802
+R2       EQU   2                       XSA BASE                         20981402
+R3       EQU   3                       CVT BASE                         21000013
+R4       EQU   4                             DELIMITER POINTER          21300013
+R5       EQU   5                       LINK REGISTER                    21600013
+R6       EQU   6                       END OF PARAMETER POINTER         21900013
+R7       EQU   7                       UCB TABLE STOPPER                22200013
+R8       EQU   8                       UCB BASE                         22500013
+R9       EQU   9                       UNIT NAME POINTER                22800013
+R10      EQU   10                            RESIDENT CORE BASE         23100013
+R11      EQU   11                      LCA BASE REG              Y02669 23200002
+VBASE    EQU   12                            BASE FOR PROGRAM           23400013
+R14      EQU   14                      RETURN REGISTER                  23700013
+R15      EQU   15                            XCTL REGISTER              24000013
+DEC10    EQU   10                                                       24120018
+DEC1     EQU   1                                                        24180018
+DEC4     EQU   4                                                        24260018
+DEC3     EQU   3                                                        24270018
+DEC2     EQU   2                                                        24271018
+DEC5     EQU   5                                                        24272018
+DEC8     EQU   8                                                 Y02669 24272102
+DEC12    EQU   12                                                Y02669 24272402
+DEC64    EQU   64                 OFFSET TO XSA SAVE AREA        Y02669 24272802
+HEX40    EQU   X'40'                                                    24273018
+BLANK    EQU   C' '                                                     24274018
+CHARA    EQU   C'A'                                                     24275018
+DEC0     EQU   0                                                        24280018
+DISP     EQU   45                                                       24290018
+*                                                                     * 24300013
+* ERROR CODES FOR MESSAGE MODULE                                      * 24600013
+ERR7     EQU   7                                                        25500013
+ERR11    EQU   11                                                       26400013
+ERR19    EQU   19                                                       27000013
+ERR23    EQU   23                                                       27300013
+ERR26    EQU   26                                                       27600013
+ERR52    EQU   52                                                Y02669 27650002
+*                                                                     * 27900013
+LOGCOD   EQU   X'1C'                         VERB = LOG                 28800013
+WRITLOG  EQU   X'20'                   VERB = WRITELOG           Y02669 28850002
+HIBIT    EQU   X'80'                                             Y02669 28900002
+*                                                                     * 29100013
+QUOTE    EQU   C''''                         LOG TEXT DELIMITER         29700013
+         EJECT                                                          30000013
+*MAIN ROUTINE - ADDRESSABILITY, END OF BUFFER, AND PARAMETER POINTERS   30300018
+*               ARE ESTABLISHED                                         30600018
+*             - DETERMINES WHICH VERB IS SPECIFIED, LOG OR WRITELOG,    30900018
+*               BY THE VERB CODE SET IN XAN(IN THE XSA)                 31200018
+*                                                                     * 31500013
+         BALR  VBASE,DEC0                   ESTABLISH PROGRAM           31800018
+         USING *,VBASE                       ADDRESSABILITY             32100013
+         MODID BR=YES                                            Y01886 32150001
+         USING XSA,R2                  BASE FOR EXTENDED SAVE AREA      32400018
+         USING SETCVT,R10                    ADDRESS TO CVT             32700013
+         L     R10,CVTPTR                    TO GET POINTER             33000013
+         L     R10,CVTMSER                   TO MASTER RESIDENT CORE    33300013
+         USING BASE,R10                      TO ESTABLISH ADDRESSABLTY  33600013
+         L     R9,XAL                        USE REGISTER 9 AS POINTER  33900013
+         LA    R9,DEC0(R9)                  TO PARAMETER KEYWORD        34500018
+         L     R7,XAR                        LOAD PTR TO BUFFER         35100013
+         LA    R7,DEC0(R7)                  CONTAINING COMMAND          35400018
+         LH    R6,DEC0(R7)                  LOAD BUFFER LENGTH          35700018
+         N     R6,V00FF                   CLEAR POSSIBLE GARGAGE Y02669 36000002
+         AR    R7,R6                         COMPUTE END OF BUFFER      36300013
+         ST    R7,XAP                        SAVE IN FIRST WORD OF XSA  36600013
+         L     R11,BALOG               LCA ADDRESS               Y02669 36650002
+         USING LCABASE,R11                                       Y02669 36660002
+         CLC   BALOG,VZEROS            IS LOG SUPPORTED          Y02669 36670002
+         BE    LOGSTRT            IF NOT, CHECK  OPERAND 'START' Y02669 36750002
+         CLI   XAN,LOGCOD              IS THIS THE 'LOG' VERB    Y02669 36970002
+         BE    VERBLOG                       YES. GO TO LOG ROUTINE     37200013
+         EJECT                                                          37500013
+* W R I T E L O G       COMMAND PROCESSOR                               37800002
+         SPACE                                                          38100013
+         SPACE                                                          39900013
+         CLC   DEC0(DEC5,R9),VSTART         PARAMETER = START    Y02669 39950002
+         BE    LERR52                  YES, INVALID - LOG ACITVE Y02669 40000002
+         CLC   DEC0(DEC5,R9),VCLOSE         PARAMETER = CLOSE           40200018
+         BNE   VCLASS                       *                           40500018
+         CLI   DEC5(R9),HEX40               DELIMITED BY BLANK          40800018
+         BE    *+DEC10                           OR                     41100018
+         LA    R6,DEC5(R9)                                       Y02669 41400002
+         CR    R6,R7                                             Y02669 41700002
+         BNE   VERR07              DELIMITER ERROR                      42000013
+         TM    LCAPOSTT,POSTCLOZ            IS WRITELOG CLOSE PENDING   42080018
+         BO    FINISH                       BRANCH IF YES               42170018
+         B     HRDCOPY               CHECK LOG = HARDCOPY STATUS Y02669 42220002
+VCLASS   EQU   *                                                        42900013
+         C     R9,VZEROS                    WRITELOG COMMAND IS NOW     42960018
+         BE    PENDINGG                     VALID WITHOUT A PARAMETER   43020018
+*                                           DEFAULT CLASS FOR WRITELOG  43080018
+*                                           COMMAND WILL BE USED        43140018
+         CLI   DEC1(R9),BLANK               DELIMITED BY BLANK          43240018
+         BE    *+DEC10                           OR                     43440018
+         LA    R6,DEC1(R9)                  DELIMITED BY EOB     Y02669 43740002
+         CR    R6,R7                                             Y02669 44100002
+         BNE   VERR07              DELIMITER ERROR                      44400013
+         CLI   DEC0(R9),CHARA               CHAR LT A                   44700018
+         BL    LERR23              IF SO, NOT ALPHAMERRIC               45000013
+         SR    R6,R6                                             Y02669 45300002
+         IC    R6,DEC0(R9)                  GET CHAR AND USE     Y02669 45600002
+         IC    R6,T(R6)           AS INDEX TO VMTAB              Y02669 45900002
+         B     *+4(R6)                      *                    Y02669 46200002
+         B     LERR23             NOT ALPHANUMERIC               Y02669 46500002
+PENDINGG  EQU  *                                                        46510018
+         TM    LCAPOSTT,POSTWLOG  IS A WRITELOG COMMAND          Y02669 46520002
+*                                      PENDING                   Y02669 46530002
+         BO    WRITEUP            BRANCH IF YES                  Y02669 46560002
+         TM    LCAPOSTT,POSTCLOZ  IS A WRITELOG CLOSE COMMAND    Y02669 46680002
+*                                      PENDING                   Y02669 46720002
+         BO    FINISH             BRANCH IF YES                  Y02669 46770002
+         STM   R5,R7,DEC64(R2)    SAVE REGS ACCROSS OIL MACRO    Y02669 46770402
+         OIL   LCAPOSTT,POSTWLOG,WREGS=(5,6,7),REF=LCABASE       Y02669 46770802
+         LM    R5,R7,DEC64(R2)       RESTORE REGS                Y02669 46771202
+         C     R9,VZEROS                    IF NO CLASSNAME PROVIDED    46780018
+         BE    DEFAULT                              WITH COMMAND        46790018
+*                                           THEN THE DEFAULT CLASS      46800018
+*                                           WILL BE USED                46810018
+         MVC   LCCLASS(DEC1),DEC0(R9)       ALPHANUMERIC, STORE IN LCA  46840018
+DEFAULT  EQU   *                                                        46870018
+         B     POSTRTN                 SET UP POST OF LOG TASK   Y02669 47040002
+         EJECT                                                          47050002
+LOGSTRT  EQU   *                                                 Y02669 47090002
+* LOG PTR IS ZERO - TEST IF VERB IS WRITELOG START . IF IT IS ,  Y02669 47140002
+* PROCESS TO RE-ACTIVATE THE LOG FUNCTION .                      Y02669 47190002
+* IF NOT , SET UP ERROR MSG FOR MODULE IGC0503D .                Y02669 47240002
+         TM    MSECBFL,MSWTL       BUFFER RECOVERY?            @ZA07784 47250003
+         BO    LERR26              YES, SET ERROR MSG          @ZA07784 47260003
+         CLI   XAN,WRITLOG             WRITELOG CMND VERB CODE ? Y02669 47290002
+         BNE   LERR26                  NO , SET ERROR MSG        Y02669 47340002
+*                                      PROCESSING                Y02669 47350002
+         CLC   DEC0(DEC5,R9),VSTART    OPERAND = START ?         Y02669 47390002
+         BNE   LERR26                  NO , INVALID FOR INACTIVE Y02669 47440002
+*                                      LOG                       Y02669 47450002
+         CLI   DEC5(R9),HEX40          VALID DELIMITER ?         Y02669 47490002
+         BE    POSTRTN                 YES, CONTINUE PROCESSING  Y02669 47540002
+         LA    R6,DEC5(R9)             END OF OPERAND ADDRESS    Y02669 47590002
+         CR    R6,R7                   EQUAL END OF BUFFER ?     Y02669 47640002
+         BNE   VERR07                  NO , DELIMITER ERROR      Y02669 47690002
+POSTRTN  EQU   *                                                 Y02669 47740002
+*                                                                Y02669 47750002
+* ENTRY IS TO SET UP AND ISSUE POSTS OF  LOG ECBS                Y02669 47790002
+*                                                                Y02669 47840002
+         LA    R4,XASAVLOC             RTN USES XSA SAVE AREA    Y02669 47850002
+         USING POSTCORE,R4           ADDRESSIBILITY TO SAVE AREA Y02669 47860002
+         MVC   POSTCORE(DEC12),POSTLIST  LIST FORM OF POST       Y02669 47890002
+         L     R6,CVTPTR               CVT ADDR                  Y02669 47940002
+         USING SETCVT,R6                                         Y02669 47990002
+         LA    R1,CVTBRET              ADDR OF POST RETURN RTN   Y02669 48040002
+         ST    R1,ERRAD                STORE IN POST LIST        Y02669 48090002
+         CLC   DEC0(DEC5,R9),VSTART    START COMMAND ECB POST ?  Y02669 48240002
+         BNE   CLOSELOG                NO , CHECK CLOSE          Y02669 48290002
+         MVC   ASCBAD(DEC4),BAASCB     SET MASTER REGION ASCB    Y02669 48300002
+         LA    R6,MSLGSTRT             START ECB ADDRESS         Y02669 48340002
+         B     ISSUPOST                POST LOG TASK             Y02669 48390002
+CLOSELOG EQU   *                                                 Y02669 48392002
+         MVC   ASCBAD(DEC4),LCAASCB    SET LOG TASK ASCB         Y02669 48392402
+         CLC   DEC0(DEC5,R9),VCLOSE    CLOSE COMMAND ECB POST ?  Y02669 48394002
+         BNE   LOGSWTCH                NO , SWITCH LOG DATA SET  Y02669 48396002
+*                                      ECB                       Y02669 48396402
+         LA    R6,MSLGCLOZ             CLOSE ECB ADDRESS         Y02669 48398002
+         STM   R5,R7,DEC64(R2)        SAVE REGS ACROSS OIL MACRO Y02669 48398202
+         OIL   LCAPOSTT,POSTCLOZ,WREGS=(5,6,7),REF=LCABASE       Y02669 48398602
+         LM    R5,R7,DEC64(R2)         RESTORE REGS              Y02669 48398702
+         B     ISSUPOST                POST LOG TASK             Y02669 48399002
+LOGSWTCH EQU   *                                                 Y02669 48399202
+         LA    R6,MSLGWLOG             SWITCH ECB ADDRESS        Y02669 48399402
+ISSUPOST EQU   *                                                 Y02669 48399702
+         ST    R6,ECBAD                ECB ADDRESS TO LIST       Y02669 48399802
+         LR    R1,R4                   PARM LIST REG FOR POST    Y02669 48400002
+         POST  MF=(E,(1))                                        Y02669 48449902
+         BR    R14                     RETURN                    Y02669 48469902
+         EJECT                                                   Y02669 48471902
+HRDCOPY  EQU   *                                                 Y02669 48479902
+* ENTRY HERE IS TO VERIFY IF LOG = HARDCOPY . SET UP             Y02669 48489902
+*       ADDRESSIBILITY                                           Y02669 48490302
+* TO UCM PREFIX , CHECK UCM(UCMFLAGS(UCMSYSG)) = ON .            Y02669 48491902
+* IF YES , SET UP FOR 'COMMAND REJECTED' WTO , BRANCH TO MSG     Y02669 48493902
+*       PROCESSING                                               Y02669 48494302
+* IF NO , BRANCH TO POST RTN TO TERMINATE LOG FUNCTION .         Y02669 48495902
+         DROP  R6                                                Y02669 48496302
+         USING SETCVT,R3               PTR TO CVT                Y02669 48497902
+         L     R3,CVTPTR                                         Y02669 48498302
+         L     R3,CVTCUCB              PTR TO UCM                Y02669 48498502
+         USING UCM,R3                                            Y02669 48498602
+         LR    R5,R3                   SET UP , CALCULATE        Y02669 48498702
+         SH    R5,FOUR                   UCM PREFIX ADDRESS      Y02669 48523902
+         L     R5,DEC0(R5)             PTR TO UCM PREFIX         Y02669 48573902
+         USING UCMPRFX,R5                                        Y02669 48574302
+         TM    UCMSFLGS,UCMSYSG        LOG = HARDCOPY ?          Y02669 48574402
+         BZ    POSTRTN                NO, TERMINATE LOG FUNCTION YO2669 48574502
+         B     REJECTIT                YES , ISSUE WTO IEE532I   Y02669 48574602
+         EJECT                                                          48574702
+VERBLOG   EQU  *                                                 Y02669 48600002
+* VERB=LOG ROUTINE - SYNTAX CHECKS THE TEXT FOR THE LOG COMMAND, Y02669 48900002
+*    MOVES ALL THE CHARACTERS BETWEEN THE QUOTES TO GOTTEN CORE,      * 49200013
+*    AND WRITES TO LOG (WTL MACRO) FROM GOTTEN CORE. RETURN IS BR 14. * 49500013
+*                                                                     * 49800013
+         XC    XASAVLOC(DEC4),XASAVLOC      ZERO OUT SWITCH FIELDY02669 49850002
+         C     R9,VZEROS                    IS PARAMETER POINTER ZERO   49900018
+         BE    VERR11                       YES, PARAMETER IS MISSING   50000018
+         CLI   DEC0(R9),QUOTE               IS FIRST CHARACTER A QROTE  50200018
+         BNE   LERR19                        NO. QUOTE ERROR            50400013
+         L     R0,SP                   WTL CORE SUBPOOL = 231    Y02669 50450002
+         OR    R0,R6                   GETMAIN LENGTH            Y02669 50500002
+         LR    R5,R0                   SAVE SP AND LENGTH OF     Y02669 50550002
+*                                      GETMAIN                   Y02669 50600002
+         GETMAIN R,LV=(0)              CORE FOR WTL              Y02669 50700002
+         LR    R8,R1                         GOTTEN CORE STARTING PT.   51000013
+         LA    R7,DEC4(R8)                  LEAVE ROOM OFR HEADER       51300018
+LOGLOOP  LA    R9,DEC1(R9)                  UPDATE CHARACTER POINTER    51600018
+         C     R9,XAP                        IS IT END OF BUFFER        51900013
+         BC    10,TXTERR                     YES, PREMATURELY    Y02669 52200002
+         CLI   0(R9),QUOTE                   IS THIS CHAR A QUOTE       52500013
+         BE    LOGQUT                        YES. GO CHECK FOR FINAL QT 52800013
+LOGMOV   MVC   0(1,R7),0(R9)                 NO. MOVE A VALID CHAR      53100013
+         LA    R7,1(R7)                      UPDATE WTL BUFFER          53400013
+         B     LOGLOOP                       GO CHECK NEXT CHARACTER    53700013
+* QUOTE IS ENCOUNTERED, CHECK FOR FINAL QUOTE                         * 54000013
+LOGQUT   LA    R9,1(R9)                      UPDATE CHARACTER POINTER   54300013
+         C     R9,XAP                        IS IT END OF BUFFER        54600013
+         BE    LOGOUT                        YES. TEXT IS COMPLETE      54900013
+         CLI   0(R9),QUOTE                   IS THIS DOUBLE QUOTE       55200013
+         BE    LOGMOV                        YES. MOVE ONE QUOTE        55500013
+LOGOUT   SR    R7,R8                         COMPUTE LNGTH OF WTL BUFFR 55800013
+         CH    R7,LOGFOR                     IS TEXT NULL               56100013
+         BE    LOGFRE                        YES. DO NOT WTL            56400013
+         SLL   R7,16                         STORE LENGTH IN BUFFER IN  56700013
+         ST    R7,0(R8)                      PRESCRIBED MANNER          57000013
+* W R I T E   T O   L O G.                                            * 57300013
+         WTL   MF=(E,(R8))                   LOG MESSAGE                57600013
+         EJECT                                                          57650002
+LOGFRE   LR    R1,R8                         R1 POINTS TO WTL BUFFER    57900013
+         LR    R0,R5                   SP AND LENGTH TO FREE     Y02669 57950002
+         FREEMAIN R,LV=(0),A=(1)       WTL BUFFER CORE           Y02669 58200002
+         TM    XASAVLOC,HIBIT          DELIMITER ERROR ?         Y02669 58250002
+         BO    LERR19                  YES , SET ERROR MSG CODE  Y02669 58300002
+         BR    R14                 RETURN                               58500013
+TXTERR   EQU   *                                                 Y02669 58550002
+         OI    XASAVLOC,HIBIT          SET DELIMITER ERROR FOR   Y02669 58600002
+*                                      RETURN                    Y02669 58610002
+         B     LOGFRE                  FREE WTL CORE             Y02669 58650002
+         EJECT                                                          58800013
+* THE FOLLOWING INSTRUCTIONS PASS A DESIGNATED ERROR CODE TO THE      * 59100013
+*   ERROR SUBROUTINE, VULERR, IN REGISTER 6.                     Y02669 59400002
+*                                                                     * 59700013
+VERR07   BAL   R6,VULERR                     ERROR CODE = 7      Y02669 60000002
+         DC    AL1(ERR7)                                                60300013
+*                                                                     * 60600013
+VERR11   BAL   R6,VULERR                     ERROR CODE =11      Y02669 60900002
+         DC    AL1(ERR11)                                               61200013
+*                                                                     * 61500013
+LERR19   BAL   R6,VULERR                     MESG CODE =19       Y02669 61800002
+         DC    AL1(ERR19)                                               62100013
+*                                                                       62400013
+LERR23   BAL   R6,VULERR                     MESG CODE =23       Y02669 62700002
+         DC    AL1(ERR23)                                               63000013
+*                                                                       63300013
+LERR26   BAL   R6,VULERR                     MESG CODE =26       Y02669 63600002
+         DC    AL1(ERR26)                                               63900013
+*                                                                       63950002
+LERR52   XC    XAV(DEC8),XAV           ZERO FIELD                Y02669 63960002
+         MVC   XAV(DEC4),LOGWORD       SET COMMAND='LOG' FOR MSG Y02669 64000002
+         BAL   R6,VULERR               MESG CODE = 52            Y02669 64050002
+         DC    AL1(ERR52)                                        Y02669 64100002
+         SPACE                                                          64200013
+         SPACE                                                          64500013
+* ERROR SUBROUTINE - RECEIVES, IN REGISTER 6, A POINTER TO A     Y02669 64800002
+*   MESSAGE CODE WHICH IS PLACED IN THE XSA (XAE). CONTROL GOES  Y02669 65100002
+*   TO THE MESSAGE ASSEMBLY MODULE, IEE0503D, VIA BRANCH         Y02669 65400002
+*                                                                     * 65700013
+VULERR   MVC   XAE(1),0(R6)           INSERT ERROR CODE          Y02669 66000002
+         L     R15,VMSGMOD            ADDRESS OF MSG MODULE      Y02669 66100002
+*                                     IGC0503D                   Y02669 66110002
+         BR    R15                    PASS CONTROL TO MSG MODULE Y02669 66150002
+REJECTIT EQU   *                                                 Y02669 66200002
+         LA    R7,M2                                             Y02669 66250002
+         B     TELLOP                                            Y02669 66300002
+WRITEUP  EQU   *                                                        68108018
+         LA    R7,M1                                             Y02669 68138002
+         B     TELLOP                       *                           68168018
+FINISH   EQU   *                                                        68236018
+         LA    R7,M3                                             Y02669 68237002
+TELLOP   EQU   *                            THIS SECTION WIRTES MSGS    68238018
+         SR    R8,R8                                                    68239018
+         IC    R8,MSGLENS-DEC1(R7)                               Y02669 68240002
+         LA    R1,XASAVSTD            USE XSA SAVE AREA FOR MSG  Y02669 68242002
+*                                     BUFFER                     Y02669 68244002
+         SR    R15,R15                                                  68245018
+         IC    R15,MSGLOC-DEC1(R7)        LOCATE MSG             Y02669 68246002
+         LA    R6,MESSAGES(R15)                                  Y02669 68247002
+         LA    R15,DEC3(R8)                 LENGTH FOR EXECUTE          68248018
+         EX    R15,MOVEMSG                  MOVE MSG TO GOTTON CORE     68249018
+         STH   R8,DEC0(R1)                                              68250018
+         C     R7,FOX1                    IS THIS MSG1           Y02669 68251002
+         BNE   NO                           BRANCH IF NOT               68252018
+         C     R9,VZEROS                                                68253018
+         BNE   PROVIDED                     *                           68254018
+         MVC   DISP(DEC1,R1),MSLOGCLS  SYSGEN DEFAULT CLASSNAME  Y02669 68255002
+         B     NO                      BYPASS NEXT INSTRUCTION   Y02669 68255402
+PROVIDED EQU   *                                                        68256018
+         MVC   DISP(DEC1,R1),LCCLASS                                    68257018
+NO       EQU   *                                                        68258018
+         XR    R0,R0                                                    68260018
+         IC    R0,XAU                                                   68261018
+         WTO   MF=(E,(1))                                        Y02669 68262002
+         BR    R14                                                      68267018
+MOVEMSG  MVC   DEC0(DEC0,R1),DEC0(R6)                            Y02669 68268002
+M1       EQU   1                                                        68269018
+M2       EQU   2                                                        68270018
+M3       EQU   3                                                        68271018
+MSGLENS  EQU   *                                                        68272018
+         DC    AL1(MSG1END-MSG1-DEC4)  LENGTH OF MSG1            Y02669 68273002
+         DC    AL1(MSG2END-MSG2-DEC4)  LENGTH OF MSG2            Y02669 68273402
+         DC    AL1(MSG3END-MSG3-DEC4)  LENGTH OF MSG3            Y02669 68275002
+MSGLOC   EQU   *                                                        68276018
+         DC    AL1(MSG1-MESSAGES)           *                           68277018
+         DC    AL1(MSG2-MESSAGES)           *                    Y02669 68277402
+         DC    AL1(MSG3-MESSAGES)           *                           68279018
+MESSAGES EQU   *                                                        68280018
+MSG1     WTO   'IEE032I WRITELOG IS PENDING. CLASSNAME =  .',MF=L,     *68290018
+               DESC=(5),MCSFLAG=(RESP,REG0)                             68316018
+MSG1END  EQU   *                                                        68320018
+MSG2     WTO   'IEE532I SYSTEM LOG DEFINED AS HARDCOPY-WRITELOG CLOSE C*68330002
+               MND REJECTED',MF=L,DESC=(5),MCSFLAG=(RESP,REG0)          68332002
+MSG2END  EQU   *                                                 Y02669 68334002
+MSG3     WTO   'IEE033I HALT OR WRITELOG CLOSE COMMAND HAS BEEN ISSUED'*68340018
+               ,MF=L,DESC=(5),MCSFLAG=(RESP,REG0)                       68348018
+MSG3END  EQU   *                                                        68352018
+         EJECT                                                          68400013
+* CONSTANTS USED BY IEE1103D.                                         * 68700013
+*                                                                     * 69000013
+VZEROS   DS    0F                                                       69600013
+         DC    F'0'                         *                           69900018
+VMSGMOD  DC    V(IGC0503D)                                       Y02669 69950002
+LOGWORD  DC    CL4'LOG '                                         Y02669 70000002
+V00FF    DC    X'0000FFFF'                      *                Y02669 70800002
+LOGFOR   DC    H'4'                          LOG TEXT LENGTH COMPARAND  71100013
+FOUR     DC    H'4'                    UCM PREFIX OFFSET         Y02669 71150002
+*                                                                     * 71400013
+VMTAB    EQU   *                                                        71700013
+         DC    X'00'     'C0'                                           72000013
+         DC    9X'04'    A - I                                          72300013
+         DC    7X'00'    'CA' - 'D0'                                    72600013
+         DC    9X'04'    J - R                                          72900013
+         DC    8X'00'    'DA' - 'E1'                                    73200013
+         DC    8X'04'    S - Z                                          73500013
+         DC    6X'00'    'EA' - 'EF'                                    73800013
+         DC    10X'04'   0 - 9                                          74100013
+         DC    6X'00'    'FA' - 'FF'                                    74400013
+T        EQU   VMTAB-192                                                74700013
+VCLOSE   DC    CL5'CLOSE'          WRITELOG PARAMETER                   75000013
+VSTART   DC    CL5'START'              WRITELOG OPERAND          Y02669 75050002
+         DS    0F                                                       75070018
+SP       DC    AL1(231),AL3(0)              *                    Y02669 75140002
+POSTLIST POST  ASCB=0,ERRET=0,MF=L                               Y02669 75190002
+FOX1     DC    F'1'                         *                           75220018
+PATCH    DS    CL52                    TEMP FIX AREA             Y02669 75270002
+         EJECT                                                          75300013
+POSTCORE DSECT                                                   Y02669 75350002
+ECBAD    DS    F                                                 Y02669 75400002
+ASCBAD   DS    F                                                 Y02669 75450002
+ERRAD    DS    F                                                 Y02669 75500002
+         EJECT                                                          75570002
+SETXSA   DSECT                                                          75600013
+         IEEXSA                                                         75900013
+         EJECT                                                          76200013
+SETCVT   DSECT                                                          76500013
+         CVT                                                            76800013
+         EJECT                                                          77100013
+         IEEBASEA                                                       77400013
+         EJECT                                                          77700013
+         IEELCA                                                         78600013
+         EJECT                                                          78700002
+UCM      DSECT                                                          78710002
+         IEECUCM                                                        78750002
+         EJECT                                                          78800002
+         IEFPTRS                                                        78850002
+         END                                                            78900013

@@ -1,0 +1,723 @@
+*                                                                       00030020
+         COPY  LCGASMSW                                                 00040000
+*                                                                       00150020
+         TITLE 'IGC0Q06C - CHKPT EXIT ROUTINE (IHJACP50)'               00300018
+IGC0Q06C CSECT                                                          00400018
+*********************************************************************** 00450002
+*                                                                     * 00500002
+*STATUS CHANGE LEVEL 000                                              * 00520002
+*                                                                     * 00570002
+*FUNCTION/OPERATION - FOR NORMAL PROCESSING THIS ROUTINE WILL DO      * 00600002
+*                   THE FOLLOWING                                     * 00700002
+*                                                                     * 01200002
+*                     1.)  ISSUE A STOW MACRO ON THE CHECKID IF THE   * 01400002
+*                          CHKPT DATA SET IS A PARTIONED DATA SET.    * 01600002
+*                     2.)  CALLS WIJOURN MACRO TO CHECKPOINT          * 01650002
+*                          THE VIO DATA SETS (FOR AUTOMATIC           * 01700002
+*                          RESTART) TO THE JOB JOURNAL.               * 01750002
+*                     3.)  UPDATE THE JCT AND WRITE IT OUT TO THE     * 02100002
+*                          SCHEDULER WORK AREA (SWA)                  * 02150002
+*                     4.)  FREEMAIN FOR THE CHKPT WORK AREA           * 02400002
+*                     5.)  XCTL TO MESSAGE MODULE                     * 02700002
+*                                                                     * 03100002
+*                     FOR ERROR PROCESSING THIS ROUTINE WILL DO THE   * 03200002
+*                     FOLLOWING                                       * 03300002
+*                                                                     * 03400002
+*                     1.)  FREEMAIN FOR CHKPT WORK AREA IF CHKPT      * 03600002
+*                          HOUSEKEEPING GOT CORE FOR IT               * 03800002
+*                     2.)  IF THE CHR WAS WRITTEN, WRITE THE JCT WITH * 04000002
+*                          NO UPDATING                                * 04100002
+*                     3.)  XCTL TO MESSAGE MODULE IGC0S06C            * 04800002
+*                                                                     * 04850002
+*                     FOR PROCESSING A CANCEL REQUEST OR A VIO ERROR  * 05400002
+*                     (CODE 205), DO THE FOLLOWING                    * 05600002
+*                                                                     * 05650002
+*                     1.)  ZERO OUT THOSE FIELDS IN THE JCT THAT ARE  * 05800002
+*                          MAINTAINED BY CHKPT (I.E. JCTDEVT,JCTCKTTR,* 06000002
+*                          JCTCKIDL, JCTCKIDT).                       * 06200002
+*                     2.)  WRITE OUT THE JCT TO THE SWA.              * 06400002
+*                     3.)  FREEMAIN FOR THE WORK AREA.                * 06600002
+*                     4.)  PUT X'00' RETURN CODE IN REGISTER 15.      * 06800002
+*                     5.)  RETURN CONTROL TO THE USER.                * 06900002
+*                                                                     * 07000002
+*ENTRY POINT  IGC0Q06C                                                * 07050002
+*                                                                     * 07060002
+*INPUT   ADDRESS OF THE CHKPT WORK AREA IN REGISTER 1.                  07100017
+*        IF REGISTER 1 IS ZERO UPON ENTRY, CORE WAS NOT OBTAINED FOR    07150017
+*        THE WORK AREA.  IN THIS CASE REGISTER 5 WILL CONTAIN THE       07200017
+*        ADDRESS OF CHKPT'S SVRB.  BYTES 0-3 OF THE EXTENDED SAVE AREA  07250017
+*        WILL CONTAIN THE RETURN CODE AND MESSAGE CODE, BYTES 33-35 THE 07300017
+*        TIOT ADDRESS AND BYTES 37-39 THE DCB ADDRESS OR ZERO (IF A BAD 07350017
+*        PARAMETER LIST WAS PASSED).  BIT 3 (HKPCLOSE) OF BYTE 32       07400017
+*        (HKPFLAG) WILL BE 1 IF CHKPT HOUSEKEEPING OPENED THE CHKPT     07450017
+*        DATA SET.                                                    * 07500002
+*                                                                     * 07550002
+*OUTPUT  CANCEL REQUEST                                               * 07560002
+*              RETURN CODE IN REGISTER 15                             * 07620002
+*        NON CANCEL REQUEST                                           * 07680002
+*              1.) ADDRESS OF SVRB IN REGISTER 1                      * 07750002
+*              2.) RETURN CODE AND MESSAGE CODE IN FIRST 4 BYTES OF   * 07800002
+*                  SVRB EXTENDED SAVE AREA                            * 07850002
+*              3.) IF ERROR OCCURRED BEFORE CHR WAS WRITTEN           * 07900002
+*                    BYTES IN SVRB        CONTENTS                    * 07950002
+*                        16-23               JOBNAME                  * 08000002
+*                        24-31               DDNAME (OR 0 IF ERROR CODE 08050017
+*                                                       IS 01)        * 08100002
+*                        36-39               DCB ADDRESS              * 08120002
+*              4.) IF ERROR OCCURRED AFTER CHR WAS WRITTEN, OR NO ERROR 08150017
+*                  OCCURRED                                           * 08200002
+*                    BYTES IN SVRB        CONTENTS                    * 08300002
+*                        16-31               CHECKID                  * 08400002
+*                        32-35               TIOT ADDRESS             * 08440002
+*                        36-39               DCB ADDRESS (HIGH ORDER  * 08480002
+*                                                BYTE=X'80' IF CHKPT  * 08520002
+*                                                OPENED THE DATA SET  * 08560002
+*                                                                     * 08570002
+*EXTERNAL ROUTINES  NONE                                              * 08600002
+*                                                                     * 08610002
+*SVC USED  FREEMAIN,XCTL,EXIT,STOW,GETMAIN                            * 08650002
+*                                                                     * 08660002
+*EXITS-NORMAL 1.) FOR CANCEL-RETURN CONTROL TO USER WITH RETURN CODE  * 08700002
+*                                 IN REGISTER 15                      * 08750002
+*             2.) IF NOT CANCEL-XCTL TO CHKPT MESSAGE MODULE IGC0S06C * 08800002
+*     -ERROR NONE                                                     * 08850002
+*                                                                     * 08860002
+*TABLES/WORK AREAS-CREATED-CERSECT (CONTAIN INFO FOR MESSAGE MODULE)  * 08900002
+*                  -REFERENCED- TCB,TIOT,JCT,UCB,CHKWA,DC,QMIOP,RPL,  * 08950002
+*                               JESCT,JSCB,CVT                        * 09000002
+*                                                                     * 09010002
+*ATTRIBUTES - REENTRANT, SUPERVISOR STATE, TYPE 4 SVC ROUTINE.        * 09050002
+*                                                                     * 09100002
+*RESTRICTIONS ON USE OF ROUTINE - VS/2-REL 2  ONLY.                   * 09150002
+*                                                                     * 09200002
+*NOTES - NONE.                                                        * 09250002
+*                                                                     * 09300002
+* VS2-REL 3 CHANGES:                                                    09310002
+*186500-187000,187900-187920                                     ZM0467 09320002
+* VS2 RELEASE 037 CHANGES ADDITIONS DELETIONS                           09330037
+*C150000,A151000                                               @ZA16894 09340037
+*D293700,C294200,A295200-297700,568800                         @ZA27494 09345037
+*********************************************************************** 09350002
+         EJECT                                                          09400002
+         USING CHKWA,RC                                                 09600017
+         BALR  RB,ZERO             SET UP MODULE ADDRESSABILITY         09800018
+         USING *,RB                                                     10000017
+         B     BEGIN               BRANCH AROUND EYE CATCHER            10050000
+         CNOP  0,8                 ALIGN TO A DOUBLE WORD BOUNDARY      10100000
+         DC    C'IGC0Q06C'         CSECT NAME                           10150000
+         DC    C'@ZA27494'         LAST CODE SHIPPED           @ZA27494 10153037
+         DC    C'&SYSDATE'         LAST DATE SHIPPED           @ZA27494 10156037
+BEGIN    EQU   *                                                        10160000
+         LTR   R1,R1              IS THERE A CHKPT WA                   10200017
+         BZ    CERERCHK            NO-CHECK TO DETERMINE ACTION         10400017
+         LR    RC,R1              SET UP CHKPT WA ADDRESSABILITY        10600017
+         LA    RD,CKREGSAV         INITIALIZE SAVE AREA REG.            11200017
+         LA    R7,INJMJCT          GET ADDR OF JCT WRITE-OUT AREA.      11600017
+         L     R4,CKTCBAD          GET THE TCB ADDRESS                  12410017
+         USING TCB,R4                                                   12420000
+         L     R9,TCBRBP           GET ADDRESS OF CHECKPOINTS SVRB      12430017
+         USING CERSECT,R9                                               12440017
+         MVC   CERRETCD(CERMSGMD-CERRETCD),CKRETCOD                     12450018
+*                                       CODES FOR MESSAGE MODULE        12460018
+         MVC   CERFLAG(LFLAG),CKFLAG1   MOVE FLAG FOR COMMON ADDRESSING 12470018
+         TM    CKFLAG1,CKCANCEL    WAS CANCEL REQUESTED                 12480017
+         BO    CERCANC             BRANCH TO PROCESS IF YES             12490017
+         L     R8,CKDCBAD          GET ADDRESS OF CHEKPT DCB            12500017
+         LA    R8,0(R8)            CLEAR HIGH ORDER BYTE                12503017
+         ST    R8,CERDCBAD         SAVE ADDRESS FOR MSG. MODULE         12506017
+         USING IHADCB,R8                                                12510017
+         L     R2,TCBTIO           GET TIOT ADDRESS                     12520017
+         USING TIOTSECT,R2                                              12530017
+         TM    CKFLAG2,CKCHR       WAS THE CHR WRITTEN                  12540017
+         BO    CERGETID            BRANCH IF YES                        12550017
+*                                                                     * 12552018
+*********************************************************************** 12554018
+*                                                                     * 12556018
+*   SET UP PARAMETER LIST FOR THE MESSAGE MODULE.  SINCE THE CHR WAS    12560017
+*   NOT WRITTEN, ONLY THE JOBNAME AND DDNAME ARE REQUIRED FOR THE MSG.  12570017
+*                                                                     * 12572018
+*********************************************************************** 12574018
+*                                                                     * 12576018
+         MVC   CERJOBNM(LJOBNM),TIOCNJOB     MOVE IN JOBNAME FROM TIOT. 12583018
+         MVC   CERDDNM(L'DCBDDNAM),DCBDDNAM INIT DDNAME FROM DCB YM3983 12585002
+         TM    DCBOFLGS,CKDCBOP    IS CHKPT DCB OPEN             YM3983 12589002
+         BZ    CERSYNR             IF NOT, USE DDNAME FROM DCB   YM3983 12589402
+*                                  OTHERWISE, FALL THRU AND GET  YM3983 12589802
+*                                  DDNAME FROM TIOT ENTRY        YM3983 12593202
+         AH    R2,DCBTIOT          POINT AT DD ENTRY IN TIOT            12596702
+         USING TIOELNGH,R2                                              12600017
+         MVC   CERDDNM(CERTIOAD-CERDDNM),TIOEDDNM                       12606018
+*                                  MOVE DDNAME TO MSG MOD PARMLST       12612018
+         B     CERSYNR             BRANCH TO FREEMAIN AND CLOSE         12620017
+*                                                                     * 12621018
+*********************************************************************** 12622018
+*                                                                     * 12623018
+*  THE CHR WAS WRITTEN.  THEREFORE THE CHECKID, TIOT ADDRESS AND THE    12623400
+*  DCB ADDRESS WILL BE PASSED TO THE MSG. MODULE                        12623800
+*                                                                     * 12624018
+*********************************************************************** 12625018
+*                                                                     * 12626018
+CERGETID EQU   *                                                        12630017
+         OI    CERDCBAD,CHRWRTTN   TELL SO6C CHR WRITTEN         YM6511 12640002
+         MVI   CERCHKID,SPACE                BLANK OUT THE CHECKID      12660018
+         MVC   CERCKID1(LCHKID),CERCHKID     FIELD IN THE PARAM AREA.   12670018
+         ST    R2,CERTIOAD         SAVE TIOT ADDRESS FOR MSG. MOD.      12700017
+         TM    CKFLAG2,CKUSPCHD    DID USER SUPPLY THE CHECKID          12720017
+         BZ    CERGETGN            BRANCH IF NO TO GET GENERATED ONE    12730017
+         L     R6,CKPARMAD         GET ADDRESS OF PARAMETER LIST        12740017
+         USING CHKPTPML,R6         MAPPING CHKPT PARM                   12746018
+         L     R4,IDADDR           GET ADDR OF THE CHECKID              12752018
+         XR    R2,R2               CLEAR REGISTER 2 FOR INSERT          12760017
+         IC    R2,LUSERID          GET LENGTH OF CHECKID                12770018
+         BCTR  R2,ZERO             SUBTRACT ONE FOR EXECUTE             12780018
+         B     CERMOVE             GO TO MOVE CHECKID TO PARMLST        12790018
+CERGETGN EQU   *                                                        12800017
+         LA    R4,CKCHEKID         GET ADDRESS OF GENERATED CHKID       12810017
+         LA    R2,LENGTH1          LENGTH-1 FOR EXECUTE                 12820018
+CERMOVE  EX    R2,CERMOVID         MOVE CHECKID TO PARAM AREA           12830017
+         DROP  R4,R2,R6                                                 12840018
+*                                                                     * 12850018
+*********************************************************************** 12860018
+*                                                                     * 12870018
+*        FOR BPAM CHECKPOINT DATA SET, WHEN NO ERRORS HAVE BEEN       * 12880018
+*        ENCOUNTERED(EXCEPT OUTSTANDING ENQUEUES) STOW CHKPT ENTRY    * 12890018
+*        UNDER CHECKID AS MEMBER                                      * 12900018
+*                                                                     * 12910018
+*********************************************************************** 12920018
+*                                                                     * 12930018
+CERCKCD  EQU   *                                                        12940017
+         CLI   CKRETCD1,CKPSBERR   DOES RETURN CODE INDICATE ONLY       13040018
+*                                  A POSSIBLE ERROR.                    13200017
+         BE    CERSKP1             YES-SKIP ERROR CHECK.                13400017
+         CLI   CKRETCD1,HEXZERO    HAVE ANY ERRORS BEEN ENCOUNTERED     13600018
+         BNZ   CERSKP2             YES-SKIP CODE TO STOW CHKPT ENTRY    13800018
+CERSKP1  TM    CKFLAG1,CKBPAM      WAS CHKPT DATA SET OPENED FOR BPAM   14000017
+         BZ    CERSKP2             NO-DO NOT STOW ENTRY                 14200017
+         L     R1,CKDCBAD               SET UP                          14400017
+         LA    R0,CERSTOW               PARAMETERS                      14600017
+         MVC   CERSTOW(IDL),CERCHKID    FOR STOW MACRO                  14800017
+         XC    CERSTOW8(LTTR),CERSTOW8  ZERO STOW TTR FIELD    @ZA16894 15000037
+         MVC   0(LTTR,R1),CKTTR         SAVE TTR FOR STOW      @ZA16894 15100037
+         STOW  (1),(0),R                                                15200017
+         B     *+4(RF)             BRANCH TABLE DETERMINES PROCESSING   15300018
+*                                  TO BE DONE DEPENDING UPON THE RETURN 15400018
+*                                  CODE FROM STOW                       15500018
+         B     CERSKP2             OK-CONTINUE                          15600018
+         B     CER10               I/O ERROR-GO TO MOVE ERRCODE TO WA   15800018
+         B     CERSKP2             OK-CONTINUE                          16000018
+         B     CER0C               NOT ENOUGH ROOM IN DIRECTORY-GO TO   16100018
+*                                  INDICATE PROGRAMMER ERROR            16200018
+         B     CER10               I/O ERROR-GO TO MOVE ERRCODE TO WA   16240018
+*                                                                     * 16280018
+*********************************************************************** 16320018
+*                                                                     * 16360018
+*        GET UCB ADDR IN ORDER TO PUT DEVICE TYPE INTO JCT FIELD      * 16400000
+*        'JCTDEVT'                                                    * 16440000
+*                                                                     * 16480018
+*********************************************************************** 16520018
+*                                                                     * 16560018
+CERSKP2  EQU   *                                                        16600017
+         L     R6,CKTCBAD          GET THE TCB ADDRESS                  16630017
+         USING TCB,R6                                                   16660000
+         L     R3,TCBTIO                                        ZA00617 16690002
+         AH    R3,DCBTIOT                                       ZA00617 16720002
+         USING TIOELNGH,R3                                      ZA00617 16750002
+         L     R6,TIOTUCB          GET THE UCB ADDRESS FROM TIOT        16760018
+*                                                                     * 17100018
+*********************************************************************** 17120018
+*                                                                     * 17140018
+*        IF CHR WAS NOT WRITTEN DO NOT UPDATE JCT OR WRITE JCT TO JOB * 17160018
+*        QUEUE, OTHERWISE, MOVE CHECKID TO JCT                        * 17180018
+*        IF AN ERROR OCCURRED OTHER THAN OUTSTANDING ENQUEUES OR      * 17200018
+*        IMMEDIATE RESTARTS SUPPRESSED BRANCH TO WRITE JCT TO JOB Q   * 17220018
+*                                                                     * 17240018
+*********************************************************************** 17260018
+*                                                                     * 17280018
+CERFD    EQU   *                                                        17320017
+         USING UCBSECT,R6          ADDRESS UCB                          17370017
+         TM    CKFLAG2,CKCHR       WAS CHR WRITTEN                      18000017
+         BZ    CERSYNR             IF NOT, BR TO FREEMAIN AND CLOSE     18100002
+CERFDCAN L     R4,CKTCBAD          GET TCB ADDR                  YM5773 18150002
+         USING TCB,R4              ADDRESS TCB                   YM3988 18200002
+         L     R4,TCBJSCB-TCB(,R4) GET JSCB ADDR                 YM3988 18250002
+         USING IEZJSCB,R4          ADDRESS JSCB                  YM3988 18300002
+         MVC   SVAJCTA(E4),JSCBJCTA SAVE JCT SVA ADDR            YM3988 18350002
+         TM    CKFLAG1,CKCANCEL         WAS CANCEL REQUESTED     YM5773 18352002
+         BO    CERJCTW                  YES-BR TO WRITE JCT      YM5773 18354002
+         CLI   CERRETC1,CKPSBERR   RETURN CODE INDICATE POSSIBLE ERROR  18360018
+*                                  A POSSIBLE ERROR                     18400017
+         BE    CERAFER             YES-UPDATE JCT                       18440018
+         CLI   CERRETC1,HEXZERO    HAS AN ERROR OCCURED                 18490018
+         BNE   CERJCT1             BRANCH IF YES--SKIP UPDATING THE JCT 18540017
+CERAFER  EQU   *                                                        18600017
+         L     R7,CKTCBAD               GET TCB ADDR             ZM0467 18650002
+         WIJOURN TCB=(R7),CALLER=CKPT   VIO JOURNLING            ZM0467 18700002
+         LTR   RF,RF                    ANY VIO ERRORS          ZA00617 18750002
+         BZ    CERAFER2                 BRANCH IF NO            ZA00617 18760002
+         MVI   CERMSGCD,VAMSGTYP        MSG SHELL ID            ZA00617 18770002
+         MVI   CERRETC1,CKIOERR         SET RETURN CODE         ZA00617 18780002
+         LA    R7,VAMERR1               IS IT RET. CODE 4        ZM0467 18790002
+         CR    RF,R7                    COMPARE                  ZM0467 18792002
+         BE    CERAFER1                 BR IF IT IS 4           ZA00617 18794002
+         MVI   CERMSGCD+E1,ERRMSGC2     SET ERR CODE 205        ZA00617 18796002
+         B     CERCANC                  BR TO CANCEL AUTO RSTRT ZA00617 18798002
+CERAFER1 MVI   CERMSGCD+E1,ERRMSGC1     SET ERR CODE 204        ZA00617 18798402
+CERAFER2 EQU   *                        UPDATE JCT AS REQUIRED  ZA00617 18798802
+         TM    JCTRSW2,JCTNORST    ARE IMMEDIATE RESTARTS SUPPRESSED    18800017
+         BO    CERJCT1             BRANCH IF YES                        18860017
+*                                                                     * 18865018
+*********************************************************************** 18870018
+*                                                                     * 18875018
+*        UPDATE THE FOLLOWING FIELDS IN JCT:                          * 18880018
+*            JCTCKID - CHKPT ID                                  YM3988 18882002
+*            JCTCKTTR - CHKPT D/S JFCB SVA ADDRESS               YM3988 18884002
+*            JCTRSW1 - SWITCH - CHKPT TAKEN                           * 18885018
+*            JCTDEVT - DEVICE TYPE CHKPT D.S.                         * 18890018
+*            JCTRSW2 - SWITCH - SYSCHK                                * 18895018
+*            JCTVOLSQ - VOLUME SEQUENCE NO CHKPT D.S.                 * 18900018
+*            JCTSMRBA - RBA OF SYS MSG DATA SET                  Y02076 18905002
+*********************************************************************** 18910018
+*                                                                     * 18915018
+         L     R4,JSCBSMLR-IEZJSCB(,R4) GET SYS MSG D/S RPL ADDR YM3988 18965002
+         USING IFGRPL,R4           ADDRESS RPL                   YM3988 18967002
+         MVC   JCTSMRBA(E8),RPLRBAR RBA OF MSG D/S TO JCT        YM3988 18969002
+         DROP  R4                  RPL ADDRESSABILITY            YM3988 18969802
+         ICM   R4,E7,JCTSMRBA+E5   BUMP THE LOGICAL RECORD NR BY YM5984 18969902
+         LA    R4,E1(,R4)          1 TO ACCOUNT FOR THE CHKPT    YM5984 18970402
+         STCM  R4,E7,JCTSMRBA+E5   MESSAGE ISSUED OUT OF S06C    YM5984 18970502
+         NI    JCTRSW2,AUTOREST    RESET AUTO RS INELIG BIT      Y02076 18970902
+         MVI   JCTCKIDT,SPACE      BLANK OUT CHK ID IN JCT       A32184 19020002
+         MVC   JCTCKID1(CKL),JCTCKIDT                            A32184 19070002
+         EX    R2,CERMVID          EX MOVE OF CHK ID TO JCT      A32184 19120002
+         MVC   JCTCKTTR(CKTTRL),TIOEJFCB                                20800017
+         OI    JCTRSW1,JCTCKFT     TURN ON CHKPT TAKEN BIT.             21600017
+         MVC   JCTDEVT(DEVTL),UCBTYP MOVE DEVICE TYPE INFO TO JCT.      22400017
+         NI    JCTRSW2,SYSCHKOF    TURN OFF POSSIBLE SYSCHK BIT         22500002
+         L     R8,DCBDEBAD         GET ADDR OF CHKPT DATA SET'S DEB.    22600017
+         DROP  R8                                                       22800017
+*                                                                     * 22806018
+*********************************************************************** 22812018
+*                                                                     * 22818018
+*        FOR BPAM CHKPT DS VOLSEQ NO IN JCT SET TO ONE.               * 22824018
+*        OTHERWISE VOL SEQ NO IS MOVED FROM DEB TO JCT                * 22830018
+*                                                                     * 22836018
+*********************************************************************** 22842018
+*                                                                     * 22848018
+         TM    CKFLAG1,CKBPAM      Q. CHKPT DATA SET OPENED FOR BPAM    22860017
+         BO    CERPVOL             YES-FILL IN JCTVOLSQ FIELD           22930017
+         TM    UCBTBYT3,UCB3TAPE   IS DATA SET ON MAGNETIC TAPE         23030018
+         BO    CERJCT1              IF SO, ACP25 HAS SET VLSEQ  YA00142 23200002
+         LA    RF,DAEXT            GET NO. OF BYTES PER DEVICE ENTRY.   23400002
+         XR    RE,RE               CLEAR REGISTER.                      23600017
+         XR    R1,R1               CLEAR REGISTER.                      23800017
+         IC    R1,DEBNMEXT(R8)     GET NUMBER OF EXTENTS.               24000017
+         MR    RE,R1               COMPUTE SIZE OF DEB DEVICE           24200017
+*                                  DEPENDENT SECTION.                   24400017
+CERCOMV  EQU   *                                                        24600017
+         AR    RF,R8               COMPUTE OFFSET TO VOL SEQ FIELD.     24800017
+         MVC   JCTVOLSQ(ONE),DEBBAS1(RF)     MOVE SEQ NO. TO JCT.       25000018
+CERJCT1  EQU   *                                                        25200017
+         LA    R7,INJMJCT          LOAD ADDR OF WRITE OUT AREA.         25400017
+*                                                                     * 25520018
+*********************************************************************** 25560018
+*                                                                     * 25600018
+*        WRITE JCT TO JOB QUEUE                                       * 25640018
+*                                                                     * 25680018
+*********************************************************************** 25720018
+*                                                                     * 25760018
+CERJCTW  EQU   *                                                        25800017
+         BAL   RA,CERQW            GO TO WRITE OUT JCT.                 26000017
+*                                                                     * 26200018
+*********************************************************************** 26400018
+*                                                                     * 26600018
+*        RESTORE CHKPT DCB SYNAD ADDR EXCECT FOR CHKPT CANCEL REQUEST * 26800018
+*                                                                     * 27000018
+*********************************************************************** 27200018
+*                                                                     * 27400018
+CERSYNR  EQU   *                                                        27600017
+         TM    CKFLAG1,CKCANCEL    WAS CANCEL REQUESTED.                27800017
+         BO    CERTURN             YES-SKIP CODE TO RESTORE SYNAD ADDR. 28000017
+         L     R8,CKDCBAD          GET ADDR OF CHKPT DCB.               28200017
+         USING IHADCB,R8           ADDRESS CHKPT DCB.                   28400017
+         MVC   SYNAD1(CKPARMAD-CKSYNAD1),CKSYNAD1                       28440018
+*                                  RESTORE SYNAD ADDR IN CHKPT DCB      28480018
+*                                                                     * 28520018
+*********************************************************************** 28560018
+*                                                                     * 28600018
+*        RESTORE CHKPT DCBBLKSIZE IF CHKPT SUPPLIED BLKSIZE           * 28640018
+*                                                                     * 28680018
+*********************************************************************** 28720018
+*                                                                     * 28760018
+CERTURN  EQU   *                                                        28800017
+CERCON2  EQU   *                                                        29340017
+         L     R8,CKDCBAD          ADDRESS CHKPT DCB                    29343017
+         MVC   DCBBLKSI(LBLKSIZ),CKDCBSI                                29345000
+*                                  RESTORE USER BLOCKSIZE               29347000
+         L     R2,CKTCBAD          ADDR TCB                             29350017
+*                                                                     * 29350218
+*********************************************************************** 29350418
+*                                                                     * 29350618
+*        FREEMAIN CHKPT WORK AREA (SUBPOOL 252 V=R SUBPOOL 253 V=V)   * 29350837
+*                                                                     * 29351018
+*********************************************************************** 29351218
+*                                                                     * 29351418
+CERFREWA EQU   *                                                        29358017
+         USING TCB,R2                                                   29360000
+         L     R0,CKWACL           SET UP FREEMAIN                      29370037
+         ICM   R0,HIORDER,SP253    INDICATE SP 253.            @ZA27494 29420037
+         LA    R1,CHKWA            PARAMETER REGISTERS                  29470037
+         TM    TCBFLGS6,TCBRV      IS THIS TASK V=R            @ZA27494 29520037
+         BNO   CONT                NO,LEAVE SP 253             @ZA27494 29570037
+         ICM   R0,HIORDER,SP252    YES,INDICATE SP 252         @ZA27494 29620037
+CONT     EQU   *                                               @ZA27494 29670037
+         L     R2,TCBRBP           ADDR CHKPT SVRB             @ZA27494 29720037
+         DROP  R2                                              @ZA27494 29770037
+         FREEMAIN R,LV=(0),A=(1)   FREE WORK AREA                       30000017
+*                                                                     * 30040018
+*********************************************************************** 30080018
+*                                                                     * 30120018
+*        SET FLAG IN PARMLST FOR MSG.MOD. TO CLOSE CHKPT D.S. IF      * 30160018
+*        CHKPT OPENED D.S.                                            * 30200018
+*********************************************************************** 30240018
+*                                                                     * 30280018
+*                                                                     * 30320018
+         TM    CERFLAG,CKOPEN      DID CHKPT OPEN DATA SET              30400017
+         BZ    CERRET              NO-RETURN TO USER                    30800017
+CERSTCLS EQU   *                                                        31100017
+         OI    CERDCBAD,CERMCLS    SET BIT TO HAVE MSG. MOD. CLOSE      31400017
+*                                  CHKPT DATA SET                       31700017
+*                                                                     * 31750018
+*********************************************************************** 31800018
+*                                                                     * 31850018
+*        IF CANCEL WAS REQUESTED RETURN TO CALLER VIA SVC 3, ELSE     * 31900018
+*        GO TO XCTL TO MSG.MOD.(IHJACP70)                             * 31950018
+*                                                                     * 32000018
+*********************************************************************** 32050018
+*                                                                     * 32100018
+CERRET   EQU   *                                                        32200017
+         TM    CERFLAG,CKCANCEL    WAS CANCEL REQUESTED                 32300017
+         BZ    CERMSGX             BRANCH IF NO TO MSG. MOD EXIT        32400017
+         LH    RF,CERRETCD         LOAD RETURN CODE                     32500017
+         SVC   3                   RETURN TO CALLING PROGRAM            32600017
+CERMSGX  EQU   *                                                        32700017
+         MVC   CERMSGMD(LMODNAME),CERMSGID   MOVE MOD.NAME TO XCTL PARM 32800018
+         LA    R7,CERMSGMD         ADDRESS OF MODULE NAME               33000017
+         ST    R7,CERXCTL          PUT IN PARM LIST FOR XCTL            33100017
+         LA    RF,CERXCTL                                               33200017
+         LR    R1,R9               PUT ADDRESS OF SVRB IN R1            33300017
+         XCTL  SF=(E,(15))         GO TO MESSAGE MODULE                 33400017
+*                                                                     * 34610018
+*********************************************************************** 34620018
+*                                                                     * 34630018
+*        SET MSG AND RET CODE IN PARMLST WHEN I/O ERROR OCCURS DURING * 34640018
+*        STOW AND THEN CONTINUE PROCESSING                            * 34650018
+**                          RETURN CODE  = 0C(HEX)                    * 34660018
+*                           MESSAGE CODE = 26(DEC)                    * 34670018
+*                                                                     * 34680018
+*********************************************************************** 34690018
+*                                                                     * 34700018
+CER10    EQU   *                                                        34800017
+         MVI   CERRETC1,CKIOERR    MOVE IN RETURN CODE                  35000018
+         LA    RA,CKERIO5          LOAD MESSAGE CODE                    35200017
+         STH   RA,CERMSGCD         PUT IN PAR AREA FOR MSG. MODULE      35400017
+         B     CERSKP2             CONTINUE PROCESSING                  35500018
+CERPVOL  EQU   *                                                        35660017
+         MVI   JCTVOLSQ,HEXONE     VOL.SEQ.NO IN JCT=1 FOR BPAM D.S.    35690018
+         B     CERJCT1             GO TO WRITE OUT JCT                  35700018
+*                                                                     * 35710018
+*********************************************************************** 35720018
+*                                                                     * 35730018
+*        INITIALIZES PARMLST TO MSG.MOD. WHEN ERROR OCCURRED BEFORE   * 35740018
+*        CHKPT GETMAIN'D FOR WORKAREA                                 * 35750018
+*                                                                     * 35760018
+*********************************************************************** 35770018
+*                                                                     * 35780018
+CERERCHK EQU   *                                                        35800017
+         USING HKPSECT,R5                                               35870017
+         LR    R9,R5               PUT ADDRESS OF SVRB IN R9            35940017
+         MVC   CERFLAG(LFLAG),HKPFLAG   MOVE FLAG TO COMMON AREA        36010018
+         L     R4,HKPTIOT          GET TIOT ADDRESS                     36080018
+         DROP  R3                                               ZA00617 36150002
+         USING TIOTSECT,R4                                              36220017
+         L     R8,HKPDCB           GET DCB ADDRESS                      36270018
+         LA    R8,ZERO(R8)         CLEAR HIGH ORDER BYTE                36320018
+         ST    R8,CERDCBAD         SAVE DCB ADDRESS FOR MSG. MOD.       36390017
+         MVC   CERJOBNM(LJOBNM),TIOCNJOB     MOVE JOBNAME TO MSG. PARMS 36440018
+         LTR   R8,R8               Q. IS THERE A DCB ADDRESS            36500017
+         BZ    CERMSGX             BRANCH IF NO TO MESSAGE MODULE       36570017
+         TM    DCBOFLGS,CKDCBOP    IS THE DCB OPENED                    36640017
+         BZ    CERMVDD             BRANCH IF NOT--GET DDNAME FROM DCB   36710017
+*                                  IF YES, GET DDNAME FROM TIOT         36780017
+         AH    R4,DCBTIOT          POINT TO TIOT ENTRY                  36850017
+         USING TIOELNGH,R4                                              36920017
+         MVC   CERDDNM(LDDNM),TIOEDDNM  MOVE DDNAME TO MESG. MOD. PARMS 36990018
+         TM    CERFLAG,HKPCLOSE    DID CHECKPOINT OPEN THE DATA SET     37060017
+         BO    CERSTCLS            BRANCH TO SET CLOSE BIT FOR MSG. MOD 37130017
+         B     CERMSGX             BRANCH TO GO TO MESSAGE MODULE       37200017
+CERMVDD  MVC   CERDDNM(LDDNM),DCBDDNAM  MOVE DDNAME TO MESSAGE PARMS.   37270018
+         B     CERMSGX             BRANCH TO GO TO MESSAGE MODULE       37340017
+         DROP  R4,R5                                                    37410017
+*                                                                     * 37420018
+*********************************************************************** 37430018
+*                                                                     * 37440018
+*        CHKPT CANCEL PROCESSING - IF A CHKPT HAS BEEN TAKEN DURING   * 37450018
+*        THIS STEP,CHKPT FIELDS IN JCT ARE ZERO'D OUT SO THAT IT WILL * 37460018
+*        APPEAR THAT A CHKPT HAS NOT BEEN TAKEN AND AN IMMEDIATE      * 37470018
+*        RESTART IS NOT POSSIBLE                                      * 37480018
+*                                                                     * 37490018
+*********************************************************************** 37500018
+*                                                                     * 37510018
+CERCANC  EQU   *                                                        37600017
+         TM    JCTRSW1,JCTCKFT     HAS A CHKPT BEEN TAKEN IN THIS STEP  37800017
+         BZ    CERCON2             NO-GO TO FREE WORK AREA              38000018
+CERZERO  EQU   *                                                        38200017
+         XC    JCTDEVT(LJCT),JCTDEVT    ZERO OUT JCT FIELDS.            38400018
+         XC    JCTCKTTR(CKTTRL),JCTCKTTR                                38600017
+         XC    JCTCKIDL(TWO),JCTCKIDL                                   38800018
+         MVI   JCTCKIDT,SPACE      BLANK OUT CHECKID FIELD IN JCT.      39000018
+         MVC   JCTCKID1(CKL),JCTCKIDT                                   39200018
+         XI    JCTRSW1,JCTCKFT     TURN OFF CHKPT TAKEN BIT.            39400017
+         B     CERFDCAN            GO TO WRITE OUT JCT.          YM5773 39600002
+*                                                                     * 39610018
+*********************************************************************** 39620018
+*                                                                     * 39630018
+*        SET MESSAGE AND RETURN CODE IN PARMLST FOR MSG.MOD WHEN      * 39640018
+*        STOW MACRO FAILED BECAUSE DIRECTORY OF CHKPT BPAM D.S.       * 39650018
+*        RAN OUT OF SPACE                                             * 39660018
+*                             RETURN CODE  = 08                       * 39670018
+*                             MESSAGE CODE = 17(DEC)                  * 39680018
+*                                                                     * 39690018
+*********************************************************************** 39700018
+*                                                                     * 39710018
+CER0C    EQU   *                                                        39800017
+         MVI   CERRETC1,CKPGMERR   MOVE RETURN CODE TO MSG. PARMS       40000018
+         LA    RA,CKERPG17         GET MSG. CODE                        40200017
+         STH   RA,CERMSGCD         PUT IN MSG. PARMS                    40400017
+         B     CERSKP2             RETURN TO MAIN-LINE CODE AFTER STOW  40440018
+*                                                                     * 40480018
+*********************************************************************** 40520018
+*                                                                     * 40560018
+*        SUBROUTINE TO GET SPACE FOR QMNGRIO PARM LIST & WORK AREA    * 40600002
+*        THEN WRITE JCT TO SWA VIA QMNGRIO                       Y02076 40640002
+*                                                                     * 40680018
+*********************************************************************** 40720018
+*                                                                     * 40760018
+CERQW    EQU   *                        WRITE JCT TO SWA         Y02076 40800002
+         ICM   R0,ADDRBYTS,QMNGWALN     INSERT LNGTH OF WA IN R0 Y02076 40810002
+         ICM   R0,HIORDER,SP253         PUT SUBPOOL NO. IN R0    Y02076 40820002
+         ST    R0,CKERAS02              SAVE GETMAIN PARM REG    Y02076 40822002
+         GETMAIN R,LV=(R0)              R1 WILL HAVE ADDR OF WA  Y02076 40830002
+         ST    R1,CKERAS01              SAVE PARM LIST ADDR      Y02076 40832002
+         USING QMIOP,R1                                          Y02076 40840002
+         XC    QMITCBAD(E24),QMITCBAD   CLEAR QMNGRIO PARM LIST  Y02076 40840402
+         L     R0,SVAJCTA               GET SVA ADDR OF JCT      Y02076 40842002
+         IC    R0,ZEROBYTE              CLEAR SVA LO ORDER BYTE  Y02076 40844002
+         ST    R0,QMIDSKAD              ST JCT SVA ADR IN P.L.   Y02076 40846002
+         LA    R0,E24                   GET OFFSET TO WORK AREA  Y02076 40848002
+         AR    R0,R1                    CALC ADDR OF WORK AREA   Y02076 40848402
+         ST    R0,QMIWRKAD              ST ADDR OF WA IN P.L.    Y02076 40848802
+         LA    R0,INJMJCT               GET CORE ADDR OF JCT     Y02076 40849202
+         ST    R0,QMIRECAD              ST ADDR IN P.L.          Y02076 40849602
+         L     R0,CKTCBAD               GET ADDR OF TCB          Y02076 40879602
+         ST    R0,QMITCBAD              STORE IN QMNGRIO P.LIST  Y02076 40929602
+         LA    R0,E176                  GET LENGTH OF JCT        Y02076 40939602
+         STH   R0,QMIRECL               STORE IN QMNGRIO P.LIST  Y02076 40939702
+         MVI   QMIFLAGS,QMIOWRTE        SET FLAGS TO 'WRITE'     Y02076 40940002
+         QMNGRIO                        WRITE JCT TO SWA         Y02076 40970002
+         LTR   RF,RF                    TEST IF WRITE WAS GOOD   Y02076 40980002
+         BNZ   CERIO                    BR TO SET CODES IF BAD   Y02076 40990002
+         L     R1,CKERAS01              GET ADR OF QMNGR P.L.    Y02076 40994002
+         L     R0,CKERAS02              GETMAIN PARM REG         Y02076 40996002
+         FREEMAIN  R,LV=(R0),A=(R1)     FREE UP P.L. & WORK A.   Y02076 40998002
+         BR    RA                       RETURN TO CALLER.               41000002
+CERIO    EQU   *                        JCT WRITE ERROR          Y02076 41050002
+         L     R1,CKERAS01              GET ADR OF QMNGR P.L.    Y02076 41100002
+         L     R0,CKERAS02              GETMAIN PARM REG         Y02076 41150002
+         FREEMAIN  R,LV=(R0),A=(R1)     FREE UP P.L. & WORK A.   Y02076 41200002
+         CLI   CERMSGCD,E0              PREVIOUS ERR OCCUR       Y02076 41300002
+         BE    CERJCTER                 BRANCH IF NO             Y02076 41350002
+         CLI   CERRETC1,CKPSBERR        POSSIBLE ERROR           Y02076 41400002
+         BNE   CERSYNR                  BRANCH IF NO             Y02076 41450002
+CERJCTER MVI   CERMSGCD+E1,ERR25        SET JCT ERR CODE 25      Y02076 41500002
+         MVI   CERMSGCD,SHELL2          SET MSG SHELL CODE 2     Y02076 41550002
+         MVI   CERRETC1,CKIOERR         SET RET CODE 0C          Y02076 41600002
+         B     CERSYNR                  BR TO FREE WORK AREA     Y02076 41650002
+*                                                                     * 45650018
+*        EXECUTED INSTRUCTION                                         * 47650018
+*                                                                     * 49650018
+CERMVID  MVC   JCTCKIDT(ONE),CERCHKID   MOVE CHECKID TO JCT.     VS4686 51650002
+CERMOVID MVC   CERCHKID(ONE),ZERO(R4)   EXECUTED INSTRUCTION            53650018
+*                                                                     * 54250018
+*        CONSTANTS                                                    * 54850018
+*                                                                     * 55450018
+CERMSGID DC    CL8'IGC0S06C'       MODULE NAME FOR XCTL PARMLST         56050018
+         DS    0F                                                       56800017
+SP252    DC    X'FC000000'         SPECIFY SUBPOOL 252 FOR V=R @ZA27494 56880037
+SP253    DC    X'FD000000'         SPECIFY SUBPOOL 253 FOR V=V          56883037
+QMNGWALN DC    AL3(280)                256 BYT QMNGRIO WA+24(PL) Y02076 56890002
+VAMSG204 DC    H'204'                   NO AUTO RSTRT-CURR^CHKPT Y02076 56892002
+VAMSG205 DC    H'205'                   NO AUTO RSTRT-ANY CHKPT  Y02076 56894002
+ZEROBYTE DC    X'00'                    CLEAR LO BYTE SVA ADR    Y02076 56896002
+ADDRBYTS EQU   7                        ADDRESS BYTES MASK       Y02076 56900002
+HIORDER  EQU   8                        HI ORDER BYTE MASK       Y02076 56910002
+AUTOREST EQU   X'BF'                    RESET AUTO RST INELIG    Y02076 56920002
+SYSCHKOF EQU   X'7F'                    TURN OFF SYSCHK BIT      Y02076 56924002
+ERR25    EQU   25                       JCT WRITE ERROR CODE     Y02076 56926002
+SHELL2   EQU   2                        MSG SHELL 2              Y02076 56928002
+E0       EQU   0                        CONSTANT 0               Y02076 56928402
+E1       EQU   1                        CONSTANT 1               Y02076 56928802
+E2       EQU   2                        CONSTANT 2               Y02076 56929202
+E3       EQU   3                        CONSTANT 3               Y02076 56929602
+E4       EQU   4                        CONSTANT 4               Y02076 56929702
+E5       EQU   5                        CONSTANT 5               Y02076 56929802
+E6       EQU   6                        CONSTANT 6               Y02076 56929902
+E7       EQU   7                        CONSTANT 7               Y02076 56933202
+E8       EQU   8                        CONSTANT 8               Y02076 56935202
+E9       EQU   9                        CONSTANT 9               Y02076 56935602
+E10      EQU   10                       CONSTANT 10              Y02076 56936002
+E24      EQU   24                       CONSTANT 24              Y02076 56936402
+E176     EQU   176                      CONSTANT 176             Y02076 56936502
+VAMERR1  EQU   4                        WIJOURN ERR RET 4       ZA00617 56936602
+ERRMSGC2 EQU   205                      VIO JOURNAL ERR 205     ZA00617 56939902
+VAMSGTYP EQU   2                        MSG SHELL TYPE CODE     ZA00617 56941902
+ERRMSGC1 EQU   204                      VIO JOURNAL ERR 204     ZA00617 56942302
+*                                                                     * 56943402
+*        MAINTENANCE SPACE                                            * 56946702
+*                                                                     * 56950000
+PATCH    DC    XL((*-IGC0Q06C)/20)'00'   FIVE PERCENT MAINTENANCE SPACE 56952000
+         IEFQMIOP                                                Y02076 56952402
+         IFGRPL                                                  Y02076 56952802
+         IEFJESCT                                                Y02076 56953602
+         IEZJSCB                                                 Y02076 56953702
+*                                                                     * 56954000
+*                                                                     * 56960018
+*        MAPPING OF PARAMETER LIST FOR CHKPT                            57040018
+*                                                                     * 57120018
+CHKPTPML DSECT                                                          57200018
+DCBADDR  DS    0F                                                       57280018
+FLAGBYTE DS    CL1       INDICATES USER/SYS-GEN/SSS-GEN AND RETURN ID   57360018
+DCBAD    DS    CL3       CHKPT D.S. DCB                                 57440018
+IDADDR   DS    0F                                                       57520018
+LUSERID  DS    CL1       LENGTH USER CHKID/RETURN SYSTEM-GEN CHKID      57600018
+CHKIDADR DS    CL3       ADDR OF CHECKID                                57680018
+CKCHR    EQU   128  INDICATES CHKPT WROTE OUT CHR                       57800017
+*                                                                       57820018
+*        MAPPING OF CHKPT SVRB AND EXTENDED SAVEAREA USED TO PASS       57840018
+*        INFORMATION TO EXIT MODULE ON ERROR CONDITIONS.                57860018
+*                                                                       57880018
+HKPSECT  DSECT                                                          57900017
+HKPSVRB  DS    24F       BASIC SECTION OF SVRB                          57980018
+HKPGML2  DS    F         SAVE AREA FOR ERROR RETURN AND MESSAGE CODES   58060018
+HKPGML   DS    F         N/A                                            58140018
+HKPGMLAD DS    2F        N/A                                            58220018
+HKPGLIST DS    2F        N/A                                            58300018
+         DS    F         N/A                                            58380018
+HKPTIOTL DS    H         LENGTH OF TIOT                                 58460018
+HKPBUFL  DS    H         N/A                                            58540018
+HKPTIOT  DS    0F                                                       58620018
+HKPFLAG  DS    1C        FLAG BYTE                                      58700018
+HKPCLOSE EQU   X'10'     INDICATES EXIT RTN MUST CLOSE CHKPT D.S.       58780018
+HKPTIOAD DS    3C        ADDRESS OF TIOT                                58860018
+HKPDCB   DS    0F                                                       58940018
+HKPSP    DS    CL1       N/A                                            59020018
+HKPDCBAD DS    3C        ADDRESS CHKPT DCB                              59100018
+HKPSAVRN DS    F         N/A                                            59180018
+*                                                                       59260018
+*        ALTERNATE MAPPING OF CHKPT SVRB AND EXTENDED SAVE AREA USED    59340018
+*        TO PASS INFORMATION TO MESSAGE MODULE TO BUILD WTO MESSAGE     59420018
+*                                                                       59500018
+CERSECT  DSECT                                                          59580018
+CERSVRB  DS    24F       BASIC SECTION OF SVRB                          59660018
+CERRETCD DS    H         RETURN CODE                                    59740018
+CERMSGCD DS    H         MESSAGE CODE                                   59820018
+CERMSGMD DS    2F        MODULE NAME FOR XCTL PARAMETER LIST            59900018
+CERXCTL  DS    F         POINTER TO MODULE NAME FOR XCLL PARMLST        59980018
+CERFLAG  EQU   CERXCTL   FLAG BYTE FROM CHKWA 'CKFLAG1' FOR COMMON      60060018
+*                        ADDRESSING ON BOTH ERROR AND NORMAL ENTRY      60140018
+CERJOBNM DS    2F        JOB NAME            FILLED WHEN ERROR BEFORE   60220018
+CERCHKID EQU   CERJOBNM  OTHERWISE CONTAINS CHECKID                     60300018
+CERDDNM  DS    2F        CHKPT D.S. DDNAME   CHR WAS WRITTEN            60380018
+CERTIOAD DS    F         ADDR OF TIOT                                   60460018
+CERDCBAD DS    F         ADDR OF CHKPT DCB                              60540018
+CERMCLS  EQU   X'80'                                                    60700017
+         IEEVCHWA VER=3                USE AOS2 VERSION OF WA           60850000
+         CNOP  2,4                                                      61000017
+CERSTOW  DS    6H    STOW PARAMETER LIST                                61200017
+CERCLOSE DS    F    CLOSE'S PARAMETER LIST                              61400017
+CERAD    DS    F                                                        61600017
+         DCBD  DSORG=(BS,PO),DEVD=(DA,TA)                               65400017
+TIOTSECT DSECT                                                          65600017
+         IEFTIOT1                                                       65800017
+UCBSECT  DSECT                                                          66000017
+         IEFUCBOB                                                       66200017
+CVTSECT  DSECT                                                          66400000
+         CVT                                                            66450000
+         IKJTCB                                                         66500000
+NOID     EQU   X'80'     SIGNIFIES LAST WORD IN PARM LIST.              66600017
+CHRWRTTN EQU   X'40'               CHR-WRITTEN FLAG              YM6511 66650002
+CLOSEOPT EQU   128  OPTION BYTE FOR CLOSE'S PARM LIST.                  66800017
+TAPE     EQU   X'80'     UCBTYP FIELD-INDICATES TAPE                    67000017
+DEBBASIC EQU   32   LENGTH OF DEB'S BASIC SECTION.                      67200017
+DEBNMEXT EQU   16   OFFSET IN DEB TO NUMBER-OF-EXTENTS FIELD.           67400017
+TAEXT    EQU   4    LENGTH DEB DEVICE DEPENDENT SECTION FOR TAPE.       67600017
+DAEXT    EQU   16   LENGTH DEB DEVICE DEPENDENT SECTION FOR DIR. ACC.   67800017
+DEVTL    EQU   4    LENGTH OF UCBTYP FIELD IN UCB.                      68000017
+CKTTRL   EQU   3    LENGTH OF JCTCKTTR FIELD IN JCT.                    68200017
+PCPSP    EQU   254                                                      68400017
+GR       EQU   60   OFFSET TO REG 15 IN SVRB REG SAVE AREA.             68600017
+GR15     EQU   62   RBEXSAVE FIELD-OFFSET LOW ORDER 1/2 WORD IN REG 15. 68800017
+IOCC     EQU   X'7F' SUCCESSFUL I/O COMPLETION CODE                     69000017
+DDL      EQU   8     LENGTH OF TIOEDDNM FIELD                           69200017
+IDL      EQU   8    LENGTH OF CHECKID FOR BPAM                          69400017
+CKL      EQU   15   LENGTH OF CHKID FIELD IN JCT MINUS ONE              69600017
+CKMSG1   EQU   32    INDICATES WTO MSG-NOT TAKEN                        69800017
+CKMSG2   EQU   64                                                       70000017
+CKERPG17 EQU   X'0311'                                                  70200017
+CKERIO5  EQU   X'031A'             I/O ERROR ON STOW,MSG CODE = 26      70400017
+CKERIO6  EQU   X'02'                                                    70600017
+CKDCBOP  EQU   X'10'                                                    70800017
+CKSPBKSZ EQU   8                                                        71000017
+*                                                                       71004018
+*        DECIMAL CONSTANTS, POSITIONS, LENGTH-CODES                     71008018
+*                                                                       71012018
+ZERO     EQU   0              DECIMAL - 0                               71016018
+ONE      EQU   1                      - 1                               71020018
+TWO      EQU   2                      - 2                               71024018
+FOUR     EQU   4                      - 4                               71028018
+DEC56    EQU   56                     - 56                              71032018
+SPACE    EQU   C' '           BLANK                                     71036018
+*                                                                       71040018
+LENGTH1  EQU   7                                                        71044018
+*                                                                       71048018
+CERCKID1 EQU   CERCHKID+1                                               71052018
+CKRETCD1 EQU   CKRETCOD+1                                               71056018
+CERSTOW8 EQU   CERSTOW+8                                                71060018
+TIOTUCB  EQU   TIOESTTB            UCB POINTER IN TIOT                  71064018
+JCTCKID1 EQU   JCTCKIDT+1                                               71068018
+CERRETC1 EQU   CERRETCD+1                                               71072018
+DEBBAS1  EQU   DEBBASIC+1                                               71076018
+SYNAD1   EQU   DCBSYNAD+1                                               71080018
+CKSYNAD1 EQU   CKSYNAD+1                                                71084018
+TIOTADD  EQU   HKPTIOAD-1                                               71088018
+DCBADD   EQU   HKPDCBAD-1                                               71092018
+SVAJCTA  EQU   CKERAS00                 AREA FOR SAVING JCT SVA  Y02076 71094002
+*                                                                       71096018
+LCODES   EQU   4         LENGTH OF RETURN AND MESSAGE CODE              71100018
+LFLAG    EQU   1                   FLAGS                                71104018
+LJOBNM   EQU   8                   JOBNAME                              71108018
+LDDNM    EQU   8                   DDNAME                               71112018
+LCHKID   EQU   15                  CHECKID                              71116018
+LJCTMB   EQU   8                   JCT MBBCCHHR ADDRESS                 71120018
+LSYNAD   EQU   3                   SYNAD                                71124018
+LBLKSIZ  EQU   2                   BLOCKSIZE                            71128018
+LMODNAME EQU   8                   MODULE NAME                          71132018
+LJCT     EQU   4                   JCT                                  71136018
+PERSUB   EQU   4         CONSTANT USED INSHIFT INSTR(= MULTIPLY BY 16)  71140018
+LTTR     EQU   4                   TTR                                  71144018
+*                                                                       71148018
+*        HEXADECIMAL CONSTANTS (MASKS)                                  71152018
+*                                                                       71156018
+HEXZERO  EQU   X'00'               HEXADECIMAL - 0                      71160018
+HEXONE   EQU   X'01'                           - 1                      71164018
+MAINUCB  EQU   X'FF'               UCB ID FOR MAIN UCB                  71168018
+ END                                                                    71200017

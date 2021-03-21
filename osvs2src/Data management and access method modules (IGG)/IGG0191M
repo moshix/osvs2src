@@ -1,0 +1,634 @@
+ TITLE   'IGG0191M - OPEN EXECUTOR, BSAM LOAD MODE, TRK OVERFLOW'       00020402
+IGG0191M CSECT                                                          00030402
+*                                                                     * 00032002
+*MODULE NAME - IGG0191M                                               * 00034002
+*                                                                     * 00036002
+*DESCRIPTIVE NAME - BDAM CREATE OPEN EXECUTOR FOR TRACK OVERFLOW      * 00036402
+*                                                                     * 00036802
+*COPYRIGHT - NONE                                                     * 00036902
+*                                                                     * 00038202
+*CHANGE ACTIVITY                                                      * 00040202
+*                                                                     * 00040602
+*          RELEASE 19 DELETIONS/CHANGES                                 00040702
+*1351000221-000400,023830-023950                                 A25961 00040802
+*          RELEASE 20 DELETIONS/CHANGES                                 00040902
+*0982014800,015600,016000-016200,017400,022400-022600,026800-    S20201 00042202
+*0982027000,028000-028200,029800-030400,032200-032400,035200,    S20201 00043502
+*0982035800,036200-036400,036800-037600,038400-039000,039800-    S20201 00044802
+*0982040000,040600-040800,041200,041800-042000,044400-046200,    S20201 00046102
+*0982047600,049200,062200                                        S20201 00047402
+*          RELEASE VS2-2 DELETIONS/CHANGES                              00057402
+*037020,058800,060900                                            Y02072 00067402
+*                                                                YM3029 00077402
+*                                                                YM2886 00079402
+*016000-016200,017200-017400                                     YM7300 00079802
+*          RELEASE VS2-3 DELETIONS/CHANGES                              00079903
+*                                                              @Z30TSMI 00080003
+*STATUS CHANGE LEVEL 005                                                00100002
+*                                                                       00110002
+*FUNCTIONS- THIS ROUTINE IS GIVEN CONTROL FOLLOWING IGG0191L TO,        00120000
+*    1. INITIALIZE IOBS AND CONSTRUCT ATTACHED CHANNEL PROGRAMS,        00140000
+*    2. CONSTRUCT A COMMON SEQUENCE OF CCWS TO ERASE TRACKS WHICH MUST  00160000
+*       BE SKIPPED OVER AT THE END OF AN EXTENT                         00180002
+*    3. COPY DCB BACK INTO USER CORE - (AN AUDIT TRAIL BIT WILL BE      00190002
+*       SET IN THE OPEN WORKAREA TO INDICATE THAT THE DCB WAS           00192002
+*       COPIED BACK. THIS BIT WILL BE INTERROGATED BY THE FORCE         00194002
+*       CLOSE EXECUTOR, SHOULD AN ABEND OCCUR DURING OPEN PRO-          00196002
+*       CESSING. IF THIS BIT IS ON THE FORCE CLOSE EXECUTOR WILL        00198002
+*       GIVE CONTROL TO NORMAL CLOSE EXECUTORS.)                        00198402
+*                                                                       00200000
+*ENTRY POINT- ENTRY IS TO THE FIRST BYTE OF CODE BY A XCTL ISSUED BY    00220000
+*    THE PREVIOUS EXECUTOR.                                             00240000
+*                                                                       00260000
+*INPUT- REGISTERS 5,6,7,8 HAVE BEEN POSITIONED AS FOLLOWS,              00280000
+*    5 = BEGINNING OF THE OPEN PARAMETER LIST                           00300000
+*    6 = BEGINNING OF THE WHERE-TO-GO TABLE  (WTG)                      00320000
+*    7 = CURRENT ENTRY IN THE PARAMETER LIST                            00340000
+*    8 = CURRENT ENTRY IN THE WTG TABLE                                 00360000
+*                                                                       00380000
+*OUTPUT- THE SPECIFIED NUMBER OF IOB-CHANNEL PROGRAMS WILL BE LINKED TO 00400000
+*    THE DCB (DCBIOBA), A SEQUENCE OF ERASE CCWS WILL BE LINKED TO THE  00420000
+*    DCB (DCBEOBW) IF IT IS NEEDED (KEY LENGTH + DATA LENGTH EXCEEDS    00440000
+*    TRACK LENGTH).                                                     00460000
+*                                                                       00480000
+*EXTERNAL ROUTINES-                                                     00500000
+*                                                                       00520000
+*EXIT- AT THE INSTRUCTION LABELED 'XCTLRTN', THE PARAMETERS FOR XCTL    00540000
+*    ARE SET UP AND XCTL ISSUED FOR THE NEXT NON-ZERO ENTRY IN THE      00560000
+*    WTG TABLE. FROM THIS EXECUTOR CONTROL WILL BE TRANSFERRED TO       00580002
+*    IGG0190S, THE LAST LOAD OF COMMON OPEN.                            00590002
+*                                                                       00600000
+*TABLES/WORK AREAS-                                                     00620000
+*    1. WHERE-TO-GO TABLE IS CONSTRUCTED BY AN INITIAL OPEN ROUTINE     00640000
+*       AND CONSISTS OF, 2 BYTE ID OF THE FIRST EXECUTOR FOR THIS DCB   00660002
+*                        3 BYTE TTR OF THAT EXECUTOR                    00680000
+*                        3 BYTE ADDRESS OF A WORK AREA FOR THIS DCB     00700000
+*    2. CORRESPONDING TO EACH ENTRY IN THE WTG TABLE IS AN ENTRY IN A   00720000
+*       PARAMETER LIST,  1 BYTE ATTRIBUTE (INPUT, OUTPUT, UPDATE)       00740002
+*                        3 BYTE DCB ADDRESS                             00760000
+*                                                                       00780000
+*ATTRIBUTES- THIS ROUTINE IS REENTRANT, EXECUTED ENABLED, PRIVILEGED.   00800002
+*    IT EXECUTES IN DATA MANAGEMENT KEY FOR ALL BUT IOB INITIALIZING    00810002
+*    WHICH IS EXECUTED IN USER KEY.                                     00810402
+         EJECT                                                          00820000
+*                                                                       00840000
+*                                                                       00860000
+*   REGISTER USAGE                                                      00880000
+*                                                                       00900000
+         USING STEPONE,RBASE                                            00920000
+         USING DEBBASIC,RDEB                                            00940002
+         USING IHADCB,RDCB                                              00960000
+         USING FORCORE,RCORE                                     Y01021 00970000
+         USING WTG,RWTG                                                 00972003
+         USING WTGENTRY,RWTGC                                           00974003
+*                                                                       00980000
+*                                                                       01000000
+RE       EQU   0         WORK/PARAMETER REGISTER                        01020000
+R0       EQU   0         SAVE REG FOR IECRES                     Y02072 01030002
+RF       EQU   1         WORK/PARAMETER REGISTER                        01040000
+RDCB     EQU   2         DCB ADDRESS                                    01060000
+RBASE    EQU   3         BASE FOR THIS MODULE                           01080000
+RCORE    EQU   4         DCB WORK AREA ADDRESS                          01100000
+RPAR     EQU   5         POINTER TO THE PARAMETER LIST                  01120000
+RWTG     EQU   6         POINTER TO THE WHERE-TO-GO TABLE               01140000
+RPARC    EQU   7         CURRENT ENTRY IN PARAMETER LIST                01160000
+RWTGC    EQU   8         CURRENT ENTRY IN WHERE-TO-GO TABLE             01180000
+RTIOT    EQU   9         TIOT ADDRESS                                   01200000
+RUCB     EQU   10        UCB ADDRESS                                    01220000
+RDEB     EQU   11        DEB ADDRESS                                    01240000
+RB       EQU   12        WORK REGISTER                                  01260000
+RC       EQU   13        WORK REGISTER                                  01280000
+RD       EQU   14        WORK REGISTER                                  01300000
+RJ       EQU   15        WORK/PARAMETER REGISTER                        01320000
+R15      EQU   15        SAVE REG FOR IECRES                     Y02072 01330002
+*                                                                       01340000
+*                                                                       01360000
+*                                                                       01380000
+         BALR  RBASE,0                 ESTABLISH BASE FOR THIS MODULE   01400000
+STEPONE  L     RDCB,0(0,RPARC)         LOAD DCB ADDRESS                 01420000
+         L     RCORE,4(0,RWTGC)         LOAD ADDRESS OF DCB WORK AREA   01440002
+         L     RDEB,DCBDEBAD            LOAD DEB ADDRESS FROM DCB       01460002
+         LH    RJ,DCBOFFSR              LOAD TOTAL LAST RECORD   S20201 01470020
+*                                       SIZE                     S20201 01480020
+         SR    RF,RF                                                    01500000
+COUNTSEG EQU   *                                                        01520000
+         LA    RF,1(0,RF)               ADD ONE TO SEGMENT COUNT        01540002
+         SH    RJ,DCBTRBAL              SUBTRACT TRACK LENGTH    S20201 01550020
+*                                       FROM                     S20201 01560020
+         BP    COUNTSEG                 RECORD REMAINDER. FITS BRANCH   01580002
+         LA    RB,DEBBASND              LOAD ADDR TO DEV DEP     Y02072 01630002
+*                                       SECTION OF THE DEB       Y02072 01640002
+         USING DEBDASD,RB               ESTABLISH BASE FOR DEV   Y02072 01650002
+*                                       DEPENDENT DEB SECTION    Y02072 01652002
+COMPARE  EQU   *                                                        01660000
+         CH    RF,DEBNMTRK              WILL ONE RECORD FIT IN   Y02072 01680002
+         BH    ABENDNRC                 EXTENT. NO, ABEND               01700002
+         DROP  RB                                                Y02072 01750002
+*                                                                       01760000
+*                                                                       01780000
+*   INITIALIZE THE IOBS AND ATTACH A CHANNEL PROGRAM TO EACH.           01800000
+*                                                                       01820000
+         MODESET   KEYADDR=DXUKEY,WORKREG=1  CHANGE TO USER KEY  Y02072 01830002
+*                                                                       01832002
+         USING IOBBSAMN,RF              ESTABLISH IOB BASE              01840002
+         L     RF,DCBIOBA               LOAD START OF IOB AREA AS IOB 1 01860002
+         OI    IOBNFLG1,IOBFIRST        MARK IOB AS FIRST               01880002
+         L     RE,IOBSTART              GET SECTOR ADDRESS              01890002
+*                                                                       01900000
+FILLIOB  MVC   IOBDNRCF+5(1),DCBKEYLE  PUT KEY LENGTH IN FIRST COUNT    01920000
+         L     RB,DXUDCBAD              GET USERS DCB ADDR       Y02072 01970002
+         LA    RB,0(RB)                 ZERO TOP BYTE            Y02072 01972002
+         ST    RB,IOBDCBPT              STORE DCB ADDR IN IOB    Y02072 01974002
+         SR    RB,RB                    CLEAR SEGMENT COUNTER           01980002
+         LA    RC,IOBDNRCF              POSITION CCW INDEX OVER COUNTS  02000002
+         LR    RD,RC                    SAVE POINTER TO CURRENT COUNTS  02020002
+         OI    IOBNFLG1,IOBWRITE        MARK IOB AS A WRITE IOB         02040002
+*                                                                       02060000
+BYPASSID LA    RC,24(0,RC)                                              02080000
+         LA    RB,1(0,RB)              ADD 1 TO SEGMENT COUNTER         02100000
+         EX    RB,CLICHK               ARE ALL COUNT FIELDS BYPASSED    02120000
+         BC    7,BYPASSID               NO, LOOP                        02140000
+*                                                                       02160000
+*      RC CONTAINS CCW 1 ADDRESS                                        02180002
+*                                                                       02190002
+         ST    RC,IOBSTART              START OF CHANNEL PROGRAM Y02072 02200002
+         LA    RB,1                     SET SEGMENT COUNTER             02220002
+         TM    JFCBMASK+D6,NONCARN      IS IT RECORD READY       S20201 02227020
+         BO    NOTCARN1                 NO, THEN FORGET RPS      S20201 02234020
+         BAL   RJ,CARNCCW               BRANCH TO INSERT RPS CCW S20201 02241020
+         AH    RE,CONST1                POINT TO SECTOR=0        Y02072 02243002
+NOTCARN1 EQU   *                                                 S20201 02255020
+         LA    RJ,IOBCC                 CONSTRUCT INITIAL SRCH   Y02072 02262002
+         ST    RJ,D0(RE,RC)             CCW ADDRESS AND          S20201 02269002
+         MVI   0(RC),SCHIDEQ            OP-CODE                         02280000
+*                                                                       02300000
+BLDSEGMT EQU   *                                                        02320000
+         ST    RC,8(0,RC)               STORE TIC ADDRESS               02340002
+         MVC   4(5,RC),CCHN5TIC         AND MOVE SEARCH FLAGS,COUNT,TIC 02360000
+*                                       OP-CODE.                        02380000
+         EX    RB,CLICHK                IDENTIFY LAST SEQUENCE          02400002
+         BNE   *+8                      OF CCWS                         02420000
+         OI    13(RC),1                                                 02440018
+         ST    RD,16(0,RC)              CONSTRUCT A WRITE               02460002
+         MVI   16(RC),WRTCKD            COUNT-KEY-DATA CCW              02480000
+         MVI   20(RC),DCHN                                              02500000
+         MVI   23(RC),8                 MV COUNT FIELD INTO CCW         02520002
+*                                                                       02540000
+         LA    RC,32(0,RC)              INCREMENT CCW INDEX TO SRCH.CCW 02560002
+         TM    JFCBMASK+D6,NONCARN      IS  RPS FEATURED         S20201 02562020
+         BO    TSTWTCHK                 IF NOT, GO CHECK FOR WRT S20201 02564020
+*                                       CHK                      S20201 02566020
+         LA    RC,CARN8(RE,RC)          SKIP OVER TIC            S20201 02568020
+         BAL   RJ,CARNCCW               NOW GO TO INSERT SET     S20201 02570020
+*                                       SECTOR                   S20201 02572020
+         B     NOTIC                    BRANCH AND CONTINUE C.P. S20201 02574020
+TSTWTCHK EQU   *                                                 S20201 02576020
+         TM    DCBOPTCD,WRTCHK          IF WRITE CHECK IS SPECIFIED     02580002
+         BC    8,NOTIC                                                  02600000
+         LA    RC,8(0,RC)               LEAVE ROOM FOR A TIC CCW        02620000
+*                                                                       02640000
+NOTIC    EQU   *                                                        02660000
+         LA    RJ,CARN8(RE,RD)          DEVELOPE AND ST R0 CNT   S20201 02680020
+         ST    RJ,D0(RE,RC)             ADDR IN SCH CCW          S20201 02700002
+         MVI   0(RC),SCHIDEQ            MOVE SEARCH OP-CODE             02720002
+         ST    RC,8(0,RC)               STORE SEARCH CCW ADDRESS AS TIC 02740002
+         MVC   4(5,RC),CCHN5TIC         ADDRESS, MOVE FLAGS, COUNT, TIC 02760000
+*                                       OP-CODE.                        02780000
+         LA    RJ,CARN16(RE,RD)         CONSTRUCT CCW TO WRT R0  S20201 02800020
+         ST    RJ,CARN16(RE,RC)         DATA FIELD               S20201 02820002
+         MVI   16(RC),WRTD                                              02840000
+         MVI   23(RC),8                                                 02860000
+*                                                                       02880000
+*                                                                       02900000
+         TM    DCBOPTCD,WRTCHK          IF WRITE CHECK IS SPECIFIED     02920002
+         BC    8,NORDR0                                                 02940000
+         MVI   20(RC),CCHN              COMMAND CHAIN WRITE R0 CCW      02960002
+         LA    RC,CARN24(RE,RC)         INCREMENT TO NEXT CCW    S20201 02962020
+         TM    JFCBMASK+D6,NONCARN      DOES DEVICE FEATURE RPS  S20201 02964020
+         BO    NOTCARN4                 NO, DONT PUT IN SET      S20201 02966020
+*                                       SECTOR CCW               S20201 02968020
+         BAL   RJ,CARNCCW               BRANCH & PUT IN SET      S20201 02970020
+*                                       SECTOR CCW               S20201 02972020
+*                                                                       02974020
+NOTCARN4 EQU   *                                                 S20201 02976020
+         MVI   D0(RC),RDR0              BLD A READ R0 CCW TO     S20201 02986020
+         MVI   HALFCCW(RC),SILI+SKIP    VERIFY CAPACITY RECORD   S20201 02996002
+         MVI   D7(RC),CNT16             INSERT CNT FIELD         S20201 03006020
+         LA    RC,ONECCW(RE,RC)         JUMP OVER RD R0 CCW      S20201 03016020
+         B     NORDRO1                  RC HAS ALREADY BEEN      S20201 03026020
+*                                       UPDATED                  S20201 03036020
+*                                                                       03060000
+NORDR0   EQU   *                                                        03080000
+         LA    RC,24(0,RC)              INCREMENT CCW INDEX TO NEXT CCW 03100002
+NORDRO1  EQU   *                                                 S20201 03106020
+*                                                                       03112020
+         EX    RB,CLICHK                TEST- ALL SEGMENTS BUILT        03120000
+         BC    8,TSTWCOPT               YES, GO TEST FOR WRITE CHECK    03140000
+*                                                                       03160000
+         LA    RB,1(0,RB)               INCREMENT SEGMENT COUNTER       03180002
+         LA    RD,24(0,RD)              INCREMENT TO NEXT SET OF COUNTS 03200002
+         LA    RJ,CARN8(RE,RD)          CONSTRUCT SCH ADDR AND   S20201 03220020
+         ST    RJ,D0(RE,RC)             OP CODE OF INITIAL SCH   S20201 03240002
+         MVI   0(RC),MTSCHID                                            03260000
+         B     BLDSEGMT                 LOOP TO BUILD WRITE CCWS FOR    03280002
+*                                       NEXT SEGMENT OF THE BLOCK.      03300000
+*  THIS SMALL ROUTINE BUILDS AND INSERTS SET SECTOR COMMAND WORDS       03301020
+CARNCCW  EQU   *                                                 S20201 03302020
+         ST    RE,D0(RE,RC)             PUT SECT2 ADDR IN CCW    Y02072 03303002
+*                                       RD & SET SECT USE SAME   Y02072 03303402
+*                                       BYTE, 2ND BYTE IS 0      Y02072 03303802
+         MVI   D0(RC),SETSECT           ALONG WITH THE SET       S20201 03304002
+*                                       SECTOR COMMAND CODE             03305002
+         MVI   HALFCCW(RC),CCHN         PUT IN CHAIN COMMAND     S20201 03306020
+         MVI   D7(RC),RPSCNT            AND COUNT                S20201 03307020
+         LA    RC,ONECCW(RE,RC)         INCREMENT CHAN PGM PTR   S20201 03308020
+         BR    RJ                       RETURN TO CALLING        S20201 03309020
+*                                       ROUTINE                  S20201 03310020
+*                                                                       03311020
+CLICHK   CLI   DCBEOBR+1,0  -EXECUTED--TEST ALL SEGMENTS CONSTRUCTED    03320000
+*                                                                       03340000
+*                                                                       03360000
+ABENDNRC EQU   *                        GO TO PROB DETERMINATION Y02072 03380002
+*                                       TO ABEND BECAUSE BLKSIZE Y02072 03390002
+*                                       IS GREATER THAN 1ST EXT  Y02072 03400002
+         DMABCOND   208,PDLOAD,REGSAVE=YES,RES=NO    CALL        Y02072X03430002
+                                        PROBLEM DETERMINATION TO ABEND  03432002
+         B     XCTLRTN                  GO TO XCTL TO 196M       Y02072 03442002
+*                                                                       03460000
+TSTWCOPT EQU   *                                                        03480000
+*                                                                       03500000
+         LA    RB,CARN8                 ASSUME WRT CHK AND PRIME S20201 03503020
+*                                       REG                      S20201 03506020
+         TM    JFCBMASK+D6,NONCARN      ANY RPS DEVICES AROUND   S20201 03509020
+         BO    NOTCARN2                 NO, FORGET READ SECTOR   S20201 03512020
+*                                       COMMAND                  S20201 03515020
+         BCTR  RE,RE                    ELSE PT TO SECTOR1 BYTE  Y02072 03518002
+         ST    RE,D0(RE,RC)             PUT IT IN ADDR FIELD OF  S20201 03521020
+*                                       CCW                      S20201 03524020
+         MVI   D0(RC),RDSECT            PUT IN RD SECT OP CODE   S20201 03527020
+         MVI   D7(RC),RPSCNT            PUT IN COUNT             S20201 03530020
+         LA    RC,ONECCW(RE,RC)         UPDATE PTR TO NEXT CCW   S20201 03533020
+NOTCARN2 EQU   *                                                 S20201 03536020
+         LA    RD,IOBDNRCF              AND COUNT FIELD INDEX           03540000
+         TM    DCBOPTCD,WRTCHK          ARE WRITE CHECK CCWS NEEDED     03560002
+         BZ    CKSEQCNT                 BRANCH IF YES            S20201 03570020
+         SR    RB,RB                    ZERO OUT REG IF WRITE    S20201 03580020
+*                                       CHECK                    S20201 03590020
+*                                                                       03600000
+         LA    RJ,IOBBB                 CONSTRUCT A SEEK CCW TO  Y02072 03620002
+         ST    RJ,D0(RE,RC)             RETURN TO 1ST TRK        S20201 03640002
+         MVI   0(RC),SEEKHH                                             03660000
+         MVI   HALFCCW(RC),CCHN         SET COMMAND CHAIN BIT    S20201 03666020
+         MVI   D7(RC),SIXCOUNT          SET COUNT TO SIX         S20201 03672020
+         TM    JFCBMASK+D6,NONCARN      RPS I PRESUME            S20201 03678020
+         BO    NOTCARN8                 SKIP FOLLOWING INSTR IF  S20201 03684020
+*                                       NOT                      S20201 03690020
+         LA    RC,ONECCW(RE,RC)         PT TO OPEN SPACE AND     S20201 03696020
+         BAL   RJ,CARNCCW               BRANCH TO FILL IT WITH   S20201 03708020
+*                                       SETSECT                  S20201 03714020
+         SH    RC,EIGHT                 DECREMENT TO RESTORE     S20201 03720020
+*                                       POINTER                  S20201 03726020
+NOTCARN8 EQU   *                                                 S20201 03732020
+*                                                                       03738020
+         LR    RJ,RD                                             S20201 03744020
+         ST    RJ,CARN8(RE,RC)                                   S20201 03750020
+         MVI   CARN8(RC),SCHIDEQ        PUT SCHID EQ OP CODE TO  S20201 03756020
+         LA    RJ,CARN8(RE,RC)          LOCATE THE NEW REC, AND  S20201 03762002
+         ST    RJ,CARN16(RE,RC)         A TIC TO THE SCH CCW     S20201 03768002
+         MVC   12(5,RC),CCHN5TIC                                        03780000
+         MVI   24(RC),RDKD              CONSTRUCT A READ KEY-DATA CCW   03800002
+         MVI   28(RC),SILI+SKIP         WITH SILI AND SKIP FLAGS SET    03820000
+         SR    RJ,RJ                                             S20201 03830020
+         IC    RJ,DCBKEYLE                                       S20201 03840020
+         AH    RJ,DCBBLKSI              SET COUNT TO KEY LENGTH  S20201 03850020
+*                                       PLUS                     S20201 03860020
+         STH   RJ,D30(RE,RC)            DATA LENGTH              S20201 03870002
+CKSEQCNT EQU   *                                                 S20201 03880020
+         SR    RF,RF                    RESET SEGMENT COUNTER    S20201 03890020
+*                                                                       03920000
+*                                                                       03940000
+UPBY24   LA    RD,24(0,RD)              SET INDEX TO FIRST SEQUENCE OF  03960002
+         LA    RF,D1(RE,RF)             WRITE CCWS               S20201 03980002
+         EX    RF,CLICHK                EXECUTE INSTR            S20201 04000020
+         BC    7,UPBY24                                                 04020000
+*                                                                       04040000
+         LA    RJ,CARN8(RE,RC)          LOAD ADDR OF VERIFY CCW2 S20201 04042020
+         TM    JFCBMASK+D6,NONCARN      TO RPS, OR NOT TO RPS    S20201 04044020
+         BO    FILLTIC                  NO, FORGET NEXT TWO      S20201 04046020
+*                                       INSTRS                   S20201 04048020
+         SH    RC,SIXTEEN               POINT BACK TO 1ST WRTCHK S20201 04050020
+*                                       CCW                      S20201 04052020
+         AR    RC,RB                    POINT TO START OF WRT    S20201 04054020
+*                                       CHK                      S20201 04056020
+         LR    RJ,RC                    PUT IT INTO A POINTER    S20201 04058020
+*                                       REGISTER                 S20201 04060020
+         LA    RD,ONECCW(RE,RD)         YES, INCLUDE RPS CCW     S20201 04062020
+         AR    RB,RB                    DOUBLE INCR FOR LATER    S20201 04064020
+*                                       USE                      S20201 04066020
+         B     FILLTICS                 BRANCH OUT OF CARNIVAL   S20201 04068020
+*                                       RTN                      S20201 04070020
+FILLTIC  EQU   *                                                 S20201 04072020
+         LTR   RB,RB                    IS WRT CHK SPECIFIED     S20201 04074020
+         BNZ   TSTFINI                  BRANCH IF NOT            S20201 04076020
+*                                                                       04078020
+FILLTICS ST    RJ,CARN32(RE,RD)         STORE AS TIC ADDR        S20201 04080020
+         MVI   32(RD),TICOP             SET TIC OP-CODE                 04100002
+         ST    RJ,CARN36(RE,RD)         ALSO ST ADDR IN IGNORED  S20201 04120020
+         MVI   36(RD),CCHN+SILI         BYTES,SET FLAGS FOR NOP         04140000
+         LA    RD,72(0,RD)              INCREMENT TO NEXT SEQUENCE      04160002
+         TM    JFCBMASK+D6,NONCARN      IS THIS RPS I SEE BEFORE S20201 04165020
+*                                       ME                       S20201 04170020
+         BO    NOTCARN6                 NO, SKIP OVER PT UPDATE  S20201 04175020
+*                                       RTN                      S20201 04180020
+         LA    RD,CARN16(RE,RD)         PT TO RD SECT CCW        S20201 04185020
+         SR    RD,RB                    COMMAND IF REC READY     S20201 04190002
+NOTCARN6 EQU   *                                                 S20201 04195020
+         LR    RJ,RC                    LOAD ADDRESS OF VERIFY   S20201 04200020
+*                                       CCW 1                    S20201 04205020
+         BCT   RF,FILLTICS              TEST-ALL TICS COMPLETED  S20201 04210020
+*                                       BRANCH ON NO.                   04220000
+*                                                                       04240000
+*                                                                       04260000
+TSTFINI  EQU   *                                                        04280000
+         L     RF,DCBIOBA               RESTORE IOB BASE         S20201 04290020
+         L     RF,IOBNIOBA              LOAD NEXT IOB ADDRESS    Y02072 04300002
+*                                                                       04300402
+         MODESET  EXTKEY=DATAMGT        RETURN TO DATAMGT KEY    Y02072X04302002
+                                        TO STORE INTO DCB COPY   Y02072 04302402
+*                                                                       04304002
+         ST    RF,DCBIOBA               STORE NEXT IOB ADDR IF   S20201 04305020
+*                                       THERE                    S20201 04310020
+*                                       IS ONE OR PT BACK TO 1ST ONE    04315002
+*                                                                       04317002
+         MODESET  KEYADDR=DXUKEY,WORKREG=15  CHANGE TO USER KEY  Y02072 04319002
+*                                                                       04319402
+         TM    IOBNFLG1,IOBFIRST        IS THIS ADDR OF IOB 1    Y02072 04320002
+         BC    8,FILLIOB                NO, GO BUILD CCWS FOR THIS IOB  04340000
+*                                                                       04360000
+         SR    RJ,RJ                    ZERO OUT AN UPDATE       S20201 04366020
+*                                       REGISTER                 S20201 04372020
+         TM    DCBEOBW+3,X'01'          ARE ERASE CCWS REQUIRED         04380002
+         BC    1,COMPDCB                NO, GO FILL DCB FIELDS          04400000
+         L     RC,DCBEOBW               LOAD ADDRESS OF ERASE CCW AREA  04420002
+         TM    JFCBMASK+D6,NONCARN      IS IT A BIRD, A PLANE,   S20201 04426020
+*                                       RPS                      S20201 04432020
+         BO    NOCARERS                 NO, FORGET THIS ROUTINE  S20201 04438020
+         AH    RE,CONST1                POINT TO LAST SECTOR(=0) Y02072 04444002
+         LR    RF,RC                    SAVE POINTER TO ERASE    S20201 04456020
+*                                       CCW STAR                 S20201 04462020
+         BAL   RJ,CARNCCW               BRANCH TO INSERT SET     S20201 04468020
+*                                       SECTOR                   S20201 04474020
+         LA    RJ,CARN8                 PRIME RPS UPDATER        S20201 04480020
+         MVC   CARN24(ONECCW,RC),D0(RF) PUT TWO SET SECT OP      S20201 04486020
+         MVC   CARN64(ONECCW,RC),D0(RF) CODES IN CCWS 5 AND 10   S20201 04492002
+         LR    RE,RJ                    SAVE AN EIGHT BYTE DISP  S20201 04498020
+*                                       FOR RR                   S20201 04504020
+         B     NEXT01                   BRANCH                   S20201 04510020
+NOCARERS EQU   *                                                 S20201 04516020
+         SR    RE,RE                    HAVE A 0 DISP IF NON RPS S20201 04522020
+NEXT01   EQU   *                                                 S20201 04528020
+         LA    RB,CARN24(RJ,RC)         CCW4 OR 6 ADDR FOR TIC   S20201 04534020
+         ST    RB,CARN32(RJ,RC)          ADDR IN CCW5 OR 7       S20201 04540020
+         LA    RB,CARN48(RJ,RC)         CCW7 OR 9 ADDR FOR       S20201 04546020
+         ST    RB,CARN48(RJ,RC)         ADDR IN ERASE CCW        S20201 04552002
+         AR    RJ,RJ                    UPDATE INDEX IF RPS      S20201 04558020
+         LA    RB,CARN72(RJ,RC)         LOAD ADDR OF R0 FIELD    S20201 04564020
+         ST    RB,D0(RE,RC)             ST AS SCH ADDR IN CCW1   S20201 04570020
+*                                       OR 2                     S20201 04576020
+         ST    RC,CARN8(RE,RC)          TIC ADDR IN CCW2 OR 3    S20201 04582020
+         ST    RB,CARN16(RE,RC)         DATA ADDR IN CCW3 OR 4   S20201 04588020
+         BCTR  RB,RE                    ADDR OF R0 FIELD - 1     S20201 04594020
+         ST    RB,CARN56(RJ,RC)         FOR RD-HOME-ADDR CCW8    S20201 04600020
+*                                       OR CCW11                        04606002
+*                                                                       04612020
+*                                                                       04640000
+         MVI   0(RC),SCHIDEQ            OP-CODE OF CCW 1                04660002
+         MVC   4(5,RC),CCHN5TIC         FLAGS, COUNT OF CCW 1,TIC CCW 2 04680002
+         MVI   16(RC),WRTD              WRITE DATA OP-CODE FOR CCW 3    04700002
+         MVI   20(RC),SILI+CCHN         FLAGS FOR CCW3                  04720000
+         MVI   23(RC),7                 COUNT FOR CCW3                  04740000
+         LR    RJ,RC                    SAVE PT TO SCH-ID CCW    S20201 04748020
+         AR    RC,RE                    INCREMENT PT OVER SET    S20201 04756020
+*                                       SECT                     S20201 04764020
+         MVC   CARN24(BYTEDEV,RC),D0(RJ)  MOVE SCH CCW AND TIC   S20201 04772020
+         MVI   40(RC),READD             READ DATA OP-CODE TO CCW 6      04780002
+         MVI   44(RC),CCHN+SILI+SKIP    FLAGS TO CCW6                   04800000
+         MVI   47(RC),8                 COUNT OF 8 TO CCW 6             04820000
+         MVI   48(RC),ERSOP             BUILD ERASE CCW 7 TO CLEAR      04840002
+         MVI   52(RC),ERSFLG+CCHN       THE TRACK                       04860000
+         MVI   55(RC),ERSCNT                                            04880000
+         AR    RC,RE                    SKIP OVER CCW10 IF RPS   S20201 04890020
+         MVI   56(RC),MTRDHA            MULTI-TRACK READ HOME ADDRESS   04900002
+         MVC   D60(D5,RC),CCHN5TIC      FLAGS AND TIC CCW        S20201 04910020
+         MVC   D65(D3,RC),DCBEOBW+D1    PUT IN CCW1 ADDR         S20201 04920020
+*                                                                       04940000
+*                                                                       04960000
+*                                                                       04980000
+COMPDCB  EQU   *                                                        05000000
+*                                                                       05010002
+         MODESET  EXTKEY=DATAMGT        RETURN TO DATAMGT KEY    Y02072 05012002
+*                                                                       05014002
+         DROP  RDEB                     DROP DEB BASE            Y02072 05018402
+         USING DEBDASD-(DEBBASND-DEBBASIC),RDEB  ESTABLISH BASE  Y02072 05019202
+*                                       DEVICE DEPENDENT SECTION Y02072 05019602
+         LH    RE,DEBNMTRK              PUT NO. OF TRACKS IN EXTENT 1   05020002
+         STH   RE,DCBWCPO               INTO DCB FOR WRITE ROUTINE      05040000
+*                                                                       05060000
+         DROP  RDEB                                              Y02072 05070002
+         SR    RJ,RJ                    CLEAR WORK REGISTERS            05080002
+         SR    RF,RF                                                    05100000
+         SR    RE,RE                                                    05120000
+         L     RC,DCBDVTBL             LOAD DEVICE TABLE ENTRY ADDRESS  05140000
+         IC    RE,OVERK(0,RC)          DEVELOP THE BYTES REQUIRED FOR   05160000
+         IC    RJ,DCBKEYLE              A MINIMUM SIZE SEGMENT.         05180000
+         LTR   RJ,RJ                                                    05200000
+         BZ    NOKEYS                   (KEY LENGTH + 1 + O'HEAD FOR A  05220000
+         SR    RE,RE                     LAST RECORD)                   05240000
+NOKEYS   EQU   *                                                        05260000
+         IC    RF,OVERL(0,RC)                                           05280000
+         TM    BYTEDEV(RC),TBOVHD       TWO BYTE OVERHEAD USED   S20201 05284020
+         BNO   MZ0010                   BRANCH NO                S20201 05288020
+         LH    RF,OVERI(RC)             GET TWO BYTE OVERHEAD    S20201 05292020
+MZ0010   EQU   *                                                 S20201 05296020
+         SR    RF,RE                                                    05300000
+         LA    RE,1(RJ,RF)                                              05320000
+         STH   RE,DCBEOBR+2             STORE INTO UNUSED AREA OF DCB   05340002
+*                                                                       05360000
+*                                                                       05380000
+*********************************************************************** 05400000
+*                                                                       05420000
+*   SCAN THE DCB PARAMETER LIST FOR ANOTHER REQUEST FOR THIS EXECUTOR   05440000
+*    IF NONE ARE FOUND TRANSER CONTROL TO THE FIRST EXECUTOR FOUND.     05460000
+*                                                                       05480000
+*********************************************************************** 05490002
+SCAN     EQU   *                        BRANCH TO NEXT EXEC             05500002
+         USING  DEBBASIC,RDEB           ESTAB DEB BASE           Y02072 05500102
+         MVC   DEBDCBB,DXUDCBAD+1       REPLACE DCB COPY ADDR    Y02072 05500402
+*                                       WITH USER DCB IN DEB     Y02072 05500802
+         DROP  RDEB                                              Y02072 05501202
+*                                                                       05502002
+*  ISSUE A MACRO WHICH CALLS AN EXTERNAL ROUTINE TO COPY THE            05504002
+*  PROTECTED DCB INTO THE USER'S DCB CORE.                              05506002
+*                                                                       05508002
+*                                                                       05515502
+         IECRES  INIT,DCBCOPY=FRWKAR,STM=(R0,R15,WTGPREFX)       Y02072 05519002
+*                                                                       05522502
+         OI    DXATEXC1,FCAOCOPY        SET AUDIT TRAIL BIT      Y02072 05524502
+*                                       FOR FORCE CLOSE CLEANUP  Y02072 05526502
+*                                       INDICATING DCB COPIED    Y02072 05528502
+         MVI   0(RWTGC),0               MARK THIS DCB FINISHED          05533002
+*                                                                       05536502
+SCAN4EQ  LA    RWTGC,WGOFF(0,RWTGC)     INCREMENT WHERE-TO-GO INDEX AND 05540002
+         LA    RPARC,PAROFF(0,RPARC)    PARAMETER LIST INDEX            05560000
+         CLC   0(2,RWTGC),AMIDCNST      IS THIS EXECUTOR NAMED AGAIN    05580002
+         BCR   8,RBASE                  YES, RETURN TO STARTING POINT   05600000
+         CLC   0(2,RWTGC),OPIDCNST      IS THIS END OF WHERE-TO-GO TAB  05620002
+         BC    7,SCAN4EQ                NO, CONTINUE SCAN               05640000
+*                                                                       05660000
+         LR    RPARC,RPAR               RESET PARAMETER LIST INDEX AND  05680002
+         LA    RWTGC,32(0,RWTG)         WHERE-TO-GO INDEX TO ENTRY ONE  05700000
+SCAN4ANY CLI   0(RWTGC),0               IS THIS DCB COMPLETED           05720002
+         BC    7,XCTLRTN                NO, XCTL TO NAMED EXECUTOR      05740000
+         LA    RWTGC,WGOFF(0,RWTGC)     YES, INCREMENT BOTH INDEX REGS  05760002
+         LA    RPARC,PAROFF(0,RPARC)                                    05780000
+         BC    15,SCAN4ANY              AND CONTINUE SCAN               05800002
+*                                                                       05820000
+XCTLRTN  EQU   *                                                        05840000
+         IECRES LOAD,PREFIX=WTGPREFX,BRANCH=DIRECT,            @Z30TSMI*05860003
+               MODID=WTGENTRY           GO TO NEXT LOAD        @Z30TSMI 05910003
+         EJECT                                                          05970002
+*                                                                       06100000
+***************                                                         06120000
+*                                                                       06140000
+*                                                                       06140320
+*      RPS CONSTANTS AND EQUATES                                        06140620
+*                                                                       06140920
+CONST1   DC    H'1'                     ONE BYTE DIFFERENCE BET  Y02072 06141202
+*                                       SECTOR 1(RD AND SET) AND Y02072 06141302
+*                                       SECTOR 2 (=0 FOR REC 0)  Y02072 06142502
+EIGHT    DC    H'8'                     DECREASES PT TO CHAN     S20201 06143602
+*                                       PROG BY 8                S20201 06144302
+SIXTEEN  DC    H'16'                    DECREASES PT TO C.P. BY  S20201 06145002
+*                                       16                       S20201 06145702
+*                                                                       06146402
+*                                                                       06147102
+D0       EQU   0                        ZERO DISPLACEMENT        S20201 06147802
+D1       EQU   1                        ONE BYTE DISPLACEMENT    S20201 06148502
+D3       EQU   3                        THREE BYTE DISPLACEMENT  S20201 06149202
+HALFCCW  EQU   4                        USED FOR HALF CCW        S20201 06149902
+*                                       DISPLACEMENT             S20201 06150602
+D5       EQU   5                        FIVE BYTE DISPLACEMENT   S20201 06151302
+D6       EQU   6                        OFFSET IN JFCB FOR       S20201 06152002
+*                                       CARNIVAL                 S20201 06152702
+D7       EQU   7                        SEVEN BYTE DISPLACEMENT  S20201 06153402
+ONECCW   EQU   8                        USED FOR FULL CCW        S20201 06154102
+*                                       DISPLACEMENT             S20201 06154802
+CARN8    EQU   8                        ONE CCW DISPLACEMENT     S20201 06155502
+D14      EQU   14                       FOURTEEN BYTES           S20201 06156202
+TWOCCW   EQU   16                       2 CCW DISPLACEMENT OR    S20201 06156902
+*                                       LENTH                    S20201 06157602
+CARN16   EQU   16                       USED FOR 2 CCW           S20201 06158302
+*                                       DISPLACEMENT             S20201 06159002
+CNT16    EQU   16                       COUNT OF SIXTEEN         S20201 06159702
+CARN24   EQU   24                       USED FOR 3 CCW           S20201 06160402
+*                                       DISPLACEMENT             S20201 06161102
+CARN28   EQU   28                       USED FOR 3-1/2 CCW DISP  S20201 06161802
+D30      EQU   30                       30 BYTE DISPLACEMENT     S20201 06162502
+CARN32   EQU   32                       USED FOR FOUR CCW        S20201 06163202
+*                                       DISPLACEMENT             S20201 06163902
+CARN36   EQU   36                       USED FOR 4-1/2 CCW DISP  S20201 06164602
+CARN48   EQU   48                       6 CCW DISPLACEMENT       S20201 06165302
+CARN56   EQU   56                       USED FOR 7 CCW           S20201 06166002
+*                                       DISPLACEMENT             S20201 06166702
+D60      EQU   60                       60 BYTE DISPLACEMENT     S20201 06167402
+CARN64   EQU   64                       USED FOR 8 CCW           S20201 06168102
+*                                       DISPLACEMENT             S20201 06168802
+D65      EQU   65                       65 BYTE DISPLACEMENT     S20201 06169502
+CARN72   EQU   72                       USED FOR 9 CCW           S20201 06170202
+*                                       DISPLACEMENT             S20201 06170902
+CARN80   EQU   80                       USED FOR 10 CCW          S20201 06171602
+*                                       DISPLACEMENT             S20201 06172302
+*                                                                       06173002
+*                                                                       06173702
+NONCARN  EQU   X'20'                    TO TEST FOR RPS          S20201 06174402
+TBOVHD   EQU   X'08'                    TWO BYTE OVERHEAD INDIC  S20201 06175102
+SETSECT  EQU   X'23'                    SET SECTOR COMMAND CODE  S20201 06175802
+RDSECT   EQU   X'22'                    READ SECTOR COMMAND CODE S20201 06176502
+*                                                                       06177202
+*   OTHER CONSTANTS AND EQUATES                                         06177902
+*                                                                       06178602
+*                                                                       06179302
+*                                                                       06180000
+CCHN5TIC DC    X'4000000508'  COMMAND CHAIN, COUNT OF 5, TIC OP CODE    06200000
+*                                                                       06240000
+ERSOP    EQU   X'11'          ERASE OP-CODE                             06260000
+ERSFLG   EQU   X'20'          SUPPRESS INCORRECT LENGTH                 06280000
+ERSCNT   EQU   X'08'          COUNT OF 8                                06300000
+*                                                                       06320000
+SCHIDEQ  EQU   X'31'          SEARCH ID EQUAL OPERATION CODE            06340000
+MTSCHID  EQU   X'B1'          MULTIPLE TRACK SEARCH ID EQUAL            06360000
+MTRDHA   EQU   X'9A'          MULTIPLE TRACK READ HOME ADDRESS          06380000
+SEEKHH   EQU   X'0B'          SEEK CCHH OP-CODE                         06400000
+WRTCKD   EQU   X'1D'          WRITE COUNT, KEY, DATA OPERATION CODE     06420000
+DCHN     EQU   X'80'          DATA CHAIN FLAG                           06440000
+RDKD     EQU   X'0E'          READ KEY, DATA OPERATION CODE             06460000
+CCHN     EQU   X'40'          COMMAND CHAIN FLAG                        06480000
+WRTD     EQU   X'05'          WRITE DATA OPERATION CODE                 06500000
+READD    EQU   X'06'          READ DATA OPERATION CODE                  06520000
+RDR0     EQU   X'16'          READ RECORD ZERO OP-CODE                  06540000
+TICOP    EQU   X'08'                    TIC OP-CODE                     06560002
+SKIP     EQU   X'10'                    SKIP DATA TRANSFER              06580000
+SILI     EQU   X'20'                    SUPPRESS INCORRECT LENGTH       06600002
+RPSCNT   EQU   1                        1 BYTE COUNT             S20201 06606020
+SIXCOUNT EQU   6                        COUNT OF SIX             S20201 06612020
+*                                                                       06620000
+WRTCHK   EQU   X'80'                   WRITE CHECK OPTION               06700002
+VORU     EQU   X'40'                   RECORD FORM IS VARIABLE OR UNDEF 06720002
+*                                                                       06780000
+*              DIRECT ACCESS DEVICE TABLE (DADT) DEFINITION             06800000
+*                                                                       06820000
+MAXCC    EQU   0         TOTAL TRACKS, CYLINDERS                        06840000
+TRKL     EQU   4         TRACK LENGTH                                   06860000
+OVERI    EQU   6         OVERHEAD FOR INTERMEDIATE KEYED RECORD         06880000
+OVERL    EQU   7         OVERHEAD FOR LAST (KEYED) RECORD ON TRACK      06900000
+OVERK    EQU   8         OVERHEAD TO BE SUBTRACTED FOR NON-KEYED RECORD 06920000
+BYTEDEV  EQU   9         FLAG BYTES                                     06940000
+TOLER    EQU   10        TOLERANCE FACTOR                               06960000
+*                                                                       06980000
+WGOFF    EQU   8                        OFFSET OF ENTRIES IN WTG TABLE  06982002
+PAROFF   EQU   4                        OFFSET OF ENTRIES IN PARAM LIST 06984002
+OPIDCNST DC    C'0S'                    LAST WTG ENTRY (OPEN)           06984402
+PDLOAD   DC    C'6M',VL3(IGG0196M)      PROB DET MODULE ID     @Z30TSMI 06984803
+MODID    DC    C'IGG019'                MODULE ID -2             Y02072 06986002
+AMIDCNST DC    C'1M'                    THIS EXECUTOR'S ID              06990002
+FIX      DC    C'@Z30TSMI'              LATEST FIX FLAG        @Z30TSMI 07040003
+DATE     DC    C'10/18/74'              DATE OF LATEST FIX     @Z30TSMI 07050003
+PATCH    DC    XL((*-IGG0191M)/20)'0'   5% PATCH AREA            Y02072 07070002
+         EJECT                                                          07100000
+*************** CONTROL BLOCK DEFINITIONS****************************** 07120002
+*                                                                       07140000
+UCBTYPCD EQU   19             OFFSET TO TYPE CODE IN THE UCB            07160000
+*                                                                       07180000
+*                                                                       07200000
+         DCBD  DSORG=(PS),DEVD=(DA)                                     07260000
+         EJECT                                                          07270002
+         CVT   DSECT=YES                                         Y02072 07280002
+         EJECT                                                          07290002
+         IEZDEB                                                  Y02072 07292002
+         EJECT                                                          08530000
+         IECDSECS  (MAIN,(IOB,NO)),PREFX,WTG,EXPAND=YES          Y02072 08550002
+FORCORE  DSECT                          WORKAREA DSECT CONTINUED Y02072 08550102
+*****   THE FOLLOWING ARE AUDIT TRAIL BITS SET FOR FORCE CLOSE    ***** 08550202
+         IHAFCAUD  ORG=YES                                       Y02072 08600202
+*****                                                                   08610302
+         EJECT                                                          08650302
+         IEZIOB                                                  Y02072 08700302
+*********************************************************************** 08750302
+*  THE FOLLOWING DSECT FORMATS THE BDAM CREATE EXTENSION TO THE IOB   * 08800302
+*********************************************************************** 08850302
+         ORG   IOBSEEK+8                                                08900302
+IOBDNRCF DS    D                        NEW RECORD COUNT FIELD   Y02072 08950302
+IOBR0CNT DS    D                        COUNT FIELD OF R0        Y02072 09000302
+IOBR0DAT DS    D                        DATA FIELD OF R0         Y02072 09050302
+IOBDCCW1 DS    D                        1ST CCW                  Y02072 09100302
+         END                                                            09150302

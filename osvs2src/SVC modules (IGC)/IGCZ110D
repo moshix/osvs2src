@@ -1,0 +1,778 @@
+         TITLE 'IGCZ110D - MCPCLOSE PROCESSING ROUTINE'                 00100022
+IGCZ110D CSECT                                                          00200022
+         SPACE 3                                                        00200122
+*  CHANGE ACTIVITY AS FOLLOWS:                                        * 00200222
+******************** MICROFICHE FLAGS *********************** SUPT CODE 00200322
+*A000000-999999                                                  S99240 00200422
+*C446000-448000,457000                                          SA58434 00200522
+*A545001                                                        SA59972 00200622
+*C465000-465001                                                 SA59972 00200722
+*A405000                                                        SA60325 00200800
+*A382000                                                       @XA05285 00210800
+*A294000,540000                                                @SA70313 00260800
+*C141857,141871                                                @OZ09246 00269800
+*D141878                                                       @OZ09246 00278800
+*A141892                                                       @OZ09246 00287800
+*A323000,337000,399000,458000,459000,522000                    @OX13498 00287900
+*C327000,436000-437000,468000-469000                           @OX13498 00288000
+*C300000                                                       @OY14092 00288100
+*A548840                                                       @OY14092 00288200
+*A292000,382600,388000,548840                                  @OZ24311 00289200
+*C465001,545001                                                @OZ24822 00292200
+*C292500                                                       @OZ26899 00295211
+         SPACE 3                                                        00300022
+*********************************************************************** 00400022
+*                                                                     * 00420022
+*MODULE-NAME=IGCZ110D                                                 * 00440022
+*                                                                     * 00460022
+*DESCRIPTIVE-NAME=MCPCLOSE PROCESSING ROUTINE                         * 00480022
+*                                                                     * 00484022
+*COPYRIGHT='NONE'                                                     * 00488022
+*                                                                     * 00492022
+*  STATUS: CHANGE LEVEL 5                                             * 00500000
+*                                                                     * 00900022
+*FUNCTION: THIS ROUTINE PROCESSES AN MCPCLOSE MACRO FROM AN APPLICAT  * 01000022
+*   TION PROGRAM OR A HALT COMMAND FROM A TERMINAL OR CONSOLE. IT     * 01100022
+*   RECEIVES CONTROL FROM THE FIRST LOAD OF MCPCLOSE, IGCZ010D.       * 01200022
+*   IGCZ010D SYNTAX CHECKS THE COMMAND AND IF VALID XCTLS TO IGCZ110D.* 01300022
+*                                                                     * 01400022
+*   IT CHECKS BIT IN OPERATOR CONTROL ELEMENT TO SEE IF A QUICK OR A  * 01500022
+*   FLUSH CLOSEDOWN WAS REQUESTED.IF QUICK IT SETS A BIT IN TCAM AVT. * 01600022
+*   IT THEN LOOPS THROUGH THE LCBS CHECKING LINE ACTIVITY FOR SENDING * 01700022
+*   ONLY OR FOR SENDING OR RECEIVING. AFTER 1ST LOOP THROUGH IT SETS  * 01800022
+*   THE MCPCLOSEDOWN BIT IN THE AVT AND 'WAITS' FOR REUSABLE DISK     * 01900022
+*   SUBTASK TO COMPLETE ITS ACTIVITIES BEFORE CHECKING LINE ACTIVITY  * 02000022
+*   AGAIN.                                                            * 02100022
+*                                                                     * 02200022
+*   WHEN DISK ACTIVITY CEASES IT AGAIN CHECKS LINES FOR ACTIVITY      * 02300022
+*   ON THIS LOOP THROUGH LCBS IT ISSUES A WAIT SVC AND IS POSTED      * 02400022
+*   COMPLETE WHEN QEVENT POSTS THE OPERATOR CONTROL ECB  AFTER EACH   * 02500022
+*   POST IT LOOPS THROUGH THE LCBS CHECKING LINE ACTIVITY. WHEN ALL   * 02600022
+*   LINE ARE FINISHED IT AGAIN LOOPS THROUGH LCBS THIS TIME CHECKING  * 02700022
+*   TO SEE IF THE LINES ARE STOPPED. IF STOPPED IT GETS THE NEXL LCB. * 02800022
+*   IF ONE IS FOUND THAT IS NOT STOPPED IT OBTAINS A UNIT,BUILDS AND  * 02900022
+*   FORMATS A STOPLINE REQUEST AND TPOSTS THE UNIT TO STOPLINE QCB    * 03000022
+*   THEN XCTLS TO IGC0010D UNTIL THE REQUEST HAS BEEN HONORED.        * 03100022
+*   STOPLINE WILL TPOST THE STOPPED LCB TO THE OPERATOR CONTROL QCB.  * 03200022
+*   IGC0010D WILL PASS THIS STOPPED LCB TO IGCZ110D. AGAIN THE LCBS   * 03300022
+*   ARE LOOPED THROUGH AND STOPLINE REQUESTS BUILT UNTIL ALL LCBS     * 03400022
+*   ARE STOPPED. THEN A CHECK IS MADE FOR ANY OPEN PCB'S IN APPLICAT- * 03500022
+*   ION PROGRAMS BY CHECKING THE USE COUNT IN EACH OPENED PCB. IF ANY * 03600022
+*   ARE OPENED THE OPERATOR IS NOTIFIED AND WAIT IS ISSUED FOR CLOSE  * 03700022
+*   TO BE ISSUED. IF FORCE CLOSE WAS SPECIFIED THE EODAD EXIT IS      * 03800022
+*   FORCED TO ALLOW THE USER TO ISSUE A CLOSE.                        * 03900022
+*                                                                     * 04000022
+*   WHEN ALL PCBS ARE CLOSED AN XCTL TO IGCZ010D IS DONE TO FACILITATE* 04100022
+*   POSTING THE CHECKPOINT REQUEST ELEMENT TO THE CHECKPOINT ROUTINE  * 04200022
+*   IF CHECKPOINT DCB IS OPEN AND A QUICKCLOSE WAS REQUESTED OR FOR A * 04300022
+*   FLUSHCLOSE THE CLOSEDOWN COMPLETION QCB.                          * 04400022
+*ENTRY POINT:                                                         * 04500022
+*                                                                     * 04600022
+*        IGCZ110D                                                     * 04700022
+*                                                                     * 04800022
+*INPUT:REGISTER 1 HAS THE ADDRESS OF THE OPERATOR CONTROL AVT         * 04900022
+*                                                                     * 05000022
+*OUTPUT:NONE                                                          * 05100022
+*                                                                     * 05200022
+*EXTERNAL REFERENCES --                                               * 05300022
+*                                                                     * 05400022
+*        AQCTL SVC-QPOSTS ELEMENT TO READY QUEUE                      * 05500022
+*                                                                     * 05600022
+*EXITS,NORMAL: THIS MODULE RETURNS TO IGC0010D OR IGCZ010D            * 05700022
+*                                                                     * 05800022
+*EXITS,ERROR--                                                        * 05900022
+*   ERROR MESSAGES ARE-                                               * 06000022
+*   IED098I DCB NOT CLOSED FOR MESSAGE PROCESSING PROGRAM             * 06100022
+*                                                                     * 06200022
+*TABLES/WORK AREAS:                                                   * 06300022
+*                                                                     * 06400022
+*        CVT                                                          * 06500022
+*        AVT(AVTBIT1,AVTTCB,AVTCOB+4,AVTCCELE,AVTCLOSB)       @ZM46681* 06600000
+*        TCB                                                          * 06700022
+*        DEB                                                          * 06800022
+*        DCB                                                          * 06900022
+*        LCB                                                          * 07000022
+*        OPCE                                                         * 07100022
+*                                                                     * 07200022
+*                                                                     * 07300022
+*ATTRIBUTES-- SERIALLY REUSABLE,TRANSIENT(TYPE 4),DISABLED,SUPERVISOR * 07400022
+*   MODE,NON-REENTRANT,REFRESHABLE                                    * 07500022
+*                                                                     * 07600022
+*CHARACTER CODE DEPENDENCY                                            * 07700022
+*        THE OPERATION OF THIS MODULE DEPENDS UPON AN INTERNAL        * 07800022
+*        REPRESENTATION OF THE EXTERNAL CHARACTER SET WHICH IS        * 07900022
+*        EQUIVALENT TO THE ONE USED AT ASSEMBLY TIME.  THE CODING     * 08000022
+*        HAS BEEN ARRANGED SO THAT REDEFINITION OF CHARACTER          * 08100022
+*        CONSTANTS, BY REASSEMBLY WILL RESULT IN A CORRECT MODULE     * 08200022
+*        FOR THE NEW DEFINITION.                                      * 08300022
+*                                                                     * 08400022
+*NOTES - COMMUNICATIONS BETWEEN THE VARIOUS TRANSIENT MODULES IS      * 08500022
+*        PRIMARILY THROUGH THE OPERATOR CONTROL AVT.                  * 08600022
+*                                                                     * 08700022
+*        THIS IS A MODULE RE-WRITE OF IEDQC0 AS OF OS/TCAM LEVEL II   * 08750022
+*********************************************************************** 08800022
+         EJECT                                                          08900022
+*        REGISTER EQUATES                                               09000022
+R0       EQU   0                        TEMPORARY REG                   09100022
+R1       EQU   1                        ADDRESS OF OPERATOR CONTROL    X09200022
+                                        WORK AREA                       09300022
+ROPCAVT  EQU   2                        BASE FOR OPC AVT                09400022
+R2       EQU   2                        ADDRESS OF INPUT (BFR,CIB)      09500022
+ROPCE    EQU   3                        BASE FOR OPC ELEMENT            09600022
+R3       EQU   3                        POSITION IN BUFFER              09700022
+R4       EQU   4                        BASE FOR TCB                    09800022
+RAVT     EQU   4                        BASE REG FOR TCAM AVT           09900022
+R5       EQU   5                        BASE FOR DEB                    10000022
+R6       EQU   6                        BASE FOR DCB                    10100022
+R7       EQU   7                        BASE FOR LCB                    10200022
+R8       EQU   8                        BASE FOR PCB                    10300022
+R9       EQU   9                        ADDRESS OF AVT                  10400022
+R10      EQU   10                       COUNT OF LINES IN A GROUP       10500022
+R11      EQU   11                       WORK REG                        10600022
+R12      EQU   12                       BASE REG                        10700022
+RBASE    EQU   12                       BASE REG FOR IGCZ110D           10800022
+R13      EQU   13                       SAVE REG                        10900022
+R14      EQU   14                       RETURN REG                      11000022
+R15      EQU   15                       BRANCH REG                      11100022
+         SPACE 3                                                        11200022
+         USING IEDQOPCD,ROPCAVT         BASE FOR OPERATOR CONTROL AVT   11300022
+         USING IEDQAVTD,RAVT            BASE FOR TCAM AVT               11400022
+         USING IEDQOPCE,ROPCE           BASE FOR OPC ELEMENT            11500022
+         BALR  RBASE,ZERO               ESTABLISH ADDRESSABILITY        11600022
+         USING *,RBASE                                                  11700022
+IGCZ110D IEDHJN SKIPID                                                  12000022
+         LR    ROPCAVT,R1               SET UP BASE REG FOR OPC AVT     12300022
+         L     RAVT,OPCAVTPT            SET TCAM AVT BASE               12400022
+         L     ROPCE,OPCCOPCE           SET OPC ELEMENT BASE            12500022
+         SR    R15,R15                  CLEAR REGISTER ON ENTERING      12600022
+         TM    AVTBIT1,AVTCLOSN         CHECK FOR 2ND ENTRY TO RTN      12700022
+         BO    STOPDLCB                 BRANCH IF 2ND ENTRY             12800022
+         SPACE 3                                                        12900022
+*DETERMINE TYPE OF CLOSEDOWN REQUESTED                                  13000022
+         SPACE                                                          13100022
+         MVI   AVTCLOSB+EIGHT,HEXFF     INDICATE NOT FROM CONSOLE       13200022
+         TM    OCSWITCH,HEX80           QUICK CLOSE REQUESTED           13300022
+         BNO   QC040                    NO - FLUSH                      13400022
+QC038    EQU   *                                                        13500022
+         OI    AVTBIT1,AVTQUCKN         TURN ON QUICK CLOSE SWITCH      13600022
+         L     R8,CVTPTR                LOAD CVT ADDR            Y02027 13610000
+         L     R8,CVTAQAVT-CVT(R8)      LOAD TCAM CVT EXTENSION  Y02027 13620000
+         OI    TCXBIT1-IEDQTCX(R8),AVTQUCKN                      Y02027 13630000
+*                                       MAP CLOSE BIT FOR COMM   Y02027 13640000
+*                                       TASK                     Y02027 13650000
+QC040    EQU   *                                                        13700022
+         LA    R11,QC0STOP              FLAG FOR STOPPED LINES          13800022
+         LA    R8,LCBSENDN+LCBRECVN+LCBFREEN VALUE FOR EXECUTE INST     13900022
+         BAL   R14,QC04105              FLAG ALL LCB WHICH ARE STPD     14000022
+         OI    AVTBIT1,AVTCLOSN         TURN ON MCPCLOSE SWITCH         14100022
+         L     R8,CVTPTR                LOAD CVT ADDR            Y02027 14101000
+         L     R8,CVTAQAVT-CVT(R8)      LOAD TCAM CVT EXTENSION  Y02027 14111000
+         OI    TCXBIT1-IEDQTCX(R8),AVTCLOSN                      Y02027 14121000
+*                                       MAP CLOSE BIT FOR COMM   Y02027 14131000
+*                                       TASK                     Y02027 14141000
+         SPACE 1                                                        14144000
+*********************************************************************** 14151000
+*  SEARCH AVTOPCOB FOR ANY ELEMENTS FROM AN APPLICATION PROGRAM AND   * 14152000
+*  IF ANY, DEQUEUE THE ELEMENT AND XMPOST THE WAITING ECB USING THE   * 14152300
+*  BRANCH ENTRY TO XMPOST.                                       Y02027 14153000
+*********************************************************************** 14154000
+LOCKQUE  SETLOCK OBTAIN,TYPE=LOCAL,MODE=UNCOND,REGS=USE,               X14154300
+               RELATED=(AVTOPCOB,IGCZ110D,FREEQUE)               Y02027 14155000
+         SR    R10,R10                  CLEAR REG                Y02027 14156000
+         ICM   R10,ADD,AVTOPCOB+ONE     GET HEAD OF ELEMENT CHN  Y02027 14157000
+         LA    R5,AVTOPCOB+ONE          SET REG FOR POSSIBLE MVC Y02027 14157300
+QLOOP    EQU   *                                                 Y02027 14158000
+         C     R10,AVTDELAD             DUMMY LAST ELEMENT       Y02027 14159000
+         BE    FREEQUE                  YES BRANCH               Y02027 14159300
+         TM    ZERO(R10),MPPKEY         APPL PROG ELEMENT        Y02027 14160000
+         BO    DEQUE                    YES, BRANCH TO CLEANUP   Y02027 14161000
+         SPACE 1                                                        14161300
+GETLINK  EQU   *                                                 Y02027 14162000
+         LA    R5,FIVE(,R10)            ADJUST PTR TO LINK FLD   Y02027 14163000
+*                                       FOR UPDATE               Y02027 14164000
+         ICM   R10,ADD,FIVE(R10)        GET NEXT ELEMENT         Y02027 14164300
+         B     QLOOP                    GO CHECK IT              Y02027 14165000
+DEQUE    EQU   *                                                 Y02027 14166000
+         MVC   ZERO(THREE,R5),FIVE(R10) DEQUEUE ELE & UPDATE Q   Y02027 14166300
+         LA    R1,X10                   BACK UP TO BEGINNING OF  Y02027 14167000
+         SR    R10,R1                   AIB/CIB                  Y02027 14168000
+         USING IEDQAIB,R10              AIB ADDRESSABILITY       Y02027 14168300
+         L     R1,AIBPCBAD              GET APPL PROG PCB OR ASCBY02027 14169000
+         TM    AIBPCBAD,USEASCB         ASCB OR PCB ?            Y02027 14170000
+         BO    GOPOST                   BRANCH IF ASCB PTR       Y02027 14171000
+         ICM   R1,ALL,PCBPEBAD-IEDQPCB(R1)  GET PEB ADDR         Y02027 14171300
+         BZ    GETLINK                  BR IF APPL PROGRAM       Y02027 14172000
+*                                       NO LONGER ACTIVE         Y02027 14172700
+         ICM   R1,ALL,PEBASCB-IEDQPEB(R1) GET APPL PROG ASCB PTR Y02027 14173400
+         BM    GETLINK                  BR IF APPL PROG CLOSE IS Y02027 14174100
+*                                       IN PROGRESS              Y02027 14174800
+         SPACE 1                                                        14175500
+GOPOST   EQU   *                                                 Y02027 14176200
+         MVI   AIBOPRC,HEX80            SET ERR RET CODE IN AIB  Y02027 14176900
+         ST    R1,AIBXMLST              SAVE ASCB PTR            Y02027 14177600
+         L     R7,CVTPTR                GET CVT PTR              Y02027 14178300
+         L     R1,CVTAQAVT-CVT(R7)      GET TCX PTR              Y02027 14179000
+         L     R1,TCXASCB-IEDQTCX(R1)   GET OUR ASCB PTR         Y02027 14179700
+         L     R1,ASCBASXB-ASCB(R1)     GET ASXB PTR             Y02027 14180400
+         L     R1,ASXBSPSA-ASXB(R1)     S/A VECTOR TABLE ADDR    Y02027 14181100
+         L     R1,WSALCWSA-WSAL(R1)     COMMON SAVE AREA ADDRESS Y02027 14181800
+         STM   R0,R14,ZERO(R1)          SAVE REGS                Y02027 14182500
+         LR    R9,R1                    SAVE SAVEAREA PTR        Y02027 14183200
+         SPACE 1                                                        14183900
+         L     R15,CVT0PT01-CVT(R7)     GET XMPOST BR ENTRY ADDR Y02027 14184600
+         LA    R13,CVTBRET-CVT(R7)      USE BR 14 INST IN      @OZ09246 14185300
+*                                       CVT FOR ERROR EXIT       Y02027 14186000
+         ICM   R13,EIGHT,X80            SET FLAG=USE REGS      @OZ09246 14186700
+         L     R11,AIBECBA              GET ECB TO BE POSTED     Y02027 14187400
+         ICM   R11,EIGHT,X80            TURN ON BIT = XMPOST     Y02027 14188100
+         LR    RBASE,R13                SET UP ERROR EXIT      @OZ09246 14188800
+         L     R13,AIBXMLST             PICK UP APPL PROG ASCB @OZ09246 14189500
+         BALR  R14,R15                  GOT TO XMPOST            Y02027 14190200
+         LM    R0,R14,ZERO(R9)          RESTORE REGS             Y02027 14190900
+         ICM   R10,ADD,ZERO(R5)         PICK UP NEXT ELEMENT     Y02027 14191600
+         B     QLOOP                    GO CHECK                 Y02027 14192300
+         DROP  R10                      FREE REG                 Y02027 14193000
+         SPACE 1                                                        14193700
+FREEQUE  EQU   *                                                 Y02027 14194400
+         SETLOCK RELEASE,TYPE=LOCAL,REGS=USE,RELATED=(AVTOPCOB,        X14195100
+               IGCZ110D,LOCKQUE)                                 Y02027 14195800
+         SR    R15,R15                  CLEAR REG                Y02027 14196500
+*WAIT FOR REUS DISK SUBTASK TO COMPLETE ITS ACTIVITIES BEFORE CHECKING  14200022
+*LINE ACTIVITY.                                                         14300022
+         SPACE                                                          14400022
+QC0405   EQU   *                                                        14500022
+         TM    AVTBIT2,AVTREUSN         CHECK FOR REUS ACTIVITY         14600022
+         BZ    QC041                    BRANCH IF NOT ACTIVE            14700022
+         BAL   R14,WAITSUB              WAIT                            14800022
+         B     QC0405                   BRANCH BACK AND CHECK AGAIN     14900022
+         SPACE 3                                                        15000022
+*GET DEB CHAIN FROM MESSAGE CONTROL TCB AND CHECK FOR ANY LINES         15100022
+*STILL NOT STOPPED.                                                     15200022
+         SPACE                                                          15300022
+QC041    EQU   *                                                        15400022
+         LA    R8,LCBSENDN              VALUE FOR EXECUTE INST          15500022
+         SR    R11,R11                  CLEAR REG TO INDICATE WAIT      15600022
+         SR    R15,R15                  CLEAR REGISTER                  15700022
+         BAL   R14,QC04105              CHECK LINE ACTIVITY             15800022
+         LA    R15,FOUR                 STOPPING LCBS THRU HK           15900022
+         B     QC04105                  LOOP THRU LCBS STOP THOSE NOT   16000022
+*                                       NOT ALREADY STOPPED             16100022
+         SPACE 3                                                        16200022
+*SUBROUTINE TO CHECK LINE ACTIVITY FOR SENDING ONLY OR FOR SENDING      16300022
+*OR RECEIVING                                                           16400022
+         SPACE                                                          16500022
+QC04105  EQU   *                                                        16600022
+         L     R9,AVTTCB                GET TCAM TCB ADDRESS            16700022
+         USING TCB,R9                   BASE FOR TCB                    16800022
+QC042    EQU   *                                                        16900022
+         L     R5,TCBDEB                GET ADDRESS OF DEB CHAIN        17000022
+         SR    R13,R13                  INITIALIZE WAIT SWITCH          17100022
+         USING IEDQDEB,R5               BASE FOR DEB                    17200022
+         SPACE 3                                                        17300022
+*BEGINNING OF LOOP THROUGH DEB CHAIN                                    17400022
+         SPACE                                                          17500022
+QC043    EQU   *                                                        17600022
+         LA    R5,0(,R5)                CLEAR HIGH ORDER BYTE           17700022
+         LTR   R5,R5                    CHECK FOR END OF DEB CHAIN      17800022
+         BZ    QC047                    BRANCH IF END OF CHAIN          17900022
+         L     R6,DEBDCBAD-ONE          GET ADDRESS OF DCB              18000022
+         USING IHADCB,R6                BASE FOR DCB                    18100022
+         TM    DCBDSORG+ONE,IEDQLINE    CHECK FOR LINE DCB              18200022
+         BZ    QC046                    BRANCH TO END OF LOOP           18300022
+         SPACE                                                          18400022
+         L     R7,DCBIOBAD              GET ADDR OF IOB IN LCB          18500022
+         XR    R9,R9                    CLEAR INDEX REGISTER            18600022
+         IC    R9,DCBEIOBX              GET LEN OF LCB FOR INDEX        18700022
+         XR    R10,R10                  CLEAR                           18800022
+         IC    R10,DEBNMEXT             NUMBER OF LINES IN GROUP        18900022
+         SPACE 3                                                        19000022
+*BEGINNING OF LOOP THROUGH LCB LIST                                     19100022
+         SPACE                                                          19200022
+         LA    R1,LCBFLAG1-IEDQLCB      DISPLACEMENT FOR LCB BEGIN      19300022
+         SR    R7,R1                    ADDR OF LCB BEGINNING           19400022
+QC044    EQU   *                                                        19500022
+         AR    R7,R9                    MOVE TO NEXT LCB                19600022
+         USING IEDQLCB,R7               BASE FOR LCB                    19700022
+QC04401  EQU   *                                                        19800022
+         TM    LCBSTAT1,LCBSENDN+LCBRECVN LINE MARKED AS SENDING AND    19900022
+*                                       RECEIVING (SET BY LINE OPEN     20000022
+*                                       IF SENDING STATUS NOT RECEIVED  20100022
+         BO    QC04505                  BRANCH IF YES                   20200022
+         CH    R15,AVTHA4               IS IT TIME TO STOP LINES        20300022
+         BE    QC0STOPL                 YES                             20400022
+         EX    R8,QC0TEST               CHECK FOR LINE ACTIVITY         20500022
+         BZ    QC045                    BRANCH IF STOPPED OR RECEIVING  20600022
+         TM    LCBSTAT1,LCBFREEN        CHECK FOR FREE LINE             20700022
+         BZ    QC04403                  BRANCH IF NOT FREE              20800022
+         SR    R1,R1                    CLEAR INDEX REGISTER            20900022
+         IC    R1,LCBUCBX               GET UCB INDEX                   21000022
+         SLL   R1,2                     MULTIPLY BY 4                   21100022
+         L     R1,DCBINVLI(R1)          GET INVITATION LIST ADDR        21200022
+         CLI   FOUR(R1),ZERO            CHECK FOR BFR SCH TIME DELAY    21300022
+         BE    QC045                    BRANCH IF NOT IN TIME DELAY     21400022
+QC04403  EQU   *                                                        21500022
+         SPACE 3                                                        21600022
+         LR    R13,R12                  SET WAIT SWITCH TO NON-ZERO     21700022
+         B     QC04505                  BRANCH AROUND STOPPED LINE      21800022
+QC045    EQU   *                                                        21900022
+         TM    LCBSTAT1,LCBRECVN+LCBFREEN IS LINE STILL RECEIVING       22000022
+         BNZ   QC04505                  BRANCH IF RECEIVING OR FREE     22100022
+         EX    R11,QC0SETFL             MARK LCB                        22200022
+         TM    LCBSTCBA+TWO,QC0STOP     CHECK FOR STOPPED LCB           22300022
+         BO    QC04505                  BRANCH IF STOPPED PREVIOUS      22400022
+         CH    R11,AVTHA2               CHECK FOR POST FUNCTION         22500022
+         BNE   QC04505                  BRANCH IF LCBS ARE NOT TO      X22600022
+                                        BE POSTED TO THEMSELVES         22700022
+         NI    LCBSTCBA+TWO,AVTEFF-QC0TWO TURN OFF BIT IF TURNED ON     22800022
+         LR    R0,R7                    ADDR OF LCB                     22900022
+         ST    R7,0(,R7)                POST LCB TO ITSELF              23000022
+         MVI   LCBPRI,PRILNFRE          SET LCB PRIORITY                23100022
+         LR    R6,R14                   SAVE REG                        23200022
+         BAL   R14,QC080                POST ELEMENT TO READY QUEUE     23300022
+         LR    R14,R6                   RESTORE REG                     23400022
+QC04505  EQU   *                                                        23500022
+         BCT   R10,QC044                SUBTRACT FROM NO. OF LINES      23600022
+         SPACE                                                          23700022
+*END OF LOOP THROUGH LCB LIST                                           23800022
+         SPACE 3                                                        23900022
+QC046    EQU   *                                                        24000022
+         L     R5,DEBDEBAD-ONE          GET ADDRESS OF NEXT DEB         24100022
+         B     QC043                    BRANCH TO BEGINNING OF LOOP     24200022
+         SPACE                                                          24300022
+*END OF LOOP THROUGH DEB CHAIN                                          24400022
+         SPACE 3                                                        24500022
+QC047    EQU   *                                                        24600022
+         CH    R15,AVTHA4               CHECK TO SEE IF IN PROCESS      24700022
+*                                       OF STOPPING LCBS USING HK       24800022
+         BE    ALLSTOP                   LCBS ARE ALL STOPPED           24900022
+         LTR   R13,R13                  CHECK WAIT SWITCH               25000022
+         BCR   8,R14                    BRANCH IF ALL LINES STOPPED    X25100022
+                                        OR RECEIVING LAST MSG           25200022
+         LTR   R11,R11                  CHECK FOR WAIT FUNCTION         25300022
+         BCR   7,R14                    BRANCH IF NO WAIT TO BE DON     25400022
+         SPACE                                                          25500022
+         LR    R6,R14                   SAVE REG                        25600022
+         BAL   R14,WAITSUB              GO WAIT AWHILE                  25700022
+         LR    R14,R6                   RESTORE REG                     25800022
+         B     QC04105                  LOOP THROUGH LCBS AGAIN         25900022
+         SPACE 3                                                        26000022
+QC0STOPL EQU   *                                                        26100022
+         CLI   LCBSTAT1,AVTEZERO        IS LINE ALREADY STOPPED         26200022
+         BE    QC04505                  YES GET NEXT LCB                26300022
+*                                       NO - MUST BUILD CMD IN BUFFER   26400022
+*                                       UNIT REQUESTING HK STOP THE     26500022
+*                                       LINE                            26600022
+         NI    OCUNIT+THREE,HEXFC       SET UP BOUNDARY                 26700022
+         L     R1,OCUNIT                STOPLINE UNIT ADDR              26800022
+         TM    OCSWITCH,HEX40           OPCE AND STOPLINE UNIT ARE      26900022
+*                                       AVAILABLE FOR RE-USE            27000022
+         BO    SETUNIT                  BRANCH IF YES                   27100022
+GETUNIT  EQU   *                                                        27200022
+         LR    R8,R13                   SET UP FOR ENQUEUE              27300022
+         LR    R10,R15                  SAVE VALUE IN REG 15            27400022
+         LA    R1,ONEUNIT               VALUE OF 1 -- WANT 1 UNIT       27500022
+         LA    R13,OPCSAVE              SETUP REG SAVEAREA FOR CA       27600022
+         L     R15,OPCGETBF             ADDR OF BUFFER REQUEST RTN      27700022
+         BALR  R14,R15                  BRANCH TO GET A BUFFER UNIT     27800022
+         ST    R1,OCUNIT                SAVE ADDR OF STOPLINE UNIT      27900022
+         LR    R13,R8                   SAVE VALUE IN REG 8             28000022
+         LR    R15,R10                  SAVE VALUE IN REG 15            28100022
+SETUNIT  EQU   *                                                        28200022
+         L     R8,OPCWAITL              GET OPCE IF ONE PRESENT         28300022
+         LA    R8,OPCZERO(R8)           CLEAR HI ORDER BYTE             28400022
+         LTR   R8,R8                    OPCE IN CHAIN                   28500022
+         ST    ROPCE,OPCWAITL           INSERT OPCE IN CHAIN AT TOP     28600022
+         MVC   OCLINK,AVTFZERO          ZERO OUT LINK FIELD             28700022
+         BZ    QC0BY                    NO OPCE NOT IN CHAIN            28800022
+         ST    R8,OCLINK                INSERT ELEMENT IN FRONT OF OLD  28900022
+*                                       ELEMENT                         29000022
+QC0BY    EQU   *                                                        29100022
+         OI    OCSWITCH,HEX40           INDICATE OPCE IS IN OPCWAITL    29200022
+         OI    OCSWITCH,HEX20           OPCE CANNOT BE REUSED  @OZ26899 29220011
+         MVC   OCBACKUP(TWO),MODNAME    SAVE NAME FOR MATCH    @OZ26899 29250011
+         ST    R7,LCBOFF(R1)            INSERT LCB ADDR IN UNIT@OZ26899 29300011
+         ST    R5,DEBOFF(R1)            INSERT ADDR OF DEB IN UNIT      29400022
+         MVI   PLCBFLG1(R1),HEXFF       INDICATE NOT A PLCB    @SA70313 29450000
+         L     R11,AVTHK                GET ADDR OF HKQCB               29500022
+         IC    R10,OPCZERO(R1)          SAVE HI ORDER BYTE              29600022
+         ST    R11,OPCZERO(R1)          INSERT HKQCB  ADDR IN UNIT      29700022
+         STC   R10,OPCZERO(R1)          RESTORE HI ORDER BYTE           29800022
+         MVI   OPCFOUR(R1),STOPLINE     INSERT DC IN UNIT FOR HK        29900022
+         TM    OCSWITCH,HEX80          QUICK CLOSE             @OY14092 30000000
+         BZ    FLUSH                   NO,BRANCH               @OY14092 30020000
+         OI    OPCEIGHT(R1),LOGOFF     SET TO FORCE LOGOFF     @OY14092 30040000
+FLUSH    EQU   *                                               @OY14092 30060000
+         LR    R0,R1                    SAVE ADDR OF UNIT               30100022
+         BAL   R14,QC080                POST UNIT TO DISABLED RQ        30200022
+OUT      EQU   *                                                        30300022
+         MVC   OCBACKUP(TWO),MODNAME    SAVE NAME FOR MATCH LATER       30400022
+EXIT     EQU   *                                                        30500022
+         MVC   OPCLDNME+OPCTHREE(OPCTWO),XCTL00 PREPARE TO XCTL         30600022
+         LA    R0,NOTCA                 INDICATE TO IGC0010D THAT       30700022
+*                                       CONTROL DIDN'T COME FROM CA     30800022
+XCTL     EQU   *                                                        30900022
+         LR    R1,ROPCAVT               PREPARE TO XCTL TO 00           31000022
+         XCTL  SF=(E,OPCXCTL)           XCTL TO IGC0010D                31100022
+         SPACE 3                                                        31200022
+*********************************************************************** 31300022
+*THIS IS THE SECOND ENTRY TO THIS MODULE. STOP LINES HAVE BEEN DONE.    31400022
+*CHECK FOR ANC OPEN DCB'S IN APPLICATION PROGRAMS BY CHECKING THE       31500022
+*USE COUNT IN EACH OPENED PCB.  IF ANY DCB'S ARE OPEN, NOTIFY THE       31600022
+*OPERATOR AND WAIT FOR CLOSE TO BE ISSUED IF FORCE CLOSE WAS            31700022
+*SPECIFIED FORCE THE EODAD EXIT ALSO.                                   31800022
+*********************************************************************** 31900022
+         SPACE                                                          32000022
+         USING IEDQPCB,R8               BASE FOR PCB                    32100022
+ALLSTOP  EQU   *                                                        32200022
+         SR    R15,R15                  ZERO OUT THE REGISTER           32300022
+         MVI   OCRLN,AVTEZERO           CLEAR SWITCHES         @OX13498 32350000
+CHKPCBS  EQU   *                                                        32400022
+         L     R8,AVTPCBPT              ADDRESS OF PCB CHAIN            32500022
+         LA    R8,ZERO(,R8)             CLEAR HIGH ORDER BYTE    Y02027 32550000
+         LTR   R8,R8                    CHECK FOR NO PCBS               32600022
+         BZ    QC0510                   BRANCH IF NONE         @OX13498 32700000
+QC050    EQU   *                                                        32800022
+         L     R11,PCBPEBAD             GET PEB ADDRESS          Y02027 32850000
+         LTR   R11,R11                  HAS APPL PROG CLOSED     Y02027 32930000
+         BZ    QC051                    BRANCH IF PEB ADDR HAS   Y02027 33000000
+*                                       BEEN INVALIDATED = APPL  Y02027 33030000
+*                                       PROG CLOSED              Y02027 33100000
+         L     R11,PEBASCB-IEDQPEB(R11) GET PTR TO ASCB          Y02027 33130000
+         LTR   R11,R11                  IS APPL PROG CLOSE IN    Y02027 33200000
+*                                       PROGRESS                 Y02027 33230000
+         BNM   QC070                    BRANCH IF YES            Y02027 33300000
+         SPACE 1                                                        33330000
+QC051    EQU   *                                                        33400022
+         NC    PCBLINK,PCBLINK          CHECK FOR END OF CHAIN          33500022
+         L     R8,PCBLINK-ONE           GET NEXT PCB                    33600022
+         BNZ   QC050                    BRANCH IF NOT END OF CHAIN      33700022
+         SPACE 1                                                        33710000
+QC0510   EQU   *                                               @OX13498 33720000
+         TM    OCRLN,WAITN              WAIT NEEDED            @OX13498 33730000
+         BZ    QC052                    NO, BRANCH             @OX13498 33740000
+         OI    OCRLN,PASS2              INDICATE SCAN COMPLETED@OS13498 33750000
+         BAL   R14,WAITSUB              GO ISSUE WAIT          @OX13498 33760000
+         NI    OCRLN,AVTEFF-WAITN       RESET WAIT SWITCH      @OX13498 33770000
+         B     CHKPCBS                  GO SCAN AGAIN          @OX13498 33780000
+         SPACE 3                                                        33800022
+*CHECK LINE ACTIVITY AGAIN. WAIT FOR LINES TO STOP SENDING AND          33900022
+*RECEIVING BEFORE GOING ON                                              34000022
+         SPACE                                                          34100022
+QC052    EQU   *                                                        34200022
+*        BAL   R8,QC0402                CHECK FOR NEW OPC CMDS ON       34300022
+         LA    R8,LCBSENDN+LCBRECVN+LCBFREEN VALUE FOR EXECUTE INST     34400022
+         SR    R11,R11                  SET NO WAIT FLAG                34500022
+         BAL   R14,QC04105              BRANCH TO SUBROUTINE            34600022
+         LH    R11,AVTHA2               INDICATE LCB IS TO BE POSTD     34700022
+         BAL   R14,QC04105              ACTIVATE LCBS ONCE MORE         34800022
+         SR    R11,R11                  WAIT FOR LINE ACTIVITY          34900022
+         BAL   R14,QC04105              WAIT FOR LINE ACTIVITY          35000022
+         SR    R8,R8                    CLEAR CPB COUNT                 35100022
+         TM    AVTBIT1,AVTDISKN         DISK=YES SPECIFIED              35200022
+         BNO   QC056                    BRANCH IF NO                    35300022
+         L     R5,AVTFCPB               GET 1ST CPB ON FREE POOL        35400022
+         SPACE 3                                                        35500022
+*BEGINNING OF LOOP THROUGH CPBS IN FREEPOOL. CHECK FOR DISK ACTIVITY.   35600022
+         SPACE                                                          35700022
+QC054    EQU   *                                                        35800022
+         LA    R5,0(,R5)                CLEAR HIGH ORDER BYTE           35900022
+         LTR   R5,R5                    CHECK FOR END OF CPB CHAIN      36000022
+         BZ    QC055                    BRANCH IF END OF CHAIN          36100022
+         LA    R8,ONE(,R8)              ADD 1 TO COUNT OF CPBS          36200022
+         USING IEDQCPB,R5               BASE FOR CPB                    36300022
+         L     R5,CPBNEXTF              GET NEXT CPB IN CHAIN           36400022
+         B     QC054                    CHECK FOR END OF CHAIN          36500022
+         SPACE                                                          36600022
+*END OF LOOP THROUGH CPBS IN THE FREE POOL                              36700022
+         SPACE 3                                                        36800022
+QC055    EQU   *                                                        36900022
+         CH    R8,AVTCPBNO              CHECK TOTAL NO. OF CPBS         37000022
+         BL    QC052                    BRANCH IF SOME NOT IN FREEP     37100022
+         SPACE 3                                                        37200022
+*POST CHECKPOINT REQUEST ELEMENT TO READY QUEUE AND POST                37300022
+*DISPATCHER'S ECB.                                                      37400022
+*  WILL XCTL BACK TO IGCZ010D TO ACCOMPLISH THIS.                       37500022
+         SPACE                                                          37600022
+QC056    EQU   *                                                        37700022
+         MVC   OPCLDNME+OPCTHREE(OPCTWO),XCTLZ0 INSERT ID OF MOD        37800022
+         OI    OPCFLAG2,QC0FF           INDICATE TO Z0 2ND ENTRY        37900022
+         B     XCTL                     EXIT TO IGCZ010D                38000022
+         SPACE 3                                                        38100022
+STOPDLCB EQU   *                                                        38200022
+         MVI   LCBSTAT1-IEDQLCB(R3),LCBSENDN+LCBRECVN MARK LCB @XA05285 38230000
+*                                        AS SEND & RECV FOR CKPTOX05285 38260000
+         LR    R9,R3                    SAVE LCB ADDRESS       @OZ24311 38280000
+         LA    R15,FOUR                 INDICATES STOPPING LCBS         38300022
+         LA    R10,OPCWAITL             GET ADDR OF WAIT LIST OF LCBS   38400022
+         L     R3,OPCWAITL              GET 1ST ELEMENT                 38500022
+CHKOPCE  EQU   *                                                        38600022
+         CLC   OCBACKUP(TWO),MODNAME    MCPCLOSE'S ELEMENT              38700022
+         BNE   GETNEXT                  NO                              38800022
+         L     R5,OCUNIT                GET ADDR OF HK BUFFER  @OZ24311 38810000
+         CLM   R9,ADD,LCBOFF+ONE(R5)    IS THIS CORRECT LCB    @OZ24311 38820000
+         BNE   EXIT                     IF NOT, RETURN TO 00   @OZ24311 38830000
+         TM    OCSWITCH,HEX20           HAS BFR BEEN THRU QHK  @OZ24311 38840000
+         BO    EXIT                     IF NOT, RETURN TO 00   @OZ24311 38850000
+         MVC   OPCZERO(OPCFOUR,R10),OCLINK UPDATE CHAIN                 38900022
+         ST    R3,OPCCOPCE              SET AS CURRENT ELEMENT   S22024 38950000
+         B     QC04105                  LOOP THRU LCBS AGAIN            39000022
+GETNEXT  EQU   *                                                        39100022
+         LR    R10,R3                   SAVE OPCE ADDRESS               39200022
+         L     R3,OCLINK                GET NEXT OPCE IN CHAIN          39300022
+         LA    R3,OPCZERO(R3)           CLEAR HI ORDER BYTE             39400022
+         B     CHKOPCE                  CHECK TO SEE IF MCPCLOSE'S      39500022
+         SPACE 3                                                        39600022
+*ERROR CONDITION-A DCB IN AN APPLICATION PROGRAM WAS OPEN.              39700022
+         SPACE                                                          39800022
+QC070    EQU   *                                                        39900022
+         OI    OCRLN,WAITN              INDICATE WAIT NEEDED   @OX13498 39950000
+         L     R7,CVTPTR                BET CVT POINTER          Y02027 39960000
+         L     R7,CVTAQAVT-CVTMAP(R7)   GET TCX PTR              Y02027 40100000
+         L     R7,TCXPEWAC-IEDQTCX(R7)  BEGINNING OF PEWA CHAIN  Y02027 40200000
+         LA    R7,ZERO(,R7)             CLEAR HIGH ORDER BYTE    Y02027 40300000
+         USING IEDQPEWA,R7              PEWA ADDRESSABILITY      Y02027 40400000
+         SPACE 1                                                        40500000
+COMPPCB  EQU   *                                                 Y02027 40600000
+         CLM   R8,ADD,PEPCBAD+ONE       THIS THE PEWA            Y02027 40700000
+*                                       LOOKING FOR              Y02027 40800000
+         BE    PCBMATCH                 YES, BRANCH              Y02027 40900000
+GETNXT   EQU   *                                                 Y02027 41000000
+         ICM   R7,ADD,PEWALINK+ONE      GET NEXT PEWA            Y02027 41100000
+         BZ    QC071                    GO WRITE OUT ERROR MSG   Y02027 41200000
+         B     COMPPCB                  CHECK FOR MATCHING PCB   Y02027 41300000
+PCBMATCH EQU   *                                                 Y02027 41400000
+         TM    PEWAOPT2,PEWAIN          INPUT DCB                Y02027 41500000
+         BNO   GETNXT                   NO, BRANCH               Y02027 41600000
+         LA    R5,DCBSTFLS              SET REG = 'FLUSH CLOSE'  Y02027 41700000
+         TM    AVTBIT1,AVTQUCKN         IS THIS QUICK CLOSE      Y02027 41800000
+         BZ    TEST                     NO, BRANCH               Y02027 41900000
+         AR    R5,R5                    SET REG = 'QUICK CLOSE'  Y02027 42000000
+TEST     EQU   *                                                 Y02027 42100000
+         IC    R0,PEWAFLG1              GET FLAG BYTE INDICATING Y02027 42200000
+*                                       TYPE OF CLOSE IN WHICH   Y02027 42300000
+*                                       EODAD EXIT CAN BE TAKEN  Y02027 42400000
+         NR    R5,R0                    OK TO TAKE EODAD         Y02027 42500000
+         BZ    GETNXT                   NO, BRANCH               Y02027 42600000
+         NI    PEWAFLG1,AVTEFF-DCBSTQCK-DCBSTFLS   TURN OFF FLAG Y02027 42700000
+*                                       TO PREVENT A 2ND PASS TO Y02027 42800000
+*                                       EODAD EXIT               Y02027 42900000
+         ICM   R0,ADD,PEWAECBA          GET APPL PROG ECB PTR    Y02027 43000000
+         BZ    SETEOF                   BR IF NO ECB             Y02027 43100000
+         TM    PEWAFLG,ERBBUSY          READ IN PROGRESS         Y02027 43200000
+         BZ    POSTBUF                  NO, BRANCH               Y02027 43300000
+SETEOF   EQU   *                                                 Y02027 43400000
+         OI    PEWAOPTC,EODADFLG        TURN ON EODAD FLAG       Y02027 43500000
+         B     GETNXT                   CHECK NEXT PEWA        @OX13498 43550000
+POSTBUF  EQU   *                                                        44500022
+         LR    R10,R15                  SAVE SWITCH            @ZM47866 44510000
+         LA    R1,ONEUNIT               REQUEST ONE UNIT       @ZM47866 44520000
+         LA    R13,OPCSAVE              ADDR OF SAVEAREA       @ZM47866 44530000
+         L     R15,OPCGETBF             ADDR OFF BUFFER REQUEST@ZM47866 44540000
+         BALR  R14,R15                  GET A BUFFER           @ZM47866 44550000
+         LR    R15,R10                  RESTORE SWITCH         @ZM47866 44560000
+         LR    R14,R1                   INITIALIZE BASE        @ZM47866 44570000
+         USING IEDQPRF,R14                                     @ZM47866 44580000
+         MVI   PRFSTAT1,PRFNHDRN        SET TEXT LAST                   44900022
+         MVI   PRFNBUNT,ONE             SET UNIT COUNT                  44950022
+         LA    R10,PERAQCB              READ AHEAD QUE ADDR             45000022
+         ST    R10,PRFQCBA-ONE          SET BUFFER                      45100022
+         MVI   PRFPRI,PRIAPBFR          POST PRIORITY                   45200022
+         SR    R0,R0                    CLEAR REG                       45300022
+         STH   R0,PRFSIZE               SET ZERO PRFSIZE                45400022
+         L     R1,PEWAPROC              GET PROCESS ENTRY AND    Y02027 45450000
+         ICM   R1,ADD,TRMDESTQ-IEDQTRM(R1)   DESTINATION QCB     Y02027 45530000
+         USING IEDQQCB,R1               QCB ADDRESSABILITY       Y02027 45600000
+         LA    R10,QCBSTVTO             STCB CHAIN PTR           Y02027 45630000
+         LR    R0,R14                   SET REGS                SA58434 45700022
+         CLM   R10,ADD,PEWAQCBS+ONE     SCHEDULER IN PEWA        Y02027 45710000
+         LA    R14,QC071                SET RETURN ADDRESS       Y02027 45720000
+         BE    QC080                    YES  BRANCH              Y02027 45730000
+         MVC   QCBSTCHN(3),QCBSLINK     MOVE GET                 Y02027 45740000
+         MVC   QCBSLINK(3),PEWAQCBS+ONE SCHEDULER                Y02027 45750000
+         ST    R10,PEWAQCBS             TO READ AHEAD QCB        Y02027 45760000
+         DROP  R1                                                       45770000
+         BAL   R14,QC080                POST BUFFER                     45800022
+         B     GETNXT                   CHECK NEXT PEWA        @OX13498 45850000
+QC071    EQU   *                                                        45900022
+         TM    OCRLN,PASS2              SCAN COMPLETED BEFORE  @OX13498 45930000
+         BO    QC075                    YES, BYPASS WTO        @OX13498 46100000
+         CLC   QC0MSG2+FIFTY8(8),PCBJOBNA  CHK PREV MSG ISSUED   Y02027 46130000
+         MVC   QC0MSG2+FIFTY8(EIGHT),PCBJOBNA    MOVE JOBNAME TO Y02027 46300000
+*                                       MESSAGE                  Y02027 46330000
+         BE    QC075                    BRANCH IF SAME MSG              46400022
+         L     R1,OPCWORK               WORKAREA ADDRESS        SA59972 46500022
+         MVC   AVTEZERO(SEVENTY,R1),QC0MSG2  MOVE MSG TO WORKA @OZ24822 46500100
+         WTO   MF=(E,(1))               WRITE IT OUT                    46600022
+QC075    EQU   *                                                        46700022
+         B     QC051                    CHECK NEXT PCB         @OX13498 46800000
+         SPACE 3                                                        47000022
+*********************************************************************** 47100022
+*SUBROUTINE TO TPOST AN ELEMENT TO THE DISABLED READY QUEUE WITH SVC    47200022
+*********************************************************************** 47300022
+         SPACE                                                          47400022
+QC080    EQU   *                                                        47500022
+         LR    R1,R0                                                    47600022
+         XC    FIVE(THREE,R1),FIVE(R1)  CLEAR LINK FIELD                47700022
+         STM   R0,R1,OPCAQCTL           PARM FOR QPOST SVC     @ZM46681 47800000
+         LA    R1,OPCAQCTL              SET UP PARAMETER REG   @ZM46681 47900000
+         MVI   OPCAQREQ,HEX0C           PUT CODE IN 1ST BYTE   @ZM46681 48000000
+         MVI   OPCAQRQ2,HEX80           SET END OF PARA LIST   @ZM46681 48100000
+         AQCTL                          USE SVC                         48200022
+         BR    R14                      RETURN FROM SUBROUTINE          48300022
+         SPACE                                                          48400022
+         SPACE 3                                                        48500022
+*********************************************************************** 48600022
+*        WAIT SUBROUTINE                                              * 48700022
+*********************************************************************** 48800022
+         SPACE 1                                                        48900022
+WAITSUB  EQU   *                                                        49000022
+         WAIT  ECB=AVTOPCOB+4           WAIT FOR COMPLETION OF REUS     49100022
+         MVI   AVTOPCOB+FOUR,ZERO       CLEAR EDB                       49200022
+         BR    R14                      RETURN                          49300022
+         SPACE 3                                                        49400022
+*********************************************************************** 49500022
+*        EXECUTED INSTRUCTIONS                                        * 49600022
+*********************************************************************** 49700022
+         SPACE 3                                                        49800022
+         USING IEDQLCB,R7               BASE FOR LCB                    49900022
+QC0TEST  TM    LCBSTAT1,ZERO            USED TO TEST LINE ACTIVITY      50000022
+QC0SETFL OI    LCBSTCBA+TWO,ZERO        MARK LCB AS STOPPED             50100022
+         SPACE 3                                                        50200022
+QC0MSG2  WTO 'IED098I DCB NOT CLOSED FOR MESSAGE PROCESSING PROGRAM-   X50300022
+                    ',MF=L,ROUTCDE=(1,11),DESC=4                        50400022
+         SPACE 3                                                        50500022
+MODNAME  DC    C'Z1'                    MOD ID TO MATCH                 50600022
+XCTL00   DC    C'00'                    MODULE ID OF IGC0010D           50700022
+XCTLZ0   DC    C'Z0'                    ID OF IGCZ010D                  50800022
+X80      DC    X'80'                    BIT ON FOR XMPOST        Y02027 50810000
+ALL      EQU   15                       MASK FOR ICM ALL BYTES   Y02027 50820000
+X10      EQU   16                       LEN TO BACK UP TO START  Y02027 50830000
+*                                       OF AIB                   Y02027 50840000
+MPPKEY   EQU   X'18'                    FLAG = REQ FROM APPL PRG Y02027 50850000
+USEASCB  EQU   X'80'                    FLAG = ALREADY HAVE ASCB Y02027 50860000
+         SPACE 3                                                        50900022
+*IMMEDIATE DATA                                                         51000022
+         SPACE                                                          51100022
+IEDQLINE EQU   X'40'                    BIT ARRANGEMENT FOR TCAM       X51200022
+                                        LINE DSORG+1 FIELD              51300022
+QC0ERROR EQU   4                        RETURN CODE FOR INVALID KEY     51400022
+QC0CANCL EQU   8                        RETURN CODE FOR CANCELLED       51500022
+QC0LAST  EQU   0                        RETURN CODE FOR COMPLETION      51600022
+QC0STOP  EQU   1                        FLAG FOR LCBQCBA+2 TO          X51700022
+                                        INDICATE LINE STOPPED AT       X51800022
+                                        ENTRY TO CLOSEDOWN              51900022
+QC0FF    EQU   X'FF'                    INVALID TCB ADDR IN PCB         52000022
+QC0TWO   EQU   2                        EQUATED VALUE FOR AVTHA2        52100022
+WAIT     EQU   X'80'                    ECB WAIT BIT                    52200022
+WAITN    EQU   X'80'                    WAIT NEEDED FLAG       @OX13498 52220000
+PASS2    EQU   X'40'                    FLAG TO INDICATE THAT  @OX13498 52240000
+*                                       THE PCBS WERE SCANNED  @OX13498 52260000
+*                                       BEFORE                 @OX13498 52280000
+         SPACE 3                                                        52300022
+OPCZERO  EQU   0                        OFFSET = 0               Y02027 52350000
+OPCONE   EQU   1                        OFFSET = 1               Y02027 52500000
+OPCTWO   EQU   2                        OFFSET = 2               Y02027 52600000
+OPCTHREE EQU   3                        OFFSET = 3               Y02027 52700000
+OPCFOUR  EQU   4                        OFFSET = 4               Y02027 52800000
+OPCFIVE  EQU   5                        OFFSET = 5               Y02027 52900000
+OPCSIX   EQU   6                        OFFSET = 6               Y02027 53000000
+OPCSEVEN EQU   7                        OFFSET = 7               Y02027 53100000
+OPCEIGHT EQU   8                        OFFSET = 8               Y02027 53200000
+OPCNINE  EQU   9                        OFFSET = 9               Y02027 53300000
+OPCTEN   EQU   10                       OFFSET = 10              Y02027 53400000
+ONEUNIT  EQU   1                        UNIT COUNT               Y02027 53450000
+LCBSTOP  EQU   X'E8'                    INDICATES STOPPED LCB TO Z1     53600022
+STOPLINE EQU   X'DC'                    TO HK MEANS TO STOP LINE        53700022
+NOTCA    EQU   2                        NOTCA INDICATOR                 53800022
+LCBOFF   EQU   16                       OFFSET IN UNIT FOR LCB ADDR     53900022
+DEBOFF   EQU   12                       OFFSET IN UNIT FOR DEB ADDR     54000022
+PLCBFLG1 EQU   X'20'                    OFFSET TO LCBFLG1      @SA70313 54050000
+DCBQCOMP EQU   X'04'                    QTAM COMPAT DCB                 54100022
+DCBSTQCK EQU   X'80'                    STOP EQUAL QUICK                54200022
+DCBSTFLS EQU   X'40'                    STOP EQUAL FLUSH                54300022
+SEVENTY  EQU   70                       MSG AND ROUTE CDE LNGTH@OZ24822 54500100
+ZERO     EQU   0                        ZERO                            54600022
+TWO      EQU   2                        TWO                             54700022
+EIGHT    EQU   8                        EIGHT                           54800022
+ONE      EQU   1                        OFFSET                          54807022
+THREE    EQU   3                        OFFSET                          54814022
+FOUR     EQU   4                        OFFSET                          54821022
+FIVE     EQU   5                        OFFSET                          54828022
+TWELVE   EQU   12                       OFFSET                          54835022
+FIFTY8   EQU   58                       OFFSET                          54842022
+TWO55    EQU   255                      OFFSET                          54849022
+HEXFF    EQU   X'FF'                    HEXFF          -                54856022
+HEX80    EQU   X'80'                    HEX80                           54863022
+HEXFC    EQU   X'FC'                    HEXFC                           54870022
+HEX40    EQU   X'40'                    HEX40                           54877022
+HEX0C    EQU   X'0C'                    HEX0C                           54884022
+HEX20    EQU   X'20'                    HEX20                  @OZ24311 54888000
+LOGOFF   EQU   X'10'                   FORCE LOGOFF            @OY14092 54892000
+ADD      EQU   7                        ADDRESS MASK             Y02027 54894000
+CVTMAP   CVT   DSECT=YES                                         Y02027 54910000
+         SPACE 1                                                        54920000
+         TTCXD                                                   Y02027 54930000
+         SPACE 1                                                        54940000
+         TPEBD                                                   Y02027 54950000
+         SPACE 1                                                        54960000
+         TQCBD                                                   Y02027 54970000
+         SPACE 1                                                        54980000
+         TTRMD                                                   Y02027 54986000
+         TPEWAD                         PROC WRK AREA DSECT             55000022
+         TAVTD                                                          55100022
+         TPCBD                                                          55200022
+         TOPCED                                                         55300022
+         TOPCAVTD                                                       55400022
+         TPRIOR                                                         55500022
+         TPRFD                                                          55600022
+         TLCBD                                                          55700022
+         TCPBD     3330                                                 55800022
+         TSCBD                                                          55900022
+IEDQCIB DSECT                                                           56000022
+         IEZCIB                                                         56100022
+TCB      DSECT                                                          56200022
+         DS    D                        SPACE FILLER                    56300022
+TCBDEB   DS    F                        ADDRESS OF QUEUE OF DEB'S       56400022
+         SPACE 3                                                        56500022
+*DSECT FOR CVT                                                          56600022
+         SPACE                                                          56700022
+         SPACE                                                          56800022
+         DCBD  DSORG=TX                                                 56900022
+DCBFLAG1 EQU   IHADCB+60                DCB TCAM FLAGBYTE               57000022
+         SPACE 3                                                        57100022
+*DSECT FOR DEB                                                          57200022
+         SPACE                                                          57300022
+IEDQDEB  DSECT                                                          57400022
+         ORG   IEDQDEB+5                OFFSET TO NEXT DEB ADDRESS      57500022
+DEBDEBAD DS    AL3                      ADDRESS OF NEXT DEB             57600022
+         ORG   IEDQDEB+16               OFFSET TO NUMBER OF EXTENTS     57700022
+DEBNMEXT DS    X                        NO OF EXTENTS IN DATA SET       57800022
+         ORG   IEDQDEB+25               OFFSET TO DCB ADDRESS           57900022
+DEBDCBAD DS    AL3                      ADDR OF DCB                     58000022
+         SPACE                                                          58100022
+         ORG   IEDQDEB+32               OFFSET TO DEVICE MODIFIER BYTE  58200022
+DEBDVMOD DS    XL1                      DEVICE MODIFIER                 58300022
+DEBUCBAD DS    XL3                      ADDRESS OF UCB                  58400022
+DEBBINUM DS    XL2                      BIN NO                          58500022
+DEBSTRCC DS    XL2                      CYLINDER ADDR FOR START         58600022
+DEBSTRHH DS    XL2                      TRACK ADDR FOR START OF EXT     58700022
+DEBENDCC DS    XL2                      CYLINDER ADDR FOR EXTNT END     58800022
+DEBENDHH DS    XL2                      TRACK ADDR FOR EXTENT END       58900022
+DEBNMTRK DS    XL2                      NO TRACKS IN THIS EXTENT        59000022
+DEBEND  EQU   *                                                         59100022
+DEBPCBAD EQU   IEDQDEB+9                DEB FIELD                       59200022
+DEBQCBAD EQU   IEDQDEB+17               DEB FIELD                       59300022
+DEBTAMWA EQU   IEDQDEB+21               DEB FIELD                       59400022
+DEBSEGLN EQU   DEBEND-DEBDVMOD          LNGTH OF SEG FOE EACH EXTNT     59500022
+         SPACE 2                                                        59508000
+         TAIBD                                                   Y02027 59516000
+         SPACE 2                                                        59524000
+         IHAPSA                                                  Y02027 59532000
+         SPACE 2                                                        59540000
+         IHAWSAVT CLASS=LOCAL,DSECT=YES                          Y02027 59548000
+         SPACE 2                                                        59556000
+         IHAASCB                                                 Y02027 59564000
+         SPACE 2                                                        59572000
+         IHAASXB                                                 Y02027 59580000
+         SPACE 2                                                        59588000
+         END                                                            59600022

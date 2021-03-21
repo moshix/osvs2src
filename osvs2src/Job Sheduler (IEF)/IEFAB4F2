@@ -1,0 +1,1693 @@
+         TITLE 'IEFAB4F2 - UPDATE ALGORITHM TABLES                     *00001000
+                        '                                               00002000
+IEFAB4F2 CSECT ,                                                01S0001 00003000
+@MAINENT DS    0H                                               01S0001 00004000
+         USING *,@15                                            01S0001 00005000
+         B     @PROLOG                                          01S0001 00006000
+         DC    AL1(16)                                          01S0001 00007000
+         DC    C'IEFAB4F2  74.165'                              01S0001 00008000
+         DROP  @15                                                      00009000
+@PROLOG  STM   @14,@12,12(@13)                                  01S0001 00010000
+         BALR  @12,0                                            01S0001 00011000
+@PSTART  DS    0H                                               01S0001 00012000
+         USING @PSTART,@12                                      01S0001 00013000
+         L     @00,@SIZDATD                                     01S0001 00014000
+         MODESET EXTKEY=SCHED,SAVEKEY=(2)                               00015000
+         GSPACE   R,LV=(0)                                              00016000
+         LR    @11,@01                                          01S0001 00017000
+         USING @DATD,@11                                        01S0001 00018000
+         ST    @13,@SA00001+4                                   01S0001 00019000
+         STC   @02,@OLDKEY                                      01S0001 00020000
+         MODESET KEYADDR=(2)                                            00021000
+         LM    @00,@02,20(@13)                                  01S0001 00022000
+         ST    @11,8(,@13)                                      01S0001 00023000
+         LR    @13,@11                                          01S0001 00024000
+         MODESET EXTKEY=ZERO                                            00025000
+         MVC   @PC00001(20),0(@01)                              01S0001 00026000
+         MODESET EXTKEY=SCHED                                           00027000
+*RTNCODE = SUCCESS;                    /*SET A 0 RETURN CODE         */ 00028000
+         SLR   RTNCODE,RTNCODE                                  01S0048 00029000
+*IF NEWDVREQ = ON THEN                 /*ENTRY NOW REQUIRE A DEVICE? */ 00030000
+         L     @10,@PC00001                                     01S0049 00031000
+         TM    NEWDVREQ(@10),B'10000000'                        01S0049 00032000
+         BNO   @RF00049                                         01S0049 00033000
+*  DO;                                 /*YES, MARK ALG REQ LIST ENTRY*/ 00034000
+*    CVRDUPLI = OFF;                   /*INDICATE NOT A DUP UNIT REQ */ 00035000
+         L     @10,@PC00001+4                                   01S0051 00036000
+         L     @10,VUPTR(,@10)                                  01S0051 00037000
+         L     @10,VOLALGTP(,@10)                               01S0051 00038000
+         NI    CVRDUPLI(@10),B'01111111'                        01S0051 00039000
+*    IF CVRSCRTH=OFF & CVRIGNOR=OFF THEN /*IS IT A SCRATCH OR DEMAND    00040000
+*                                          REQ ?                     */ 00041000
+         TM    CVRSCRTH(@10),B'00001010'                        01S0052 00042000
+         BNZ   @RF00052                                         01S0052 00043000
+*      DO;                             /*NO                          */ 00044000
+*        CVRSKFLG = OFF;               /*INDICATE ALG MUST COVER     */ 00045000
+         NI    CVRSKFLG(@10),B'01111111'                        01S0054 00046000
+*      END;                                                     01S0055 00047000
+*    ELSE;                             /*ALG SHOULD NOT PROCESS      */ 00048000
+@RF00052 DS    0H                                               01S0057 00049000
+*  END;                                                         01S0057 00050000
+*ELSE;                                 /*NOT A NEW DEVICE REQ'D FUNC */ 00051000
+@RF00049 DS    0H                                               01S0059 00052000
+*IF ARUPDATE = ON & CVRIGNOR=OFF THEN  /*WAS A NON-DEMAND VU ENTRY      00053000
+*                                        JUST ALLOCATED?             */ 00054000
+         L     @10,@PC00001                                     01S0059 00055000
+         TM    ARUPDATE(@10),B'01000000'                        01S0059 00056000
+         BNO   @RF00059                                         01S0059 00057000
+         L     @10,@PC00001+4                                   01S0059 00058000
+         L     @10,VUPTR(,@10)                                  01S0059 00059000
+         L     @10,VOLALGTP(,@10)                               01S0059 00060000
+         TM    CVRIGNOR(@10),B'00000010'                        01S0059 00061000
+         BNZ   @RF00059                                         01S0059 00062000
+*  DO;                                 /*YES, DO FUNCTION            */ 00063000
+*/********************************************************************/ 00064000
+*/*                                                                  */ 00065000
+*/* SEGMENT NAME - UPALGARU                                          */ 00066000
+*/*                                                                  */ 00067000
+*/* DESCRIPTIVE NAME - INDICATE THE DEVICE GROUP USED                */ 00068000
+*/*                                                                  */ 00069000
+*/* FUNCTION -                                                       */ 00070000
+*/*     THE ALGORITHM REQUEST LIST ENTRY, ASSOCIATED WITH THE        */ 00071000
+*/*     VOLUNIT TABLE ENTRY JUST ALLOCATED, AND THAT REQUEST LIST    */ 00072000
+*/*     ENTRY'S GROUP ENTRY THAT WAS ALLOCATED ARE UPDATED           */ 00073000
+*/*     TO INDICATE WHETHER OR NOT THE ALGORITHM CAN REARRANGE THIS  */ 00074000
+*/*     ALLOCATION IF NECESSARY. THE REQUEST CANNOT BE REARRANGED    */ 00075000
+*/*     IF IT IS ALLOCATED TO A PERMANENTLY-RESIDENT OR RESERVED     */ 00076000
+*/*     DIRECT-ACCESS VOLUME.                                        */ 00077000
+*/*                                                                  */ 00078000
+*/*     THIS ROUTINE ALSO INDICATES IN THE ALGORITHM REQUEST LIST    */ 00079000
+*/*     ENTRY WHETHER OR NOT THE UNIT JUST ALLOCATED WAS ALREADY     */ 00080000
+*/*     ALLOCATED AND, IF IT ALREADY WAS ALLOCATED, WHETHER OR       */ 00081000
+*/*     NOT IT WAS ALLOCATED TO THIS JOB.                            */ 00082000
+*/*                                                                  */ 00083000
+*/*   OPERATION - (THE OPERATION IS DOCUMENTED BY THE CODE ITSELF.)  */ 00084000
+*/*                                                                  */ 00085000
+*/* ENTRY - (INLINE SUBROUTINE)                                      */ 00086000
+*/*                                                                  */ 00087000
+*/*   PURPOSE - (SEE FUNCTION)                                       */ 00088000
+*/*                                                                  */ 00089000
+*/*   INPUT - FUNCMAP - FUNCTION MAP                                 */ 00090000
+*/*             AFFPROS - INDICATOR WHETHER AFFINITY PROCESSING      */ 00091000
+*/*                       IS BEING DONE.                             */ 00092000
+*/*         - VUPTR - PTR TO VOLUNIT ENTRY JUST ALLOCATED            */ 00093000
+*/*         - UCBPTR - PTR TO THE UCB JUST ALLOCATED                 */ 00094000
+*/*         - ALCWAPTR - PTR TO THE ALLOCATION WORK AREA             */ 00095000
+*/*         - UCBGRPID - PTR TO THE GROUP ID OF THE UCB JUST ALLOC'D */ 00096000
+*/*                                                                  */ 00097000
+*/* EXIT - NORMAL - (INLINE SUBROUTINE)                              */ 00098000
+*/*                                                                  */ 00099000
+*/*   CONDITION - THE FUNCTION WAS COMPLETED                         */ 00100000
+*/*                                                                  */ 00101000
+*/*   OUTPUT -                                                       */ 00102000
+*/*       THE FOLLOWING ALG REQ LIST ENTRY FIELDS MAY BE             */ 00103000
+*/*       SET: CVRALLCT, CVRSKFLG, CVRIGNOR, AND CVRWMOVE.           */ 00104000
+*/*                                                                  */ 00105000
+*/*       THE FOLLOWING ALG GROUP LIST ENTRY FIELDS MAY BE           */ 00106000
+*/*       SET: CVRBOUND AND CVRGRPAL                                 */ 00107000
+*/*                                                                  */ 00108000
+*/*   RETURN CODE - (NONE)                                           */ 00109000
+*/*                                                                  */ 00110000
+*/********************************************************************/ 00111000
+*GRPFOUND = OFF;                       /*INDICATE GROUP NOT YET FOUND*/ 00112000
+         NI    GRPFOUND,B'01111111'                             02S0061 00113000
+*GRPLISTP = CVRGRPPT;                  /*PT TO REQS FIRST GROUP ENTRY*/ 00114000
+         L     GRPLISTP,CVRGRPPT(,@10)                          02S0062 00115000
+*DO WHILE GRPFOUND = OFF;              /*SCAN UNTIL GROUP IS FOUND   */ 00116000
+         B     @DE00063                                         02S0063 00117000
+@DL00063 DS    0H                                               02S0064 00118000
+*  IF UCBGRPID = CVRGRPID THEN         /*IS THIS THE GROUP ALC'D FROM*/ 00119000
+         L     @10,@PC00001+16                                  02S0064 00120000
+         L     @10,UCBGRPID(,@10)                               02S0064 00121000
+         CH    @10,CVRGRPID(,GRPLISTP)                          02S0064 00122000
+         BNE   @RF00064                                         02S0064 00123000
+*    DO;                               /*YES, UPDATE THIS GROUP ENTRY*/ 00124000
+*      GRPFOUND = ON;                  /*INDICATE GROUP IS FOUND     */ 00125000
+         OI    GRPFOUND,B'10000000'                             02S0066 00126000
+*      IF (UCB3DACC = ON | UCB3TAPE = ON)                       02S0067 00127000
+*        & (UCBRESV=ON | UCBPRES=ON) THEN /*P/R OR RESERVED DEVICE   */ 00128000
+         L     @10,@PC00001+8                                   02S0067 00129000
+         L     @10,UCBPTR(,@10)                                 02S0067 00130000
+         TM    UCB3DACC(@10),B'10100000'                        02S0067 00131000
+         BZ    @RF00067                                         02S0067 00132000
+         TM    UCBRESV(@10),B'00100100'                         02S0067 00133000
+         BZ    @RF00067                                         02S0067 00134000
+*        DO;                           /*YES,INDICATE NOT MOVABLE    */ 00135000
+*          IF NOAFFERR = ON | AFFPROS=ON THEN /*ANY AFFINITY ERROR ? */ 00136000
+         L     @10,@PC00001                                     02S0069 00137000
+         TM    NOAFFERR(@10),B'00110000'                        02S0069 00138000
+         BZ    @RF00069                                         02S0069 00139000
+*            DO;                       /*NO, MARK UNMOVABLE          */ 00140000
+*              CVRBOUND=CVRBOUND + ONE; /*INCREMENT THE NUMBER BOUND */ 00141000
+         LA    @10,1                                            02S0071 00142000
+         AH    @10,CVRBOUND(,GRPLISTP)                          02S0071 00143000
+         STH   @10,CVRBOUND(,GRPLISTP)                          02S0071 00144000
+*              CVRSKFLG = ON;          /*ALG NOT TO CONSIDER         */ 00145000
+*              CVRIGNOR = ON;                                   02S0073 00146000
+         L     @10,@PC00001+4                                   02S0073 00147000
+         L     @10,VUPTR(,@10)                                  02S0073 00148000
+         L     @10,VOLALGTP(,@10)                               02S0073 00149000
+         OI    CVRSKFLG(@10),B'10000010'                        02S0073 00150000
+*            END;                                               02S0074 00151000
+*          ELSE                        /*AFFINITIES NOT PROCESSED YET*/ 00152000
+*            RTNCODE = COMEBACK;                                02S0075 00153000
+         B     @RC00069                                         02S0075 00154000
+@RF00069 LA    RTNCODE,4                                        02S0075 00155000
+*        END;                                                   02S0076 00156000
+*      ELSE                            /*NOT A P/R OR RESERVED DA DEV*/ 00157000
+*        DO;                           /*INDICATE ALG CAN REARRANGE  */ 00158000
+         B     @RC00067                                         02S0077 00159000
+@RF00067 DS    0H                                               02S0078 00160000
+*          CVRALLCT = CVRALLCT + ONE;  /*INCREMENT NO.-ALLOC-TO-REQ  */ 00161000
+         L     @10,@PC00001+4                                   02S0078 00162000
+         L     @10,VUPTR(,@10)                                  02S0078 00163000
+         L     @10,VOLALGTP(,@10)                               02S0078 00164000
+         LA    @04,1                                            02S0078 00165000
+         LH    @03,CVRALLCT(,@10)                               02S0078 00166000
+         ALR   @03,@04                                          02S0078 00167000
+         STH   @03,CVRALLCT(,@10)                               02S0078 00168000
+*          CVRGRPAL = CVRGRPAL + ONE;  /*INCREMENT NO.-ALLOC-TO-GROUP*/ 00169000
+         AH    @04,CVRGRPAL(,GRPLISTP)                          02S0079 00170000
+         STH   @04,CVRGRPAL(,GRPLISTP)                          02S0079 00171000
+*        END;                                                   02S0080 00172000
+*    END;                                                       02S0081 00173000
+*  ELSE;                               /*NOT THE GROUP ALLOC'D FROM  */ 00174000
+@RF00064 DS    0H                                               02S0083 00175000
+*  GRPLISTP=GRPLISTP+LENGTH(CVRGPLST); /*POINT TO NEXT GROUP ENTRY   */ 00176000
+@RC00064 AH    GRPLISTP,@CH00257                                02S0083 00177000
+*END;                                                           02S0084 00178000
+@DE00063 TM    GRPFOUND,B'10000000'                             02S0084 00179000
+         BZ    @DL00063                                         02S0084 00180000
+*IF AFFPROS = ON THEN                  /*IS AFFINITY PROCESSING BEING   00181000
+*                                        DONE?                       */ 00182000
+         L     @10,@PC00001                                     02S0085 00183000
+         TM    AFFPROS(@10),B'00100000'                         02S0085 00184000
+         BNO   @RF00085                                         02S0085 00185000
+*  DO;                                 /*YES,INDICATE IN ALG REQ LIST*/ 00186000
+*    CVRSKFLG = ON;                    /*INDICATE ALG NOT TO CONSIDER*/ 00187000
+*    CVRIGNOR = ON;                    /*ALG WILL NEVER CONSIDER     */ 00188000
+         L     @10,@PC00001+4                                   02S0088 00189000
+         L     @10,VUPTR(,@10)                                  02S0088 00190000
+         L     @10,VOLALGTP(,@10)                               02S0088 00191000
+         OI    CVRSKFLG(@10),B'10000010'                        02S0088 00192000
+*  END;                                                         02S0089 00193000
+*ELSE                                  /*THIS IS NOT AFFINITY PROCESS*/ 00194000
+*  DO;                                                          02S0090 00195000
+         B     @RC00085                                         02S0090 00196000
+@RF00085 DS    0H                                               02S0091 00197000
+*    CVRDUPLI = OFF;                   /*NOT A DUPLICATE UNIT REQ    */ 00198000
+         L     @10,@PC00001+4                                   02S0091 00199000
+         L     @10,VUPTR(,@10)                                  02S0091 00200000
+         L     @10,VOLALGTP(,@10)                               02S0091 00201000
+         NI    CVRDUPLI(@10),B'01111111'                        02S0091 00202000
+*  IF CVRIGNOR = OFF THEN              /*MOVABLE REQUEST ?           */ 00203000
+         TM    CVRIGNOR(@10),B'00000010'                        02S0092 00204000
+         BNZ   @RF00092                                         02S0092 00205000
+*    CVRSKFLG = OFF;                   /*YES, HAVE ALG CONSIDER      */ 00206000
+         NI    CVRSKFLG(@10),B'01111111'                        02S0093 00207000
+*  ELSE;                               /*NON-MOVABLE REQUEST         */ 00208000
+@RF00092 DS    0H                                               02S0095 00209000
+*    IF UCB3DACC=ON & UCBUSER>ONE &    /*IS THE UNIT ALREADY ALLOC'D?*/ 00210000
+*      UCBRESV = OFF &UCBPRES = OFF THEN /*AND POSSIBLY MOVEABLE?    */ 00211000
+         L     @10,@PC00001+8                                   02S0095 00212000
+         L     @10,UCBPTR(,@10)                                 02S0095 00213000
+         TM    UCB3DACC(@10),B'00100000'                        02S0095 00214000
+         BNO   @RF00095                                         02S0095 00215000
+         CLI   UCBUSER(@10),1                                   02S0095 00216000
+         BNH   @RF00095                                         02S0095 00217000
+         TM    UCBRESV(@10),B'00100100'                         02S0095 00218000
+         BNZ   @RF00095                                         02S0095 00219000
+*      DO;                             /*YES, PROCESS                */ 00220000
+*        CVRSKFLG = ON;                /*INDICATE ALG NOT TO CONSIDER*/ 00221000
+         L     @10,@PC00001+4                                   02S0097 00222000
+         L     @10,VUPTR(,@10)                                  02S0097 00223000
+         L     @10,VOLALGTP(,@10)                               02S0097 00224000
+         OI    CVRSKFLG(@10),B'10000000'                        02S0097 00225000
+*        OTHERALC = OFF;               /*ASSUME NOT ALC'D TO THIS JOB*/ 00226000
+         NI    OTHERALC,B'01111111'                             02S0098 00227000
+*/********************************************************************/ 00228000
+*/*                                                                  */ 00229000
+*/* SEGMENT NAME - DETWHOAL                                          */ 00230000
+*/*                                                                  */ 00231000
+*/* DESCRIPTIVE NAME - DETERMINE IF UNIT IS ALREADY ALLOCATED        */ 00232000
+*/*                    TO THIS JOB                                   */ 00233000
+*/*                                                                  */ 00234000
+*/* FUNCTION -                                                       */ 00235000
+*/*     THIS ROUTINE SCANS ALL THE SIOTS TO SEE IF ANY OTHER         */ 00236000
+*/*     VOLUNIT ENTRIES ARE ALLOCATED TO THE SAME UNIT THE VOLUNIT   */ 00237000
+*/*     ENTRY BEING PROCESSED WAS ALLOCATED TO.                      */ 00238000
+*/*     IF SUCH A VOLUNIT ENTRY IS FOUND, THE VOLUNIT ENTRY          */ 00239000
+*/*     BEING PROCESSED IS UPDATED TO HAVE VOLUME AFFINITY TO THIS   */ 00240000
+*/*     REQUEST. VOLUNIT ENTRIES WITH AFFINITY                       */ 00241000
+*/*     TO THE VOLUNIT ENTRY BEING PROCESSED ARE ALSO UPDATED TO     */ 00242000
+*/*     MAINTAIN THEIR AFFINITIES.                                   */ 00243000
+*/*     NOTE: THIS FUNCTION IS DONE TO INSURE THAT THE ALLOCATION'S  */ 00244000
+*/*           DEVICE REQUIREMENTS DO NOT INCREASE IF THE VOLUME      */ 00245000
+*/*           MUST BE REARRANGED TO ANOTHER UNIT LATER ON BY THE     */ 00246000
+*/*           ALGORITHM.                                             */ 00247000
+*/*                                                                  */ 00248000
+*/*   OPERATION - (THE OPERATION IS DOCUMENTED BY THE CODE ITSELF.)  */ 00249000
+*/*                                                                  */ 00250000
+*/* ENTRY - (INLINE SUBROUTINE)                                      */ 00251000
+*/*                                                                  */ 00252000
+*/*   PURPOSE - (SEE FUNCTION)                                       */ 00253000
+*/*                                                                  */ 00254000
+*/*   INPUT -                                                        */ 00255000
+*/*       ALCWAPTR - PTR TO THE ALLOCATION WORK AREA                 */ 00256000
+*/*         SIOT1P - PTR TO THE FIRST SIOT IN THE CHAIN              */ 00257000
+*/*         VOLUNPTR - PTR TO THE VOLUNIT TABLE                      */ 00258000
+*/*         VOLUNSZE - SIZE OF THE VOLUNIT TABLE                     */ 00259000
+*/*       VUPTR - PTR TO THE VOLUNIT ENTRY BEING PROCESSED           */ 00260000
+*/*       UCBPTR - PTR TO THE UNIT ALLOCATED TO THE VOLUNIT ENTRY    */ 00261000
+*/*                BEING PROCESSED.                                  */ 00262000
+*/*                                                                  */ 00263000
+*/* EXIT - NORMAL - (INLINE SUBROUTINE)                              */ 00264000
+*/*                                                                  */ 00265000
+*/*   CONDITION - THE FUNCTION HAS BEEN COMPLETED                    */ 00266000
+*/*                                                                  */ 00267000
+*/*   OUTPUT - OTHERALC SET TO 1 IF UNIT FOUND ALLOCATED TO ANOTHER  */ 00268000
+*/*            VOLUNIT ENTRY.                                        */ 00269000
+*/*          - THE VOLUNTID AND VOLID FIELDS OF SOME VOLUNIT         */ 00270000
+*/*            ENTRIES MAY BE UPDATED.                               */ 00271000
+*/*                                                                  */ 00272000
+*/*   RETURN CODE - (NONE)                                           */ 00273000
+*/*                                                                  */ 00274000
+*/********************************************************************/ 00275000
+*RFY DSAB BASED(SIOTETIO);             /*BASE ETIOT ON PTR IN SIOT   */ 00276000
+*SIOTPTR = SIOT1P;                     /*POINT TO FIRST SIOT IN CHAIN*/ 00277000
+         L     @10,@PC00001+12                                  03S0100 00278000
+         L     @10,ALCWAPTR(,@10)                               03S0100 00279000
+         MVC   SIOTPTR(4),SIOT1P(@10)                           03S0100 00280000
+*DO WHILE (SIOTPTR^=ZERO & OTHERALC=OFF); /*SCAN ALL SIOTS           */ 00281000
+         B     @DE00101                                         03S0101 00282000
+@DL00101 DS    0H                                               03S0102 00283000
+*  VUSCANP = SVOLUNAD;                 /*POINT TO SIOTS FIRST VU NTRY*/ 00284000
+         L     @10,SIOTPTR                                      03S0102 00285000
+         L     VUSCANP,SVOLUNAD(,@10)                           03S0102 00286000
+*  RELDEVNO = ZERO;                    /*INITIALIZE TIOT DEVICE ENTRY*/ 00287000
+         SLR   RELDEVNO,RELDEVNO                                03S0103 00288000
+*  DO NUMVOLUN = ONE TO SVOLUNNO       /*SCAN ALL VU ENTRIES FOR SIOT*/ 00289000
+*      WHILE OTHERALC=OFF;             /*..UNTIL UNIT FOUND ALLOC'D  */ 00290000
+         LA    NUMVOLUN,1                                       03S0104 00291000
+         B     @DE00104                                         03S0104 00292000
+@DL00104 TM    OTHERALC,B'10000000'                             03S0104 00293000
+         BNZ   @DC00104                                         03S0104 00294000
+*    IF VDEVREQD = ON THEN             /*IS A DEVICE REQUIRED ?      */ 00295000
+         L     @10,@PC00001+4                                   03S0105 00296000
+         L     @10,VUPTR(,@10)                                  03S0105 00297000
+         TM    VDEVREQD(@10),B'00100000'                        03S0105 00298000
+         BNO   @RF00105                                         03S0105 00299000
+*      DO;                             /*YES, PROCESS ENTRY          */ 00300000
+*        RELDEVNO = RELDEVNO + ONE;    /*INCREMENT TIOT DEVICE ENTRY */ 00301000
+         LA    @06,1                                            03S0107 00302000
+         ALR   RELDEVNO,@06                                     03S0107 00303000
+*        IF VUSCANP ^= VUPTR           /*IS THIS THE ENTRY JUST ALC'D*/ 00304000
+*            & VUSCANP->VOLUNTID^=VOLUNTID /*OR AN AFFINITY REQ TO IT*/ 00305000
+*            & VUSCANP->VOLALOC = ON   /*OR NOT ALREADY ALLOCATED    */ 00306000
+*            & TIOUCBP(RELDEVNO)=UCBPTR THEN /*OR NOT THE RIGHT UCB ?*/ 00307000
+         CR    VUSCANP,@10                                      03S0108 00308000
+         BE    @RF00108                                         03S0108 00309000
+         LH    @03,VOLUNTID(,VUSCANP)                           03S0108 00310000
+         LH    @15,VOLUNTID(,@10)                               03S0108 00311000
+         CR    @03,@15                                          03S0108 00312000
+         BE    @RF00108                                         03S0108 00313000
+         TM    VOLALOC(VUSCANP),B'10000000'                     03S0108 00314000
+         BNO   @RF00108                                         03S0108 00315000
+         LR    @14,RELDEVNO                                     03S0108 00316000
+         SLA   @14,2                                            03S0108 00317000
+         L     @01,SIOTPTR                                      03S0108 00318000
+         L     @01,SIOTETIO(,@01)                               03S0108 00319000
+         L     @01,DSABTIOT(,@01)                               03S0108 00320000
+         L     @09,@PC00001+8                                   03S0108 00321000
+         L     @08,TIOUCBP-5(@14,@01)                           03S0108 00322000
+         LA    @08,0(,@08)                                      03S0108 00323000
+         C     @08,UCBPTR(,@09)                                 03S0108 00324000
+         BNE   @RF00108                                         03S0108 00325000
+*          DO;                         /*NO, PROCESS                 */ 00326000
+*            OTHERALC = ON;            /*INDICATE UNIT IS ALREADY ALC*/ 00327000
+         OI    OTHERALC,B'10000000'                             03S0110 00328000
+*            IF NOAFFERR = ON THEN                              03S0111 00329000
+         L     @14,@PC00001                                     03S0111 00330000
+         TM    NOAFFERR(@14),B'00010000'                        03S0111 00331000
+         BNO   @RF00111                                         03S0111 00332000
+*              DO;                                              03S0112 00333000
+*                SAVUNIT = VOLUNTID;   /*SAVE UNIT ID OF VU JUST ALCD*/ 00334000
+         LR    SAVUNIT,@15                                      03S0113 00335000
+*                SAVOLID = VOLID;      /*SAVE VOL ID OF VU JUST ALC'D*/ 00336000
+         MVC   SAVOLID(6),VOLID(@10)                            03S0114 00337000
+*                VOLUNTID=VUSCANP->VOLUNTID;/*COPY UNIT + VOL ID ..  */ 00338000
+         LH    @09,VOLUNTID(,VUSCANP)                           03S0115 00339000
+         STH   @09,VOLUNTID(,@10)                               03S0115 00340000
+*                VOLID = VUSCANP -> VOLID; /*..FROM THE VU ENTRY        00341000
+*                                        ALREADY ALLOC'D TO THE SAME    00342000
+*                                        UNIT                        */ 00343000
+         MVC   VOLID(6,@10),VOLID(VUSCANP)                      03S0116 00344000
+*                VUENTNO=VOLUNSZE/VOLENTLN; /*DETERMINE NUMBER OF       00345000
+*                                        VU'S                        */ 00346000
+         L     @10,@PC00001+12                                  03S0117 00347000
+         L     @10,ALCWAPTR(,@10)                               03S0117 00348000
+         L     @00,VOLUNSZE(,@10)                               03S0117 00349000
+         SRDA  @00,32                                           03S0117 00350000
+         D     @00,VOLENTLN                                     03S0117 00351000
+         LR    VUENTNO,@01                                      03S0117 00352000
+*                VOLUNP = VOLUNPTR;    /*POINT TO FIRST VOLUNIT ENTRY*/ 00353000
+         L     VOLUNP,VOLUNPTR(,@10)                            03S0118 00354000
+*                DO VUCTR=ONE TO VUENTNO;  /*SCAN ALL VOLUNIT ENTRIES*/ 00355000
+         LA    @10,1                                            03S0119 00356000
+         LR    VUCTR,@10                                        03S0119 00357000
+         B     @DE00119                                         03S0119 00358000
+@DL00119 DS    0H                                               03S0120 00359000
+*                  IF VOLUNP->VOLUNTID=SAVUNIT THEN /*SAME UNIT ID      00360000
+*                                        CHANGE                      */ 00361000
+         CH    SAVUNIT,VOLUNTID(,VOLUNP)                        03S0120 00362000
+         BNE   @RF00120                                         03S0120 00363000
+*                    DO;               /*YES.,,                      */ 00364000
+*                      VOLUNP->VOLUNTID=VOLUNTID; /*COPY NEW UNIT ID */ 00365000
+         L     @10,@PC00001+4                                   03S0122 00366000
+         L     @10,VUPTR(,@10)                                  03S0122 00367000
+         MVC   VOLUNTID(2,VOLUNP),VOLUNTID(@10)                 03S0122 00368000
+*                      VOLUNP->VOLID=VOLID; /*COPY NEW VOLUME ID     */ 00369000
+         MVC   VOLID(6,VOLUNP),VOLID(@10)                       03S0123 00370000
+*                    END;                                       03S0124 00371000
+*                  ELSE;               /*NOT THE SAME UNIT ID        */ 00372000
+@RF00120 DS    0H                                               03S0126 00373000
+*                  VOLUNP=VOLUNP+VOLENTLN;/*POINT TO THE NXT VU ENTRY*/ 00374000
+         AL    VOLUNP,VOLENTLN                                  03S0126 00375000
+*                END;                                           03S0127 00376000
+         AH    VUCTR,@CH00044                                   03S0127 00377000
+@DE00119 CR    VUCTR,VUENTNO                                    03S0127 00378000
+         BNH   @DL00119                                         03S0127 00379000
+*              END;                                             03S0128 00380000
+*            ELSE                                               03S0129 00381000
+*              RTNCODE = COMEBACK;                              03S0129 00382000
+         B     @RC00111                                         03S0129 00383000
+@RF00111 LA    RTNCODE,4                                        03S0129 00384000
+*          END;                                                 03S0130 00385000
+*        ELSE;                         /*VU ENTRY NOT ALC'D SAME UNIT*/ 00386000
+@RF00108 DS    0H                                               03S0132 00387000
+*      END;                                                     03S0132 00388000
+*    ELSE;                             /*VU ENTRY DOES NOT REQ A UNIT*/ 00389000
+@RF00105 DS    0H                                               03S0134 00390000
+*    VUSCANP = VUSCANP + VOLENTLN;     /*POINT TO THE NEXT VU ENTRY  */ 00391000
+@RC00105 AL    VUSCANP,VOLENTLN                                 03S0134 00392000
+*  END;                                                         03S0135 00393000
+         AH    NUMVOLUN,@CH00044                                03S0135 00394000
+@DE00104 L     @10,SIOTPTR                                      03S0135 00395000
+         CH    NUMVOLUN,SVOLUNNO(,@10)                          03S0135 00396000
+         BNH   @DL00104                                         03S0135 00397000
+@DC00104 DS    0H                                               03S0136 00398000
+*  SIOTPTR = SIOTNPTR;                 /*POINT TO THE NEXT SIOT      */ 00399000
+         L     @10,SIOTPTR                                      03S0136 00400000
+         L     @10,SIOTNPTR(,@10)                               03S0136 00401000
+         ST    @10,SIOTPTR                                      03S0136 00402000
+*END;                                                           03S0137 00403000
+@DE00101 ICM   @10,15,SIOTPTR                                   03S0137 00404000
+         BZ    @DC00101                                         03S0137 00405000
+         TM    OTHERALC,B'10000000'                             03S0137 00406000
+         BZ    @DL00101                                         03S0137 00407000
+@DC00101 DS    0H                                               03S0138 00408000
+*RFY DSAB BASED(DSABPTR);                                       03S0138 00409000
+*        IF OTHERALC = OFF THEN        /*IS UNIT ALREADY ALLOC'D TO     00410000
+*                                        THIS JOB ?                  */ 00411000
+         TM    OTHERALC,B'10000000'                             02S0139 00412000
+         BNZ   @RF00139                                         02S0139 00413000
+*          DO;                         /*NO, INDICATE ALG CANNOT MOVE   00414000
+*                                        VOL  UNTIL OTHER JOBS UNALOC*/ 00415000
+*            CVRWMOVE = ON;                                     02S0141 00416000
+         L     @10,@PC00001+4                                   02S0141 00417000
+         L     @10,VUPTR(,@10)                                  02S0141 00418000
+         L     @10,VOLALGTP(,@10)                               02S0141 00419000
+         OI    CVRWMOVE(@10),B'00000001'                        02S0141 00420000
+*          END;                                                 02S0142 00421000
+*        ELSE                          /*UNIT ALLOC'D TO THIS JOB    */ 00422000
+*          DO;                                                  02S0143 00423000
+         B     @RC00139                                         02S0143 00424000
+@RF00139 DS    0H                                               02S0144 00425000
+*            IF NOAFFERR = ON THEN                              02S0144 00426000
+         L     @10,@PC00001                                     02S0144 00427000
+         TM    NOAFFERR(@10),B'00010000'                        02S0144 00428000
+         BNO   @RF00144                                         02S0144 00429000
+*              CVRIGNOR = ON;          /*INDICATE ALG NOT TO CONSIDER*/ 00430000
+         L     @10,@PC00001+4                                   02S0145 00431000
+         L     @10,VUPTR(,@10)                                  02S0145 00432000
+         L     @10,VOLALGTP(,@10)                               02S0145 00433000
+         OI    CVRIGNOR(@10),B'00000010'                        02S0145 00434000
+*          END;                                                 02S0146 00435000
+*      END;                                                     02S0147 00436000
+*    ELSE;                             /*UNIT WAS NOT ALREADY ALLOC'D*/ 00437000
+@RF00095 DS    0H                                               02S0149 00438000
+*  END;                                                         02S0149 00439000
+@RC00095 DS    0H                                               02S0150 00440000
+*/********************************************************************/ 00441000
+*/*                                                                  */ 00442000
+*/* SEGMENT NAME - ARUGELIM                                          */ 00443000
+*/*                                                                  */ 00444000
+*/* DESCRIPTIVE NAME - ELIMINATE OTHER ELIGIBLE GENERICS             */ 00445000
+*/*                                                                  */ 00446000
+*/* FUNCTION -                                                       */ 00447000
+*/*     THE PURPOSE OF THIS ROUTINE IS TO DETERMINE WHETHER          */ 00448000
+*/*     THE VOLUNIT ENTRY BEING PROCESSED IS ASSOCIATED WITH A       */ 00449000
+*/*     MULTI-UNIT/MULTI-GENERIC REQUEST WHICH IS A SPECIFIC VOLUME  */ 00450000
+*/*     REQUEST WHICH IS ELIGIBLE TO MORE THAN ONE GENERIC DEV. TYPE.*/ 00451000
+*/*     IF SO, SEG. 'FINDGENC' IS INVOKED TO DETERMINE WHICH GENERIC */ 00452000
+*/*     WAS ALLOCATED TO AND TO CALL MODULE IEFAB481 TO ELIMINATE    */ 00453000
+*/*     ALL THE OTHER GENERICS FROM THE EDL AND THE ALGORITHM        */ 00454000
+*/*     TABLE ENTRIES ASSOCIATED WITH THE SIOT.                      */ 00455000
+*/*                                                                  */ 00456000
+*/*     IF THE REQUEST WAS ASSOCIATED WITH A MULTI-UNIT/MULTI-GENERIC*/ 00457000
+*/*     REQUEST, THEN MODULE IEFAB481 IS ALSO INVOKED TO UPDATE THE  */ 00458000
+*/*     EDL AND ALG GROUP LIST ENTRIES FOR ALL OTHER REQUESTS        */ 00459000
+*/*     ASSOCIATED WITH THIS REQUEST.                                */ 00460000
+*/*                                                                  */ 00461000
+*/*   OPERATION - (THE OPERATION IS DOCUMENTED BY THE CODE ITSELF.)  */ 00462000
+*/*                                                                  */ 00463000
+*/* ENTRY - (INLINE SUBROUTINE)                                      */ 00464000
+*/*                                                                  */ 00465000
+*/*   PURPOSE - (SEE FUNCTION)                                       */ 00466000
+*/*                                                                  */ 00467000
+*/*   INPUT -                                                        */ 00468000
+*/*       VUPTR - PTR TO THE VOLUNIT ENTRY BEING PROCESSED           */ 00469000
+*/*                                                                  */ 00470000
+*/* EXIT - NORMAL - (INLINE SUBROUTINE)                              */ 00471000
+*/*   CONDITION - THE FUNCTION HAS BEEN COMPLETED                    */ 00472000
+*/*                                                                  */ 00473000
+*/*   OUTPUT - (NONE EXCEPT MODULE IEFAB481 MAY  MARK SOME EDL       */ 00474000
+*/*             GENERIC ENTRIES AND ALGORITHM GROUP LIST ENTRIES AS  */ 00475000
+*/*             INELIGIBLE FOR THIS SIOT.)                           */ 00476000
+*/*                                                                  */ 00477000
+*/*   RETURN CODE - (NONE)                                           */ 00478000
+*/*                                                                  */ 00479000
+*/********************************************************************/ 00480000
+*RFY INDMSIOT BASED(VOLSIOTP);         /*BASE SIOT ON PTR FROM VU    */ 00481000
+@RC00085 DS    0H                                               02S0151 00482000
+*ELIMGENS = OFF;                       /*ASSUME GENERICS DO NOT HAVE    00483000
+*                                        TO BE INELIGIBLE            */ 00484000
+         NI    ELIMGENS,B'01111111'                             02S0151 00485000
+*IF SIOTAFID ^= ZERO THEN              /*ASSOCIATED WITH A MULTI-UNIT,  00486000
+*                                        MULTI-GEN REQ ?             */ 00487000
+         L     @10,@PC00001+4                                   02S0152 00488000
+         L     @10,VUPTR(,@10)                                  02S0152 00489000
+         L     @10,VOLSIOTP(,@10)                               02S0152 00490000
+         ICM   @04,3,SIOTAFID(@10)                              02S0152 00491000
+         BZ    @RF00152                                         02S0152 00492000
+*  DO;                                 /*YES,GENS MUST BE ELIMINATED */ 00493000
+*    ELIMGENS = ON;                                             02S0154 00494000
+         OI    ELIMGENS,B'10000000'                             02S0154 00495000
+*  END;                                                         02S0155 00496000
+*ELSE                                  /*NOT A MULTI-UNIT/GEN REQ    */ 00497000
+*  DO;                                                          02S0156 00498000
+         B     @RC00152                                         02S0156 00499000
+@RF00152 DS    0H                                               02S0157 00500000
+*    IF VOLSPEC = ON                   /*IS THIS A SPEC VOLUME REQ ? */ 00501000
+*        & EDLMGENS = OFF              /*NOT WITH COMPATIBLE GENERICS*/ 00502000
+*        & EDLGENNO > ONE THEN         /*AND WITH > 1 GEN IN EDL ?   */ 00503000
+         L     @10,@PC00001+4                                   02S0157 00504000
+         L     @10,VUPTR(,@10)                                  02S0157 00505000
+         TM    VOLSPEC(@10),B'00100000'                         02S0157 00506000
+         BNO   @RF00157                                         02S0157 00507000
+         L     @10,VOLSIOTP(,@10)                               02S0157 00508000
+         L     @10,SIOTEDLP(,@10)                               02S0157 00509000
+         TM    EDLMGENS(@10),B'01000000'                        02S0157 00510000
+         BNZ   @RF00157                                         02S0157 00511000
+         LA    @04,1                                            02S0157 00512000
+         C     @04,EDLGENNO(,@10)                               02S0157 00513000
+         BNL   @RF00157                                         02S0157 00514000
+*      DO;                             /*YES,DET. NO. ELIGIBLE GENS  */ 00515000
+*        ELIGENCT = ZERO;              /*INITIALIZE COUNT OF ELIG GEN*/ 00516000
+         SLR   ELIGENCT,ELIGENCT                                02S0159 00517000
+*        EDLPTR = EDLFGENP;            /*POINT TO FIRST GEN IN EDL   */ 00518000
+         L     EDLPTR,EDLFGENP(,@10)                            02S0160 00519000
+*        DO GENCTR = ONE TO EDLGENNO;  /*SCAN ALL GENS IN THE EDL    */ 00520000
+         LR    GENCTR,@04                                       02S0161 00521000
+         B     @DE00161                                         02S0161 00522000
+@DL00161 DS    0H                                               02S0162 00523000
+*          IF EINDEVTP = OFF THEN      /*IS THE GENERIC STILL ELIG ? */ 00524000
+         TM    EINDEVTP(EDLPTR),B'10000000'                     02S0162 00525000
+         BNZ   @RF00162                                         02S0162 00526000
+*            DO;                       /*YES, INCREMENT THE COUNT    */ 00527000
+*              ELIGENCT = ELIGENCT + ONE;                       02S0164 00528000
+         AH    ELIGENCT,@CH00044                                02S0164 00529000
+*            END;                                               02S0165 00530000
+*          ELSE;                       /*GENERIC IS NOT ELIGIBLE     */ 00531000
+@RF00162 DS    0H                                               02S0167 00532000
+*          EDLPTR = EDLNXTNT;          /*POINT TO NEXT GEN IN THE EDL*/ 00533000
+         L     EDLPTR,EDLNXTNT(,EDLPTR)                         02S0167 00534000
+*        END;                                                   02S0168 00535000
+         AH    GENCTR,@CH00044                                  02S0168 00536000
+@DE00161 L     @10,@PC00001+4                                   02S0168 00537000
+         L     @10,VUPTR(,@10)                                  02S0168 00538000
+         L     @10,VOLSIOTP(,@10)                               02S0168 00539000
+         L     @10,SIOTEDLP(,@10)                               02S0168 00540000
+         C     GENCTR,EDLGENNO(,@10)                            02S0168 00541000
+         BNH   @DL00161                                         02S0168 00542000
+*        IF ELIGENCT > ONE THEN        /*MORE THAN 1 ELIGIBLE GEN ?  */ 00543000
+         CH    ELIGENCT,@CH00044                                02S0169 00544000
+         BNH   @RF00169                                         02S0169 00545000
+*          DO;                         /*YES,GENS MUST BE ELIMINATED */ 00546000
+*            ELIMGENS = ON;                                     02S0171 00547000
+         OI    ELIMGENS,B'10000000'                             02S0171 00548000
+*          END;                                                 02S0172 00549000
+*        ELSE;                         /*ONLY 1 ELIGIBLE GENERIC     */ 00550000
+@RF00169 DS    0H                                               02S0174 00551000
+*      END;                                                     02S0174 00552000
+*    ELSE;                             /*NOT A SPEC VOL,MULTI-GEN REQ*/ 00553000
+@RF00157 DS    0H                                               02S0176 00554000
+*  END;                                                         02S0176 00555000
+*IF ELIMGENS = ON THEN                 /*MUST GENERICS BE ELIMINATED?*/ 00556000
+@RC00152 TM    ELIMGENS,B'10000000'                             02S0177 00557000
+         BNO   @RF00177                                         02S0177 00558000
+*  DO;                                 /*YES,DETERMINE ELIGIBLE GEN  */ 00559000
+*/********************************************************************/ 00560000
+*/*                                                                  */ 00561000
+*/* SEGMENT NAME - FINDGENC                                          */ 00562000
+*/*                                                                  */ 00563000
+*/* DESCRIPTIVE NAME - DETERMINE WHICH GENERIC WAS ALLOCATED         */ 00564000
+*/*                                                                  */ 00565000
+*/* FUNCTION -                                                       */ 00566000
+*/*     THIS ROUTINE DETERMINES WHICH GENERIC DEVICE TYPE THE        */ 00567000
+*/*     REQUEST HAS BEEN ALLOCATED TO. THEN THIS ROUTINE INVOKES     */ 00568000
+*/*     MODULE IEFAB481 TO MARK ALL OTHER GENERIC ENTRIES INELIGIBLE */ 00569000
+*/*     IN THE EDL AND TO MARK THE ALGORITHM GROUP LIST ENTRIES      */ 00570000
+*/*     FOR OTHER GENERICS INELIGIBLE FOR THIS SIOT.                 */ 00571000
+*/*                                                                  */ 00572000
+*/*     IF THE REQUEST WAS ASSOCIATED WITH A MULTI-UNIT/MULTI-GENERIC*/ 00573000
+*/*     REQUEST, THEN MODULE IEFAB481 IS ALSO INVOKED TO UPDATE THE  */ 00574000
+*/*     EDL AND ALG GROUP LIST ENTRIES FOR ALL OTHER REQUESTS        */ 00575000
+*/*     ASSOCIATED WITH THIS REQUEST.                                */ 00576000
+*/*                                                                  */ 00577000
+*/*   OPERATION - THE GENERIC ENTRIES IN THE EDL ARE SCANNED UNTIL   */ 00578000
+*/*               THE ENTRY CONTAINING THE GROUP ID JUST ALLOCATED   */ 00579000
+*/*               IS LOCATED.                                        */ 00580000
+*/*               IF THE SIOT WAS ASSOCIATED WITH A MULTI-UNIT/      */ 00581000
+*/*               MULTI-GENERIC REQ, ALL SIOTS ARE SCANNED TO SEE    */ 00582000
+*/*               IF THEY ARE ALSO ASSOCIATED WITH THE SAME MULTI-   */ 00583000
+*/*               UNIT/MULTI-GENERIC REQUEST.                        */ 00584000
+*/*                                                                  */ 00585000
+*/* ENTRY - (INLINE SUBROUTINE)                                      */ 00586000
+*/*                                                                  */ 00587000
+*/*   PURPOSE - (SEE FUNCTION)                                       */ 00588000
+*/*                                                                  */ 00589000
+*/*   INPUT -                                                        */ 00590000
+*/*       VUPTR - PTR TO THE VOLUNIT ENTRY BEING PROCESSED.          */ 00591000
+*/*       UCBGRPID - GROUP ID OF THE UCB JUST ALLOCATED.             */ 00592000
+*/*                                                                  */ 00593000
+*/* EXIT - NORMAL - (INLINE SUBROUTINE)                              */ 00594000
+*/*                                                                  */ 00595000
+*/*   CONDITION - THE FUNCTION HAS BEEN COMPLETED.                   */ 00596000
+*/*                                                                  */ 00597000
+*/*   OUTPUT - (NONE, EXCEPT MODULE IEFAB481 WILL MARK SOME EDL      */ 00598000
+*/*            GENERIC ENTRIES AND ALGORITHM GROUP LIST ENTRIES AS   */ 00599000
+*/*            INELIGIBLE FOR THEIR ASSOCIATED SIOTS.)               */ 00600000
+*/*                                                                  */ 00601000
+*/*   RETURN CODE - RTNCODE SET TO 0                                 */ 00602000
+*/*                                                                  */ 00603000
+*/********************************************************************/ 00604000
+*GENFOUND = OFF;                       /*INDICATE GENERIC NOT FOUND  */ 00605000
+         NI    GENFOUND,B'01111111'                             03S0179 00606000
+*EDLPTR = EDLFGENP;                    /*POINT TO FIRST GEN IN EDL   */ 00607000
+         L     @10,@PC00001+4                                   03S0180 00608000
+         L     @10,VUPTR(,@10)                                  03S0180 00609000
+         L     @10,VOLSIOTP(,@10)                               03S0180 00610000
+         L     @10,SIOTEDLP(,@10)                               03S0180 00611000
+         L     EDLPTR,EDLFGENP(,@10)                            03S0180 00612000
+*DO GENCTR = ONE TO EDLGENNO           /*SCAN ALL GENS IN THE EDL    */ 00613000
+*    WHILE (GENFOUND = OFF);           /*UNTIL GROUP ALLOC'D IS FOUND*/ 00614000
+         LA    GENCTR,1                                         03S0181 00615000
+         B     @DE00181                                         03S0181 00616000
+@DL00181 TM    GENFOUND,B'10000000'                             03S0181 00617000
+         BNZ   @DC00181                                         03S0181 00618000
+*  IF EINDEVTP = OFF THEN              /*IS THE GENERIC ELIGIBLE ?   */ 00619000
+         TM    EINDEVTP(EDLPTR),B'10000000'                     03S0182 00620000
+         BNZ   @RF00182                                         03S0182 00621000
+*    DO;                               /*YES, PROCESS                */ 00622000
+*      EDLGNTP = EDLGRPTR;             /*POINT TO FIRST GROUP FOR GEN*/ 00623000
+         L     EDLGNTP,EDLGRPTR(,EDLPTR)                        03S0184 00624000
+*      DO GRPCTR = ONE TO EDLGRPNO     /*SCAN ALL GROUPS FOR GENERIC */ 00625000
+*          WHILE (GENFOUND = OFF);     /*UNTIL GROUP ALLOC'D IS FOUND*/ 00626000
+         LA    GRPCTR,1                                         03S0185 00627000
+         B     @DE00185                                         03S0185 00628000
+@DL00185 TM    GENFOUND,B'10000000'                             03S0185 00629000
+         BNZ   @DC00185                                         03S0185 00630000
+*        IF EDLGRID = UCBGRPID THEN    /*IS GROUP THE ONE JUST ALLOCD*/ 00631000
+         L     @10,@PC00001+16                                  03S0186 00632000
+         CLC   EDLGRID(4,EDLGNTP),UCBGRPID(@10)                 03S0186 00633000
+         BNE   @RF00186                                         03S0186 00634000
+*          DO;                         /*YES, ELIMINATE OTHER GENS   */ 00635000
+*            GENFOUND = ON;            /*INDICATE GENERIC LOCATED    */ 00636000
+         OI    GENFOUND,B'10000000'                             03S0188 00637000
+*            IF SIOTAFID ^= ZERO THEN  /*PART OF MULTI-UNIT/GEN REQ? */ 00638000
+         L     @10,@PC00001+4                                   03S0189 00639000
+         L     @10,VUPTR(,@10)                                  03S0189 00640000
+         L     @10,VOLSIOTP(,@10)                               03S0189 00641000
+         LH    @10,SIOTAFID(,@10)                               03S0189 00642000
+         LTR   @10,@10                                          03S0189 00643000
+         BZ    @RF00189                                         03S0189 00644000
+*              DO;                     /*YES, PROCESS ALL ASSOC SIOTS*/ 00645000
+*                SAVAFFID = SIOTAFID;  /*SAVE THE MUG GROUP ID       */ 00646000
+         LR    SAVAFFID,@10                                     03S0191 00647000
+*                SIOTPTR = SIOT1P;     /*POINT TO THE FIRST SIOT     */ 00648000
+         L     @10,@PC00001+12                                  03S0192 00649000
+         L     @10,ALCWAPTR(,@10)                               03S0192 00650000
+         MVC   SIOTPTR(4),SIOT1P(@10)                           03S0192 00651000
+*                DO WHILE(SIOTPTR^=ZERO /*SCAN ALL SIOTS             */ 00652000
+*                   & RTNCODE = SUCCESS);                       03S0193 00653000
+         B     @DE00193                                         03S0193 00654000
+@DL00193 DS    0H                                               03S0194 00655000
+*                  IF SIOTPTR->SIOTAFID=SAVAFFID THEN /*SAME MUG ID? */ 00656000
+         L     @10,SIOTPTR                                      03S0194 00657000
+         CH    SAVAFFID,SIOTAFID(,@10)                          03S0194 00658000
+         BNE   @RF00194                                         03S0194 00659000
+*                    DO;               /*YES,UPDATE EDL/ALG TABLES   */ 00660000
+*                      CALL IEFAB481(SIOTPTR,EDLDEVT);          03S0196 00661000
+         LA    @10,SIOTPTR                                      03S0196 00662000
+         ST    @10,@AL00001                                     03S0196 00663000
+         LA    @10,EDLDEVT(,EDLPTR)                             03S0196 00664000
+         ST    @10,@AL00001+4                                   03S0196 00665000
+         L     @15,@CV00088                                     03S0196 00666000
+         LA    @01,@AL00001                                     03S0196 00667000
+         BALR  @14,@15                                          03S0196 00668000
+*                      RTNCODE=REG15;  /*SAVE THE RETURN CODE        */ 00669000
+         LR    RTNCODE,REG15                                    03S0197 00670000
+*                    END;                                       03S0198 00671000
+*                  ELSE;               /*NOT THE SAME MUG GROUP ID   */ 00672000
+@RF00194 DS    0H                                               03S0200 00673000
+*                  SIOTPTR=SIOTPTR->SIOTNPTR; /*POINT TO NEXT SIOT   */ 00674000
+         L     @10,SIOTPTR                                      03S0200 00675000
+         L     @10,SIOTNPTR(,@10)                               03S0200 00676000
+         ST    @10,SIOTPTR                                      03S0200 00677000
+*                END;                                           03S0201 00678000
+@DE00193 SLR   @10,@10                                          03S0201 00679000
+         C     @10,SIOTPTR                                      03S0201 00680000
+         BE    @DC00193                                         03S0201 00681000
+         CR    RTNCODE,@10                                      03S0201 00682000
+         BE    @DL00193                                         03S0201 00683000
+@DC00193 DS    0H                                               03S0202 00684000
+*              END;                                             03S0202 00685000
+*            ELSE                      /*NOT PART OF MUG REQ         */ 00686000
+*              DO;                                              03S0203 00687000
+         B     @RC00189                                         03S0203 00688000
+@RF00189 DS    0H                                               03S0204 00689000
+*                CALL IEFAB481(VOLSIOTP,EDLDEVT); /*UPDATE EDL/ALG      00690000
+*                                        TABLES                      */ 00691000
+         L     @10,@PC00001+4                                   03S0204 00692000
+         L     @10,VUPTR(,@10)                                  03S0204 00693000
+         LA    @10,VOLSIOTP(,@10)                               03S0204 00694000
+         ST    @10,@AL00001                                     03S0204 00695000
+         LA    @10,EDLDEVT(,EDLPTR)                             03S0204 00696000
+         ST    @10,@AL00001+4                                   03S0204 00697000
+         L     @15,@CV00088                                     03S0204 00698000
+         LA    @01,@AL00001                                     03S0204 00699000
+         BALR  @14,@15                                          03S0204 00700000
+*                RTNCODE = REG15;      /*SAVE THE RETURN CODE        */ 00701000
+         LR    RTNCODE,REG15                                    03S0205 00702000
+*                END;                                           03S0206 00703000
+*          END;                                                 03S0207 00704000
+*        ELSE;                         /*NOT THE GROUP JUST ALLOC'D  */ 00705000
+@RF00186 DS    0H                                               03S0209 00706000
+*        EDLGNTP = EDLNXGRP;           /*POINT TO NEXT GROUP FOR GEN */ 00707000
+@RC00186 L     EDLGNTP,EDLNXGRP(,EDLGNTP)                       03S0209 00708000
+*      END;                                                     03S0210 00709000
+         AH    GRPCTR,@CH00044                                  03S0210 00710000
+@DE00185 C     GRPCTR,EDLGRPNO(,EDLPTR)                         03S0210 00711000
+         BNH   @DL00185                                         03S0210 00712000
+@DC00185 DS    0H                                               03S0211 00713000
+*    END;                                                       03S0211 00714000
+*  ELSE;                               /*GENERIC IS INELIGIBLE       */ 00715000
+@RF00182 DS    0H                                               03S0213 00716000
+*  EDLPTR = EDLNXTNT;                  /*POINT TO NEXT GENERIC IN EDL*/ 00717000
+         L     EDLPTR,EDLNXTNT(,EDLPTR)                         03S0213 00718000
+*END;                                                           03S0214 00719000
+         AH    GENCTR,@CH00044                                  03S0214 00720000
+@DE00181 L     @10,@PC00001+4                                   03S0214 00721000
+         L     @10,VUPTR(,@10)                                  03S0214 00722000
+         L     @10,VOLSIOTP(,@10)                               03S0214 00723000
+         L     @10,SIOTEDLP(,@10)                               03S0214 00724000
+         C     GENCTR,EDLGENNO(,@10)                            03S0214 00725000
+         BNH   @DL00181                                         03S0214 00726000
+@DC00181 DS    0H                                               03S0215 00727000
+*  END;                                                         02S0215 00728000
+*ELSE;                                 /*GENS DONT HAVE TO BE ELIM'ED*/ 00729000
+@RF00177 DS    0H                                               02S0217 00730000
+*RFY INDMSIOT BASED(SIOTPTR);          /*USE NORMAL SIOT BASE        */ 00731000
+*  END;                                                         01S0218 00732000
+*ELSE;                                 /*ARU FUNCTION NOT NEEDED     */ 00733000
+@RF00059 DS    0H                                               01S0220 00734000
+*RETURN CODE(RTNCODE);                 /*RETURN TO CALLER            */ 00735000
+         IC    @02,@OLDKEY                                      01S0220 00736000
+         L     @13,4(,@13)                                      01S0220 00737000
+         L     @00,@SIZDATD                                     01S0220 00738000
+         LR    @01,@11                                          01S0220 00739000
+         FSPACE   R,LV=(0),A=(1)                                        00740000
+         MODESET KEYADDR=(2)                                            00741000
+         LR    @15,@05                                          01S0220 00742000
+         L     @14,12(,@13)                                     01S0220 00743000
+         LM    @00,@12,20(@13)                                  01S0220 00744000
+         BR    @14                                              01S0220 00745000
+*END IEFAB4F2                          /*END OF UPDATE-ALG-TABLES    */ 00746000
+*/* THE FOLLOWING INCLUDE STATEMENTS WERE FOUND IN THIS PROGRAM.      * 00747000
+*/*%INCLUDE SYSLIB  (A4F2SPEC)                                        * 00748000
+*/*%INCLUDE SYSLIB  (A4F2DATA)                                        * 00749000
+*/*%INCLUDE SYSLIB  (IEFZB422)                                        * 00750000
+*/*%INCLUDE SYSLIB  (IEFZB423)                                        * 00751000
+*/*%INCLUDE SYSLIB  (IEFZB425)                                        * 00752000
+*/*%INCLUDE SYSLIB  (IEFZB426)                                        * 00753000
+*/*%INCLUDE SYSLIB  (IEFUCBOB)                                        * 00754000
+*/*%INCLUDE SYSLIB  (IEFASIOT)                                        * 00755000
+*/*%INCLUDE SYSLIB  (IEFTIOT1)                                        * 00756000
+*/*%INCLUDE SYSLIB  (IHADSAB )                                        * 00757000
+*/*%INCLUDE SYSLIB  (UPALGARU)                                        * 00758000
+*/*%INCLUDE SYSLIB  (UALGSPEC)                                        * 00759000
+*/*%INCLUDE SYSLIB  (DETWHOAL)                                        * 00760000
+*/*%INCLUDE SYSLIB  (DWHOSPEC)                                        * 00761000
+*/*%INCLUDE SYSLIB  (ARUGELIM)                                        * 00762000
+*/*%INCLUDE SYSLIB  (GELISPEC)                                        * 00763000
+*/*%INCLUDE SYSLIB  (FINDGENC)                                        * 00764000
+*/*%INCLUDE SYSLIB  (FINGSPEC)                                        * 00765000
+*;                                                              01S0221 00766000
+@DATA    DS    0H                                                       00767000
+@CH00044 DC    H'1'                                                     00768000
+@CH00257 DC    H'16'                                                    00769000
+@DATD    DSECT                                                          00770000
+         DS    0F                                                       00771000
+@SA00001 DS    18F                                                      00772000
+@PC00001 DS    5F                                                       00773000
+@AL00001 DS    2A                                                       00774000
+IEFAB4F2 CSECT                                                          00775000
+         DS    0F                                                       00776000
+@DATD    DSECT                                                          00777000
+         DS    0D                                                       00778000
+SIOTPTR  DS    A                                                        00779000
+EDLUCBLP DS    A                                                        00780000
+TIOTPTR  DS    A                                                        00781000
+DSABPTR  DS    A                                                        00782000
+CNTPTR   DS    A                                                        00783000
+ELIMGENS DS    BL1                                                      00784000
+GENFOUND DS    BL1                                                      00785000
+GRPFOUND DS    BL1                                                      00786000
+OTHERALC DS    BL1                                                      00787000
+SAVOLID  DS    CL6                                                      00788000
+@OLDKEY  DS    AL1                                                      00789000
+IEFAB4F2 CSECT                                                          00790000
+         DS    0F                                                       00791000
+@SIZDATD DC    AL1(230)                                                 00792000
+         DC    AL3(@ENDDATD-@DATD)                                      00793000
+@CV00088 DC    V(IEFAB481)                                              00794000
+         DS    0D                                                       00795000
+VOLENTLN DC    AL4(28)                                                  00796000
+IEFAB4F2 CSECT                                                          00797000
+         DS   0H                                                        00798000
+PATCHLOC DC ((@DATA-@PSTART)/20)X'00'                                   00799000
+@DATD    DSECT                                                          00800000
+         ORG   *+1-(*-@DATD)/(*-@DATD) INSURE DSECT DATA                00801000
+@ENDDATD EQU   *                                                        00802000
+IEFAB4F2 CSECT                                                          00803000
+@00      EQU   00                      EQUATES FOR REGISTERS 0-15       00804000
+@01      EQU   01                                                       00805000
+@02      EQU   02                                                       00806000
+@03      EQU   03                                                       00807000
+@04      EQU   04                                                       00808000
+@05      EQU   05                                                       00809000
+@06      EQU   06                                                       00810000
+@07      EQU   07                                                       00811000
+@08      EQU   08                                                       00812000
+@09      EQU   09                                                       00813000
+@10      EQU   10                                                       00814000
+@11      EQU   11                                                       00815000
+@12      EQU   12                                                       00816000
+@13      EQU   13                                                       00817000
+@14      EQU   14                                                       00818000
+@15      EQU   15                                                       00819000
+VUENTNO  EQU   @06                                                      00820000
+VUCTR    EQU   @09                                                      00821000
+SAVUNIT  EQU   @08                                                      00822000
+SAVAFFID EQU   @08                                                      00823000
+RTNCODE  EQU   @05                                                      00824000
+RELDEVNO EQU   @04                                                      00825000
+NUMVOLUN EQU   @07                                                      00826000
+GRPCTR   EQU   @07                                                      00827000
+GENCTR   EQU   @06                                                      00828000
+ELIGENCT EQU   @02                                                      00829000
+VUSCANP  EQU   @02                                                      00830000
+VOLUNP   EQU   @03                                                      00831000
+GRPLISTP EQU   @02                                                      00832000
+EDLPTR   EQU   @03                                                      00833000
+EDLGNTP  EQU   @04                                                      00834000
+REG15    EQU   @15                                                      00835000
+IEFEDL   EQU   0                                                        00836000
+EDLHDR   EQU   IEFEDL                                                   00837000
+EDLGENNO EQU   EDLHDR+4                                                 00838000
+EDLFGENP EQU   EDLHDR+8                                                 00839000
+EDLUVFLG EQU   EDLHDR+16                                                00840000
+EDLMGENS EQU   EDLUVFLG                                                 00841000
+EDLENTRY EQU   0                                                        00842000
+EDLNXTNT EQU   EDLENTRY                                                 00843000
+EDLDEVT  EQU   EDLENTRY+4                                               00844000
+EDLGRPNO EQU   EDLENTRY+8                                               00845000
+EDLGRPTR EQU   EDLENTRY+12                                              00846000
+EDLDTFLG EQU   EDLENTRY+20                                              00847000
+EINDEVTP EQU   EDLDTFLG                                                 00848000
+EDLGNTRY EQU   0                                                        00849000
+EDLNXGRP EQU   EDLGNTRY                                                 00850000
+EDLGRID  EQU   EDLGNTRY+12                                              00851000
+EDLGRFLG EQU   EDLGNTRY+16                                              00852000
+EDLUCBL  EQU   0                                                        00853000
+EDLINDIC EQU   EDLUCBL+2                                                00854000
+VOLUNTAB EQU   0                                                        00855000
+VOLID    EQU   VOLUNTAB                                                 00856000
+VOLSTAT  EQU   VOLUNTAB+6                                               00857000
+VOLSTATA EQU   VOLSTAT                                                  00858000
+VOLSPEC  EQU   VOLSTATA                                                 00859000
+VOLSTATB EQU   VOLSTAT+1                                                00860000
+VOLALOC  EQU   VOLSTATB                                                 00861000
+VDEVREQD EQU   VOLSTATB                                                 00862000
+VOLSTATC EQU   VOLSTAT+2                                                00863000
+VOLSTATD EQU   VOLSTAT+3                                                00864000
+VOLUNTID EQU   VOLUNTAB+10                                              00865000
+VOLALGTP EQU   VOLUNTAB+12                                              00866000
+VOLSIOTP EQU   VOLUNTAB+16                                              00867000
+ALCWA    EQU   0                                                        00868000
+SIOT1P   EQU   ALCWA+8                                                  00869000
+CNTABLE  EQU   ALCWA+28                                                 00870000
+VOLUNPTR EQU   ALCWA+80                                                 00871000
+VOLUNSZE EQU   ALCWA+84                                                 00872000
+ALGTABP  EQU   ALCWA+88                                                 00873000
+INDICATE EQU   ALCWA+112                                                00874000
+@NM00007 EQU   ALCWA+113                                                00875000
+TIOTHDRP EQU   ALCWA+120                                                00876000
+NAMES    EQU   0                                                        00877000
+ALGPTRS  EQU   0                                                        00878000
+CVRPARM  EQU   0                                                        00879000
+CVRFLG1  EQU   CVRPARM+8                                                00880000
+CVRRQLST EQU   0                                                        00881000
+CVRALLCT EQU   CVRRQLST+6                                               00882000
+CVRMIN   EQU   CVRRQLST+10                                              00883000
+CVRFLG2  EQU   CVRRQLST+16                                              00884000
+CVRSKFLG EQU   CVRFLG2                                                  00885000
+CVRSCRTH EQU   CVRFLG2                                                  00886000
+CVRIGNOR EQU   CVRFLG2                                                  00887000
+CVRWMOVE EQU   CVRFLG2                                                  00888000
+CVRDUPLI EQU   CVRFLG2+1                                                00889000
+CVRGRPPT EQU   CVRRQLST+20                                              00890000
+CVRGPLST EQU   0                                                        00891000
+CVRGRPID EQU   CVRGPLST+4                                               00892000
+CVRGRPAL EQU   CVRGPLST+6                                               00893000
+CVRBOUND EQU   CVRGPLST+10                                              00894000
+CVRFLG3  EQU   CVRGPLST+12                                              00895000
+GRPCOUNT EQU   0                                                        00896000
+UCB      EQU   0                                                        00897000
+UCBOB    EQU   0                                                        00898000
+UCBJBNR  EQU   UCBOB                                                    00899000
+UCBFL5   EQU   UCBOB+1                                                  00900000
+UCBAF    EQU   UCBFL5                                                   00901000
+UCBSTAT  EQU   UCBOB+3                                                  00902000
+UCBRESV  EQU   UCBSTAT                                                  00903000
+UCBPRES  EQU   UCBSTAT                                                  00904000
+UCBCHAN  EQU   UCBOB+4                                                  00905000
+UCBSFLS  EQU   UCBOB+6                                                  00906000
+UCBFLA   EQU   UCBSFLS                                                  00907000
+UCBFL1   EQU   UCBFLA                                                   00908000
+UCBBSY   EQU   UCBFL1                                                   00909000
+UCBNRY   EQU   UCBFL1                                                   00910000
+UCBPST   EQU   UCBFL1                                                   00911000
+UCBCUB   EQU   UCBFL1                                                   00912000
+UCBFLB   EQU   UCBSFLS+1                                                00913000
+UCBCHM   EQU   UCBOB+8                                                  00914000
+UCBCHM1  EQU   UCBCHM                                                   00915000
+UCBPTH0  EQU   UCBCHM1                                                  00916000
+UCBPTH1  EQU   UCBCHM1                                                  00917000
+UCBWGT   EQU   UCBOB+12                                                 00918000
+UCBTYP   EQU   UCBOB+16                                                 00919000
+UCBTBYT1 EQU   UCBTYP                                                   00920000
+UCB1FEA5 EQU   UCBTBYT1                                                 00921000
+UCB1FEA6 EQU   UCBTBYT1                                                 00922000
+UCBTBYT2 EQU   UCBTYP+1                                                 00923000
+UCB2OPT2 EQU   UCBTBYT2                                                 00924000
+UCBDUDN1 EQU   UCB2OPT2                                                 00925000
+UCB2OPT3 EQU   UCBTBYT2                                                 00926000
+UCBDUDN2 EQU   UCB2OPT3                                                 00927000
+UCB2OPT4 EQU   UCBTBYT2                                                 00928000
+UCBRWTAU EQU   UCB2OPT4                                                 00929000
+UCB2OPT6 EQU   UCBTBYT2                                                 00930000
+UCB2OPT7 EQU   UCBTBYT2                                                 00931000
+UCBTBYT3 EQU   UCBTYP+2                                                 00932000
+UCBDVCLS EQU   UCBTBYT3                                                 00933000
+UCB3TAPE EQU   UCBDVCLS                                                 00934000
+UCB3DACC EQU   UCBDVCLS                                                 00935000
+UCBTBYT4 EQU   UCBTYP+3                                                 00936000
+UCBEXTPT EQU   UCBOB+20                                                 00937000
+UCBFLC   EQU   UCBEXTPT                                                 00938000
+UCBDEV   EQU   UCBOB+24                                                 00939000
+UCBCMEXT EQU   0                                                        00940000
+UCBATI   EQU   UCBCMEXT+3                                               00941000
+@NM00018 EQU   UCBATI                                                   00942000
+UCBFLP1  EQU   UCBCMEXT+5                                               00943000
+UCBMT    EQU   0                                                        00944000
+UCBOCR   EQU   0                                                        00945000
+UCB3540X EQU   0                                                        00946000
+UCBUCS   EQU   0                                                        00947000
+UCBUCSOP EQU   UCBUCS+4                                                 00948000
+UCBFCBOP EQU   UCBUCS+5                                                 00949000
+INDMSIOT EQU   0                                                        00950000
+SCTUSADD EQU   INDMSIOT+20                                              00951000
+SIOTAFID EQU   INDMSIOT+26                                              00952000
+SIOTBYT1 EQU   INDMSIOT+43                                              00953000
+SIOTBYT3 EQU   INDMSIOT+46                                              00954000
+SIOTTSTC EQU   INDMSIOT+47                                              00955000
+SIOTBYT0 EQU   INDMSIOT+52                                              00956000
+SCTSDISP EQU   INDMSIOT+55                                              00957000
+SCTSBYT1 EQU   INDMSIOT+56                                              00958000
+SCTSBYT2 EQU   INDMSIOT+57                                              00959000
+SCTSBYT3 EQU   INDMSIOT+58                                              00960000
+SCTSBYT4 EQU   INDMSIOT+59                                              00961000
+SCTUTYPE EQU   INDMSIOT+60                                              00962000
+SIOTDEVT EQU   SCTUTYPE                                                 00963000
+SIOUBYT3 EQU   SIOTDEVT+2                                               00964000
+SIOTALTD EQU   INDMSIOT+92                                              00965000
+SIOTBYT2 EQU   INDMSIOT+103                                             00966000
+SIOTEDLP EQU   INDMSIOT+136                                             00967000
+SVOLUNAD EQU   INDMSIOT+140                                             00968000
+SIOTETIO EQU   INDMSIOT+148                                             00969000
+SIOTNPTR EQU   INDMSIOT+152                                             00970000
+SVOLUNNO EQU   INDMSIOT+168                                             00971000
+TIOT1    EQU   0                                                        00972000
+TIOENTRY EQU   0                                                        00973000
+TIOESTTA EQU   TIOENTRY+1                                               00974000
+TIOERLOC EQU   TIOENTRY+2                                               00975000
+TIOELINK EQU   TIOERLOC+1                                               00976000
+TIOESYOT EQU   TIOELINK                                                 00977000
+TIOESTTC EQU   TIOENTRY+15                                              00978000
+TIOESTTB EQU   TIOENTRY+16                                              00979000
+POOLSTAR EQU   TIOENTRY+20                                              00980000
+DSAB     EQU   0                                                        00981000
+DSABTIOT EQU   DSAB+16                                                  00982000
+DSABGIDP EQU   DSAB+24                                                  00983000
+DSABANMP EQU   DSAB+28                                                  00984000
+DSABORG  EQU   DSAB+32                                                  00985000
+DSABORG1 EQU   DSABORG                                                  00986000
+DSABORG2 EQU   DSABORG+1                                                00987000
+DSABFLG1 EQU   DSAB+34                                                  00988000
+DSABFLG2 EQU   DSAB+35                                                  00989000
+DSABFLG3 EQU   DSAB+36                                                  00990000
+DSABFLG4 EQU   DSAB+37                                                  00991000
+DSABANMI EQU   0                                                        00992000
+DSABGIDL EQU   0                                                        00993000
+UCBBGN   EQU   0                                                        00994000
+FUNCMAP  EQU   0                                                        00995000
+NEWDVREQ EQU   FUNCMAP                                                  00996000
+ARUPDATE EQU   FUNCMAP                                                  00997000
+AFFPROS  EQU   FUNCMAP                                                  00998000
+NOAFFERR EQU   FUNCMAP                                                  00999000
+VUPTR    EQU   0                                                        01000000
+UCBPTR   EQU   0                                                        01001000
+ALCWAPTR EQU   0                                                        01002000
+UCBGRPID EQU   0                                                        01003000
+UCBOBS01 EQU   UCBDEV                                                   01004000
+UCBSTAB  EQU   UCBOBS01+10                                              01005000
+UCBBSVL  EQU   UCBSTAB                                                  01006000
+UCBPRSRS EQU   UCBSTAB                                                  01007000
+UCBDMCT  EQU   UCBOBS01+11                                              01008000
+UCBFL4   EQU   UCBOBS01+13                                              01009000
+UCBUSER  EQU   UCBOBS01+14                                              01010000
+UCBOBS02 EQU   UCBDEV                                                   01011000
+UCBTFL1  EQU   UCBOBS02+19                                              01012000
+UCBXTN   EQU   UCBOBS02+20                                              01013000
+UCBVOPT  EQU   UCBXTN                                                   01014000
+UCBOBS03 EQU   UCBDEV                                                   01015000
+UCBXTADR EQU   UCBOBS03                                                 01016000
+UCBOBS04 EQU   UCBDEV                                                   01017000
+UCBBTA   EQU   UCBOBS04+12                                              01018000
+UCBOBS06 EQU   UCBDEV                                                   01019000
+UCBAOF   EQU   UCBOBS06                                                 01020000
+UCBAOF1  EQU   UCBAOF                                                   01021000
+UCBAOF2  EQU   UCBAOF+1                                                 01022000
+@NM00017 EQU   UCBOBS06+3                                               01023000
+UCBIRB   EQU   UCBOBS06+4                                               01024000
+UCBGRAF  EQU   UCBIRB                                                   01025000
+UCBLDNCA EQU   UCBOBS06+8                                               01026000
+UCBRDYQ  EQU   UCBLDNCA                                                 01027000
+UCBIRLN  EQU   UCBRDYQ                                                  01028000
+UCBLDNCB EQU   UCBRDYQ+1                                                01029000
+UCBCTLNK EQU   UCBOBS06+12                                              01030000
+UCBOBS07 EQU   UCBDEV                                                   01031000
+UCBOBS08 EQU   UCBDEV                                                   01032000
+UCBOBS09 EQU   UCBDEV                                                   01033000
+TIOEDEVE EQU   TIOESTTB                                                 01034000
+TIOSTTB  EQU   TIOEDEVE                                                 01035000
+TIOUCBP  EQU   TIOEDEVE+1                                               01036000
+         AGO   .@UNREFD                START UNREFERENCED COMPONENTS    01037000
+TIOVERF  EQU   TIOSTTB                                                  01038000
+TIOUNLD  EQU   TIOSTTB                                                  01039000
+TIOMNTD  EQU   TIOSTTB                                                  01040000
+TIOSETU  EQU   TIOSTTB                                                  01041000
+TIOVLSR  EQU   TIOSTTB                                                  01042000
+TIOPVIO  EQU   TIOSTTB                                                  01043000
+TIOREQD  EQU   TIOSTTB                                                  01044000
+TIOUSED  EQU   TIOSTTB                                                  01045000
+UCBRV066 EQU   UCBOBS09+4                                               01046000
+UCBIOSBA EQU   UCBOBS09                                                 01047000
+UCBRV042 EQU   UCBOBS08+5                                               01048000
+UCBCTCF1 EQU   UCBOBS08+4                                               01049000
+UCBCTCAD EQU   UCBOBS08                                                 01050000
+UCBICNCB EQU   UCBOBS07+4                                               01051000
+UCBRV040 EQU   UCBOBS07                                                 01052000
+UCBCTLNA EQU   UCBCTLNK+1                                               01053000
+UCBRLN   EQU   UCBCTLNK                                                 01054000
+UCBRDYQA EQU   UCBLDNCB                                                 01055000
+UCBINRLN EQU   UCBIRLN                                                  01056000
+UCBIRBA  EQU   UCBIRB+1                                                 01057000
+UCBRV039 EQU   UCBGRAF                                                  01058000
+UCBDWNR  EQU   UCBGRAF                                                  01059000
+UCBRPND  EQU   UCBGRAF                                                  01060000
+UCBUPM   EQU   UCBGRAF                                                  01061000
+UCBBTAM  EQU   UCBGRAF                                                  01062000
+UCBDRNO  EQU   UCBGRAF                                                  01063000
+UCBDRO   EQU   UCBGRAF                                                  01064000
+UCBOIP   EQU   UCBGRAF                                                  01065000
+UCBATRCD EQU   @NM00017                                                 01066000
+UCBSKPFG EQU   @NM00017                                                 01067000
+UCBRIPND EQU   @NM00017                                                 01068000
+UCBRTIAC EQU   @NM00017                                                 01069000
+UCBRSV79 EQU   @NM00017                                                 01070000
+UCBRSV78 EQU   @NM00017                                                 01071000
+UCBRSV77 EQU   @NM00017                                                 01072000
+UCBOLTEP EQU   @NM00017                                                 01073000
+UCBATNCT EQU   UCBOBS06+2                                               01074000
+UCBRSV76 EQU   UCBAOF2                                                  01075000
+UCBRSV75 EQU   UCBAOF2                                                  01076000
+UCBRSV74 EQU   UCBAOF2                                                  01077000
+UCBRSV73 EQU   UCBAOF2                                                  01078000
+UCBRSV72 EQU   UCBAOF2                                                  01079000
+UCBRSV71 EQU   UCBAOF2                                                  01080000
+UCBRSV70 EQU   UCBAOF2                                                  01081000
+UCBRSV69 EQU   UCBAOF2                                                  01082000
+UCBRSV68 EQU   UCBAOF1                                                  01083000
+UCBRSV67 EQU   UCBAOF1                                                  01084000
+UCBRSV66 EQU   UCBAOF1                                                  01085000
+UCBRSV65 EQU   UCBAOF1                                                  01086000
+UCBRSV64 EQU   UCBAOF1                                                  01087000
+UCBOFNL  EQU   UCBAOF1                                                  01088000
+UCBOFSP  EQU   UCBAOF1                                                  01089000
+UCBOFMCR EQU   UCBAOF1                                                  01090000
+UCBBTB   EQU   UCBBTA+1                                                 01091000
+UCBDI    EQU   UCBBTA                                                   01092000
+UCBSNS   EQU   UCBOBS04+8                                               01093000
+UCBTEB   EQU   UCBOBS04+4                                               01094000
+UCBGCB   EQU   UCBOBS04+3                                               01095000
+UCBOPEN  EQU   UCBOBS04+2                                               01096000
+UCBSTART EQU   UCBOBS04                                                 01097000
+UCBXTNB  EQU   UCBXTN+1                                                 01098000
+UCBRSV22 EQU   UCBVOPT                                                  01099000
+UCBRSV21 EQU   UCBVOPT                                                  01100000
+UCBRSV20 EQU   UCBVOPT                                                  01101000
+UCBESVE  EQU   UCBVOPT                                                  01102000
+UCBERPC  EQU   UCBVOPT                                                  01103000
+UCBESVC  EQU   UCBVOPT                                                  01104000
+UCBEVA   EQU   UCBVOPT                                                  01105000
+UCBESV   EQU   UCBVOPT                                                  01106000
+UCBRV009 EQU   UCBTFL1                                                  01107000
+UCBRV008 EQU   UCBTFL1                                                  01108000
+UCBRV007 EQU   UCBTFL1                                                  01109000
+UCBRV006 EQU   UCBTFL1                                                  01110000
+UCBRV005 EQU   UCBTFL1                                                  01111000
+UCBRV038 EQU   UCBTFL1                                                  01112000
+UCBNSLTP EQU   UCBTFL1                                                  01113000
+UCBNLTP  EQU   UCBTFL1                                                  01114000
+UCBRES1B EQU   UCBOBS02+18                                              01115000
+UCBFSER  EQU   UCBOBS02+12                                              01116000
+@NM00016 EQU   UCBOBS02+4                                               01117000
+UCBFSEQ  EQU   UCBOBS02+2                                               01118000
+UCBFSCT  EQU   UCBOBS02                                                 01119000
+UCBNEXP  EQU   UCBOBS01+20                                              01120000
+UCBBASE  EQU   UCBOBS01+16                                              01121000
+UCBRES1A EQU   UCBOBS01+15                                              01122000
+UCBFL47  EQU   UCBFL4                                                   01123000
+UCBFL46  EQU   UCBFL4                                                   01124000
+UCBFL45  EQU   UCBFL4                                                   01125000
+UCBRV065 EQU   UCBFL4                                                   01126000
+UCBDSS   EQU   UCBFL4                                                   01127000
+UCBRV028 EQU   UCBFL4                                                   01128000
+UCBWDAV  EQU   UCBFL4                                                   01129000
+UCBDAVV  EQU   UCBFL4                                                   01130000
+UCBSQC   EQU   UCBOBS01+12                                              01131000
+UCBDATP  EQU   UCBOBS01+12                                              01132000
+UCBDMC   EQU   UCBDMCT                                                  01133000
+UCBMOUNT EQU   UCBDMCT                                                  01134000
+UCBBNUL  EQU   UCBSTAB                                                  01135000
+UCBSHAR  EQU   UCBSTAB                                                  01136000
+UCBBSTR  EQU   UCBSTAB                                                  01137000
+UCBBPUB  EQU   UCBSTAB                                                  01138000
+UCBBPRV  EQU   UCBSTAB                                                  01139000
+UCBBALB  EQU   UCBPRSRS                                                 01140000
+UCBPGFL  EQU   UCBSTAB                                                  01141000
+UCBDVSHR EQU   UCBBSVL                                                  01142000
+UCBVOLI  EQU   UCBOBS01+4                                               01143000
+UCBVTOC  EQU   UCBOBS01                                                 01144000
+@NM00001 EQU   FUNCMAP                                                  01145000
+DSABGRID EQU   DSABGIDL+4                                               01146000
+DSABLLEN EQU   DSABGIDL                                                 01147000
+DSABANAM EQU   DSABANMI+1                                               01148000
+DSABANML EQU   DSABANMI                                                 01149000
+DSABRS04 EQU   DSAB+68                                                  01150000
+DSABSIOT EQU   DSAB+64                                                  01151000
+DSABRS03 EQU   DSAB+62                                                  01152000
+DSABDCBM EQU   DSAB+56                                                  01153000
+DSABSSCM EQU   DSAB+52                                                  01154000
+DSABSSNM EQU   DSAB+48                                                  01155000
+DSABPTTR EQU   DSAB+44                                                  01156000
+DSABTCBP EQU   DSAB+40                                                  01157000
+DSABRS02 EQU   DSAB+38                                                  01158000
+@NM00042 EQU   DSABFLG4                                                 01159000
+DSABCKSI EQU   DSABFLG4                                                 01160000
+DSABCKVL EQU   DSABFLG4                                                 01161000
+DSABCKDS EQU   DSABFLG4                                                 01162000
+@NM00041 EQU   DSABFLG3                                                 01163000
+DSABJSCT EQU   DSABFLG3                                                 01164000
+DSABCATL EQU   DSABFLG3                                                 01165000
+DSABVMSC EQU   DSABFLG3                                                 01166000
+DSABVAM  EQU   DSABFLG3                                                 01167000
+DSABPASS EQU   DSABFLG3                                                 01168000
+DSABDEFR EQU   DSABFLG3                                                 01169000
+@NM00040 EQU   DSABFLG2                                                 01170000
+DSABUNAL EQU   DSABFLG2                                                 01171000
+DSABIRM  EQU   DSABFLG2                                                 01172000
+DSABOPEN EQU   DSABFLG2                                                 01173000
+DSABNUSE EQU   DSABFLG1                                                 01174000
+DSABCATM EQU   DSABFLG1                                                 01175000
+DSABPCAT EQU   DSABFLG1                                                 01176000
+DSABDCAT EQU   DSABFLG1                                                 01177000
+DSABCONV EQU   DSABFLG1                                                 01178000
+DSABDCNV EQU   DSABFLG1                                                 01179000
+DSABPALC EQU   DSABFLG1                                                 01180000
+DSABDALC EQU   DSABFLG1                                                 01181000
+@NM00039 EQU   DSABORG2                                                 01182000
+DSABTR   EQU   DSABORG2                                                 01183000
+DSABAM   EQU   DSABORG2                                                 01184000
+@NM00038 EQU   DSABORG2                                                 01185000
+DSABTQ   EQU   DSABORG2                                                 01186000
+DSABTX   EQU   DSABORG2                                                 01187000
+DSABGS   EQU   DSABORG2                                                 01188000
+DSABU    EQU   DSABORG1                                                 01189000
+DSABPO   EQU   DSABORG1                                                 01190000
+DSABMQ   EQU   DSABORG1                                                 01191000
+DSABCQ   EQU   DSABORG1                                                 01192000
+DSABCX   EQU   DSABORG1                                                 01193000
+DSABDA   EQU   DSABORG1                                                 01194000
+DSABPS   EQU   DSABORG1                                                 01195000
+DSABIS   EQU   DSABORG1                                                 01196000
+DSABSSVA EQU   DSAB+21                                                  01197000
+DSABRS01 EQU   DSAB+20                                                  01198000
+DSABOPCT EQU   DSAB+14                                                  01199000
+DSABLNTH EQU   DSAB+12                                                  01200000
+DSABBCHN EQU   DSAB+8                                                   01201000
+DSABFCHN EQU   DSAB+4                                                   01202000
+DSABID   EQU   DSAB                                                     01203000
+TIOTFEND EQU   POOLSTAR+16                                              01204000
+TIOPSLOT EQU   POOLSTAR+13                                              01205000
+TIOPSTTB EQU   POOLSTAR+12                                              01206000
+TIOPPOOL EQU   POOLSTAR+4                                               01207000
+TIOPNSRT EQU   POOLSTAR+3                                               01208000
+@NM00037 EQU   POOLSTAR+2                                               01209000
+TIOPNSLT EQU   POOLSTAR+1                                               01210000
+@NM00036 EQU   POOLSTAR                                                 01211000
+TIOEFSRT EQU   TIOENTRY+17                                              01212000
+TIOSVERF EQU   TIOESTTB                                                 01213000
+TIOSUNLD EQU   TIOESTTB                                                 01214000
+TIOSMNTD EQU   TIOESTTB                                                 01215000
+TIOSSETU EQU   TIOESTTB                                                 01216000
+TIOSVLSR EQU   TIOESTTB                                                 01217000
+TIOSPVIO EQU   TIOESTTB                                                 01218000
+TIOSREQD EQU   TIOESTTB                                                 01219000
+TIOSUSED EQU   TIOESTTB                                                 01220000
+TIOSBALS EQU   TIOESTTC                                                 01221000
+TIOSBALP EQU   TIOESTTC                                                 01222000
+TIOSVOLS EQU   TIOESTTC                                                 01223000
+TIOSVOLP EQU   TIOESTTC                                                 01224000
+TIOSAFFS EQU   TIOESTTC                                                 01225000
+TIOSAFFP EQU   TIOESTTC                                                 01226000
+TIOSDEFR EQU   TIOESTTC                                                 01227000
+TIOSDKCR EQU   TIOESTTC                                                 01228000
+TIOEJFCB EQU   TIOENTRY+12                                              01229000
+TIOEDDNM EQU   TIOENTRY+4                                               01230000
+TIOTREM  EQU   TIOELINK                                                 01231000
+TIOESSDS EQU   TIOESYOT                                                 01232000
+TIOESYIN EQU   TIOELINK                                                 01233000
+TIOEQNAM EQU   TIOELINK                                                 01234000
+TIOEDYNM EQU   TIOELINK                                                 01235000
+TIOTTERM EQU   TIOELINK                                                 01236000
+TIOTRV01 EQU   TIOELINK                                                 01237000
+TIOSYOUT EQU   TIOELINK                                                 01238000
+TIOEWTCT EQU   TIOERLOC                                                 01239000
+TIOSDSP2 EQU   TIOESTTA                                                 01240000
+TIOSDSP1 EQU   TIOESTTA                                                 01241000
+TIOSLABL EQU   TIOESTTA                                                 01242000
+TIOSDADS EQU   TIOESTTA                                                 01243000
+TIOSJBLB EQU   TIOESTTA                                                 01244000
+TIOSPLTS EQU   TIOESTTA                                                 01245000
+TIOSPLTP EQU   TIOESTTA                                                 01246000
+TIOSLTYP EQU   TIOESTTA                                                 01247000
+TIOELNGH EQU   TIOENTRY                                                 01248000
+TIOCSTEP EQU   TIOT1+8                                                  01249000
+TIOCNJOB EQU   TIOT1                                                    01250000
+SIODDSNL EQU   INDMSIOT+173                                             01251000
+SIOVDSNL EQU   INDMSIOT+172                                             01252000
+SIOVDSNT EQU   INDMSIOT+170                                             01253000
+SIOTVMVP EQU   INDMSIOT+164                                             01254000
+SIOTJFX  EQU   INDMSIOT+160                                             01255000
+SJFCBPTR EQU   INDMSIOT+156                                             01256000
+SIOTATE  EQU   INDMSIOT+144                                             01257000
+SIOTEDLS EQU   INDMSIOT+132                                             01258000
+SIOTRSNC EQU   INDMSIOT+130                                             01259000
+SCTANAME EQU   INDMSIOT+122                                             01260000
+@NM00035 EQU   INDMSIOT+108                                             01261000
+SIOTSSNM EQU   INDMSIOT+104                                             01262000
+SIODDQCR EQU   SIOTBYT2                                                 01263000
+SIOVDQCR EQU   SIOTBYT2                                                 01264000
+SIOTCVOL EQU   SIOTBYT2                                                 01265000
+SIOTCNEW EQU   SIOTBYT2                                                 01266000
+SIOTCALC EQU   SIOTBYT2                                                 01267000
+SIOTGALL EQU   SIOTBYT2                                                 01268000
+SIOTDSPD EQU   SIOTBYT2                                                 01269000
+SIOTDMND EQU   SIOTBYT2                                                 01270000
+SIOTOPUC EQU   INDMSIOT+99                                              01271000
+SIOTOUTR EQU   INDMSIOT+97                                              01272000
+SIOTOUTC EQU   INDMSIOT+96                                              01273000
+@NM00034 EQU   INDMSIOT+93                                              01274000
+SIOTAUNC EQU   SIOTALTD                                                 01275000
+SIOTACAT EQU   SIOTALTD                                                 01276000
+SIOTADEL EQU   SIOTALTD                                                 01277000
+SIOTAKEP EQU   SIOTALTD                                                 01278000
+SIOTNPRV EQU   SIOTALTD                                                 01279000
+SIOJCATS EQU   SIOTALTD                                                 01280000
+@NM00033 EQU   SIOTALTD                                                 01281000
+@NM00032 EQU   SIOTALTD                                                 01282000
+@NM00031 EQU   INDMSIOT+91                                              01283000
+SIOTNDSB EQU   INDMSIOT+88                                              01284000
+@NM00030 EQU   INDMSIOT+84                                              01285000
+SIOTDPCD EQU   INDMSIOT+82                                              01286000
+@NM00029 EQU   INDMSIOT+81                                              01287000
+SCTOUTPN EQU   INDMSIOT+80                                              01288000
+SCTOUTNO EQU   INDMSIOT+76                                              01289000
+SCTOUTNM EQU   INDMSIOT+68                                              01290000
+SIOUCBAD EQU   SCTUTYPE+5                                               01291000
+SIOUCNVT EQU   SCTUTYPE+4                                               01292000
+SIOUBYT4 EQU   SIOTDEVT+3                                               01293000
+@NM00028 EQU   SIOUBYT3                                                 01294000
+SIO3UREC EQU   SIOUBYT3                                                 01295000
+SIO3DISP EQU   SIOUBYT3                                                 01296000
+SIO3DACC EQU   SIOUBYT3                                                 01297000
+SIO3COMM EQU   SIOUBYT3                                                 01298000
+SIO3TAPE EQU   SIOUBYT3                                                 01299000
+SIOUBYT2 EQU   SIOTDEVT+1                                               01300000
+SIOUBYT1 EQU   SIOTDEVT                                                 01301000
+SIOTOMN  EQU   SCTSBYT4                                                 01302000
+SIOTIPDI EQU   SCTSBYT4                                                 01303000
+SIOTVAFF EQU   SCTSBYT4                                                 01304000
+SIOTSTEP EQU   SCTSBYT4                                                 01305000
+SIOTASCI EQU   SCTSBYT4                                                 01306000
+@NM00027 EQU   SCTSBYT4                                                 01307000
+SIOTGDGA EQU   SCTSBYT4                                                 01308000
+SCTSGDGS EQU   SCTSBYT4                                                 01309000
+SCTSOLD  EQU   SCTSBYT3                                                 01310000
+SCTSMOD  EQU   SCTSBYT3                                                 01311000
+SCTSNEW  EQU   SCTSBYT3                                                 01312000
+SCTSYSOU EQU   SCTSBYT3                                                 01313000
+SCTVREF  EQU   SCTSBYT3                                                 01314000
+@NM00026 EQU   SCTSBYT3                                                 01315000
+SCTSYSNE EQU   SCTSBYT3                                                 01316000
+SCTDSNRF EQU   SCTSBYT3                                                 01317000
+SCTRECVD EQU   SCTSBYT2                                                 01318000
+SCTDEFER EQU   SCTSBYT2                                                 01319000
+SCTLABEL EQU   SCTSBYT2                                                 01320000
+SCTUNLBD EQU   SCTSBYT2                                                 01321000
+SCTJOBLB EQU   SCTSBYT2                                                 01322000
+SCTVOLAF EQU   SCTSBYT2                                                 01323000
+SIOTCATL EQU   SCTSBYT2                                                 01324000
+SIOCLUNL EQU   SCTSBYT2                                                 01325000
+SIOTJSCT EQU   SCTSBYT1                                                 01326000
+SCTUNAFF EQU   SCTSBYT1                                                 01327000
+SCTPARLM EQU   SCTSBYT1                                                 01328000
+SIOTQDSN EQU   SCTSBYT1                                                 01329000
+SIOTGDSN EQU   SCTSBYT1                                                 01330000
+SIOTCCAT EQU   SCTSBYT1                                                 01331000
+SCTSYSIN EQU   SCTSBYT1                                                 01332000
+SCTDUMMY EQU   SCTSBYT1                                                 01333000
+SIOTUNCT EQU   SCTSDISP                                                 01334000
+SIOTCTLG EQU   SCTSDISP                                                 01335000
+SIOTDLET EQU   SCTSDISP                                                 01336000
+SIOTKEEP EQU   SCTSDISP                                                 01337000
+SIOTPASS EQU   SCTSDISP                                                 01338000
+SIOTPRIV EQU   SCTSDISP                                                 01339000
+S3400DSP EQU   SCTSDISP                                                 01340000
+@NM00025 EQU   SCTSDISP                                                 01341000
+SIOTVLCT EQU   INDMSIOT+54                                              01342000
+SCTNMBUT EQU   INDMSIOT+53                                              01343000
+SIOTRTRY EQU   SIOTBYT0                                                 01344000
+SIOTPUPV EQU   SIOTBYT0                                                 01345000
+SIOTNOPV EQU   SIOTBYT0                                                 01346000
+SIOTGIGN EQU   SIOTBYT0                                                 01347000
+SPVTAMSG EQU   SIOTBYT0                                                 01348000
+SIOTFUDA EQU   SIOTBYT0                                                 01349000
+SIOTDYAL EQU   SIOTBYT0                                                 01350000
+SIOTSSDS EQU   SIOTBYT0                                                 01351000
+SIOTGIID EQU   INDMSIOT+50                                              01352000
+SCTVOLCT EQU   INDMSIOT+49                                              01353000
+SCTSPOOL EQU   INDMSIOT+48                                              01354000
+SIOTQNAM EQU   SIOTTSTC                                                 01355000
+@NM00024 EQU   SIOTTSTC                                                 01356000
+SIOTTERM EQU   SIOTTSTC                                                 01357000
+@NM00023 EQU   SIOTTSTC                                                 01358000
+@NM00022 EQU   SIOTBYT3                                                 01359000
+SIOTJES3 EQU   SIOTBYT3                                                 01360000
+SIOCDEVT EQU   SIOTBYT3                                                 01361000
+SIOALIAS EQU   SIOTBYT3                                                 01362000
+SCTDDINO EQU   INDMSIOT+44                                              01363000
+SIOTDDNT EQU   SIOTBYT1                                                 01364000
+SIOTALCD EQU   SIOTBYT1                                                 01365000
+SIODADSM EQU   SIOTBYT1                                                 01366000
+SIOTDADR EQU   SIOTBYT1                                                 01367000
+SIODUNAL EQU   SIOTBYT1                                                 01368000
+SIOVAMDS EQU   SIOTBYT1                                                 01369000
+SIOTHOLD EQU   SIOTBYT1                                                 01370000
+SIOTOCKP EQU   SIOTBYT1                                                 01371000
+SIOPSCNT EQU   INDMSIOT+42                                              01372000
+SIOTREFN EQU   INDMSIOT+40                                              01373000
+SIOTOTUN EQU   INDMSIOT+39                                              01374000
+SIOTVRSB EQU   INDMSIOT+36                                              01375000
+@NM00021 EQU   INDMSIOT+35                                              01376000
+SCTPJFCB EQU   INDMSIOT+32                                              01377000
+@NM00020 EQU   INDMSIOT+31                                              01378000
+SCTPSIOT EQU   INDMSIOT+28                                              01379000
+@NM00019 EQU   INDMSIOT+24                                              01380000
+SIODSNTE EQU   INDMSIOT+22                                              01381000
+SIOTUNAF EQU   SCTUSADD                                                 01382000
+SIOTDEST EQU   INDMSIOT+12                                              01383000
+SCTDDNAM EQU   INDMSIOT+4                                               01384000
+SIOTTYPE EQU   INDMSIOT+3                                               01385000
+SIOTDSKA EQU   INDMSIOT                                                 01386000
+UCBERADR EQU   UCBUCS+12                                                01387000
+UCBFCBID EQU   UCBUCS+8                                                 01388000
+UCBERCNT EQU   UCBUCS+7                                                 01389000
+UCBRSV51 EQU   UCBUCS+6                                                 01390000
+UCBRSV50 EQU   UCBFCBOP                                                 01391000
+UCBRSV49 EQU   UCBFCBOP                                                 01392000
+UCBRSV48 EQU   UCBFCBOP                                                 01393000
+UCBRSV47 EQU   UCBFCBOP                                                 01394000
+UCBRSV46 EQU   UCBFCBOP                                                 01395000
+UCBRSV45 EQU   UCBFCBOP                                                 01396000
+UCBRSV44 EQU   UCBFCBOP                                                 01397000
+UCBFCBO1 EQU   UCBFCBOP                                                 01398000
+UCBUCSPE EQU   UCBUCSOP                                                 01399000
+UCBRSV43 EQU   UCBUCSOP                                                 01400000
+UCBRSV42 EQU   UCBUCSOP                                                 01401000
+UCBRSV41 EQU   UCBUCSOP                                                 01402000
+UCBRSV40 EQU   UCBUCSOP                                                 01403000
+UCBRSV39 EQU   UCBUCSOP                                                 01404000
+UCBUCSO2 EQU   UCBUCSOP                                                 01405000
+UCBUCSO1 EQU   UCBUCSOP                                                 01406000
+UCBUCSID EQU   UCBUCS                                                   01407000
+UCBRV064 EQU   UCB3540X+6                                               01408000
+UCBVLSER EQU   UCB3540X                                                 01409000
+UCBRDATA EQU   UCBOCR+4                                                 01410000
+UCBFRID  EQU   UCBOCR                                                   01411000
+UCBCLN   EQU   UCBMT+14                                                 01412000
+UCBERG   EQU   UCBMT+12                                                 01413000
+UCBMS    EQU   UCBMT+11                                                 01414000
+UCBNB    EQU   UCBMT+10                                                 01415000
+UCBPW    EQU   UCBMT+9                                                  01416000
+UCBPR    EQU   UCBMT+8                                                  01417000
+UCBSIO   EQU   UCBMT+6                                                  01418000
+UCBTW    EQU   UCBMT+5                                                  01419000
+UCBTR    EQU   UCBMT+4                                                  01420000
+UCBTWT   EQU   UCBMT+3                                                  01421000
+UCBTRT   EQU   UCBMT+2                                                  01422000
+UCBCTD   EQU   UCBMT                                                    01423000
+UCBWTOID EQU   UCBCMEXT+17                                              01424000
+UCBRV043 EQU   UCBCMEXT+16                                              01425000
+UCBASID  EQU   UCBCMEXT+14                                              01426000
+UCBMFCNT EQU   UCBCMEXT+12                                              01427000
+UCBPMSK  EQU   UCBCMEXT+10                                              01428000
+UCBCCWOF EQU   UCBCMEXT+8                                               01429000
+UCBRV041 EQU   UCBCMEXT+6                                               01430000
+UCBRV036 EQU   UCBFLP1                                                  01431000
+UCBRV035 EQU   UCBFLP1                                                  01432000
+UCBRV034 EQU   UCBFLP1                                                  01433000
+UCBRV033 EQU   UCBFLP1                                                  01434000
+UCBRV032 EQU   UCBFLP1                                                  01435000
+UCBRV031 EQU   UCBFLP1                                                  01436000
+UCBRV030 EQU   UCBFLP1                                                  01437000
+UCBNSRCH EQU   UCBFLP1                                                  01438000
+UCBSNSCT EQU   UCBCMEXT+4                                               01439000
+UCBHPDV  EQU   @NM00018                                                 01440000
+UCBHALI  EQU   @NM00018                                                 01441000
+UCBRSV09 EQU   @NM00018                                                 01442000
+UCBRSV08 EQU   @NM00018                                                 01443000
+UCBRSV07 EQU   @NM00018                                                 01444000
+UCBRSV06 EQU   @NM00018                                                 01445000
+UCBRSV05 EQU   @NM00018                                                 01446000
+UCBRSV04 EQU   @NM00018                                                 01447000
+UCBDTI   EQU   UCBCMEXT+2                                               01448000
+UCBSTI   EQU   UCBCMEXT+1                                               01449000
+UCBETI   EQU   UCBCMEXT                                                 01450000
+UCBEXTP  EQU   UCBEXTPT+1                                               01451000
+UCBDDRSW EQU   UCBFLC                                                   01452000
+UCBTICBT EQU   UCBFLC                                                   01453000
+UCBIVRR  EQU   UCBFLC                                                   01454000
+UCBIVRS  EQU   UCBFLC                                                   01455000
+UCBITF   EQU   UCBFLC                                                   01456000
+UCBUDE   EQU   UCBFLC                                                   01457000
+UCBWAA   EQU   UCBFLC                                                   01458000
+UCBATTP  EQU   UCBFLC                                                   01459000
+UCBUNTYP EQU   UCBTBYT4                                                 01460000
+UCBRSV11 EQU   UCBDVCLS                                                 01461000
+UCBRSV10 EQU   UCBDVCLS                                                 01462000
+UCB3CHAR EQU   UCBDVCLS                                                 01463000
+UCB3UREC EQU   UCBDVCLS                                                 01464000
+UCB3DISP EQU   UCBDVCLS                                                 01465000
+UCB3COMM EQU   UCBDVCLS                                                 01466000
+UCBDVPWR EQU   UCB2OPT7                                                 01467000
+UCBVLPWR EQU   UCB2OPT6                                                 01468000
+UCB2OPT5 EQU   UCBTBYT2                                                 01469000
+UCBRVDEV EQU   UCBRWTAU                                                 01470000
+UCBRPS   EQU   UCBDUDN2                                                 01471000
+UCBRR    EQU   UCBDUDN1                                                 01472000
+UCB2OPT1 EQU   UCBTBYT2                                                 01473000
+UCB2OPT0 EQU   UCBTBYT2                                                 01474000
+UCB1FEA7 EQU   UCBTBYT1                                                 01475000
+UCBD6250 EQU   UCB1FEA6                                                 01476000
+UCBD1600 EQU   UCB1FEA5                                                 01477000
+UCB1FEA4 EQU   UCBTBYT1                                                 01478000
+UCB1FEA3 EQU   UCBTBYT1                                                 01479000
+UCB1FEA2 EQU   UCBTBYT1                                                 01480000
+UCB1FEA1 EQU   UCBTBYT1                                                 01481000
+UCB1FEA0 EQU   UCBTBYT1                                                 01482000
+UCBNAME  EQU   UCBOB+13                                                 01483000
+UCBRV029 EQU   UCBWGT                                                   01484000
+UCBVHRSN EQU   UCBWGT                                                   01485000
+UCBVORSN EQU   UCBWGT                                                   01486000
+UCBMTPXP EQU   UCBWGT                                                   01487000
+UCBREW   EQU   UCBWGT                                                   01488000
+UCBPUB   EQU   UCBWGT                                                   01489000
+UCBOUT   EQU   UCBWGT                                                   01490000
+UCBIN    EQU   UCBWGT                                                   01491000
+UCBCPU   EQU   UCBOB+11                                                 01492000
+UCBLCI   EQU   UCBOB+10                                                 01493000
+UCBCNT   EQU   UCBOB+9                                                  01494000
+UCBRV017 EQU   UCBCHM1                                                  01495000
+UCBRV016 EQU   UCBCHM1                                                  01496000
+UCBRV015 EQU   UCBCHM1                                                  01497000
+UCBRV014 EQU   UCBCHM1                                                  01498000
+UCBSPB   EQU   UCBPTH1                                                  01499000
+UCBPPB   EQU   UCBPTH1                                                  01500000
+UCBSPA   EQU   UCBPTH0                                                  01501000
+UCBPPA   EQU   UCBPTH0                                                  01502000
+UCBFLB7  EQU   UCBFLB                                                   01503000
+UCBFLB6  EQU   UCBFLB                                                   01504000
+UCBCRHSN EQU   UCBFLB                                                   01505000
+UCBCRHRV EQU   UCBFLB                                                   01506000
+UCBRESVH EQU   UCBFLB                                                   01507000
+UCBSPST  EQU   UCBFLB                                                   01508000
+UCBASNS  EQU   UCBFLB                                                   01509000
+UCBIORST EQU   UCBFLB                                                   01510000
+UCBQISCE EQU   UCBFL1                                                   01511000
+UCBACTV  EQU   UCBFL1                                                   01512000
+UCBSAP   EQU   UCBFL1                                                   01513000
+UCBNOTRC EQU   UCBCUB                                                   01514000
+UCBPSNS  EQU   UCBFL1                                                   01515000
+UCBUSING EQU   UCBPST                                                   01516000
+UCBNOTRD EQU   UCBNRY                                                   01517000
+UCBBUSYD EQU   UCBBSY                                                   01518000
+UCBUA    EQU   UCBCHAN+1                                                01519000
+UCBCHA   EQU   UCBCHAN                                                  01520000
+UCBDADI  EQU   UCBSTAT                                                  01521000
+UCBSYSR  EQU   UCBSTAT                                                  01522000
+UCBALOC  EQU   UCBSTAT                                                  01523000
+UCBUNLD  EQU   UCBSTAT                                                  01524000
+UCBCHGS  EQU   UCBSTAT                                                  01525000
+UCBONLI  EQU   UCBSTAT                                                  01526000
+UCBID    EQU   UCBOB+2                                                  01527000
+UCBALTPH EQU   UCBFL5                                                   01528000
+UCBALTCU EQU   UCBFL5                                                   01529000
+UCBNALOC EQU   UCBFL5                                                   01530000
+UCBENVRD EQU   UCBFL5                                                   01531000
+UCBVSDR  EQU   UCBFL5                                                   01532000
+UCBSASK  EQU   UCBFL5                                                   01533000
+UCBAMV   EQU   UCBAF                                                    01534000
+UCBDCC   EQU   UCBFL5                                                   01535000
+UCBMONT  EQU   UCBJBNR                                                  01536000
+UCBRV011 EQU   UCBJBNR                                                  01537000
+UCBRSV02 EQU   UCBJBNR                                                  01538000
+UCBOLDSM EQU   UCBJBNR                                                  01539000
+UCBRV003 EQU   UCBJBNR                                                  01540000
+UCBRV002 EQU   UCBJBNR                                                  01541000
+UCBJES3  EQU   UCBJBNR                                                  01542000
+UCBVRDEV EQU   UCBJBNR                                                  01543000
+UCBCMSEG EQU   UCBOB                                                    01544000
+UCBPFXND EQU   UCB+512                                                  01545000
+UCBIOQ   EQU   UCB+508                                                  01546000
+UCBLOCK  EQU   UCB+504                                                  01547000
+UCBPXST  EQU   UCB+504                                                  01548000
+@NM00015 EQU   UCB                                                      01549000
+GRPWPTR  EQU   GRPCOUNT+12                                              01550000
+GRPIDENT EQU   GRPCOUNT+10                                              01551000
+GRPEXCS  EQU   GRPCOUNT+8                                               01552000
+GRPTOTAL EQU   GRPCOUNT+6                                               01553000
+GRPOFFLN EQU   GRPCOUNT+4                                               01554000
+GRPALLCT EQU   GRPCOUNT+2                                               01555000
+GRPAVAIL EQU   GRPCOUNT                                                 01556000
+@NM00014 EQU   CVRGPLST+13                                              01557000
+@NM00013 EQU   CVRFLG3                                                  01558000
+CVRFORCI EQU   CVRFLG3                                                  01559000
+CVRGSKP  EQU   CVRFLG3                                                  01560000
+CVRGALL  EQU   CVRGPLST+8                                               01561000
+CVRGCPTR EQU   CVRGPLST                                                 01562000
+@NM00012 EQU   CVRRQLST+26                                              01563000
+CVRWUCBP EQU   CVRRQLST+24                                              01564000
+CVRNGRP  EQU   CVRRQLST+18                                              01565000
+@NM00011 EQU   CVRFLG2+1                                                01566000
+CVRMULTI EQU   CVRFLG2                                                  01567000
+CVRFULL  EQU   CVRFLG2                                                  01568000
+CVRREACH EQU   CVRFLG2                                                  01569000
+CVRRUSED EQU   CVRFLG2                                                  01570000
+CVRGNEXT EQU   CVRRQLST+12                                              01571000
+CVRPTS   EQU   CVRMIN                                                   01572000
+CVRNEED  EQU   CVRRQLST+8                                               01573000
+CVRREQ1  EQU   CVRRQLST+4                                               01574000
+CVRVUPTR EQU   CVRRQLST                                                 01575000
+@NM00010 EQU   CVRPARM+9                                                01576000
+@NM00009 EQU   CVRFLG1                                                  01577000
+CVRFCALL EQU   CVRFLG1                                                  01578000
+CVROFFLG EQU   CVRFLG1                                                  01579000
+CVRALFLG EQU   CVRFLG1                                                  01580000
+CVRAVFLG EQU   CVRFLG1                                                  01581000
+CVRGRPLK EQU   CVRPARM+6                                                01582000
+CVRNREQ  EQU   CVRPARM+4                                                01583000
+CVRRQPTR EQU   CVRPARM                                                  01584000
+ALGGCNTP EQU   ALGPTRS+12                                               01585000
+ALGGLSTP EQU   ALGPTRS+8                                                01586000
+ALGRQLTP EQU   ALGPTRS+4                                                01587000
+ALGPARMP EQU   ALGPTRS                                                  01588000
+ALCPROCN EQU   NAMES+16                                                 01589000
+ALCSTEPN EQU   NAMES+8                                                  01590000
+ALCJOBN  EQU   NAMES                                                    01591000
+EXITPRMP EQU   ALCWA+144                                                01592000
+CANCELP  EQU   ALCWA+140                                                01593000
+WORK3MP  EQU   ALCWA+136                                                01594000
+WMASK2P  EQU   ALCWA+132                                                01595000
+WMASKPTR EQU   ALCWA+128                                                01596000
+LGENLOCK EQU   ALCWA+124                                                01597000
+TCBP     EQU   ALCWA+116                                                01598000
+ALCWASID EQU   ALCWA+114                                                01599000
+@NM00008 EQU   @NM00007                                                 01600000
+NODEVERR EQU   @NM00007                                                 01601000
+NEEDRCVY EQU   @NM00007                                                 01602000
+ALCWAREC EQU   @NM00007                                                 01603000
+WAITIGEN EQU   @NM00007                                                 01604000
+UNITRECS EQU   @NM00007                                                 01605000
+ALCWADUL EQU   INDICATE                                                 01606000
+ALCWISAM EQU   INDICATE                                                 01607000
+DSSUNIT  EQU   INDICATE                                                 01608000
+DSSTAPE  EQU   INDICATE                                                 01609000
+PRIVASUM EQU   INDICATE                                                 01610000
+INDREQU  EQU   INDICATE                                                 01611000
+INDRETRY EQU   INDICATE                                                 01612000
+INDWAIT  EQU   INDICATE                                                 01613000
+QMGRRBP  EQU   ALCWA+108                                                01614000
+RIMTABCT EQU   ALCWA+104                                                01615000
+RIMTABLN EQU   ALCWA+100                                                01616000
+RIMTABP  EQU   ALCWA+96                                                 01617000
+ALGTABSZ EQU   ALCWA+92                                                 01618000
+@NM00006 EQU   ALCWA+78                                                 01619000
+LTUNITID EQU   ALCWA+76                                                 01620000
+TOTVOLUN EQU   CNTABLE+44                                               01621000
+NUMREQS  EQU   CNTABLE+40                                               01622000
+TOTREQS  EQU   CNTABLE+36                                               01623000
+OTHEREQS EQU   CNTABLE+32                                               01624000
+SUBSREQS EQU   CNTABLE+28                                               01625000
+STRGREQS EQU   CNTABLE+24                                               01626000
+PUBLREQS EQU   CNTABLE+20                                               01627000
+PVTNREQS EQU   CNTABLE+16                                               01628000
+SPECREQS EQU   CNTABLE+12                                               01629000
+TPREQS   EQU   CNTABLE+8                                                01630000
+VAMREQS  EQU   CNTABLE+4                                                01631000
+DMYREQS  EQU   CNTABLE                                                  01632000
+EDTABPTR EQU   ALCWA+24                                                 01633000
+FAILRSCP EQU   ALCWA+20                                                 01634000
+IOSLUTP  EQU   ALCWA+16                                                 01635000
+JSCBPTR  EQU   ALCWA+12                                                 01636000
+FMAPPTR  EQU   ALCWA+4                                                  01637000
+WASIZE   EQU   ALCWA                                                    01638000
+VUGRID   EQU   VOLUNTAB+24                                              01639000
+VUUCBP   EQU   VOLUNTAB+20                                              01640000
+VURCVYPR EQU   VOLSTATD                                                 01641000
+VUVLUNIQ EQU   VOLSTATD                                                 01642000
+VUDMUNIQ EQU   VOLSTATD                                                 01643000
+VUUNALSW EQU   VOLSTATD                                                 01644000
+VUDMNDAL EQU   VOLSTATD                                                 01645000
+VUDMNDOF EQU   VOLSTATD                                                 01646000
+VUREALOC EQU   VOLSTATD                                                 01647000
+VUMUGDON EQU   VOLSTATD                                                 01648000
+@NM00005 EQU   VOLSTATC                                                 01649000
+@NM00004 EQU   VOLSTATC                                                 01650000
+@NM00003 EQU   VOLSTATC                                                 01651000
+VOLURREQ EQU   VOLSTATC                                                 01652000
+VOLGRREQ EQU   VOLSTATC                                                 01653000
+VOLDAREQ EQU   VOLSTATC                                                 01654000
+VOLCOREQ EQU   VOLSTATC                                                 01655000
+VOLTAREQ EQU   VOLSTATC                                                 01656000
+VUAFFWRK EQU   VOLSTATB                                                 01657000
+VUVINELG EQU   VOLSTATB                                                 01658000
+VUDADSME EQU   VOLSTATB                                                 01659000
+VUDNALOC EQU   VOLSTATB                                                 01660000
+VUPROCED EQU   VOLSTATB                                                 01661000
+VOLMNTD  EQU   VOLSTATB                                                 01662000
+VOLDEFER EQU   VOLSTATA                                                 01663000
+VUDADSM  EQU   VOLSTATA                                                 01664000
+VOLRESVE EQU   VOLSTATA                                                 01665000
+VOLNSHR  EQU   VOLSTATA                                                 01666000
+VOLSTG   EQU   VOLSTATA                                                 01667000
+VOLPRV   EQU   VOLSTATA                                                 01668000
+VOLPUB   EQU   VOLSTATA                                                 01669000
+EDLNOJES EQU   EDLINDIC                                                 01670000
+EDLVOLAF EQU   EDLINDIC                                                 01671000
+EDLENQ   EQU   EDLINDIC                                                 01672000
+EDLDADSM EQU   EDLINDIC                                                 01673000
+EDLALCD  EQU   EDLINDIC                                                 01674000
+EDLUCBAD EQU   EDLUCBL                                                  01675000
+EDLJINEL EQU   EDLGRFLG                                                 01676000
+EDLLISTP EQU   EDLGNTRY+8                                               01677000
+EDLUCBNO EQU   EDLGNTRY+4                                               01678000
+@NM00002 EQU   EDLENTRY+18                                              01679000
+EDLNSCNT EQU   EDLENTRY+16                                              01680000
+EDLVAM   EQU   EDLUVFLG                                                 01681000
+EDLGMTP  EQU   EDLHDR+12                                                01682000
+EDLLUV   EQU   EDLHDR                                                   01683000
+.@UNREFD ANOP                          END UNREFERENCED COMPONENTS      01684000
+@RC00067 EQU   @RC00064                                                 01685000
+@RC00108 EQU   @RC00105                                                 01686000
+@RC00139 EQU   @RC00095                                                 01687000
+@RF00144 EQU   @RC00095                                                 01688000
+@RC00189 EQU   @RC00186                                                 01689000
+@RC00069 EQU   @RC00067                                                 01690000
+@RC00111 EQU   @RC00108                                                 01691000
+@ENDDATA EQU   *                                                        01692000
+         END   IEFAB4F2,(C'PLS2336',0603,74165)                         01693000

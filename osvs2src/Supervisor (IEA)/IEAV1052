@@ -1,0 +1,1464 @@
+         TITLE 'IEAV1052  VS/2  1052 CONSOLE I/O SUPPORT'               06650002
+*********************************************************************** 06750001
+*                                                                       06800001
+* NAME         IEAV1052 1052 DEVICE SUPPORT PROCESSOR                   06850001
+*                        ACCESS METHOD  EXCP (1052)                     06900001
+*                                                                       06950001
+*********************************************************************** 07000001
+*                                                                       07050001
+*                                                                       07100001
+*  EXPLANATION:   THE MODULE IS DIVIDED INTO THREE LOGICAL SECTIONS.    07150001
+*  THEY WERE TAKEN FROM OS RELEASE 21 AND MODIFIED FOR AOS.             07200001
+*  MANY OF THE EQUATES WERE NOT CHANGED THUS MANY EQUATES MAY EXIST     07250001
+*  WITH SIMILIAR VALUES. THIS IS ESPECIALLY TRUE OF REGISTER NAMES.     07300001
+*                                                                       07350001
+*      EACH ROUTINE HAS ITS OWN PROLOG EXPLAINING ITS FUNCTION.         07400001
+*  ALL OF THE EQUATES AND CONSTANTS HAVE BEEN GROUPED TOGETHER FOR      07450001
+*  CONVENIENCE.                                                         07500001
+*                                                                       07550001
+*                                                                       07600001
+*  THE FIRST MODULE WAS IEECMPMX.                                       07650001
+*  THE SECOND MODULE WAS IEECMPM1.                                      07700001
+*  THE THIRD MODULE WAS IEECVOCX.                                       07750001
+*                                                                       07800001
+*********************************************************************** 07850001
+*                                                                       07900001
+*     THE FOLLOWING PROLOGUE IS A GENERAL ONE FOR THE ENTIRE MODULE     07950001
+*                                                                       08000001
+*********************************************************************** 08050001
+*                                                                       08060051
+* STATUS       VS/2 MVS 3033 PROCESSOR SUPPORT (SCP)           @G51APSS 08070051
+*                                                                       08100001
+* FUNCTION     THE PURPOSE OF THIS ROUTINE IS TO PERFORM OPEN AND       08150001
+*              CLOSE FUNCTIONS, TO INITIATE I/O REQUESTS, TO RECEIVE    08200001
+*              AND PROCESS I/O COMPLETIONS, TO PROCESS MLWTO OUTPUT,    08250001
+*              AND TO MANAGE THE CONSOLE OUTPUT QUEUE FOR A 1052        08300001
+*              CONSOLE DEVICE.                                          08350001
+*                                                                       08400001
+* INPUT        R0        IRRELEVANT                                     08450001
+*              R1        EXTENDED SAVE AREA ADDRESS                     08500001
+*              R2 - R13  IRRELEVANT                                     08550001
+*              R14       RETURN ADDRESS                                 08600001
+*              R15       EP ADDRESS    Y02752                           08650002
+*                                                                       08700001
+* OUTPUT       R0       DESTROYED                                       08750001
+*              R1       EXTENDED SAVE AREA ADDRESS                      08800001
+*              R2 - R13 DESTROYED                                       08850001
+*              R14      RETURN ADDRESS                                  08900001
+*              R15      DESTROYED                                       08950001
+*                                                                       09000001
+* EXTERNAL REFERENCES - DOCUMENTED IN EACH SECTION                      09050001
+*                                                                       09100001
+* EXITS        BRANCH TO CONSOLE SWITCH IN THE FOLLOWING CASES:  Y02752 09150002
+*              1. FOR SOFTWARE ERROR IN OPEN/CLOSE/EXCP          Y02753 09200002
+*              2. IF CALLED FOR CONSOLE ALARM                           09250001
+*              3. IF I/O ERROR IS ENCOUNTERED                           09300001
+*                                                                       09350001
+*              RETURN TO CALLER IN ALL OTHER CASES                      09400001
+*                                                                       09450001
+* TABLES - DOCUMENTED IN EACH SECTION                                   09500001
+*                                                                       09550001
+* OPERATION                                                             09600001
+*              IF ENTERED ON COMPLETION OF I/O, THE PROCESSOR WILL      09650001
+*              BRANCH TO CONSOLE SWITCH ON AN I/O ERROR. IF A    Y02752 09700002
+*              READ WAS COMPLETED SUCCESSFULLY, THE INPUT IS EDITED     09750001
+*              FOR BACKSPACE CHARACTERS AND PASSED TO THE COMMAND       09800001
+*              SCHEDULER VIA SVC 34, AFTER WHICH THE INPUT BUFFER       09850001
+*              IS FREED. IF A WRITE WAS SUCCESSFULLY COMPLETED AND      09900001
+*              IT IS NOT AN MLWTO LINE, THE CONSOLE QUEUE IS UPDATED.   09950001
+*                                                                       10000001
+*              IF AN OPEN IS PENDING, A DCB IS OBTAINED AND             10050001
+*              INITIALIZED AND THE OPEN MACRO IS ISSUED.                10100001
+*                                                                       10150001
+*              IF ATTENTION IS PENDING, A READ BUFFER IS OBTAINED,      10200001
+*              THE IOB IS SET UP FOR THE READ OPERATION, AND AN         10250001
+*              EXCP IS ISSUED TO START THE I/O.                         10300001
+*                                                                       10350001
+*              IF OUTPUT IS PENDING AND AN MLWTO IS NOT IN PROGRESS,    10400001
+*              THE CONSOLE QUEUE IS SEARCHED FOR A VALID ENTRY TO       10450001
+*              BE SERVICED. IF THE ENTRY IS NOT FOR AN MLWTO, THE       10500001
+*              IOB IS SET UP FOR A WRITE OPERATION AND EXCP IS ISSUED.  10550001
+*                                                                       10600001
+*              IF THE PROCESSOR HAS BEEN WAITING FOR AN MLWTO LINE,     10650001
+*              THE MAJOR WQE IS CHECKED FOR AN END LINE IF THE          10700001
+*              'START AT TOP OF CHAIN' FLAG IS ON. IF THE MAJOR         10750001
+*              WQE CONTAINS AN END LINE, THE OUTPUT QUEUE IS UPDATED    10800001
+*              TO REFLECT THE END OF THE MLWTO.                         10850001
+*                                                                       10900001
+*              IF AN MLWTO LINE HAS BEEN SUCCESSFULLY WRITTEN AND       10950001
+*              THE LINE WAS AN END LINE, THE OUTPUT QUEUE IS UPDATED.   11000001
+*              IF THE LINE WAS NOT AN END LINE AND NO MORE LINES ARE    11050001
+*              READY TO WRITE, A FLAG IS SET TO INDICATE A 'WAITING     11100001
+*              ON MLWTO LINE' CONDITION. IF THERE IS ANOTHER LINE       11150001
+*              READY TO WRITE BUT AN ATTENTION IS PENDING, THE          11200001
+*              ATTENTION WILL BE SERVICED FIRST. IF NO ATTENTION        11250001
+*              IS PENDING, THE NEXT LINE WILL BE OUTPUTTED VIA EXCP.    11300001
+*                                                                       11350001
+*              IF AN MLWTO HAS BEEN QUEUED TO THE CONSOLE QUEUE,        11400001
+*              THE FIRST LINE OF THE MLWTO IS WRITTEN VIA EXCP.         11450001
+*                                                                       11500001
+*              IF A CLOSE REQUEST IS PENDING AND NO OTHER WORK IS       11550001
+*              PENDING, THE DCB IS RELEASED AND THE CLOSE MACRO IS      11600001
+*              ISSUED.                                                  11650001
+*                                                                       11700001
+*              IF ENTERED FOR AN OPEN REQUEST FROM CONSOLE SWITCH,      11750002
+*              EXIT IS VIA BR 14 TO CONSOLE SWITCH. ALL OTHER EXITS     11800002
+*              ARE VIA BR 14 TO CALLER.                                 11850001
+*********************************************************************** 11900001
+          EJECT                                                         11910002
+*********************************************************************** 11920002
+*                                                                       11950001
+*    MODULE 1.                                                          12000001
+*                                                                       12050001
+* FUNCTION     THE PURPOSE OF THIS MODULE IS TO MANAGE THE              12100001
+*              INTERFACES WITH IOS AND DATA MANAGEMENT REQUIRED         12150001
+*              FOR I/O ACTIVITY ON A DEVICE SUPPORTED AS A CONSOLE.     12200001
+*              THERE ARE 5 PRIMARY SERVICES PERFORMED.                  12250001
+*                                                                       12300001
+*                  1. INTERCEPTS CLOSE REQUEST, COMPLETES I/O    Y02752 12350002
+*                     REQUESTS PREVIOUSLY QUEUED, DISPOSES OF    Y02752 12380002
+*                     BUFFER, BRANCHS TO THE CLOSE SUBROUTINE    Y02752 12410002
+*                     TO CLOSE AND FREE THE DCB.                 Y02752 12450002
+*                                                                       12500001
+*                  2. INTERCEPTS OPEN REQUESTS AND BRANCHS TO    Y02752 12550002
+*                     THE OPEN SUBROUTINE TO OBTAIN A DCB AND    Y02752 12580002
+*                     OPEN IT.                                   Y02752 12610002
+*                                                                       12650001
+*                  3. INITIATES I/O ACTIVITY.                           12700001
+*                                                                       12750001
+*                  4. RESPONDS TO I/O COMPLETIONS CONDITIONS,           12800001
+*                     INCLUDING I/O ERROR CONDITIONS.                   12850001
+*                                                                       12900001
+*                  5. MANAGES ACQUISITION AND DISPOSITION OF            12950001
+*                     BUFFERS                                           13000001
+*                                                                       13050001
+* INPUT        REG 1 POINTS TO PARAMETER LIST MAPPED BY CXSA.           13100001
+*              LIST INCLUDES POINTERS TO THE UCM MODULE, AND THE        13150001
+*              ACTIVE UCM ENTRY.                                        13200001
+*                                                                       13250001
+* OUTPUT       UNIT STATUS IN THE UCM ENTRY                             13300001
+*                                                                       13350001
+* EXTERNAL REFERENCE                                             Y02752 13400002
+*              SETLOCK                                           Y02751 13450002
+*              SETFRR                                            Y02753 13500002
+*              UCM                                                      13550001
+*              OPEN                                              Y02893 13600002
+*              CLOSE                                             Y02893 13610002
+*              CXSA                                                     13650001
+*              GETMAIN                                                  13700001
+*              FREEMAIN                                                 13750001
+*              IEAVSWCH         AUTOMATIC SWITCH ROUTINE         Y02752 13800002
+*              SVC 34                                                   13850001
+*                                                                       13900001
+* EXITS        BRANCH                                            Y02752 13950002
+*              TO AUTOMATIC SWITCH ROUTINE IN THE EVENT OF              14050001
+*              A PERMANENT I/O ERROR.                                   14100001
+*              RETURN                                                   14150001
+*              TO DEVICE SERVICE ROUTINE WHEN THERE ARE NO MORE         14200001
+*              OUTSTANDING REQUESTS                                     14250001
+*                                                                       14300001
+* TABLES       UCM                                                      14350001
+*              DCB                                                      14400001
+*              CXSA                                                     14450001
+*              WQE                                                      14500001
+*                                                                       14550001
+* OPERATION    1. IF CLOSE REQUEST NOT PENDING, TESTS BUSY.             14600001
+*                 TO CLOSE, CHECKS IF OPEN, THEN FINISHES QUEUED I/O    14650001
+*                 AND BRANCHS TO THE CLOSE SUBROUTINE            Y02752 14700002
+*                                                                       14750001
+*              2. IF NOT BUSY, TESTS REQUEST FLAGS.                     14800001
+*                 IF BUSY, CHECKS FOR I/O COMPLETE. IF NOT FINISHED     14850001
+*                 RETURNS TO DEVICE SERVICE. IF FINISHED, ERROR CHECKS  14900001
+*                 OPERATION, DISPOSES OF BUFFER, AND TESTS REQUEST      14950001
+*                 FLAGS.                                                15000001
+*                                                                       15050001
+*              3. IF REQUESTS FLAGS NOT PENDING, RETURNS TO DEVICE      15100001
+*                 SERVICE. IF NOT OPEN, BRANCH TO OPEN ROUTINE   Y02752 15150002
+*                 OTHERWISE  INIATES I/O. THEN                   Y02752 15200002
+*                 RETURNS TO DEVICE SERVICE.                            15250001
+*                                                                       15300001
+*              4. BUFFER HANDLING. (EXCP 1052)  (SUBPOOL 255)           15350001
+*                                                                       15400001
+*                  A. FOR INPUT, ACQUIRED DYNAMICALLY AND        Y02752 15450002
+*                     BLANKED. AT I/O COMPLETION,                Y02752 15500002
+*                     BACKSPACE CHARACTERS ARE REMOVED, AND IT IS       15600001
+*                     THEN SUBMITTED TO THE COMMAND SCHEDULER WITH      15650001
+*                     MGCR (SVC 34). THE BUFFER IS THEN FREED IF        15700001
+*                     NECESSARY.                                        15750001
+*                                                                       15800001
+*                  B. FOR OUTPUT, THE NEXT BESSAGE TO BE PUT OUT Y02752 15850002
+*                     IS POINTED TO BY THE CQE CHAINED OFF THIS  Y02752 15870002
+*                     CONSOLES UCME. THE MESSAGE IS WRITTEN      Y02752 15950002
+*                     FROM THE WQE, NO INTERMEDIATE BUFFER IS    Y02752 15970002
+*                     USED. WHEN I/O IS COMPLETE, THE CQE ENTRY  Y02752 15990002
+*                     IS MARKED AS AVAILABLE AND DEVICE SERVICE  Y02752 16010002
+*                     IS NOTIFIED CLEANUP IS NEEDED.             Y02752 16030002
+*                                                                       16050001
+*              5. ERRORS. (1052)                                        16100001
+*                  I/O ERRORS ARE HANDLED BY THE STANDARD ERROR         16150001
+*                  RECOVERY PROCEDURE FOR THE 1052. IN THE EVENT        16200001
+*                  OF A PERMANENT I/O ERROR, THE ERP WILL POST          16250001
+*                  THE I/O COMPLETE ECB WITH SOMETHING OTHER THAN       16300001
+*                  A X'7F'. THIS WILL IN TURN CAUSE THE PROCESS  Y02893 16350002
+*                  MODULE TO BRANCH TO CONSOLE SWITCH.           Y02752 16400002
+*                                                                       16450001
+* COMMENT      THIS MODULE WILL SERVE MULTIPLE UCM ENTRIES.      Y02752 16500002
+*              SERIALIZATION ON THE UCM, UCME, CQE'S, AND WQE'S  Y02752 16530002
+*              IS ACCOMPLISHED BY OBTAINING THE GLOBAL CMS LOCK. Y02752 16560002
+*              THE LOCAL LOCK IS HELD BECAUSE IT IS REQUIRED     Y02752 16650002
+*              WHEN THE CMS LOCK IS TO BE OBTAINED. THIS ROUTINE Y02752 16660002
+*              RUNS ENABLED, SUPERVISOR KEY AND STATE.           Y02752 16670002
+*                                                                       16677051
+* CHANGE-ACTIVITY = ZA00873,ZA01560,ZA15366,G51APSS            @G51APSS 16684051
+*                                                                       16691051
+*********************************************************************** 16700001
+*MODULE CREATED FOR MCS - REL 18                                        16800001
+          EJECT                                                         16820002
+*********************************************************************** 16850001
+*                                                                     * 16900001
+*     REGISTER   EQUATES                                              * 16950001
+*                                                                     * 17000001
+*********************************************************************** 17050001
+R0       EQU   0                   LOCAL SAVE REGISTER.                 17100001
+R1       EQU   1                   INTERFACE REGISTER.                  17150001
+R2       EQU   2                   PARAMETER/WORK REG                   17200001
+R3       EQU   3                   WORK REG                             17250001
+R4       EQU   4                   GENERAL USE                   Y02752 17300002
+R5       EQU   5                   GENERAL USE                   Y02752 17350002
+R6       EQU   6                   PTR TO MLWTO QUEUE ENTRY             17400001
+R7       EQU   7                   UCM BASE                             17450001
+R8       EQU   8                   BUFFER BASE                          17500001
+R9       EQU   9                   DCB BASE                             17550001
+R10      EQU   10                  UCM ENTRY BASE                       17600001
+R11      EQU   11                  XSA BASE                             17650001
+R12      EQU   12                  PROGRAM BASE                         17700001
+R13      EQU   13                  UNUSED (MODIFIED BY SETLOCK)  Y02751 17750002
+R14      EQU   14                  RETURN ADDRESS                       17800001
+R15      EQU   15                  GENERAL USE, EP ADDR FOR CALL Y02752 17850002
+*********************************************************************   19450001
+*                                                                       19500001
+*                  GENERAL  EQUATES                                     19550001
+*                                                                       19600001
+**********************************************************************  19650001
+L1       EQU   1                   LENGTH AND DISPLACEMENT              19700001
+L3       EQU   3                   LENGTH AND DISPLACEMENT              19750001
+L4       EQU   4                   LENGTH AND DISPLACEMENT              19800001
+L5       EQU   5                   LENGTH                        Y02711 19810002
+L36      EQU   36                  LENGTH                        Y02711 19860002
+*********************************************************************** 20300001
+ZERO     EQU   0                    *                                   20350001
+ONE      EQU   1                    *                                   20400001
+TWO      EQU   2                    TWO                          Y02752 20450002
+THREE    EQU   3                    *                                   20500001
+FOUR     EQU   4                    *                                   20550001
+SEVEN    EQU   7                   DISPLACEMENT                  Y02711 20600002
+EIGHT    EQU   8                    LENGTH                       S21002 20650001
+TOMGCR   EQU   34                   *                                   20850001
+BLANK    EQU   C' '                SYMBOLIC FOR BLANKING BUFFERS Y02893 20900002
+ZEROBYTE EQU   X'00'                *                                   20950001
+HEX16    EQU   X'16'                *                                   21200001
+HEX7F    EQU   X'7F'                *                                   21450001
+SWMASK   EQU   255                 USE TO SWITCH BITS IN A MASK         21600001
+M7       EQU   7                   MASK OF 7                            21700001
+MF       EQU   15                  MASK OF 15 (X'F') FOR ICM     Y02753 21720002
+LASTNTRY EQU   X'80'               FOR END OF VARIABLE PTR LIST  Y02711 21750002
+EXITJFCB EQU   X'07'               INDICATOR FOR JFCB OPEN EXIT  Y02711 21800002
+         EJECT                                                          21850001
+IEAV1052 CSECT                      CSECT FOR THE ENTIRE MODULE         21900001
+* A 238750,238770 C 238760                                     @ZA01560 21905003
+* A 563918-564278                                              @ZA00873 21905103
+* D 565178-568378                                              @ZA00873 21907103
+* A (FOUND) APPROX. 315538 INVALID PURGE PROCESSING            @ZA15366 21908151
+         SPACE 3                                                 Y02893 21910002
+*****************************************************************Y02893 21920002
+*                                                                Y02893 21930002
+* THE FOLLOWING BASE REGS ARE SET UP HERE:                              21950001
+*        R12 - PROGRAM BASE                                             22000001
+*        R11 - XSA BASE                                                 22050001
+*        R10 - UCM ENTRY BASE                                           22100001
+*        R9  - DCB BASE                                                 22150001
+* LATER ON, R6  - CQE ENTRY                                             22200001
+*        R8  - WQE ENTRY                                                22250001
+*                                                                       22300001
+*****************************************************************Y02893 22350002
+         SPACE 1                                                 Y02893 22390002
+         LR    R12,R15             SET BASE REG TO ENTRY POINT   Y02893 22430002
+         USING IEAV1052,R12        BASE THE PROGRAM              Y02893 22470002
+         SPACE 1                                                 Y02893 22510002
+         MODID                                                   Y02893 22550002
+         SPACE 1                                                 Y02893 22590002
+         LR    R11,R1              SET BASE REG FOR XSA          Y02893 22630002
+         USING CXSA,R11            BASE THE EXTENDED SAVE AREA   Y02893 22670002
+         SPACE 1                                                 Y02893 22710002
+         ST    R14,CSAXA           SAVE RETURN ADDRESS           Y02893 22750002
+         ST    R7,CSAXF            SAVE ADDRESS OF THE ASCB      Y02751 22752002
+         L     R10,CSAUCM          GET PTR TO CURRENT UCME       Y02893 22870002
+         USING UCMLIST,R10         BASE IT                       Y02893 22910002
+         SPACE 1                                                 Y02893 22950002
+         L     R9,UCMDCB           PTR TO DCB FOR THIS CONSOLE   Y02893 22990002
+*                                  IF THE CONSOLE HAS BEEN       Y02893 23030002
+*                                  OPENED, OTHERWISE ZERO.       Y02893 23070002
+         USING IHADCB,R9           BASE THE DCB                  Y02893 23110002
+         ICM   R2,MF,CSANPTR       GET PTR TO RECOVERY AREA      Y02753 23111002
+         BZ    PMNESTAE            IF NONE, SKIP RECOVERY SETUP  Y02753 23112002
+         USING PARMLIST,R2         BASE RECOVERY PARMLIST        Y02753 23113002
+         MVC   CSAXB(EIGHT),PARMRTAD   SAVE RETRY AND REGSAVE    Y02753 23114002
+         LA    R15,P1052RTY        GET PTR TO COMMON RETRY       Y02753 23115002
+         ST    R15,PARMRTAD        SET UP RETRY TO THIS MODULE   Y02753 23116002
+         DROP  R2                  PARMLIST BASE REG             Y02753 23117002
+PMNESTAE DS    0H                                                Y02753 23118002
+         BAL   R14,PGETLOCK        GO OBTAIN NECESSARY LOCKS     Y02751 23120002
+         SPACE 3                                                 Y02893 23130002
+         EJECT                                                          23150001
+PMCF     DS    0H                                                Y02893 23160002
+         TM    UCMSTS,UCMCF             Q. CLOSE REQUEST            MCS 23200001
+         BZ    PMBF                     NO                          MCS 23250001
+         TM    UCMSTS,UCMBF+UCMPF+UCMAF IS ANYTHING PENDING         MCS 23450001
+         BNZ   PMBF                YES-QUIESCE                      MCS 23500001
+         TM    UCMSDS5,UCMSDS5A    IS AN MLWTO BEING WAITED FOR  Y02893 23540002
+         BNO   PMCLOSE             IF NOT, GO CLOSE THE CONSOLE  Y02893 23590002
+*                                  IF YES, FALL THRU AND RETURN  Y02893 23640002
+         SPACE 3                                                 Y02893 23690002
+*    COMMON RETURN POINT FROM THIS MODULE WHEN LOCKS ARE HELD.   Y02893 23740002
+         SPACE 1                                                 Y02893 23790002
+RETURN   DS    0H                  COMMON RETURN PT IF LOCKED    Y02751 23800002
+         BAL   R14,PFRELOCK        GO FREE ANY LOCKS OBTAINED    Y02751 23850002
+         SPACE 3                                                 Y02893 23852002
+*    COMMON RETURN POINT FROM THIS MODULE WHEN NO LOCKS ARE HELD Y02893 23854002
+         SPACE 1                                                 Y02751 23860002
+RETURN1  DS    0H                  COMMON RETURN PT IF UNLOCKED  Y02751 23870002
+         ICM   R2,MF,CSANPTR       GET PTR TO RECOVERY AREA      Y02753 23872002
+         BZ    RETURN2             IF NONE, SKIP RESET           Y02753 23874002
+         USING PARMLIST,R2         ADDR FOR PARMLIST           @ZA01560 23875003
+         MVC   PARMRTAD(EIGHT),CSAXB RESTORE RECOVERY PTR      @ZA01560 23876003
+         DROP  R2                  RELEASE PARMLIST BASE       @ZA01560 23877003
+RETURN2  DS    0H                                                Y02753 23878002
+         L     R14,CSAXA           RESTORE RETURN REG            Y02751 23880002
+         BR    R14                 RETURN TO ISSUER OF SVC 72    Y02751 23890002
+         SPACE 3                                                 Y02751 23892002
+PMCLOSE  EQU   *                                                        23900001
+         XC    UCMECB,UCMECB           CLEAR ECB BEFORE CLOSE    Y02893 23950002
+         NI    UCMSTS,SWMASK-UCMCF     CF=OFF                           24000001
+         MVI   CSACODE,CSACLOSE        LOCAL CLOSE CODE.                24050001
+         B     OPENCLOS            GO TO OPEN / CLOSE               AOS 24150001
+         EJECT                                                          24500001
+PMBF     EQU   *                                                        24550001
+         TM    UCMSTS,UCMBF            Q. BUSY.                         24600001
+         BZ    PMAPF                   NO.                              24650001
+*                                  Q. I/O COMPLETE.                     24700001
+         TM    UCMDEVC,UCMDEVE                                      MCS 24750001
+         BNO   RETURN                   NO IGNORE THIS REQUEST      MCS 24800001
+         NI    UCMDEVC,SWMASK-UCMDEVE  TURN OFF I/O COMPLETE FLAG   MCS 24850001
+         TM    UCMECB,HEX7F        WAS THE I/O SUCCESSFUL        Y02893 24900002
+         BO    PMOK                     YES                         MCS 24950001
+*                                       NO,GO TO THE AUTOMATIC      MCS 25000001
+*                                       SWITCH ROUTINE              MCS 25050001
+PMEXRCVR DS    0H                                                Y02753 25070002
+         NI    UCMSTS,SWMASK-UCMBF     TURN OFF BUSY FLAG           MCS 25100001
+         SPACE 1                                                 Y02751 25200002
+**************************************************************** Y02751 25290002
+*   CALL TO CONSOLE SWITCH ROUTINE ON I/O ERROR OR FAILURE IN    Y02751 25292002
+*   OPENING THE DCB.                                             Y02751 25294002
+*   LOCKS ARE FREED BEFORE EXITING TO SWITCH.                    Y02751 25296002
+**************************************************************** Y02751 25298802
+         SPACE 1                                                 Y02751 25299202
+PMSWCH   DS    0H                                                Y02751 25299602
+         BAL   R14,PFRELOCK        GO FREE LOCKS                 Y02751 25299702
+PMSWCH1  DS    0H                                                Y02751 25301702
+         MVI   CSACODE,CSASWTCH    INDICATE CONSOLE SWITCH       Y02751 25302702
+         MVC   CSANAME,PMXTRNL     MOVE IN NAME OF SWCH RTN      Y02751 25303702
+         LR    R1,R11              SET PTR TO CXSA               Y02751 25305702
+         L     R14,CSAXA           RESET RETURN ADDR OF CALLER   Y02751 25307702
+         L     R15,CSACTLM         GET PTR TO UCM BASE SECTION   Y02751 25309902
+         ICM   R2,MF,CSANPTR       GET PTR TO RECOVERY AREA      Y02753 25310202
+         BZ    PMSWNSTA            IF NONE, SKIP RESTORATION     Y02753 25310502
+         USING PARMLIST,R2                                       Y02753 25310802
+         MVC   PARMRTAD(EIGHT),CSAXB   RESTORE RETRY AND REGSAVE Y02753 25311102
+PMSWNSTA DS    0H                                                Y02753 25311402
+         USING UCM,R15             BASE THE DSECT                Y02751 25311902
+         L     R15,UCMSWCH         GET E.P. OF CONSOLE SWITCH    Y02751 25316602
+         DROP  R2,R15              UCM AND PARMLIST BASES        Y02753 25318602
+         BR    R15                 GO TO CONSOLE SWITCH.         Y02751 25326602
+         EJECT                                                          25333302
+PMOK     EQU   *                                                        25350001
+         XC    UCMECB,UCMECB       CLEAR THE I/O ECB             Y02893 25400002
+         NI    UCMSTS,SWMASK-UCMBF     NO LONGER BUSY.                  25450001
+         L     R8,DMX                  ACTIVE BUFFER PTR.        Y02893 25500002
+         LA    R8,ZERO(R8)             KILL HIGH BYTE.           Y02893 25550002
+         USING WQE,R8                                            Y02893 25600002
+         SR    R2,R2                   CLEAR WORK REG            Y02893 25650002
+         IC    R2,DMX                  GET READ/WRITE CODE       Y02893 25700002
+         B     BTABLE1(R2)             READ OR WRITE             Y02893 25750002
+BTABLE1  DS    0H                                                Y02893 25770002
+         B     PMBKS                   READ.                            25800001
+         B     PMFWQE                  WRITE.                           25850001
+         SPACE 2                                                        25900001
+PMBKS    EQU   *                                                        25950001
+         SPACE 1                                                 Y02751 25960002
+*  LOCKS WON'T BE NEEDED HERE AND MUST BE GIVEN UP LATER TO      Y02751 25970002
+*  ISSUE SVC 34 AND FREEMAIN, GO FREE THEM NOW.                  Y02751 25980002
+         SPACE 1                                                 Y02751 25990002
+         BAL   R14,PFRELOCK        GO OBTAIN LOCKS               Y02751 25992002
+         LA    R4,WQENBR+L4        PTR TO START OF TEXT BUFFER   Y02752 26000002
+         LA    R5,ONE                  BUFFER POSITION INDEX.    Y02893 26050002
+         LR    R6,R5                   BUFFER EXTENT INDEX       Y02893 26100002
+         LA    R7,WQETXTL-WQETXT(R4)   LAST BUFFER CHAR PTR.     Y02893 26150002
+*                       PRESCAN FOR PRESENCE OF ANY BACKSPACE           26200001
+*                       CHARACTERS.                                     26250001
+PMBKSLUP CLI   ZERO(R4),HEX16          BACKSPACE.                Y02893 26300002
+         BE    PMBKSL                  YES                              26350001
+         LA    R5,ONE(R5)              BUMP BUFFER INDEX BY 1.   Y02893 26400002
+         BXLE  R4,R6,PMBKSLUP          CHECK NEXT CHARACTER.     Y02893 26450002
+         B     PMMGCR                  NONE.                            26500001
+PMBKSL   EQU   *                                                        26550001
+*                       PRESENCE OF ONE OR MORE BACKSPACE               26600001
+*                       CHARACTERS INVOKES FOLLOWING SQUEEZE-OUT        26650001
+*                       MECHANISM.                                      26700001
+         CLI   ZERO(R4),HEX16          Q. BACKSPACE CHARACTER.   Y02893 26750002
+         BNE   PMBKDONE                NO.                              26800001
+         BCT   R5,PMBKSX               YES,BACKUP ONE CHARACTER. Y02893 26850002
+         LA    R5,ONE                  DONT GO LEFT OUT OF BUF.  Y02893 26900002
+         B     PMBKSX                  BRANCH                           26950001
+PMBKDONE DS    0H                                                Y02752 27000002
+         LA    R2,WQENBR+L4-ONE(R5)    CURRENT FILL POSITION     Y02752 27020002
+         MVC   ZERO(ONE,R2),ZERO(R4)   FILL IT.                  Y02893 27060002
+         LA    R5,ONE(R5)              NEXT POSITION.            Y02893 27100002
+PMBKSX   EQU   *                                                        27150001
+         BXLE  R4,R6,PMBKSL            GETEM ALL.                Y02893 27200002
+         LA    R2,WQENBR+L4-ONE(R5)    CURRENT FILL POSITION     Y02752 27250002
+         MVI   ZERO(R2),BLANK           END WITH BLANK.          Y02893 27300002
+         SPACE 2                                                        27350001
+PMMGCR   EQU   *                                                        27400001
+         LA    R1,L'WQETXT-TWO+FOUR    MGCR COUNT.               Y02893 27450002
+         SPACE 1                                                 Y02752 27500002
+**************************************************************** Y02752 27520002
+*  THE INPUT BUFFER TO SVC 34 CONSISTS OF A 2 BYTE LENGTH FIELD  Y02752 27550002
+*  (ON A FULL WORD BOUNDARY), FOLLOWED BY A 2 BYTE SPACER,       Y02752 27600002
+*  FOLLOWED BY THE INPUT TEXT BUFFER.  THE LENGTH IN THE LENGTH  Y02752 27610002
+*  FIELD INCLUDES THE 4 BYTES OF THE HEADER.                     Y02752 27620002
+*                                                                Y02752 27622002
+*  AT ENTRY TO SVC 34, REGISTER 1 CONTAINS THE ADDRESS OF THE    Y02752 27624002
+*  BUFFER HEADER, AND REGISTER 0 CONTAINS THE CONSOLE ID.        Y02752 27626002
+**************************************************************** Y02752 27628002
+         SPACE 1                                                 Y02752 27630002
+         STH   R1,WQENBR           BUF LENGTH TO BUF HEADER      Y02752 27640002
+         LA    R1,WQENBR           SET UP REG 1 TO CALL SVC 34   Y02752 27645002
+         SR    R0,R0                   ZERO OUT REG ZERO         Y02893 27650002
+         IC    R0,UCMID                PASS UCM ID TO MSGR       Y02893 27700002
+         SVC   TOMGCR                  SVC 34                           27750001
+         SPACE 3                                                 Y02893 27800002
+*  FREE THE INPUT BUFFER.                                        Y02893 27810002
+         SPACE                                                          27820002
+         LR    R1,R8                   PTS TO DISCARDED BUFFER.  Y02893 27840002
+         FREEMAIN R,SP=255,LV=WQESIZE,A=(1)     FREE THE BUFFER         27842002
+         SPACE 2                                                 Y02751 27844002
+*  TEST FOR OTHER WORK, SPECIFICALLY, ATTENTION PENDING, CLOSE   Y02751 27846002
+*  PENDING, OR OUTPUT PENDING.  IF ANY WORK TO DO, REOBTAIN THE  Y02751 27848002
+*  LOCKS AND GO PROCESS THE REQUEST.  IF NO WORK TO DO, RETURN.  Y02751 27848402
+         SPACE 1                                                 Y02751 27848802
+         TM    UCMSTS,UCMAF+UCMCF+UCMPF    TEST FOR MORE WORK    Y02751 27849202
+         BZ    RETURN1             IF NONE, RETURN               Y02751 27849602
+         BAL   R14,PGETLOCK        IF MORE WORK, GO OBTAIN LOCKS Y02751 27849702
+         B     PMCF                GO PROCESS NEXT WORK REQUEST  Y02751 27849802
+         EJECT                                                          27850001
+PMFWQE   EQU   *                                                    MCS 27900001
+         L     R6,UCMWLAST         GET ADDRESS OF LAST CQE       Y02893 27950002
+*                                  SERVICED.                     Y02893 27980002
+         LTR   R6,R6               LAST CQE PTR ZERO           @YM08168 27986002
+         BZ    PURGE               DE-CHAIN ENTRY              @YM08168 27992002
+         USING CQE,R6                                            Y02893 28010002
+         SPACE 1                                                 Y02893 28040002
+         TM    CQEFLAG,CQEMAJOR    WAS AN MLWTO WRITTEN          Y02893 28070002
+         BZ    PMFNORM             IF NO, CONTINUE             @YM08168 28100002
+         TM    UCMSTS,UCMTC        WORKING ON INLINE MLWTO     @YM08168 28105002
+         BZ    CHECK0              NO, REDUCE USE COUNT        @YM08168 28110002
+         B     MLWEXIT             GO TO MLWTO ROUTINE         @YM08168 28115002
+PMFNORM  OI    CQEFLAG,CQEAVAIL    FLAG THIS ENTRY AVAILABLE   @YM08168 28130002
+         OI    UCMSTS,UCMTB        SIGNAL DE-Q CLEANUP IS NEEDED Y02893 28160002
+         NI    CQEFLAG,SWMASK-CQEENTR  THRN OFF ACTIVE ENTRY FLG Y02893 28190002
+         B     PMCF                GO CHECK FOR OTHER WORK       Y02893 28220002
+         SPACE 1                                                        28250002
+         DROP  R6                                                Y02893 28280002
+         SPACE 3                                                        28600002
+*  CHECK FOR ANY OTHER ACTION TO BE PERFORMED BY THIS MODULE     Y02893 28610002
+         SPACE 1                                                 Y02893 28620002
+PMAPF    EQU   *                                                        28650001
+         MVI   UCMECB,ZEROBYTE      CLEAR I/O COMPLETE IN ECB  @YA00066 28660003
+         NI    UCMDEVC,SWMASK-UCMDEVE  CLEAR I/O COMPLETE SET  @YA00066 28680003
+         TM    UCMSTS,UCMAF+UCMTA+UCMPF                          Y02752 28700002
+         BZ    RETURN                   NO                          MCS 28750001
+         TM    UCMSTS,UCMTA            IS OPEN STILL PENDING        MCS 28800001
+         BNO   PMAF                    OPEN NOT PEND, WE ARE OPEN   MCS 28850001
+         MVI   CSACODE,CSAOPEN         NO, SET CODE.                    28900001
+         B     OPENCLOS                GO TO OPEN.                  AOS 28950001
+         SPACE 1                                                 Y02893 28970002
+PMAF     EQU   *                                                        29000001
+         TM    UCMSTS,UCMAF            WHAT TO DO...                    29050001
+         BO    PMINPUT                 INPUT FIRST,                     29100001
+         SPACE 1                                                 Y02752 29130002
+*  WORK REQUEST IS FOR OUTPUT PENDING, PROCESS IT.               Y02752 29140002
+         SPACE 1                                                 Y02752 29142002
+         TM    UCMSTS,UCMTC            WORKING ON MLWTO          S21002 29150001
+         BO    MLWEXIT1                YES, GO TO SECOND LOAD    S21002 29200001
+         B     PMOUTPUT            OTHERWISE, GO TO OUTPUT       Y02893 29210002
+         EJECT                                                          29300002
+*****************************************************************Y02893 29303002
+*                                                                Y02893 29306002
+*   INPUT SETUP ROUTINE, ENTERED WHEN UCMAP INDICATES AN         Y02893 29309002
+*   ATTENTION PENDING FOR THIS CONSOLE. THE ROUTINE WILL:        Y02893 29312002
+*        A.    TURN OFF THE ATTENTION PENDING FLAG               Y02893 29315002
+*        B.    SET UP THE IOB TO POINT AT THE READ CCW'S.        Y02893 29318002
+*        C.    GET STORAGE FOR THE INPUT BUFFER AND BLANK IT.    Y02893 29321002
+*        D.    SET UP THE READ CCW'S WITH THE BUFFER ADDRESS     Y02893 29324002
+*              AND LENGTH.                                       Y02893 29327002
+*        E.    GO TO THE COMMON EXCP ROUTINE.                    Y02893 29330002
+*                                                                Y02893 29333002
+*****************************************************************Y02893 29336002
+         SPACE 1                                                 Y02893 29339002
+PMINPUT  EQU   *                                                        29350001
+         NI    UCMSTS,SWMASK-UCMAF     ATTENTION SATISFIED. ALSO MAKE   29400001
+         LA    R2,DMCREAD              READ CCW PTR.             Y02893 29450002
+         ST    R2,DMICPA               IOB PT TO CCW.            Y02893 29500002
+         SPACE 1                                                 Y02751 29550002
+*  GET A BUFFER FOR THE READ, USING THE BRANCH ENTRY TO REGMAIN. Y02751 29600002
+         SPACE 1                                                 Y02751 29650002
+         L     R4,CSACTLM          GET UCM BASE ADDRESS          Y02751 29652002
+         USING UCM,R4              BASE THE UCM                  Y02751 29654002
+         L     R7,UCMASCB          GET ASCB ADDRESS              Y02751 29657002
+         L     R4,UCMPXA           GET TCB ADDR OF COMMTASK      Y02751 29660002
+         DROP  R4                  RELEASE THE BASE              YO2751 29662002
+         SPACE 1                                                 Y02751 29692002
+         GETMAIN  RU,LV=WQESIZE,SP=255,BRANCH=YES                Y02751 29694002
+         SPACE 1                                                 Y02751 29696002
+         LR    R8,R1               XFER TO WQE BASE REG          Y02893 29698002
+         MVI   WQEAVAIL,WQEBUFB+WQEBUFD    INDICATE BUFFER IN    Y02893 29700002
+*                                          USE AND OBTAINED VIA  Y02893 29710002
+*                                          GETMAIN.              Y02893 29720002
+         MVI   DMX,DMXR                CURRENT OPERATION CODE.          29800001
+         LA    R2,WQENBR+L4            BUFFER ADDRESS.           Y02752 29850002
+         LA    R3,L'WQETXT-TWO         BUFFER EXTENT.            Y02893 29900002
+         STCM  R2,M7,DMCRDATA      DATA AREA ADDR TO CCW         Y02893 29960002
+         STH   R3,DMCRNBR                                        Y02893 30000002
+         MVI   WQENBR+L4,BLANK         START WITH BLANK          Y02752 30050002
+         MVC   WQENBR+L5(L'WQETXT-ONE),WQENBR+L4        BUFFER.  Y02752 30100002
+         B     PMEXCP                  DO I/O.                          30150001
+         EJECT                                                          30200002
+*****************************************************************Y02893 30202002
+*                                                                Y02893 30204002
+*   OUTPUT SETUP ROUTINE, ENTERED WHEN UCMPF INDICATES OUTPUT    Y02893 30206002
+*   PENDING. THE ROUTINE WILL:                                   Y02893 30208002
+*        A.    SEARCH THE CQE'S FOR A WQE TO WRITE.              Y02893 30210002
+*              1.   IF NONE ARE FOUND, GO CHECK FOR OTHER WORK.  Y02893 30212002
+*              2.   IF A WQE IS SETUP CONTINUES.                 Y02893 30214002
+*        B.    GO TO THE OUTPUT COMPLETED ROUTINE IF THIS MSG    Y02893 30216002
+*              TO BE PURGED.                                     Y02893 30218002
+*        C.    GO TO THE MLWTO ROUTINE IF THIS WQE IS A MLWTO    Y02893 30220002
+*        D.    SET UP THE WRITE CCW CHAIN WITH THE DATA ADDRESS  Y02893 30222002
+*              AND LENGTH.                                       Y02893 30224002
+*        E.    GO TO THE COMMON EXCP ROUTINE.                    Y02893 30226002
+*                                                                Y02893 30228002
+*****************************************************************Y02893 30230002
+         SPACE 1                                                 Y02893 30232002
+PMOUTPUT EQU   *                                                        30250001
+         LA    R2,DMCWRITE             WRITE CCW ADDRESS.        Y02893 30300002
+         ST    R2,DMICPA               PT IOB TO CCW.            Y02893 30350002
+         L     R6,UCMWLAST         GET ADDRESS OF LAST CQE       Y02893 30400002
+*                                  SERVICED                      Y02893 30420002
+         USING CQE,R6                                            Y02893 30440002
+         LTR   R6,R6               IS THERE A LAST CQE           Y02893 30460002
+         BNZ   TESTLAST                 YES GO TEST IT              MCS 30500001
+         L     R6,UCMOUTQ          IF NO LAST CQE, SEARCH ENTIRE Y02893 30550002
+*                                  OUTPUT CHAIN FROM THE TOP.    Y02893 30580002
+         LTR   R6,R6               IS THERE ANY OUTPUT           Y02893 30610002
+         BZ    ENDOFQ                  NO MORE QUEUE                MCS 30650001
+TESTLAST DS    0H                                                Y02893 30700002
+         TM    CQEFLAG,CQEENTR     IS THIS AN ENTRY              Y02893 30720002
+         BO    FOUND                   YES                          MCS 30750001
+         TM    CQEFLAG,CQEEOB      IS THIS LINK OR END OF Q      Y02893 30800002
+         BO    LINK                    LINK                         MCS 30850001
+         BM    ENDOFQ                  END OF Q                     MCS 30900001
+         LA    R6,FOUR(R6)         INCREMENT PTR TO NEXT CQE     Y02893 30950002
+         B     TESTLAST                CHECK NEXT ENTRY             MCS 31000001
+LINK     DS    0H                                                       31008002
+         L     R6,ZERO(R6)         GET PTR TO NEXT CQE FROM THE  Y02893 31016002
+*                                  CQE LINK FIELD.               Y02893 31024002
+         B     TESTLAST            GO TEST THIS CQE FOR ENTRIES  Y02893 31032002
+         SPACE 1                                                 Y02893 31040002
+ENDOFQ   EQU   *                                                    MCS 31050001
+         NI    UCMSTS,SWMASK-UCMPF     TURN OFF OUTPUT FLAG         MCS 31100001
+         B     PMCF                GO BACK AND CHECK FOR WORK    Y02893 31150002
+FOUND    EQU   *                                                    MCS 31200001
+         LA    R6,ZERO(R6)         ZERO OUT HIGH ORDER BYTE      Y02893 31250002
+         ST    R6,UCMWLAST         SAVE PTR TO CQE IN PROCESS    Y02893 31300002
+         L     R8,CQEWQE           GET WQE PTR                   Y02893 31350002
+         TM    WQEXA,WQEPURGE          IS THIS WQE PURGED           MCS 31400001
+         BNO   DONTPURG            NO, SKIP OTHER PURGE TESTS    Y02756 31450002
+         SPACE 1                                                 Y02756 31500002
+*****************************************************************Y02756 31503002
+*                                                                Y02756 31506002
+*    IF THE WQE PURGE FLAG IS ON, THE FOLLOWING ADDITIONAL TESTS Y02756 31510002
+*    MUST BE MADE TO DETERMINE HOW TO HANDLE THIS WQE.           Y02756 31520002
+*        1.    IF CQEMLQHC IS ON, THEN THE WQE WAS QUEUED TO BE  Y02756 31530002
+*              OUTPUT IN HARDCOPY FORMAT AND TESTS 2 AND 3 MUST  Y02756 31540002
+*              ALSO BE APPLIED, OTHERWISE GO AHEAD AND PURGE IT. Y02756 31542002
+*        2.    THIS MESSAGE MAY NEVER HAVE BEEN A CANDIDATE FOR  Y02752 31544002
+*              HARDCOPY (WQEQFHC IS ZERO (0)) IN WHICH CASE,     Y02756 31546002
+*              IT CAN BE PURGED. IF IT WAS A CANDIDATE FOR H.C., Y02756 31548002
+*              THEN TEST 3 MUST BE APPLIED.                      Y02756 31548402
+*        3.    ONLY 'HARDCOPY ONLY' MESSAGES OR MESSAGES THAT    Y02756 31548802
+*              HAVE BEEN WRITTEN TO AT LEAST ONE CONSOLE SHOULD  Y02756 31549202
+*              BE HARDCOPIED, THEREFORE WQEBUFC IS TESTED TO SEE Y02756 31549602
+*              IF THE MESSAGE IS READY FOR HARDCOPY.             Y02756 31549702
+*                                                                Y02756 31549802
+*****************************************************************Y02756 31553802
+         SPACE 1                                                 Y02756 31557802
+         TM    CQEFLAG,CQEMLQHC    IS H.C. FORMAT REQUESTED      Y02756 31561802
+         BNO   PURGE               IF NOT, PURGE WQE           @ZA15366 31566651
+         TM    WQEXA,WQEQFHC       IS WQE A H.C. CANDIDATE       Y02756 31576602
+         BNO   PURGE               IF NOT, PURGE WQE           @ZA15366 31578651
+         TM    WQEAVAIL,WQEBUFC    IS WQE READY FOR H.C.         Y02756 31580602
+         BNO   PURGE               IF NOT, PURGE WQE           @ZA15366 31581051
+         SPACE 1                                                 Y02756 31582602
+DONTPURG DS    0H                                                Y02756 31583002
+         TM    CQEFLAG,CQEMAJOR    IS ENTRY FOR A MAJOR MLWTO    Y02893 31633002
+         BO    MLWEXIT1            IF YES, GO TO MLWTO ROUTINE   Y02893 31643002
+         MVI   DMX,DMXW                INSERT CODE.                     31650001
+         SPACE 1                                                 Y02756 31700002
+*  IF THIS CONSOLE IS THE HARDCOPY CONSOLE, PUT ALL MESSAGES     Y02756 31750002
+*  OUT IN HARD COPY FORMAT. (I.E., BEGIN MESSAGE TEXT AT WQERR.) Y02756 31800002
+         SPACE 1                                                 Y02756 31804002
+         SR    R3,R3               CLEAR REG FOR INSERT CHAR     Y02756 31806002
+         IC    R3,WQENBR+THREE     GET MESSAGE TEXT LENGTH       Y02756 31808002
+         LA    R2,WQETXT           GET ADDR OF MESSAGE TEXT      Y02756 31808402
+         TM    CQEFLAG,CQEMLQHC    IS THIS THE H.C. DEVICE       Y02756 31808802
+         BNO   PMHDRI              NO, GO TEST FOR SPECIAL HDR   Y02756 31809202
+         LA    R2,WQERR            ADDR H.C. HEADER IN WQE       Y02756 31809402
+         LA    R3,WQETXT-WQERR(R3) ADD LEN OF H.C. HDR TO MSG    Y02756 31809602
+         B     PMCKLEN             GO CHECK LENGTH AGAINST MAX   Y02756 31809802
+         SPACE 1                                                 Y02756 31811802
+*  IF CONSOLE IS NOT THE HARDCOPY CONSOLE, IS MSG TO INCLUDE     Y02756 31813802
+*  THE TIME STAMP AND JOBNAME  (JOBID).                          Y02756 31815802
+         SPACE 1                                                 Y02756 31817802
+PMHDRI   DS    0H                                                Y02756 31819802
+         TM    UCMDISP2,UCMDISPI   TEST FOR TIME STAMP AND JOBID Y02756 31823202
+         BNO   PMHDRJ              IF NOT, GO TEST JOBID ONLY    Y02756 31824202
+         LA    R2,WQETS            START MSG AT TIME STAMP       Y02756 31825202
+         LA    R3,WQETXT-WQETS(R3) INCREMENT LENGTH BY HEADER    Y02756 31826202
+         B     PMCKLEN             GO CHECK LENGTH AGAINST MAX   Y02756 31827202
+         SPACE 1                                                 Y02756 31828202
+*  TEST WHETHER MESSAGE IS TO BEGIN WITH THE JOBID HEADER        Y02756 31829202
+         SPACE 1                                                 Y02756 31830202
+PMHDRJ   DS    0H                                                Y02756 31830702
+         TM    UCMDISP2,UCMDISPJ   TEST FOR JOBID                Y02756 31831202
+         BNO   PMSETLEN            IF NOT JOBID, ONLY MSG TEXT   Y02756 31832202
+         LA    R2,WQEJOBNM         START MSG AT JOBID HEADER     Y02756 31833202
+         LA    R3,WQETXT-WQEJOBNM(R3) INCREMENT LENGTH BY HEADER Y07256 31833502
+         B     PMCKLEN             GO CHECK LENGTH AGAINST MAX   Y02756 31833802
+         SPACE 2                                                 Y02756 31834102
+*  IF ANY OF THE SPECIAL OUTPUT FORMATS WERE SELECTED, CHECK     Y02756 31834402
+*  THAT TOTAL MESSAGE LENGTH INCLUDING HEADER DOES NOT EXCEED    Y02756 31834702
+*  THE MAXIMUM.                                                  Y02756 31835202
+         SPACE 1                                                 Y02756 31835502
+PMCKLEN  DS    0H                                                Y02756 31835802
+         CH    R3,HCMAXLEN         IS TOTAL LENGTH GT MAX        Y02756 31836102
+         BNH   PMSETLEN            IF NOT, BRANCH                Y02756 31836402
+         LH    R3,HCMAXLEN         IF GREATER, USE MAX INSTEAD   Y02756 31836702
+PMSETLEN DS    0H                                                Y02756 31838702
+         STH   R3,DMCWNBR          STORE LENGTH IN CCW           Y02756 31840702
+         STCM  R2,M7,DMCWDATA      DATA AREA ADDR TO CCW         Y02893 31842702
+         OI    WQEAVAIL,WQEBUFC    INDICATE WQE READY FOR H.C.   Y02756 31846702
+         SPACE 1                                                 Y02756 31848702
+*  MESSAGE IS READY FOR OUTPUT, GO TO EXCP ROUTINE. (FALL THRU)  Y02756 31850702
+         EJECT                                                          31852702
+*****************************************************************Y02893 31855002
+*   COMMON EXCP ROUTINE USED FOR BOTH OUTPUT AND INPUT, BY       Y02893 31860002
+*   BOTH NORMAL AND MLWTO ROUTINES. AT ENTRY:                    Y02893 31865002
+*        1.    THE CCW'S HAVE BEEN SETUP.                        Y02893 31870002
+*        2.    THE IOB HAS BEEN POINTED AT THE CORRECT CCW CHAIN Y02893 31875002
+*        3.    REG  8  CONTAINS THE ADDR OF THE READ BUFFER OR   Y02893 31879002
+*                      THE WQE BEING PROCESSED.                  Y02893 31879402
+*                                                                Y02893 31880002
+*****************************************************************Y02893 31885002
+         SPACE 1                                                 Y02893 31890002
+PMEXCP   EQU   *                                                        31900001
+         OI    UCMSTS,UCMBF            ITS BUSY NOW.                    31950001
+         XC    UCMECB,UCMECB       CLEAR THE ECB FOR THIS DEVICE Y02893 32000002
+         SPACE 1                                                 Y02751 32010002
+*  GO FREE THE LOCKS BEFOE ISSUING THE EXCP MACRO.               Y02751 32020002
+         SPACE 1                                                 Y02751 32030002
+         BAL   R14,PFRELOCK        GO FREE THE LOCKS             Y02751 32040002
+         STCM  R8,M7,DMX+ONE       SAVE READ BUF OR WQE ADDR     Y02893 32044002
+*                                  NOTE:  THE READ OR WRITE      Y02893 32046002
+*                                         INDICATOR IS IN THE    Y02893 32048002
+*                                         HIGH ORDER BYTE OF DMX Y02893 32048402
+         SPACE 1                                                 Y02893 32048802
+         LA    R1,DMIOB                LOCATE IOB.               Y02893 32050002
+         ICM   R2,MF,CSANPTR       GET PTR TO RECOVERY AREA      Y02753 32060002
+         BZ    PMEXCPNS            IF NONE, SKIP RECOVERY SETUP  Y02753 32070002
+         OI    PARMFTPT-PARMLIST(R2),UCMBF  FLAG WRITE WORKING   Y02753 32080002
+PMEXCPNS DS    0H                                                Y02753 32090002
+         SPACE                                                          32100001
+         EXCP  (1)                                                      32150001
+         SPACE                                                          32200001
+         LTR   R2,R2               WAS THERE A RECOVERY AREA     Y02753 32210002
+         BZ    RETURN1             IF NOT, SKIP RECOVERY RESET   Y02753 32220002
+         NI    PARMFTPT-PARMLIST(R2),SWMASK-UCMBF  EXCP IS DONE  Y02753 32230002
+         B     RETURN1             RETURN TO DSV                 Y02751 32250002
+         SPACE 5                                                 Y02983 32300002
+         DROP  R6                                                Y02893 32307002
+         TITLE 'IEAV1052  VS/2  1052 CONSOLE I/O SUPPORT, MLWTO'        32700002
+*********************************************************************** 33000001
+*                                                                     * 33050001
+* STATUS:                                                             * 33100001
+*    CHANGE LEVEL=0                                                   * 33150001
+*                                                                     * 33200001
+* FUNCTION:                                                           * 33250001
+*    HANDLE PUTPUT OF MLWTO LINES                                     * 33300001
+*                                                                     * 33350001
+* ENTRY POINTS:                                                       * 33400001
+*         IEECMPM1                                                    * 33450001
+*                                                                     * 33500001
+* INPUT:                                                              * 33550001
+*    REG 1..XSA POINTER                                               * 33600001
+*    REG 2..PARAMETER                                                 * 33650001
+*           ZERO....MLWTO LINE JUST WRITTEN                           * 33700001
+*           FOUR....MLWTO LINE TO BE WRITTEN                          * 33750001
+*                                                                     * 33850001
+* OUTPUT:                                                             * 33900001
+*    REG 1..XSA POINTER                                               * 33950001
+*                                                                     * 34000001
+* EXTERNAL REFERENCES:                                                * 34050001
+*        NONE                                                    Y02893 34100002
+*                                                                     * 34150001
+* EXITS,NORMAL:                                                       * 34200001
+*         RETURN TO CALLER VIA BR 14                                  * 34250001
+*         RETURN TO FIRST LOAD (IEECMPMX) TO HANDLE ATTENTIONS        * 34300001
+*                                                                     * 34350001
+* EXITS,ERROR:                                                        * 34400001
+*         NONE                                                        * 34450001
+*                                                                     * 34500001
+* TABLES/WORKAREAS:                                                   * 34550001
+*    UCM                                                              * 34600001
+*    WQE                                                              * 34650001
+*    DCB                                                              * 34700001
+*                                                                     * 34750001
+* ATTRIBUTES:                                                         * 34800001
+*    REENTRANT, NON-RESIDENT, PRIVILEGED                              * 34850001
+*                                                                     * 34900001
+* CHARACTER CODE DEPENDENCY:                                          * 34950001
+*    NONE                                                             * 35000001
+*                                                                     * 35050001
+*********************************************************************** 35100001
+         EJECT                                                          35150001
+*****************************************************************Y02893 35250002
+*                                                                Y02893 35350002
+*   MLWTO PROCESSING ROUTINE ENTRY POINTS.                       Y02893 35450002
+*        1.    MLWEXIT   ENTERED TO COMPLETE PROCESSING OF A WQE Y02893 35550002
+*                        THAT HAS BEEN WRITTEN OR TO BE PURGED.  Y02983 35650002
+*        2.    MLWEXIT1  ENTERED WHEN THERE IS OUTPUT TO DO AND  Y02983 35750002
+*              A.   A MLWTO IS BEING WRITTEN.                    Y02893 35850002
+*          OR  B.   THE NEXT WQE IS FOR A MLWTO.                 Y02893 35950002
+*                                                                Y02893 36050002
+*****************************************************************Y02893 36150002
+         SPACE 1                                                 Y02893 36250002
+MLWEXIT  EQU   *                                                 S21002 36350002
+         SR    R2,R2                LINE WRITTEN                 S21002 36450002
+         B     MLWEXIT2             SET UP FOR EXIT              S21002 36550002
+MLWEXIT1 EQU   *                    1ST EXIT TO 2ND LOAD         S21002 36650002
+         LA    R2,FOUR              LINE TO WRITE                S21002 36750002
+MLWEXIT2 EQU   *                    2ND EXIT TO 2ND LOAD         S21002 36850002
+         SPACE 2                                                 Y02893 36950002
+         L     R7,CSACTLM          UCM,BASE                             37650001
+*  THE FOLLOWING BASE REGS ARE SET UP HERE:                             37700001
+*        6 - CQE                                                        37750001
+*        7 - UCM                                                        37800001
+*        8 - WQE MAJOR                                                  37850001
+         USING CQEWQE,R6                                                37900001
+         USING UCM,R7                                                   37950001
+         USING WQE,R8                                            Y20893 38000002
+         SPACE 1                                                        38050001
+         L     R6,UCMWLAST         GET ADDR OF LAST CQE SERVICED Y02893 38100002
+         TM    UCMSDS5,UCMSDS5A    WAITING FOR MLWTO LINE               38150001
+         BO    COMEBACK            YES, FIND IT                         38200001
+         LTR   R2,R2               LINE TO BE WRITTEN                   38250001
+         BNZ   WRITE               YES                                  38300001
+         SPACE 1                                                        38350001
+         L     R8,CQEWQE           GET WQE PTR                   Y02893 38400002
+         LA    R8,ZERO(R8)         BUFFER POINTED TO BY REG 8 IS THE    38500001
+*                                  MAJOR, WHICH MAY OR MAY NOT HAVE     38550001
+*                                  JUST BEEN WRITTEN.                   38600001
+*                                  UCMMLAST POINTS TO THE MINOR HALF    38650001
+*                                  CONTAINING THE LINE JUST WRITTEN,    38700001
+*                                  IF ADDRESS EXISTS.                   38750001
+         NC    UCMMLAST(L4),UCMMLAST   MINOR JUST WRITTEN               38800001
+         BNZ   CHECK0                  YES                              38850001
+CHECKA   EQU   *                                                        38900001
+         TM    WMJMLTYP,WMJMLTYD   END INDICATOR IN MAJOR               38950001
+         BO    PURGE               YES                                  39000001
+         TM    WMJMMLW,WMJMMLWH    ANY MINORS EXIST                     39050001
+         BO    GOBACK              NO, RETURN TO FIRST LOAD             39100001
+         SPACE 1                                                 Y02756 39102002
+*    IF THERE ARE NO MORE MINORS ON THE CHAIN AT THIS TIME, A    Y02756 39104002
+*    TEST MUST BE MADE TO SEE IF PROCESSING IS SUSPENDED (FLAG   Y02756 39109602
+*    WMJMDSPG), FOR IN THIS CASE IT WOULD APPLY TO THIS MINOR.   Y02756 39109702
+         SPACE 1                                                 Y02756 39109802
+         L     R1,WMJMMIN          GET PTR TO FIRST MINOR        Y02756 39110002
+         NC    WMNMNX1-WMNM(L3,R1),WMNMNX1-WMNM(R1) IS THERE A   Y02756 39120002
+*                                          NEXT MINOR AFTER THIS Y02756 39130002
+         BNZ   CHECKA5             IF ANOTHER MINOR EXISTS, BR   Y02756 39140002
+         TM    WMJMDSP,WMJMDSPG    IS PROCESSING SUSPENDED       Y02756 39142002
+         BO    GOBACK              IF YES, LEAVE MINOR ALONE     Y02756 39144002
+CHECKA5  DS    0H                                                Y02756 39146002
+         NI    CQEFLAG,SWMASK-CQEATTOP  TURN OFF FLAG                   39150001
+         ST    R1,UCMMLAST         SAVE PTR TO THIS MINOR        Y02756 39200002
+         B     ATTN                CHECK ATTENTION                      39250001
+CHECK0   EQU   *                                                        39300001
+         L     R8,UCMMLAST         POINT TO HALF WITH WRITTEN LINE      39350001
+         SR    R1,R1               CLEAR REG                            39450001
+         IC    R1,WMNMUC1-WMNM(R8) GET USE COUNT                        39500001
+         BCTR  R1,R0               REDUCE BY ONE                        39550001
+         STC   R1,WMNMUC1-WMNM(R8) STORE USE COUNT                      39600001
+         TM    UCMSTS,UCMTC        WORKING ON INLINE MLWTO     @YM08168 39610002
+         BZ    PURGE               NO, DE-CHAIN ENTRY          @YM08168 39620002
+         LTR   R1,R1               HAS COUNT BECOME ZERO         Y02893 39650002
+         BNZ   CHECK1              NO                                   39700001
+         L     R1,CQEWQE           GET ADDR OF MAJOR WQE         Y02893 39750002
+         OI    WMJMMLW-WMJM(R1),WMJMMLWG  TELL DEQ TO CHK THIS CHN      39800001
+         OI    UCMSTS,UCMTB        TELL DEQ TO CHECK MY QUEUE           39850001
+CHECK1   EQU   *                                                        39900001
+         TM    WMNMLT1-WMNM(R8),WMNMLT1D  END INDICATOR IN THIS LINE    40000001
+         BO    PURGE               YES, DE-CHAIN                        40050001
+CHECKB   EQU   *                                                        40100001
+         ICM   R8,M7,WMNMNX1       PICK UP PTR TO NEXT MINOR     Y02756 40200002
+         LA    R8,ZERO(R8)         CLEAR HIGH BYTE FOR LTR INSTR Y02756 40210002
+         LTR   R8,R8               IS POINTER 0 (NO MORE MINORS) Y02756 40250002
+         BZ    GOBACK              IF NO MORE NOW, GOBACK        Y02756 40260002
+         NC    WMNMNX1,WMNMNX1     IS THERE ANOTHER MINOR AFTER  Y02756 40270002
+*                                  THIS ONE ON THE QUEUE.        Y02756 40280002
+         BNZ   CHECKB5             IF THERE IS, BRANCH           Y02756 40290002
+         SPACE 1                                                 Y02756 40292002
+*    IF THERE ARE NO MORE MINORS ON THE CHAIN AT THIS TIME, A    Y02756 40294002
+*    TEST MUST BE MADE TO SEE IF PROCESSING IS SUSPENDED (FLAG   Y02756 40294402
+*    WMJMDSPG), FOR IN THIS CASE IT WOULD APPLY TO THIS MINOR.   Y02756 40294802
+         SPACE 1                                                 Y02756 40298402
+         L     R1,CQEWQE           GET POINTER TO MAJOR          Y02756 40298802
+         TM    WMJMDSP-WMJM(R1),WMJMDSPG IS PROCESSING SUSPENDED Y02756 40299202
+         BO    GOBACK              IF IT IS, GOBACK              Y02756 40299602
+CHECKB5  DS    0H                                                Y02756 40299702
+         ST    R8,UCMMLAST         SAVE PTR TO THIS MINOR        Y02756 40299802
+ATTN     EQU   *                                                        40300002
+         TM    UCMSTS,UCMAF        ATTENTION PENDING                    40310002
+         BZ    WRITE               NO, CONTINUE TO OUTPUT MLWTO         40320002
+         B     PMCF                 RETURN TO MAIN RTN                  40330002
+PURGE    EQU   *                                                        40350001
+         NI    UCMSTS,SWMASK-UCMTC   NO LONGER WORKING ON MLWTO         40400001
+         LTR   R6,R6                LAST CQE PTR ZERO          @YM08168 40410002
+         BZ    PMCF                 CHECK FOR MORE WORK        @YM08168 40420002
+         OI    UCMSTS,UCMTB+UCMPF   CHECK Q AND OUTPUT PENDING          40450001
+         OI    CQEFLAG,CQEAVAIL        MARK ENTRY AVAILABLE      Y02893 40500002
+         NI    CQEFLAG,SWMASK-CQEENTR  TURN OFF 'VALID ENTRY'    Y02893 40530002
+*                                      INDICATOR IN CQE.         Y02893 40560002
+         B     PMCF                 ALL DONE                            40600001
+         SPACE 3                                                        40650001
+COMEBACK EQU   *                                                        40700001
+         NI    UCMSDS5,SWMASK-UCMSDS5A   TURN OFF WAITING BIT           40750001
+*                                  BIT WILL BE RESET IF CONDITION       40800001
+*                                  STILL EXISTS                         40850001
+         TM    CQEFLAG,CQEATTOP    START WITH FIRST MINOR AGAIN         40900001
+         BO    CMBK1               YES                                  40950001
+         NC    UCMMLAST(FOUR),UCMMLAST   WAS LAST WRITE MAJOR           41000001
+         BZ    CMBK1                     YES                            41050001
+         L     R8,UCMMLAST         SET BASE FOR MINOR                   41100001
+         B     CHECKB              GET NEW LINE POINTER                 41150001
+CMBK1    EQU   *                                                        41200001
+         NI    CQEFLAG,SWMASK-CQEATTOP  TURN OFF TOP OF CHAIN FLAG      41250001
+         L     R8,CQEWQE           GET ADDR OF MAJOR WQE         Y02893 41300002
+         LA    R8,ZERO(R8)         CLEAR OUT FLAGS                      41350001
+         B     CHECKA              GET NEW LINE                         41400001
+         EJECT                                                          41450001
+WRITE    EQU   *                                                        41500001
+         L     R8,CQEWQE           GET WQE PTR                   Y02893 41550002
+         LA    R8,ZERO(R8)         WRITE OR START OF NEW WRITE.         41600001
+         TM    UCMSTS,UCMTC        WORKING ON MLWTO                     41650001
+         BO    WRITE3              YES, OLD MLWTO                       41700001
+         XC    UCMMLAST(L4),UCMMLAST   ZERO LAST MINOR POINTER          41750001
+         OI    UCMSTS,UCMTC        NOW WORKING                          41800001
+         OI    WMJMBUF,WMJMBUFC    INDICATE MAJOR READY FOR H.C. Y02756 41810002
+         LA    R2,WMJMTXT          POINT TO TEXT                        41850001
+         SR    R3,R3               CLEAR FOR INSERT CHAR         Y02756 41860002
+         IC    R3,WMJMTXTL+L1      GET LENGTH                           41870002
+         TM    CQEFLAG,CQEMLQHC    IS WQE QUEUED FOR HARDCOPY    Y02893 41900002
+         BNO   WRITE1              NO                                   41950001
+         LA    R2,WMJMRR           POINT TO TEXT                        42000002
+         LA    R3,WMJMTXT-WMJMRR(R3)   ADD LENGTH OF HARDCOPY    Y02893 42030002
+*                                      HEADER TO MESSAGE LENGTH. Y02893 42070002
+         B     WRITE2A             GO STORE LENGTH               Y02756 42072002
+         SPACE 1                                                 Y02756 42074002
+*  IF THIS MESSAGE IS NOT FOR HARDCOPY, CHECK WHETHER TIME       Y02756 42076002
+*  STAMP AND JOBNAME HEADER ARE REQUIRED.                        Y02756 42078002
+         SPACE 1                                                 Y02756 42080002
+WRITE1   DS    0H                                                Y02756 42082002
+         TM    UCMDISP2,UCMDISPI   TEST FOR TIME STAMP AND JOBID Y02756 42084002
+         BNO   WRITE1A             IF NOT, TEST FOR JUST JOBID   Y02756 42086002
+         LA    R2,WMJMTS           START MSG WITH TIME STAMP     Y02756 42088002
+         LA    R3,WMJMTXT-WMJMTS(R3) INCREMENT LENGTH BY HEADER  Y02756 42090002
+         B     WRITE2A             GO STORE LENGTH               Y02756 42092002
+         SPACE 1                                                 Y02756 42094002
+*  TEST WHETHER MESSAGE IS TO HAVE THE JOBID HEADER              Y02756 42096002
+         SPACE 1                                                 Y02756 42098002
+WRITE1A  DS    0H                                                Y02756 42100002
+         TM    UCMDISP2,UCMDISPJ   TEST FOR JOBID HEADER         Y02756 42105002
+         BNO   WRITE2A             IF NOT, USE MSG TEXT ONLY     Y02756 42110002
+         LA    R2,WMJMJBNM         START MSG WITH JOBID HEADER   Y02756 42115002
+         LA    R3,WMJMTXT-WMJMJBNM(R3) INCREMENT LENGTH FOR HDR  Y02756 42120002
+         SPACE 1                                                 Y02756 42125002
+*  STORE SELECTED LENGTH IN THE CCW                              Y02756 42130002
+         SPACE 1                                                 Y02756 42135002
+WRITE2A  DS    0H                                                Y02756 42140002
+         STC   R3,DMCWNBR+L1       STORE LENGTH IN CCW                  42150002
+         B     WRITE2              START I/O                     SRB668 42200001
+         SPACE 1                                                        42900001
+WRITE3   EQU   *                                                        42950001
+         L     R8,UCMMLAST         POINT TO HALF CONTAINING LINE        43000001
+         CLI   WMNMTL1-WMNM(R8),ZERO   ZERO LENGTH, NULL LINE           43050001
+         BZ    CHECK0              YES, HANDLE AS I/O COMPLETE          43100001
+         TM    CQEFLAG,CQEMLQHC    IS WQE QUEUED FOR HARDCOPY    Y02893 43150002
+         BO    WRITE4              YES, INCLUDE HARDCOPY TEXT           43200001
+         LA    R2,WMNMTXT1-WMNM(R8)         POINT TO TEXT               43250001
+         MVC   DMCWNBR+L1(L1),WMNMTL1-WMNM(R8)                          43300001
+         B     WRITE2              WRITE LINE                           43350001
+WRITE4   EQU   *                                                        43400001
+         IC    R2,WMNMTL1-WMNM(R8) GET LENGTH                           43450001
+         LA    R2,WMNMTXT1-WMNMHCT1(R2) ADD LENGTH OF HARDCOPY   Y02893 43500002
+*                                       HEADER TO MSG LENGTH.    Y02893 43520002
+         STC   R2,DMCWNBR+L1       STORE LENGTH IN CCW                  43550001
+         LA    R2,WMNMHCT1-WMNM(R8) POINT TO TEXT                       43600001
+         B     WRITE2              GO WRITE LINE                        43650001
+         SPACE 1                                                 Y02893 43700002
+GOBACK   EQU   *                                                        43950001
+         OI    UCMSDS5,UCMSDS5A     WAITING FOR MLWTO LINE              44000001
+         NI    UCMSTS,SWMASK-UCMPF   TURN OFF OUTPUT PENDING            44050001
+         B     PMCF                GO TO FIRST LOAD                     44100001
+         SPACE 1                                                 Y02893 44104002
+WRITE2   EQU   *                                                        44130002
+         MVI   DMX,DMXW            INSERT CODE                          44142002
+         LA    R3,DMCWRITE         WRITE CCW ADDRESS                    44146002
+         STCM  R2,M7,DMCWDATA      DATA AREA ADDR TO CCW         Y02893 44146402
+         ST    R3,DMICPA           POINT IOB TO CCW                     44148002
+         B     PMEXCP              GO TO EXCP ROUTINE TO WRITE   Y02893 44148402
+         DROP  R6,R7,R8            DROP BASES FOR CQE, UCM, WQE  Y02893 44148802
+         TITLE 'IEAV1052 -- OPEN/CLOSE SUBROUTINE'               Y20893 44150002
+*********************************************************************** 44550001
+*                                                                       44600001
+* NAME         OPENCLOSE, CONSOLE UNIT INITIALIZATION.           Y20893 44650002
+*                  EXCP       INPUT/OUTPUT.                             44700001
+*                                                                       44750001
+* FUNCTION     THIS ROUTINE OPENS, AND LATER CLOSES, A UNIT DESIGNATED  44800002
+*              AS A CONSOLE SUPPORT UNIT.                               44850001
+*                                                                       44900001
+* ENTRY POINT  INTERNAL - 'OPENCLOS' WITH LOCKS HELD             Y02752 44950002
+*              EXTERNAL - 'IGC0I07B' FROM IEAVSWCH, WITH LOCKS   Y02752 45000002
+*                                                                       45050001
+* INPUT        AT IGC0I07B - REGISTER 1 POINTS TO SVRB EXTENDED  Y02752 45100002
+*                            SAVE AREA MAPPED BY CXSA.           Y02752 45130002
+*              AT OPENCLOS - REGISTER 11 CONTAINS PTR TO CXSA    Y02752 45160002
+*                                                                       45200001
+* OUTPUT       FOR OPEN...  SUPPLIES OPENED DCB.                        45250001
+*              FOR CLOSE..  CLOSES DCB AND FREES THE CORE.              45300001
+*                                                                       45350001
+* EXITS        AFTER OPEN     TO PROCESS MODULE.                        45800001
+*              AFTER CLOSE    TO MODULE EXIT ROUTINE             Y02752 45850002
+*                                                                       45950001
+* TABLES       SVRB EXTENSION.                                          46000001
+*              JFCB FOR OPEN.                                    Y02711 46050002
+*              EVENT INDICATION LIST (EIL) IN NON-MCS SYSTEM            46100001
+*                                                                       46150001
+* OPERATION    INITIALLY REG 1 POINTS TO THE 40 BYTE SVRB EXTENSION     46200001
+*              PARAMETER LIST.  THEN ADDRESSABILITY FOR A PARTICULAR    46250001
+*              UCM ENTRY, THE UCM MODULE ITSELF, AND, IF OPEN, THE      46300001
+*              DCB IS ESTABLISHED. A CODE SEGREGATES OPEN AND CLOSE.    46350001
+*              IF OPEN REQUEST, DYNAMIC CORE IS OBTAINED (IF NECESSARY) 46400001
+*              FOR A WORK AREA AND JFCB.  AN OPEN TYPE=J IS      Y02752 46450002
+*              ISSUED. THE WORKAREA/JFCB CORE IS THEN FREED      Y02752 46500002
+*              A SCAN OF THE EIL IS                              Y02752 46550002
+*              PERFORMED FOR LAST CURRENT ECB POINTER.           Y02752 46600002
+*              IF CLOSED REQUEST, THE DCB IS CLOSED, AND THE     Y02752 46750002
+*              DCB CORE IS FREEMAINED.                           Y02752 46800002
+*                                                                       46850001
+**************************************************************** Y02752 46900002
+         EJECT                                                          47000001
+**************************************************************** Y02752 47020002
+*  THIS ENTRY POINT IS FOR THE USE OF AUTO SWITCH                SRB374 47050001
+*  IT ESTABLISHES ITS OWN ADDRESSABILITY AND PROCEEDS TO PERFORM SRB374 47100001
+*  THE FUNCTION REQUESTED                                        SRB374 47150001
+**************************************************************** Y02752 47160002
+         SPACE 1                                                 Y02893 47170002
+         ENTRY IGC0I07B                                          SRB374 47200001
+IGC0I07B EQU   *                   ENTRY POINT                   SRB374 47250001
+         DROP  R12                 ELIMINATE PROGRAM BASE        SRB374 47300001
+         BALR  R12,ZERO            GET TEMP BASE ADDR            SRB374 47350001
+         USING *,R12               ESTABLISH TEMP ADDRESSABILITY SRB374 47400001
+         L     R12,A1052           GET MODULE BASE ADDRESS       SRB374 47450001
+         DROP  R12                 ELIMINATE TEMP BASE           SRB374 47500001
+         USING IEAV1052,R12        SET MODULE BASE               Y02893 47550002
+* PROGRAM ADDRESSABILITY SET. SET UP NECESSARY DSECT BASES       SRB374 47600001
+         LR    R11,R1              INITIALIZE CXSA BASE          Y02893 47650002
+         L     R10,CSAUCM          GET PTR TO UCME FOR THIS REQ  Y02751 47660002
+         L     R9,UCMDCB           GET PTR TO DCB FOR THIS UCME  Y02751 47670002
+         ST    R14,CSAXA           SAVE RETURN ADDRESS           Y02751 47680002
+         SPACE 3                                                 Y02893 47690002
+**************************************************************** Y02752 47710002
+*                                                                Y02893 47730002
+*  OPENCLOS  -  INTERNAL MODULE ENTRY POINT FOR OPEN/CLOSE       Y02893 47750002
+*               SUBROUTIME.                                      Y02893 47800002
+*                                                                Y02893 47810002
+**************************************************************** Y02752 47820002
+         SPACE 1                                                 Y02893 47830002
+OPENCLOS EQU   *                   ENTRY TO OPEN / CLOSE RTN            47850001
+         SR    R4,R4                   CLEAR.                    Y02893 48150002
+         IC    R4,CSACODE              GET ENTRY CODE.           Y02893 48200002
+         MVI   CSACODE,ZERO            CLEAR ENTRY CODE LOCATION        48250001
+         B     BTABLE2(R4)             FUNCTION SELECTION        Y02893 48300002
+BTABLE2  DS    0H                                                Y02893 48320002
+         B     PJOPEN                  TO OPEN.                         48350001
+         B     PJCLOSE                 TO CLOSE.                        48400001
+         EJECT                                                          48450001
+PJCLOSE  EQU   *                                                        48500001
+         LTR   R9,R9               IS THERE A DCB YET            Y02751 48650002
+         BZ    STATUSA                 DCB WAS NOT OPENED         M3472 48700001
+         SPACE 1                                                 Y02751 48760002
+*  FREE THE LOCKS BEFORE ISSUING THE SVCS.                       Y02751 48770002
+         SPACE 1                                                 Y02751 48780002
+         BAL   R14,PFRELOCK        GO TO FREE LOCK ROUTINE       Y02751 48790002
+         SPACE 1                                                 Y02751 48792002
+         ICM   R2,MF,CSANPTR       GET PTR TO ESTAE AREA         Y02753 48872002
+         BZ    PJCLNSTA            IF NO AREA, SKIP SETUP        Y02753 48952002
+         USING PARMLIST,R2         BASE RECOVERY PARMLIST        Y02753 49032002
+         OI    PARMFTPT,UCMCF      FLAG RETRY AS CLOSE TYPE      Y02753 49112002
+         DROP  R2                  PARMLIST BASE REG             Y02753 49192002
+PJCLNSTA DS    0H                                                Y02753 49272002
+         SPACE 1                                                 Y02753 49352002
+*                                      DISCONNECT DATA MANAGEMENT.      49500001
+         MVI   DMX4,DMX4C              CLOSE TERMINAL FLAG BYTE.    AOS 49550001
+         LA    R1,DMX4                 GET DCB ADDRESS                  49600001
+         CLOSE ((R9)),MF=(E,(1))   CLOSE THIS CONSOLES DCB       Y02751 49650002
+         LR    R1,R9               ADDR OF DCB CORE FOR FREEMAIN Y02893 49652002
+         FREEMAIN R,SP=255,LV=DMCORE,A=(1)   FREE GOTTEN DCB            49660002
+         SPACE 1                                                 Y02751 49692002
+*  GO OBTAIN LOCKS BEFORE PROCESSING MORE FIELDS IN THE UCM.     Y02751 49694002
+         SPACE 1                                                 Y02751 49696002
+         ICM   R2,MF,CSANPTR       GET PTR TO RECOVERY PARMLIST  Y02753 49696402
+         BZ    PJCLRCVR            IF NONE, SKIP FLAG CLEANUP    Y02753 49696802
+         NI    PARMFTPT-PARMLIST(R2),SWMASK-UCMCF  CLOSE DONE    Y02753 49697202
+PJCLRCVR DS    0H                                                Y02753 49697602
+         BAL   R14,PGETLOCK        GO TO LOCK OBTAIN ROUTINE     Y02751 49698002
+         SPACE 1                                                 Y02751 49698402
+STATUSA  L     R4,UCMUCB           GET UCB POINTER               Y02893 50000002
+         USING UCBOB,R4                                          Y02893 50100002
+         TM    UCBSTAT,UCBCHGS     IS THE DEVICE BEING           Y02893 50150002
+*                                          TAKEN OFFLINE.        Y02893 50200002
+         BZ    DEVSTAT             NO LEAVE ONLINE BIT ALONE      19084 50250002
+         EJECT                                                          50300002
+**************************************************************** Y02752 50320002
+*  IF THE DEVICE IS GOING OFFLINE, TURN OFF THE FOLLOWING UCB    Y02893 50350002
+*  FLAGS--- ONLINE, CHANGING, ALLOCATED,  SYSTEM CONSOLE, AND    Y02893 50400002
+*  'CONSOLE STATUS SWITCH'.                                      Y02893 50450002
+**************************************************************** Y02752 50470002
+         SPACE 1                                                 Y02893 50500002
+         NIL   UCBSTAT,SWMASK-UCBONLI-UCBCHGS-UCBALOC-UCBSYSR-UCBDADI, *50510002
+               REF=UCBOB                                         Y02751 50512002
+         B     CONTINUE            CONTINUE PROCESSING            19084 50520002
+         EJECT                                                   Y02893 50530002
+**************************************************************** Y02752 50535002
+*  IF A DEVICE IS GOING OUT OF CONSOLE STATUS, BUT TO REMAIN     Y02893 50540002
+*  ONLINE, TURN OFF THE FOLLOWING UCB FLAGS---                   Y02893 50542002
+*  ALLOCATED, SYSTEM CONSOLE, AND 'CONSOLE STATUS SWITCH'.       Y02893 50544002
+**************************************************************** Y02752 50545002
+         SPACE 1                                                 Y02893 50546002
+DEVSTAT  DS    0H                                                Y02893 50548002
+         NIL   UCBSTAT,SWMASK-UCBALOC-UCBSYSR-UCBDADI,           Y02751*50548402
+               REF=UCBOB                                         Y02751 50548502
+         SPACE 1                                                 Y02893 50549202
+CONTINUE DS    0H                                                Y02893 50599202
+         NI    UCMATR,SWMASK-UCMAT04-UCMUF TURN OFF DEVICE       Y02893 50599602
+*                                          CHANGING STATUS AND   Y02893 50649602
+*                                          DEVICE ACTIVE FLAGS.  Y02893 50699602
+         XC    UCMECB,UCMECB           CLEAR ECB.                       50800001
+         XC    UCMDCB,UCMDCB           CLEAR DCB PTR.                   50850001
+         NI    UCMSTS,SWMASK-UCMBF-UCMCF-UCMTA INDICATE NOT BUSY Y02893 50900002
+*                                          AND NOT CLOSE OR OPEN Y02893 50910002
+*                                          PENDING.              Y02893 50920002
+         SPACE                                                          50950001
+         L     R1,UCBEXTPT         GET PTR TO COMMON EXTENSION   Y02752 51050002
+         USING UCBCMEXT,R1         BASE THE EXTENSION            Y02752 51070002
+         DROP  R4                                              @G51APSS 51073051
+         L     R4,UCMFEXTP         GET PTR TO UCME FIXED EXTENSION     X51077051
+                                                               @G51APSS 51084051
+         USING UCMEFEXT,R4         BASE THE UCME FIXED EXTENSION       X51091051
+                                                               @G51APSS 51100051
+         MVC   UCBATI(1),UCMEFSA1  RESTORE ATTN INDEX          @G51APSS 51108051
+         DROP  R1,R4                                           @G51APSS 51116051
+         LA    R15,FOUR            PTR TO THE UCM MCS PREFIX   @G51APSS 51124051
+         L     R8,CSACTLM              IS FOUR BYTES BEFORE    @G51APSS 51132051
+         LCR   R15,R15                 THE UCM BASE            @G51APSS 51137051
+         AR    R15,R8              FIND ADDR OF MCS PREFIX PTR @G51APSS 51148051
+         L     R15,ZERO(R15)       GET PTR TO UCM PREFIX       @G51APSS 51156051
+         USING UCMPRFX,R15         SET PREFIX BASE             @G51APSS 51164051
+         TM    UCMSFLG2,UCMSYSL    REQUEST FROM AUTO SWTCH?    @G51APSS 51172051
+         BO    PMRETSWH            IF YES, RETURN TO IEAVSWCH  @G51APSS 51180051
+         B     RETURN              GO FREE LOCKS AND RETURN      Y02751 51200002
+         DROP  R15                                             @G51APSS 51205051
+         EJECT                                                          51250001
+*                                                                       51300001
+*                       OPEN 1052 FOR EXCP.                             51350001
+*                                                                       51400001
+PJOPEN   EQU   *                                                        51450001
+         L     R4,UCMUCB           GET UCB ADDR OF THIS DEVICE   Y02893 51500002
+         USING UCBOB,R4                                          Y02751 51600002
+         TM    UCBSTAT,UCBSYSR     IS THE DEVICE A CONSOLE NOW   Y02711 51610002
+         DROP  R4                  UCB BASE                      Y02711 51620002
+         BNO   RETURN              IF NOT, SKIP OPEN REQUEST     Y02711 51648802
+         ST    R9,CSAXD            INITIALIZE DCB PTR SAVEAREA   Y02753 51678802
+         SPACE 1                                                 Y02751 51720002
+GETDCB   DS    0H                                                Y02711 51722002
+         BAL   R14,PFRELOCK        GO FREE LOCKS BEFORE SVC'S    Y02751 51730002
+         SPACE 1                                                 Y02751 51740002
+         ICM   R2,MF,CSANPTR       GET PTR TO RECOVERY PARMLIST  Y02753 51741002
+         BZ    PJOPNSTA            IF NONE, SKIP RECOVERY SETUP  Y02753 51742002
+         USING PARMLIST,R2                                       Y02753 51743002
+         OI    PARMFTPT,UCMTA      FLAG RETRY AS OPEN TYPE       Y02753 51744002
+         DROP  R2                                                Y02753 51745002
+PJOPNSTA DS    0H                                                Y02753 51746002
+         SPACE 1                                                 Y02753 51747002
+*                                      SPACE FOR DATA BLOCKS.           51750001
+         GETMAIN R,SP=255,LV=DMCORE    GET AREA FOR DCB                 51850001
+         LR    R9,R1               MOVE ADDR TO DCB BASE REG     Y02751 51900002
+         ST    R9,CSAXD            SAVE DCB PTR FOR RECOVERY     Y02753 51970002
+         SPACE 1                                                 Y02751 52050002
+*  NOTE.  THE DCB BASE REG USING WAS DONE AT THE BEGINNING OF    Y02751 52100002
+*         OF THE MODULE.                                         Y02751 52150002
+         SPACE 1                                                 Y02751 52200002
+         MVC   ZERO(DMCORE,R9),DMDCB   MOVE IN FIXED AREAS       Y02751 52250002
+         LA    R7,DMIOB            GET A PTR TO THE IOB          Y02893 52300002
+         ST    R7,DCBIOBAD         STORE PTR TO IOB IN DCB       Y02893 52350002
+         ST    R9,DMIDCB           PLACE DCB PTR IN IOB          Y02751 52400002
+         LA    R7,DMCNOP           GET ADDRESS OF NOP CCW        Y02893 52450002
+         STCM  R7,M7,DMCTRA+ONE    CHAIN NOP CCW TO TIC CCW      Y02893 52500002
+         EJECT                                                          52550001
+         GETMAIN R,SP=255,LV=PNCORE                                     52600001
+         LR    R8,R1               ESTABLISH BASE FOR JFCB CORE  Y02711 52650002
+         USING PNOPEND,R8                                        Y02711 52700002
+         XC    PNOPEND(PNCORE),PNOPEND     CLEAR THE JFCB AREA @YM00432 52710002
+         SPACE 1                                                 Y02711 52750002
+*  FORM THE DDNAME FOR THIS CONSOLE BY CONVERTING THE CONSOLE    Y02711 52800002
+*  ID TO EBCDIC (TO 3 DIGITS) AND CONCATENATING IT TO 'IEAVM'    Y02711 52850002
+         SPACE 1                                                 Y02711 52900002
+         SR    R1,R1               CLEAR REG FOR INSERT CHAR     Y02711 52950002
+         IC    R1,UCMID            GET THE CONSOLE ID            Y20711 53000002
+         CVD   R1,PNWORKD          CONVERT IT TO PACKED DECIMAL  Y02711 53050002
+         UNPK  PNWORKD(L5),PNWORKH4(L3)    UNPACK IT TO EBCDIC   Y02711 53100002
+         MVC   DCBDDNAM,BASENAM    MOVE THE 'IEAVM' BASE         Y02711 53150002
+         MVC   DCBDDNAM+L'BASENAM(L3),PNWORKD CONCATENATE THE ID Y02711 53200002
+         SPACE 1                                                 Y02711 53250002
+*  SET UP THE JFCB AND THE DCB AND OPEN EXIT LISTS               Y02711 53300002
+         SPACE 1                                                 Y02711 53350002
+         MVC   JFCBDSNM,PNDSN      MOVE IN A DSNAME FOR CONSOLE  Y02711 53400002
+         MVC   JFCBDSNM+EIGHT(L36),JFCBDSNM+SEVEN SET REMAINDER  Y02711 53450002
+*                                          OF DSNAME FIELD TO    Y02711 53500002
+*                                          BLANKS.               Y02711 53550002
+         SPACE 1                                                 Y02711 53552002
+*  SET FIELDS IN THE JFCB TO PREVENT WRITE BACK OF THE JFCB.     Y02711 53554002
+         OI    JFCBTSDM,JFCTTR+JFCNWRIT+JFCNDSCB+JFCNDCB+JFCPAT  Y02711 53560002
+         LA    R3,JFCB             ADDR OF JFCB FOR EXIT LIST    Y02711 53570002
+         STCM  R3,M7,PNXLST+ONE    STORE IT IN THE EXIT LIST     Y02711 53580002
+         OI    PNXLST,LASTNTRY+EXITJFCB  MARK EXIT AS JFCB       Y02711 53582002
+         LA    R3,PNXLST           ADDR OF EXIT LIST             Y02711 53590002
+         STCM  R3,M7,DCBEXLST+ONE  STORE IT IN THE DCB           Y02711 53592002
+         OI    PNJEF,LASTNTRY      SET END OF LIST IND.IN PARM  YM06163 53596002
+         EJECT                                                          53600001
+         OPEN  ((R9),INOUT),TYPE=J,MF=(E,PNJEF)  OPEN CONSOLE    Y02751 53650002
+         SPACE                                                          53700001
+         LR    R1,R8               JFCB AND TEMP WORK AREA ADDR  Y02893 53710002
+         SPACE 1                                                 Y02893 53712002
+         FREEMAIN R,SP=255,LV=PNCORE,A=(1)  FREE JFCB STORAGE    Y02893 53720002
+         XC    DCBEXLST+ONE(L3),DCBEXLST+ONE   ZERO FIELD               53800001
+         SPACE 1                                                 Y02751 53802002
+*  GO OBTAIN LOCKS AGAIN BEFORE UPDATING THE UCM AND UCME.       Y02751 53804002
+         SPACE 1                                                 Y02751 53806002
+         ICM   R2,MF,CSANPTR       GET PTR TO RECOVERY PARMLIST  Y02753 53806402
+         BZ    PJOPRCVR            IF NONE, SKIP FLAG UPDATE     Y02753 53806802
+         NI    PARMFTPT-PARMLIST(R2),SWMASK-UCMTA  OPEN DONE     Y02753 53807202
+PJOPRCVR DS    0H                                                Y02753 53807602
+         BAL   R14,PGETLOCK        GO TO LOCK ROUTINE            Y02751 53808002
+         ST    R9,UCMDCB           DCB PTR TO CONSOLES UCME      Y02751 53810002
+         NI    UCMATR,SWMASK-UCMAT04  TURN OFF DEVICE STATUS BIT    MCS 53850001
+         MVI   DCBIFLGS,ZERO          USE STANDARD EROR RECOVERY  M4927 53900001
+         OI    UCMATR,UCMUF            TURN ON ACTIVE BIT           MCS 53950001
+         NI    UCMSTS,SWMASK-UCMTA  TURN OFF OPEN PENDING        Y02893 54000002
+         SPACE                                                          54200001
+         DROP  R8                                                Y02893 54250002
+         SPACE 1                                                 Y02893 54300002
+         LA    R15,UCMECB          ADDR OF I/O ECB FOR THIS UCME Y02893 54350002
+         ST    R15,DMIECBP         ADDR OF I/O ECB TO IOB        Y02893 54360002
+         L     R4,UCMUCB           GET PTR TO UCB FOR THIS UCME  Y02752 54390002
+         USING UCBOB,R4                                          Y02752 54420002
+         L     R15,UCBEXTPT        GET PTR TO COMMON EXTENSION   Y02752 54450002
+         USING UCBCMEXT,R15        BASE THE EXTENSION            Y02752 54470002
+         DROP  R4                                              @G51APSS 54472051
+         L     R4,UCMFEXTP         GET PTR TO UCME FIXED EXTENSION     X54475051
+                                                               @G51APSS 54480051
+         USING UCMEFEXT,R4         BASE THE UCME FIXED EXTENSION       X54485051
+                                                               @G51APSS 54490051
+         MVC   UCMEFSA1(1),UCBATI  SAVE ATTN INDEX             @G51APSS 54495051
+         MVI   UCBATI,FOUR         SET ATTENTION INDEX TO FOUR   Y02752 54500002
+         DROP  R4,R15              DROP UCB AND UCB EXTENSION    Y02752 54520002
+         LA    R15,FOUR            PTR TO MCS PREFIX TO UCM IS      MCS 54550002
+         LCR   R15,R15                 FOUR BYTES BEFORE THE UCM    MCS 54590002
+         L     R8,CSACTLM              REG 8 POINTS TO UCM              54630002
+         AR    R15,R8                  SUBT 4 FROM UCM POINTER          54670002
+         L     R15,ZERO(R15)       GET PTR TO UCM PREFIX                54710002
+         USING UCMPRFX,R15         SET PREFIX BASE                  MCS 54750002
+         TM    UCMSFLG2,UCMSYSL    OPEN RQUEST FROM AUTO SWITCH  Y02751 54800002
+         BO    PMRETSWH            IF YES, GO RETRUN TO IEAVSWCH Y02751 54850002
+         TM    DCBOFLGS,DCBOFOPN   WAS OPEN SUCCESSFUL           Y02753 54900002
+         BO    PMCF                IF YES, RETURN TO MAINLINE    Y02753 54905002
+         B     PMSWCH              OTHERWISE, RETURN TO IEAVSWCH Y02753 54910002
+         DROP  R15                     ELIMINATE PREFIX BASE        MCS 54950002
+PMRETSWH DS    0H                                                Y02751 55010002
+         LR    R1,R11              RESET PTR TO CXSA             Y02751 55070002
+         L     R14,CSAXA           RESTORE RETURN REGISTER       Y02751 55130002
+         MVC   CSANAME,PMXTRNL     MOVE IN NAME OF SWCH RTN      Y02751 55190002
+         BR    R14                 RETURN TO CONSOLE SWITCH      Y02751 55250002
+         TITLE 'IEAV1052 -- SETLOCK OBTAIN SUBROUTINE'           Y02751 55360002
+**************************************************************** Y02751 55370002
+*                                                                Y02751 55380002
+*                       COMMON SETLOCK OBTAIN ROUTINE            Y02751 55390002
+*                                                                Y02751 55392002
+*  THIS ROUTINE WILL OBTAIN THE LOCAL AND CMS LOCKS, AND THEN    Y02751 55394002
+*  ISSUE THE SETFRR.THE ADDRESS OF THE FRR TO BE PLACED ON THE   Y02751 55396002
+*  STACK IS CONTAINED IN FIELD CSADCBP OF SVRB EXTENDED SAVE.    Y02751 55396402
+*                                                                Y02751 55398002
+*  ENTRY POINT:    PGETLOCK, VIA 'BAL   14,PGETLOCK'             Y02751 55398402
+*                                                                Y02751 55398802
+*  CALLED FROM:    1.  INITIAL MODULE ENTRY ROUTINE (PROLOGUE).  Y02751 55399202
+*                  2.  AFTER RETURN FROM SVC 34 (IF MORE WORK)   Y02751 55399302
+*                  3.  DEVICE CLOSE ROUTINE                      Y02751 55399602
+*                  4.  DEVICE OPEN ROUTINE                       Y02751 55399702
+*                                                                Y02751 55399802
+**************************************************************** Y02751 55399902
+         SPACE 1                                                 Y02751 55416602
+PGETLOCK DS    0H                                                Y02751 55426602
+         ST    R14,CSAXE           SAVE RETURN REG               Y02751 55428602
+         LR    R10,R11             USE THIS AS A TEMP CXSA BASE  Y02751 55430602
+         LR    R15,R12             USE THIS AS A TEMP MOD BASE   Y02751 55432602
+         DROP  R10,R11,R12                                       Y02751 55433002
+         USING CXSA,R10            TEMPORARY CXSA BASE           Y02751 55433102
+         USING IEAV1052,R15        TEMPORARY MODULE BASE         Y02751 55433202
+         SPACE 3                                                 Y02751 55438802
+*  GET THE LOCAL LOCK.                                           Y02751 55440802
+         SPACE 1                                                 Y02751 55442802
+         SETLOCK OBTAIN,TYPE=LOCAL,MODE=UNCOND,                  Y02751*55443202
+               RELATED=(UCM,IEAV1052(PFRELOCK))                  Y02751 55443602
+         SPACE 3                                                 Y02751 55444202
+*  GET THE CMS GLOBAL LOCK.  (UNCONDITIONAL REQUEST)             Y02751 55444302
+         SPACE 1                                                 Y02751 55458202
+         SETLOCK OBTAIN,TYPE=CMS,MODE=UNCOND,                    Y02751*55468202
+               RELATED=(UCM,IEAV1052(PFRELOCK),IEAVSWCH(FRR))    Y02751 55470202
+         SPACE 2                                                 Y02751 55471402
+*  SET FUNCTIONAL RECOVERY ROUTINE IN PLACE.                     Y02753 55471802
+         SPACE 1                                                 Y02753 55472802
+         L     R11,CSACTLM         GET PTR TO UCM BASE           Y02753 55473302
+         L     R11,UCMFRRAD-UCM(R11) GET ADDR OF COMMON FRR RTN  Y02753 55473802
+         USING PSA,R0              BASE THE PSA (ADDR IS 0)      Y02753 55474802
+         SETFRR A,FRRAD=(11),PARMAD=(13),WRKREGS=(12,13),        Y02753C55475802
+               RELATED=(CMS-LOCK,IEAV1052(PFRELOCK))             Y02753 55476802
+         DROP  R0                                                Y02753 55477802
+         SPACE 2                                                 Y02753 55478802
+         ST    R13,CSADCBP         SAVE FRR WORKAREA ADDR        Y02753 55479802
+         USING PARMLIST,R13        BASE RECOVERY PARMLIST        Y02753 55480502
+         MVC   PARMID,SVC72ID      MOVE ID IN FOR RECOVERY       Y02753 55481202
+         DROP  R10,R13,R15         RELEASE TEMP BASE REGS        Y02751 55485002
+         LR    R11,R10             RESTORE CXSA BASE             Y02751 55486502
+         LR    R12,R15             RESTORE MODULES BASE          Y02751 55488002
+         USING CXSA,R11                                          Y20751 55491002
+         USING IEAV1052,R12                                      Y02751 55492502
+         L     R10,CSAUCM          RESTORE UCME BASE REG         Y02751 55494002
+         USING UCMLIST,R10                                       Y02751 55495502
+         L     R14,CSAXE           RESTORE RETURN REG            Y02751 55498502
+         BR    R14                 RETURN TO SUBROUTINE CALLER   Y02751 55500002
+         TITLE 'IEAV1052 -- SETLOCK RELEASE SUBROUTINE'          Y02751 55502502
+**************************************************************** Y02751 55504502
+*                                                                Y02751 55506502
+*                       COMMON SETLOCK RELEASE ROUTINE           Y02751 55508502
+*                                                                Y02751 55510502
+*  THIS ROUTINE WILL REMOVE THE CURRENT FRR FROM THE STACK AND   Y02751 55512502
+*  THEN FREE THE CMS AND LOCAL LOCKS (IN THE ORDER NAMED).       Y02751 55522502
+*                                                                Y02751 55550502
+*  ENTRY POINT:    PFRELOCK, VIA 'BAL  14,PFRELOCK'              Y02751 55552502
+*                                                                Y02751 55558502
+*  CALLED FROM:                                                  Y02751 55558602
+*              1.  RETURN, BEFORE EXIT, IF LOCKS ARE HELD        Y02751 55559402
+*              2.  PMBF BEFORE EXIT TO IEAVSWCH ON AN I/O ERROR  Y02751 55560402
+*              3.  PMBKS WHEN I/O COMPLETE ON A READ             Y02751 55561402
+*              4.  PMEXCP BEFORE ISSUING EXCP MACRO              Y02751 55561502
+*              5.  PJCLOSE TO ISSUE CLOSE MACRO                  Y02751 55561602
+*              6.  PJOPEN TO ISSUE OPEN MACRO                    Y02751 55561702
+*                                                                Y02751 55561802
+**************************************************************** Y02751 55562602
+         SPACE 1                                                 Y02751 55564102
+PFRELOCK DS    0H                                                Y02751 55564502
+         ST    R14,CSAXE           SAVE RETURN REG               Y02751 55565002
+         LR    R10,R11             USE THIS AS A TEMP CXSA BASE  Y02751 55565802
+         LR    R15,R12             USE THIS AS A TEMP MOD BASE   Y02751 55566602
+         DROP  R10,R11,R12                                       Y02751 55567402
+         USING CXSA,R10            TEMPORARY CXSA BASE           Y02751 55568202
+         USING IEAV1052,R15        TEMPORARY MODULE BASE         Y02751 55569002
+         SPACE 3                                                 Y02751 55571002
+*  REMOVE THIS MODULES FRR FROM THE STACK.                       Y02753 55571402
+         SPACE 1                                                 Y02753 55572102
+         USING PSA,R0              BASE THE PSA (ADDR IS 0)      Y02753 55572802
+         SETFRR D,WRKREGS=(12,13),                               Y20753C55573502
+               RELATED=(CMS-LOCK,IEAV1052(PGETLOCK))             Y02753 55574202
+         DROP  R0                                                Y02753 55574902
+         SR    R12,R12             MAKE A ZERO                   Y02753 55575602
+         ST    R12,CSADCBP         CLEAR PTR TO FRR ROUTINE      Y02753 55576302
+         SPACE 2                                                 Y02751 55579602
+*  ISSUE SETLOCK RELEASE TO RELEASE THE CMS LOCK                 Y02751 55581602
+         SPACE 1                                                 Y02751 55583602
+         SETLOCK RELEASE,TYPE=CMS,                               Y02751*55588002
+               RELATED=(UCM,IEAV1052(PGETLOCK))                  Y02751 55590002
+         SPACE 2                                                 Y02751 55592002
+*  ISSUE SETLOCK RELEASE TO RELEASE THE LOCAL LOCK               Y02751 55595202
+         SPACE 1                                                 Y02751 55596402
+         SETLOCK RELEASE,TYPE=LOCAL,                             Y02751*55597602
+               RELATED=(UCM,IEAV1052(PGETLOCK))                  Y02751 55598802
+         SPACE 2                                                 Y02751 55600002
+*  LOCKS HAVE NOW BEEN FREED, RESTORE REGS AND                   Y02751 55600202
+*  RETURN TO THE SUBROUTINE CALLER.                              Y02751 55602202
+         SPACE 1                                                 Y02751 55604202
+         LR    R11,R10             RESTORE CXSA BASE             Y02751 55606602
+         LR    R12,R15             RESTORE MODULES BASE          Y02751 55606702
+         DROP  R10,R15             RELEASE TEMP BASE REGS        Y02751 55606802
+         USING CXSA,R11                                          Y02751 55606902
+         USING IEAV1052,R12                                      Y02751 55618502
+         L     R10,CSAUCM          RESTORE UCME BASE REG         Y02751 55628502
+         USING UCMLIST,R10                                       Y02751 55628902
+         L     R14,CSAXE           RESTORE RETURN REG            Y02751 55629302
+         BR    R14                 RETURN TO SUBROUTINE CALLER   Y02751 55629702
+         TITLE 'IEAV1052 -- ESTAE RETRY ROUTINE ENTRY POINT'     Y02753 55630102
+**************************************************************** Y02755 55630202
+*                                                                Y02755 55630302
+*  ESTAE RECOVERY ROUTINE                                        Y02755 55634202
+*                                                                Y02755 55636202
+**************************************************************** Y02755 55636602
+P1052RTY DS    0H                                                Y02753 55637402
+         BALR  R15,ZERO            MAKE A TEMPORARY BASE         Y02753 55643402
+         USING *,R15                                             Y02753 55649402
+         L     R12,A1052           GET NORMAL PROGRAM BASE       Y02753 55655402
+         DROP  R15                                               Y02753 55661402
+         USING PSA,R0              BASE PSA ON LOCATION ZERO     Y02753 55667402
+         L     R5,PSATOLD          GET PTR TO MY TCB             Y02753 55673402
+         DROP  R0                                                Y02753 55679402
+         L     R5,TCBRBP-TCB(R5)   GET PTR TO MY SVRB            Y02753 55687802
+         LA    R11,RBEXSAVE-RBSECT(R5) RELOAD CXSA BASE          Y02753 55737802
+         L     R10,CSAUCM          RELOAD UCME PTR               Y02753 55787802
+         L     R9,UCMDCB           RELOAD DCB PTR                Y02753 55837802
+         L     R2,CSANPTR          GET PTR TO RECOVERY PARMLIST  Y02753 55887802
+         USING PARMLIST,R2         BASE THE PARMLIST             Y02753 55937802
+         TM    PARMFTPT,UCMBF      WAS EXCP IN PROCESS           Y02753 55947802
+         BO    RETRYXCP            IF YES, GO RECOVER            Y02753 55957802
+         LA    R15,PJCLRCVR        SET UP TO RECOVERY CLOSE      Y02753 55987802
+         TM    PARMFTPT,UCMCF      IS IT A CLOSE RETRY           Y02753 56037802
+         BO    RETRYFND            YES, GO COMPLETE RETRY SETUP  Y02753 56087802
+         SPACE 1                                                 Y02753 56137802
+         LA    R15,PJOPRCVR        SET UP TO RECOVER OPEN        Y02753 56187802
+         TM    PARMFTPT,UCMTA      IS IT AN OPEN RETRY           Y02753 56237802
+         BO    RETRYOPN            YES, GO ANALYZE FURTHER       Y02753 56287802
+         SPACE 1                                                 Y02753 56337802
+*  ADDITIONAL RECOVERY PROCESSES CAN GO HERE.                    Y02753 56387802
+************************************************************** @ZA00873 56391803
+*                                                              @ZA00873 56395803
+* AFTER ALL KNOWN RECOVERY FOOTPRINTS HAVE BEEN CHECKED, THE   @ZA00873 56399803
+* FOLLOWING BRANCH WILL BE TAKEN TO GIVE CONTROL TO THE        @ZA00873 56403803
+* CONSOLE SWITCH ROUTINE (IEAVSWCH). A CONSOLE SWITCH IS       @ZA00873 56407803
+* GENERATED TO PREVENT THE POSSIBILITY OF THE PROBLEM          @ZA00873 56411803
+* RECURRING OR CAUSE OTHER PROBLEMS TO OCCUR.                  @ZA00873 56415803
+*                                                              @ZA00873 56419803
+************************************************************** @ZA00873 56423803
+         B     PMSWCH1             PREPARE TO CONSOLE SWITCH   @ZA00873 56427803
+         SPACE 1                                                 Y02753 56437802
+RETRYFND DS    0H                                                Y02753 56917802
+         MVI   PARMFTPT,ZEROBYTE   CLEAR FOOTPRINT FLAGS         Y02753 56997802
+         BR    R15                 GO TO RECOVERY ROUTINE        Y02753 57077802
+         SPACE 1                                                 Y02753 57078802
+RETRYXCP DS    0H                                                Y02753 57079802
+         BAL   R14,PGETLOCK        GO OBTAIN LOCKS FOR RECOVERY  Y02753 57080802
+         LA    R15,PMEXRCVR        SETUP ADDR OF EXCP RECOVERY   Y02753 57081802
+         B     RETRYFND            GO TO COMMON EXIT             Y02753 57082802
+         SPACE 1                                                 Y02753 57087802
+RETRYOPN DS    0H                                                Y02753 57097802
+         ICM   R9,MF,CSAXD         RELOAD DCB PTR                Y02753 57107802
+         BNZ   RETRYFND            IF PTR NOT ZERO, GO RETRY     Y02753 57117802
+         LA    R15,PMSWCH1         IF STORAGE NOT OBTAINED, SWCH Y02753 57127802
+         B     RETRYFND            GO CALL CONSOLE SWITCH        Y02753 57137802
+         TITLE 'IEAV1052, CONSTANTS AREA'                               57200002
+HCMAXLEN DC    H'127'              MAX LEN OF OUTPUT LINE, H.C.  Y02756 57220002
+PNDSN    DC    C'CONSOLE '         DSNAME USED TO OPEN CONSOLE   Y01711 57240002
+BASENAM  DC    C'IEAVM'            BASE FOR CONSOLE DDNAME       Y02711 57260002
+SVC72ID  DC    C'VCTR'             RECOVERY IDENTIFIER           Y02753 57280002
+PMXTRNL  DC    CL8'IGC0407B'           EXTERNAL PROCESSOR NAME.  Y02751 57300002
+A1052    DC    A(IEAV1052)         TO ESTABLISH BASE REG         Y02893 57340002
+*     PATCH   AREA                                                      57360002
+         DS    0D                                                Y02752 57380002
+PATCH    DC    4CL30'***** IEAV1052 PATCH AREA ****'           @G51APSS 57400051
+*     END  OF  PATCH                                                    57502002
+         TITLE 'IEAV1052  IEEUCDX MACRO, DCB, IOB, AND CCW'      Y02752 57505002
+         IEEUCDX                                                        57508002
+         TITLE 'IEAV1052  PNOPEND, JFCB AND TEMP WORK AREA MAP'  Y02711 57512002
+*********************************************************************** 57516002
+************************       DSECTS          ************************ 57518002
+*********************************************************************** 57520002
+         SPACE    3                                                     57523002
+PNOPEND  DSECT                                                          57526002
+JFCB     DS    0D                                                Y02711 57530002
+         IEFJFCBN ,                                              Y02711 57540002
+         SPACE 2                                                 Y02711 57542002
+*  OPEN EXIT LIST FOR TYPE=J                                     Y02711 57544002
+         SPACE 1                                                 Y02711 57546002
+PNJEF    DC    X'80'               INDICATE END OF LIST          Y02711 57548002
+         DC    AL3(0)              SPACE FOR ADDRESS             Y02711 57548402
+PNXLST   DC    X'87'               INDICATE END OF LIST AND JFCB Y02711 57548802
+         DC    AL3(0)              SPACE FOR ADDRESS             Y02711 57549202
+         SPACE 2                                                 Y02711 57549602
+*  TEMPORARY WORK AREA USED DURING PREPARATION FOR OPEN.         Y02711 57549702
+         SPACE 1                                                 Y02711 57549802
+PNWORKD  DC    D'0'                DOUBLE WORD FOR CVD INSTR     Y02711 57549902
+         ORG   PNWORKD+6           BACK UP TO LAST HALF WORD     Y02711 57566602
+PNWORKH4 DC    H'0'                LAST HALF WORD OF PNWORKD     Y02711 57576602
+PNWORKX  DC    X'00'               XTRA BYTE USED DURING UNPK    Y02711 57578602
+PNCORE   EQU   *-PNOPEND           SYMBOLIC FOR LENGTH OF DSECT  Y02711 57580602
+         TITLE 'IEAV1052       CONSOLE QUEUE ELEMENT'                   57750001
+         IHACTM CQE                                                     57800001
+         TITLE 'IEAV1052            CVT'                                57850001
+         CVT   DSECT=YES                                                57900001
+         TITLE 'IEAV1052           CXSA'                                57950001
+         IHACTM CXSA                                                    58000001
+         TITLE 'IEAV1052        FTPT   RECOVERY WORK AREA'       Y02753 58100002
+         IHACTM FTPT               RECOVERY WORKAREA MAPPING     Y02753 58200002
+         TITLE 'IEAV1052        RB DSECT'                        Y02753 58280002
+         IHARB DSECT=YES                                         Y02753 58360002
+         TITLE 'IEAV1052          TCB'                              AOS 58450001
+         IKJTCB                                                     AOS 58500001
+         TITLE 'IEAV1052           UCM'                                 58550001
+         IEECUCM  FORMAT=NEW                                            58600001
+PMECB    EQU   UCMECB              ACTIVE I/O COMPLETION ECB.           58650001
+UCBDSECT DSECT                                                          58700001
+         TITLE 'IEAV1052           UCB'                                 58750001
+         IEFUCBOB                                                       58800001
+         TITLE 'IEAV1052           WQE'                                 58850001
+         IHAWQE                                                         58900001
+         TITLE 'IEAV1052           FRR STACK'                           58950002
+         IHAFRRS                   USED BY SETFRR MACRO          Y02751 58960002
+         TITLE 'IEAV1052           PSA'                          Y02751 58970002
+         IHAPSA                    USED BY SETFRR MACRO          Y02751 58980002
+         END                                                            59000001

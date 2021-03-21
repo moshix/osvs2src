@@ -1,0 +1,637 @@
+         JHEAD 'DC FIXED-FLOATING POINT CONVERSION',                   X00100000
+               PHASEID=X5F,                                            X00200000
+               LEVEL=10                                                 00300000
+         COPY  JCOMMON                  GET COMMON DEFINITION           00400000
+         EJECT                                                          00500000
+         COPY  X5COM                    GET PHASE COMMON DEFINITION     00600000
+         EJECT                                                          00700000
+*                                                                       00800000
+*DUMMY SECTION FOR WORKING STORAGE                                      00900000
+*                                                                       01000000
+WSDSECT  DSECT                                                          01100000
+HOLD     DS    D                        DOUBLE WORD FOR CVB INST        01200000
+AFIRST   DS    F                        SAVE AREA FOR BEGINNING POINTER 01300000
+SAVEAD   DS    F                        SAVE AREA FOR ENDING POINTER    01400000
+* ZWDE THRU ZWACC ARE STORED AND LOADED BY MULTIPLE OPS                 01500000
+* AND MUST BE IN GIVEN SEQUENCE.                                        01600000
+ZWDE     DS    F                   DECIMAL EXPONENT                     01700000
+ZWSF     DS    F                   FIXED PT SCALE AND FLOATING PT EXPON 01800000
+ZWTXPT   DS    F                   SAVE TEXT POINTER                    01900000
+         DS    0F                  ENSURE WORD ALIGNMENT OF ZWACC       02000000
+ZWACC    DS    XL20                ACCUMULATOR                          02100000
+         DS    0F                  SET PROPER ALIGNMENT FOR ZWW1        02200000
+ZWW1     DS    XL56                WORK AREA                            02300000
+ZWW2     EQU   ZWW1+L'ZWW1-4       LOW WORD OF WORK AREA                02400000
+*                                                                       02500000
+DCLNGTH  DS    F                        LENGTH MODIFIER                 02600000
+VASCTL   DS    C                        DECON FLAG                      02700000
+ZWSW     DS    C                   CONTROL SWITCHES AND VALUE SIGN      02800000
+*                             BIT 7 X'01' = FLOATING POINT  (ELSE FIXD) 02900000
+*                                 6    2  = VALUE FOUND (MAYBE ZERO)    03000000
+*                                 5    4  = FLT.PT IS INITIALIZED (WSF) 03100000
+*                                 4    8  = FLT.PT IS L-CON             03200000
+*                                                                       03300000
+         EJECT                                                          03400000
+*TITLE 'FFPCONV'                                                      * 03500000
+*FUNCTION/OPERATION - TO DO ALL FIXED OR FLOATING POINT CONVERSION FOR* 03600000
+*   DC STATEMENTS.  IT IS CALLED BY          ONCE FOR EACH CONSTANT TO* 03700000
+*   BE CONVERTED.                                                     * 03800000
+*ENTRY POINT- L     R12,                                              * 03900000
+*            BALR R9,R12                                              * 04000000
+*INPUT- R10 WILL POINT TO AN UNCLASSIFIED TEXT BUCKET CONTAINING THE  * 04100000
+*          CONSTANT TO BE CONVERTED.  THE FIRST BYTE OF THE TEXT      * 04200000
+*          BUCKET IS THE BUCKET CODE (NOT USED).  THE SECOND BYTE     * 04300000
+*          CONTAINS THE LENGTH - 1 OF THE CONSTANT THAT FOLLOWS.      * 04400000
+*       R11 WILL POINT TO AN INPUT ARRAY OF 8 FULLWORDS, FULLWORD     * 04500000
+*          ALIGNED.  IF BYTE 1, WORD 1 = 1, THEN THE LENGTH IS IN BITS* 04600000
+*          OTHERWISE THE LENGTH IS IN BYTES.  BYTE 4, WORD 1 IS THE   * 04700000
+*          TYPE (19=L-CON, 1A=DOUBLE WORD, 1B=FLOATING POINT FULLWORD,* 04800000
+*          1C=FIXED POINT FULLWORD, AND 1D=HALFWORD).  WORD 2 IS THE  * 04900000
+*          LENGTH IN BYTES OR BITS, DEPENDENT ON BYTE 1, WORD 1.  WORD* 05000000
+*          3 IS THE SCALING FACTOR, AND WORD 4 IS THE EXTERNAL        * 05100000
+*          EXPONENT.  WORDS 5-8 ARE NOT USED FOR INPUT.               * 05200000
+*       $HEVAL+4 WILL POINT TO AN AREA OF CORE FOR WORKING STORAGE    * 05300000
+*OUTPUT-R10 POINTS TO A , OR A ' BUCKET.                              * 05400000
+*       R11 POINTS TO THE INPUT ARRAY.  BYTE 2 WORD 1 IS THE ERROR    * 05500000
+*          CODE BYTE.  WORDS 5-8 ARE THE RIGHT JUSTIFIED CONSTANT.    * 05600000
+*EXTERNAL ROUTINES- NONE                                              * 05700000
+*EXITS- NORMAL - $EXIT                                                * 05800000
+*       ERROR - SAME, EXCEPT THE ERRORS ARE LOGGED IN THE ERROR BYTE. * 05900000
+*TABLES/WORK AREAS-                                                   * 06000000
+*                   (ZWDE)     F   MODIFIED EXPONENT SAVE AREA        * 06100000
+*                   (ZWSF)     F   FIXED PT SCALE & FLOATING PT EXPON * 06200000
+*                   (ZWTXPT)   F   TEXT POINTER SAVE AREA             * 06300000
+*                   (ZWACC)   5F   ACCUMULATOR                        * 06400000
+*                   (ZWW1)   56C   WORK AREA                          * 06500000
+*                   (DCLNG)    F   LENGTH MODIFIER                    * 06600000
+*                   (VASCTL)   C   DECON FLAG BYTE                    * 06700000
+*                   (ZWSW)     C   CONTROL SWITCH AND VALUE SIGN      * 06800000
+*                   (SAVEAD)   F   POINTER SAVE AREA                  * 06900000
+*                   (AFIRST)   F   POINTER SAVE AREA                  * 07000000
+*                   (HOLD)     D   DOUBLE WORD FOR CVB                * 07100000
+*ATTRIBUTES- N/A                                                      * 07200000
+*NOTES-                                                               * 07300000
+         EJECT                                                          07400000
+*                                                                       07500000
+*    INITIALIZATION                                                     07600000
+*                                                                       07700000
+         USING WSDSECT,R4                                               07800000
+         USING X5COM,R7                 DEFINE COMMON USING             07900000
+         JCSECT (X5F00)                 INITIATE CSECT                  08000000
+*C127000                                                       @AX14184 08050006
+         JMODID ,                       CREATE ROUTINE IDENTIFIER       08100000
+FXFLCV   JSAVE BASE=NO                  SAVE REGISTERS                  08200000
+         JENTRY (X5F01=FXFLCV)          DEFINE ENTRY                    08300000
+         USING FXFLCV,R3                DEFINE PHASE USING              08400000
+         LR    R3,R12                   ESTABLISH BASE                  08500000
+         L     R4,ALPTR                 FETCH WORKING STORAGE POINTER   08600000
+         MVI   ZARYERR(R11),BIT0-BIT0   ZERO ERROR BYTE                 08700000
+         L     R2,ZARYLEN(0,R11)        FETCH LENGTH MODIFIER VALUE     08800000
+         TM    ZARYSGN(R11),BIT0        IS LENGTH MODIFIER BITS         08900000
+         BO    CNV3                     YES                             09000000
+         SLL   R2,3                     NO, BYTES, SO SHIFT FOR BITS    09100000
+CNV3     BCTR  R2,0                     DECREMENT BIT LENGTH BY ONE     09200000
+         ST    R2,DCLNGTH               SAVE BIT LENGTH VALUE           09300000
+         CLI   ZARYTYPE(R11),BTYPEFL    IS THIS FLOATING POINT          09400000
+         BH    ZWFXCV                     NO.  FIXED POINT              09500000
+         CLI   ZARYTYPE(R11),BTYPEL     IS THIS AN L-CON                09600000
+         BH    ZWFLCV                     NO.  FLOATING POINT           09700000
+         MVI   ZWSW,BIT4+BIT7             YES. SET INDICATOR FOR L-CON  09800000
+         B     ZWA1                     GO INITIALIZE                   09900000
+         SPACE                                                          10000000
+ZWFLCV   MVI   ZWSW,BIT7                SET INDICATOR FOR FLOATING PT   10100000
+ZWA1     XR    ZWRD,ZWRD                LOWER LIMIT SCALE FACTOR        10200000
+         LA    ZWRE,30                  UPPER LIMIT SCALE FACTOR        10300000
+         B     ZWA2                       GO AROUND FIXED POINT SET UP  10400000
+         SPACE                                                          10500000
+ZWFXCV   MVI   ZWSW,BIT0-BIT0           SET INDICATOR FOR FIXED POINT   10600000
+         LA    ZWRD,187                 LOWER                           10700000
+         LCR   ZWRD,ZWRD                  LIMIT SCALE FACTOR            10800000
+         LA    ZWRE,346                 UPPER LIMIT SCAL FACTOR         10900000
+ZWA2     LR    ZWRARY,R11               SAVE INPUT ARRAY POINTER        11000000
+         L     ZWRA,ZARYSCL(ZWRARY)     FETCH SCALE FACTOR              11100000
+         L     ZWRH,ZARYEXP(ZWRARY)     FETCH EXTRN EXPONENT MODIFIER   11200000
+         LR    ZWRB,R10                 LOAD SCAN CHAR POINTER          11300000
+         STM   ZWRH,ZWRB,ZWDE           SAVE EXP, SCALE MOD AND TXT PTR 11400000
+         XC    ZWACC,ZWACC         CLEAR ACCUMULATOR                    11500000
+         SR    ZWRL,ZWRL           PREPARE TO MARK DECIMAL POINT        11600000
+         LR    ZWRF,ZWRB           SET UP FOR NO EXP DIGITS TEST        11700000
+         LR    ZWRI,ZWRH           SAVE EXPONENT MODIFIER               11800000
+         EJECT                                                          11900000
+*B                                                                      12000000
+*B SCAN TEXT MARKING DECIMAL,END OF VALUE,FIRST TERMINATOR.             12100000
+*B CONVERT EXPONENT IF ANY AND MODIFY.                                  12200000
+*B                                                                      12300000
+ZWB1     LR    ZWRJ,ZWRB           MARK END OF VALUE FIELD              12400000
+         GOIF  D0(ZWRB),JCOMMA,EQ=ZWC1  CHECK FOR END OF OPERAND        12500000
+         GOIF  D0(ZWRB),JQUOTE,EQ=ZWC1  CHECK FOR END OF OPERAND        12600000
+         GOIF  D0(ZWRB),JBLANK,EQ=ZWZ4  CHECK FOR END OF OPER  @AX14184 12700006
+         CLI   0(ZWRB),JE               BRANCH                          12800000
+         BNE   ZWB3                     IF CHARACTER NOT E              12900000
+         LA    ZWRB,1(ZWRB)             STEP OVER E                     13000000
+         BAL   ZWRG,ZWS1           STEP OVER SIGN IF PRESENT            13100000
+         BAL   ZWRG,DECON          CONVERT EXPONENT                     13200000
+         LR    ZWRLAST,ZWRB             SET TERMINATOR POINTER          13300000
+         GOIF  D0(ZWRB),JCOMMA,EQ=ZWB1A  OK IF COMMA                    13400000
+         GOIF  D0(ZWRB),JQUOTE,EQ=ZWB1A  OK IF QUOTE                    13500000
+         B     ZWZ4                     GO LOG ERROR AND EXIT           13600000
+ZWB1A    EQU   *                        BRANCH LABEL                    13700000
+         CLI   1(ZWRJ),JMINUS      BRANCH                               13800000
+         BNE   ZWB2                     UNLESS EXP NEGATIVE             13900000
+         LCR   ZWRH,ZWRH           COMPLEMENT EXPONENT                  14000000
+         SPACE                                                          14100000
+ZWB2     AR    ZWRI,ZWRH           ADD TO EXP MODIFIER                  14200000
+         ST    ZWRI,ZWDE           STORE MODIFIED EXP                   14300000
+         B     ZWC1                     EXIT-ALL CHAR HAVE BEEN SCANNED 14400000
+         SPACE                                                          14500000
+ZWB3     CLI   0(ZWRB),JPERIOD          BRANCH                          14600000
+         BNE   ZWB4                     UNLESS CHAR DECIMAL POINT       14700000
+         LR    ZWRL,ZWRB           MARK DECIMAL POINT                   14800000
+ZWB4     LA    ZWRB,1(ZWRB)             ADVANCE TEXT POINTER            14900000
+         B     ZWB1                     CONTINUE LOOP                   15000000
+*C                                                                      15100000
+*C SAVE POINTER TO TERMINATOR.CHECK EXPONENT AND SCALE FACTOR RANGE AND 15200000
+*C CHECK FOR NO EXPONENT DIGITS. SET UP TO SCAN VALUE.                  15300000
+*C                                                                      15400000
+ZWC1     AH    ZWRI,=H'5'               MAKE RANGE SYMETRIC             15500000
+         LR    ZWRLAST,ZWRB             SAVE TERMINATOR POINTER         15600000
+         LPR   ZWRI,ZWRI           TAKE MAGNITUDE                       15700000
+         CH    ZWRI,=H'80'         BRANCH                               15800000
+         BNH   ZWC2                     IF EXPONENT WITHIN RANGE        15900000
+         OI    ZARYERR(ZWRARY),ZRCD13   SET EXPONENT OUT OF RANGE INDIC 16000000
+         SR    ZWRI,ZWRI                SET EXPONENT TO ZERO AND        16100000
+         ST    ZWRI,ZWDE                  CONTINUE AS IF EXP WAS ZERO   16200000
+         SPACE                                                          16300000
+ZWC2     LA    ZWRH,ZRCD11              SET NO. FOR SCL FAC RANGE ERROR 16400000
+         CR    ZWRA,ZWRD           BRANCH                               16500000
+         BL    ZWZ3                     IF SF TOO SMALL                 16600000
+         CR    ZWRA,ZWRE           BRANCH                               16700000
+         BH    ZWZ3                     IF SF TOO LARGE                 16800000
+         CR    ZWRB,ZWRF           BRANCH TO ERROR ROUTINE              16900000
+         BE    ZWZ4                     IF NO EXP DIGIT OR TEXT         17000000
+         L     ZWRB,ZWTXPT         RESET TEXT POINT TO BEGINNING VALUE  17100000
+         BAL   ZWRG,ZWS1           STEP OVER VALUE SIGN IF PRESENT      17200000
+         SPACE                                                          17300000
+         LTR   ZWRL,ZWRL           IF NO DECIMAL                        17400000
+         BNZ   ZWD1                  SET MARK TO                        17500000
+         LR    ZWRL,ZWRJ             END OF VALUE                       17600000
+         EJECT                                                          17700000
+*D                                                                      17800000
+*D STEP OVER DECIMAL POINT. CHECK FOR END OF VALUE.                     17900000
+*D                                                                      18000000
+ZWD1     CR    ZWRB,ZWRL           IF NEXT CHAR                         18100000
+         BNE   ZWD2                     DECIMAL POINT                   18200000
+         LA    ZWRB,1(ZWRB)             ADVANCE VALUE POINTER           18300000
+         LR    ZWRL,ZWRB             AND DECIMAL MARKER                 18400000
+ZWD2     CR    ZWRB,ZWRJ           IF END OF VALUE                      18500000
+         BNL   ZWM1                  BRANCH                             18600000
+*E                                                                      18700000
+*E CONVERT PIECE OF VALUE.CHECK FOR ZERO.COMPUTE ADJUSTED EXP FOR PIECE 18800000
+*E                                                                      18900000
+ZWE1     BAL   ZWRG,DECON          CONVERT PIECE OF VALUE               19000000
+         TM    VASCTL,BIT0+BIT1    IF ONE OR MORE DIGITS CONVERTED      19100000
+         BZ    ZWE2                     AND NON-DIGIT REACHED, BRANCH   19200000
+         TM    VASCTL,BIT0         IF NO DIGITS FOUND                   19300000
+         BO    ZWZ4                     BRANCH TO INVALID TERM. MESSAGE 19400000
+         LA    ZWRB,9(ZWRF)        CORRECT VALUE POINTER                19500000
+ZWE2     OI    ZWSW,BIT6           SET VALUE FOUND SWITCH               19600000
+         LTR   ZWRD,ZWRH           COPY AND TEST VALUE                  19700000
+         BZ    ZWD1                     BRANCH IF ZERO                  19800000
+         LR    ZWRG,ZWRL           LOCATION DECIMAL                     19900000
+         SR    ZWRG,ZWRB             MINUS LOCATION CHAR AFTER FLD CNVT 20000000
+         A     ZWRG,ZWDE             PLUS EXP GIVES ADJ EXP FOR THIS    20100000
+*                                    PIECE OF VALUE                     20200000
+         TM    ZWSW,BIT5+BIT7      BRANCH UNLESS FIRST NON-ZERO         20300000
+         BNM   ZWG1                  PIECE FLOATING VALUE               20400000
+*F                                                                      20500000
+*F IF FLOATING PT COMPUTE WORKING SCALE FACTOR.                         20600000
+*F                                                                      20700000
+         LCR   ZWRC,ZWRG           COMPLEMENT ADJ EXP                   20800000
+         MH    ZWRC,=HS13'3.322'   MULT BY LOG 10 BASE 2 (3.527 HEX)    20900000
+         SRA   ZWRC,13             SCALE PRODUCT                        21000000
+ZWF1     BCTR  ZWRC,0              COUNT NUMBER BITS                    21100000
+         SRA   ZWRD,1                AND SUBTRACT                       21200000
+         BP    ZWF1                     FROM PRODUCT                    21300000
+         SRA   ZWRC,2              ROUND DOWN TO MULTIPLE OF 4          21400000
+         SLA   ZWRC,2                                                   21500000
+         AH    ZWRC,=H'124'          AND ADD 124                        21600000
+         ST    ZWRC,ZWSF           STORE WORKING SCALE FACTOR           21700000
+         OI    ZWSW,BIT5           SET FL PT INIT SWITCH                21800000
+         LPR   ZWRF,ZWRC           IF WORKING SCALE FACTOR WILL         21900000
+         CH    ZWRF,=H'400'          PRODUCE INVALID CHARACTERISTIC     22000000
+         BH    ZWQ7                     BRANCH TO INVALID EXP MSG       22100000
+*G                                                                      22200000
+*G COMPUTE AMT OF BINARY SHIFT. SPLIT INTO WORD INDEX AND BIT SHIFT.    22300000
+*G RESET WORKING AREA. TEST SIGN OF ADJ EXPONENT.                       22400000
+*G                                                                      22500000
+ZWG1     LA    ZWRC,32             32                                   22600000
+         AR    ZWRC,ZWRG             PLUS ADJ EXP                       22700000
+         A     ZWRC,ZWSF           PLUS SCALE FACTOR GIVES BIN SHIFT    22800000
+         SPACE                                                          22900000
+* NOTE - ZWSF HAS S-MODIFIER VALUE IF F-, H-CON,                        23000000
+*             OR THE WORKING SCALE FACTOR IF L-, D-, OR E-CON.          23100000
+         SRDA  ZWRC,5              SEPARATE INTO BIT AND WORD SHIFTS    23200000
+         SRL   ZWRD,27             POSITION BIT SHIFT                   23300000
+         SLL   ZWRC,2              POSITION WORD SHIFT                  23400000
+         XC    ZWW1,ZWW1           CLEAR WORK AREA                      23500000
+         LTR   ZWRG,ZWRG           TEST ADJ EXP                         23600000
+         BNP   ZWI1                BRANCH IF ZERO OR NEG                23700000
+         EJECT                                                          23800000
+*H                                                                      23900000
+*H ADJ EXP IS PLUS.  MULTIPLY VALUE BY 5 TO THE GIVEN POWER.            24000000
+*H                                                                      24100000
+         ST    ZWRH,ZWW2           STORE VALUE                          24200000
+         LR    ZWRA,ZWRC           WORD SHIFT IN BYTES                  24300000
+         SH    ZWRA,=H'16'           LESS 16 = LEFT LIMIT OF WORK AREA  24400000
+         BP    ZWJ8                     BRANCH IF LIMIT DEFINES NO WORK 24500000
+ZWH1     SR    ZWRI,ZWRI           RESET WORK AREA POINTER              24600000
+         SR    ZWRH,ZWRH           CLEAR CARRY REG                      24700000
+ZWH2     L     ZWRF,ZWW2(ZWRI)     LOAD PART OF VALUE                   24800000
+         M     ZWRE,=F'5'          TIMES 5                              24900000
+         ALR   ZWRF,ZWRH           ADD CARRY                            25000000
+         BC    12,ZWH3             PROPAGATE                            25100000
+         AH    ZWRE,=H'1'            CARRY                              25200000
+ZWH3     LTR   ZWRH,ZWRE           SAVE CARRY AND TEST SIGN             25300000
+         BNM   ZWH4                  IF NEGATIVE                        25400000
+         AH    ZWRH,=H'5'            CORRECT                            25500000
+ZWH4     ST    ZWRF,ZWW2(ZWRI)     STORE PARTIAL PRODUCT                25600000
+         SH    ZWRI,=H'4'          STEP AREA POINTER LEFT               25700000
+         CR    ZWRI,ZWRA           IF LEFT LIMIT NOT REACHED            25800000
+         BNL   ZWH2                  BRANCH                             25900000
+         LTR   ZWRH,ZWRH           TEST FINAL CARRY                     26000000
+         BZ    ZWH5                     IF NOT ZERO                     26100000
+         OI    ZARYERR(ZWRARY),DCTRUN   SET TRUNCATION INDICATOR        26200000
+ZWH5     BCT   ZWRG,ZWH1           DECREMENT ADJ EXP AND CLOSE LOOP     26300000
+         B     ZWJ1                     SHIFT VALUE                     26400000
+*I                                                                      26500000
+*I ADJ EXP IS NOT PLUS. SHIFT VALUE AS INDICATED BY THE WORD INDEX AND  26600000
+*I DIVIDE BY 5 TO THE MAGNITUDE OF THE GIVEN POWER. RESET WORD INDEX    26700000
+*I                                                                      26800000
+ZWI1     LCR   ZWRC,ZWRC           COMPLEMENT WORD SHIFT GIVES LEFT     26900000
+*                                    LIMIT WORK AREA                    27000000
+         BP    ZWD1                     BRANCH IF LIMIT DEFINES NO WORK 27100000
+         ST    ZWRH,ZWW2(ZWRC)     STORE VALUE IN WORK AREA SHIFTED     27200000
+         LCR   ZWRG,ZWRG           COMPLEMENT AND TEST ADJ EXP GIVES    27300000
+*                                    COUNT FOR NUMBER TIMES TO DIVIDE   27400000
+         BZ    ZWI5                     BRANCH IF ZERO                  27500000
+ZWI2     LR    ZWRI,ZWRC           SET WORKING POINTER TO LEFT LIMIT    27600000
+         SR    ZWRE,ZWRE           CLEAR UPPER DIVIDEND REG             27700000
+ZWI3     L     ZWRF,ZWW2(ZWRI)     LOAD PART OF DIVIDEND                27800000
+         D     ZWRE,=F'10'         DIVIDE                               27900000
+         SLL   ZWRF,1                BY 5                               28000000
+         CH    ZWRE,=H'5'          IF REMAINDER                         28100000
+         BL    ZWI4                     TOO LARGE                       28200000
+         SH    ZWRE,=H'5'            CORRECT REMAINDER                  28300000
+         AH    ZWRF,=H'1'            AND DIVIDEND                       28400000
+ZWI4     ST    ZWRF,ZWW2(ZWRI)     STORE PARTIAL QUOTIENT               28500000
+         AH    ZWRI,=H'4'          STEP WORKING POINTER RIGHT           28600000
+         BNP   ZWI3                REPEAT UNTIL RIGHT LIMIT REACHED     28700000
+         BCT   ZWRG,ZWI2           REDUCE COUNT AND CLOSE LOOP          28800000
+ZWI5     SR    ZWRC,ZWRC           CLEAR WORD SHIFT                     28900000
+         OC    ZWW1(L'ZWW1-L'ZWACC),ZWW1  TEST HI PART OF WORK AREA     29000000
+         BE    ZWJ1                     IF NOT ZERO                     29100000
+         OI    ZARYERR(ZWRARY),DCTRUN   SET TRUNCATION INDICATOR        29200000
+         EJECT                                                          29300000
+*J                                                                      29400000
+*J SHIFT VALUE PER WORD SHIFT AND BIT SHIFT. TRUNCATE TO 160            29500000
+*J BITS AND ADD TO ACCUMULATOR.                                         29600000
+*J                                                                      29700000
+ZWJ1     SR    ZWRG,ZWRG           RESET CARRY REG                      29800000
+         LA    ZWRH,16             INIT ACCUMULATOR POINTER             29900000
+ZWJ2     SR    ZWRE,ZWRE           RESET WORKING REGISTERS              30000000
+         SR    ZWRF,ZWRF                                                30100000
+         LTR   ZWRC,ZWRC           TEST WORD INDEX                      30200000
+         BP    ZWJ4                     IF PLUS LEAVE WORK AREA CLEAR   30300000
+         BZ    ZWJ3                     IF ZERO FETCH ONE WORD OF RESLT 30400000
+         L     ZWRF,ZWW2+4(ZWRC)   FETCH LO WORD OF RESULT              30500000
+ZWJ3     L     ZWRE,ZWW2(ZWRC)     FETCH HI WORD OF RESULT              30600000
+ZWJ4     SLDL  ZWRE,0(ZWRD)        BIT SHIFT                            30700000
+         ALR   ZWRE,ZWRG           ADD IN CARRY                         30800000
+         BC    3,ZWJ5              BRANCH IF CARRY LEAVING ONE IN ZWRG  30900000
+         SR    ZWRG,ZWRG           RESET CARRY                          31000000
+ZWJ5     LTR   ZWRH,ZWRH           END OF ACCU                          31100000
+         BM    ZWJ7                     YES, BRANCH                     31200000
+         AL    ZWRE,ZWACC(ZWRH)    ADD IN PIECE FROM ACCUMULATOR        31300000
+         BC    12,ZWJ6             BRANCH IF NO CARRY                   31400000
+         LA    ZWRG,1              SET CARRY                            31500000
+ZWJ6     ST    ZWRE,ZWACC(ZWRH)    STEP WORKAREA PT                     31600000
+         SH    ZWRC,=H'4'          STEP ACCU PT                         31700000
+         SH    ZWRH,=H'4'          REPEAT FOR EACH WORD OF ACCU         31800000
+         B     ZWJ2                     LOOP                            31900000
+ZWJ7     LTR   ZWRE,ZWRE           TEST CARRY                           32000000
+         BZ    ZWD1                     IF ON                           32100000
+ZWJ8     OI    ZARYERR(ZWRARY),DCTRUN   SET TRUNCATION INDICATOR        32200000
+         B     ZWD1                     STEP OVER DECIMAL POINT         32300000
+*M                                                                      32400000
+*M SET UP TO FORMAT RESULT. BRANCH TO APPROPRIATE ROUTINE.              32500000
+*M                                                                      32600000
+ZWM1     LM    ZWRL,ZWRJ,ZWSF      GET SCALE FACTOR AND TEXT POINTER,   32700000
+         L     ZWRC,DCLNGTH             GET BIT LENGTH                  32800000
+         LCR   ZWRC,ZWRC             AND COMPLEMENT                     32900000
+         TM    ZWSW,BIT5+BIT6      WHAT FORMAT REQUIRED                 33000000
+         BZ    ZWZ4                     BRANCH IF TEXT TRIVIAL          33100000
+         BO    ZWP1                     BRANCH IF FLOAT PT AND NON-ZERO 33200000
+         EJECT                                                          33300000
+*N                                                                      33400000
+*N FORMAT FIXED POINT RESULT.                                           33500000
+*N                                                                      33600000
+ZWN1     TM    ZWACC+L'ZWACC-4,BIT0     TEST DROPPED BIT                33700000
+         BZ    ZWN2                       NO ROUND NEEDED               33800000
+         LA    ZWRI,L'ZWACC-4           LOAD INDEX REG                  33900000
+ZWN3     LA    ZWRA,1                   LOAD ROUND/CARRY BIT            34000000
+         AL    ZWRA,ZWACC-4(ZWRI)       ADD IN PIECE OF VALUE           34100000
+         ST    ZWRA,ZWACC-4(ZWRI)                                       34200000
+         BC    12,ZWN2                  IF NO CARRY, GO QUIT            34300000
+         SH    ZWRI,=H'4'                 ELSE PROPAGATE CARRY          34400000
+         BP    ZWN3                         THRU ALL OF ZWACC           34500000
+         OI    ZARYERR(ZWRARY),DCTRUN   IF CARRY OUT, SET TRUNC. INDIC. 34600000
+ZWN2     CLI   0(ZWRJ),JMINUS           IF VALUE SIGN IS NEGATIVE       34700000
+         BE    ZWN4                       GO DO NEG. OUTPUT             34800000
+* VALUE IS POSITIVE.  MOVE INTACT TO OUTPUT.                            34900000
+         LM    ZWRG,ZWRB,ZWACC                                          35000000
+         STM   ZWRG,ZWRB,ZARYCON(ZWRARY)  STORE IN OUTPUT AREA          35100000
+* TEST FOR TRUNCATION OF HIGH-ORDER BITS (POSITIVE DATA)                35200000
+         CH    ZWRC,=H'-63'             IS LENGTH OVER 2 WORDS          35300000
+         BL    ZWN6                       YES.  GO DO HI 2 WORDS        35400000
+         OR    ZWRG,ZWRH                TEST HI 2 WORDS FIRST           35500000
+         BNZ   ZWN8                     SHOULD BE ZERO                  35600000
+         SLDA  ZWRA,63(ZWRC)            TEST TRUN. IN BITS OF LO 2 WDS  35700000
+         B     ZWN6+L'ZWN6                THEN GO TEST                  35800000
+ZWN6     SLDA  ZWRG,127(ZWRC)           TEST TRUN. IN BITS OF HI 2 WDS  35900000
+         BC    10,ZWZ5                  IF OKAY GO PUT IT OUT           36000000
+         B     ZWN8                     ELSE GO LOG ERROR               36100000
+* VALUE IS NEGATIVE.  COMPLIMENT IT AND PUT IN OUTPUT.                  36200000
+ZWN4     LA    ZWRI,L'ZWACC-4           LOAD UP INDEX                   36300000
+         SR    ZWRA,ZWRA                CLEAR REDUCTION BIT             36400000
+ZWN5     L     ZWRB,ZWACC-4(ZWRI)       PICK UP A WORD                  36500000
+         LCR   ZWRB,ZWRB                COMPLIMENT IT, 2'S COMP         36600000
+         SLR   ZWRB,ZWRA                REDUCE TO 1'S COMP IF ABOVE    X36700000
+                                            FIRST NON-ZERO WORD         36800000
+         BC    2,ZWN0                   BRANCH IF VALUE IS STILL ZERO   36900000
+* BRANCH GOES WRONG IF ZERO IS DEVELOPED ABOVE 1ST NON-ZERO. BUT THAT'S 37000000
+*  OKAY, AS, ONCE ZWRA IS = 1, RELOADING IT DOESN'T MATTER ANYWAY.      37100000
+         LA    ZWRA,1                   BEGIN 1'S COMPLIMENT NEXT WORD  37200000
+ZWN0     ST    ZWRB,ZARYCON-4(ZWRARY,ZWRI) STORE IN OUTPUT AREA         37300000
+         SH    ZWRI,=H'4'               NEXT                            37400000
+         BP    ZWN5                       WORD                          37500000
+* TEST FOR TRUNCATION OF HIGH-ORDER BITS (NEGATIVE DATA)                37600000
+         LM    ZWRG,ZWRB,ZARYCON(ZWRARY) PICK UP COMP. VALUE            37700000
+         CH    ZWRC,=H'-63'             IS LENGTH OVER 2 WORDS          37800000
+         BL    ZWN7                       YES.  GO DO HI 2 WORDS        37900000
+         SLDA  ZWRG,63                  TEST HI 2 WORDS FIRST           38000000
+         BC    3,ZWN8                   SHOULD BE MAX NEG OR ZERO       38100000
+         SLDA  ZWRA,63(ZWRC)            TEST TRUN. IN BITS OF LO 2 WDS  38200000
+         B     ZWN7+L'ZWN7                THEN GO TEST                  38300000
+ZWN7     SLDA  ZWRG,127(ZWRC)           TEST TRUN. IN BITS OF HI 2 WDS  38400000
+         BC    12,ZWZ5                  IF OKAY GO PUT IT OUT           38500000
+* SET TRUNCATION INDICATOR AND GO PUT OUT VALUE                         38600000
+ZWN8     OI    ZARYERR(ZWRARY),DCTRUN   ELSE SET TRUNCATION BIT         38700000
+         B     ZWZ5                         THEN GO PUT IT OUT.         38800000
+         EJECT                                                          38900000
+*P                                                                      39000000
+*P NORMALIZE FLOATING POINT RESULT                                      39100000
+*P                                                                      39200000
+ZWP1     L     ZWRD,ZARYSCL(ZWRARY)     GET S-MODIFIER                  39300000
+         CLI   ZWACC,BIT3               IS HIGH HEX DIGIT GT 0          39400000
+         BNL   ZWP2                     -YES.                           39500000
+* VALUE NEEDS NORMALIZATION.            -NO.                            39600000
+         MVC   ZWW1(L'ZWACC),ZWACC      PUT IN TEMP STORAGE             39700000
+         MVO   ZWACC+10(10),ZWW1+10(10) SHIFT VALUE LEFT 4 BITS         39800000
+         MVO   ZWACC+00(11),ZWW1+00(11)                                 39900000
+         AH    ZWRL,=H'4'               ADJUST WORKING SCALE FACTOR     40000000
+         B     ZWP1                     RETEST NORMALIZATION            40100000
+* ROUND VALUE TO LENGTH                                                 40200000
+*   CALCULATE LEFT SHIFT FOR ROUNDING-BIT                               40300000
+ZWP2     LR    ZWRE,ZWRD                GRAB S-MOD (HEX BYTES)          40400000
+         SLA   ZWRE,2                     MAKE INTO BITS                40500000
+         TM    ZWSW,BIT4                IS THIS AN L-CON                40600000
+         BZ    ZWP3                       NO. GO TO  D-,E- FORMULA      40700000
+         CH    ZWRC,=H'-63'               YES. IS LENGTH .GT. 64 BITS   40800000
+         BNL   ZWP3                         NO. USE D,E-CON FORMULA     40900000
+         CH    ZWRC,=H'-71'                 YES. IS LENGTH .GT. 72      41000000
+         BL    ZWP4                           YES. USE LONG L FORMULA   41100000
+         SH    ZWRE,=H'-71'                   NO. SPECIAL L FORMULA,    41200000
+         B     ZWP5                             GO SHIFT                41300000
+ZWP4     AH    ZWRE,=H'8'               LONG L-CON FORM.                41400000
+ZWP3     AH    ZWRE,=H'134'             SHORT L-CON, D-E-CON.           41500000
+         AR    ZWRE,ZWRC                SUBTRACT LENGTH-1               41600000
+*                                                                       41700000
+ZWP5     CH    ZWRE,=H'127'             WILL ANY OF VALUE BE RETAINED   41800000
+         BH    ZWQ1                       NO.  SKIP ROUNDING.           41900000
+         SRDL  ZWRE,5                   SPLIT SHIFT INTO                42000000
+         SRL   ZWRF,32-5                  BITS AND                      42100000
+         SLL   ZWRE,2                     WORDS  (IN BYTE TERMS).       42200000
+         LCR   ZWRE,ZWRE                                                42300000
+         LA    ZWRI,L'ZWACC-4(,ZWRE)    INIT INDEX WORD-SHIFT ADJUSTED  42400000
+         LA    ZWRA,1                   LOAD ROUND BIT                  42500000
+         SLL   ZWRA,0(ZWRF)             POSITION IT                     42600000
+ZWP6     AL    ZWRA,ZWACC-4(ZWRI)       ADD IN PIECE OF VALUE           42700000
+         ST    ZWRA,ZWACC-4(ZWRI)                                       42800000
+         BC    12,ZWQ1                  IF NO CARRY, GO QUIT            42900000
+         LA    ZWRA,1                     ELSE LOAD CARRY REGISTER,     43000000
+         SH    ZWRI,=H'4'                                               43100000
+         BP    ZWP6                       GO PROPAGATE CARRY            43200000
+*OVERFLOW ON ROUNDING. NUTS.                                            43300000
+         MVI   ZWACC,X'10'              PUT CORRECTED VALUE             43400000
+         SH    ZWRL,=H'4'  (ART'S FIX)  ADJUST WORKING SCALE FACTOR     43500000
+         EJECT                                                          43600000
+*Q                                                                      43700000
+*Q SHIFT RIGHT PER SCALE MOD., PLACE EXPONENT(S), POSITION FOR OUTPUT   43800000
+*Q                                                                      43900000
+ZWQ1     LR    ZWRB,ZWRD                GET S-MOD                       44000000
+         AH    ZWRB,=H'1'               BUMP TO MOVE EXTRA BYTE IF     X44100000
+                                          S-MOD IS ODD                  44200000
+         SRA   ZWRB,1                   MAKE INTO BYTES                 44300000
+         XC    ZWW1(L'ZWACC-3),ZWW1     CLEAR NEW HIGH BYTES            44400000
+         LA    ZWRI,ZWW1+1(ZWRB)        INDEX MOVE. ADD 1 FOR EXP.      44500000
+         MVC   0(L'ZWACC-5,ZWRI),ZWACC  MOVE AND SHIFT BY BYTES         44600000
+         TM    ZARYSCL+3(ZWRARY),BIT7   WAS S-MOD ODD                   44700000
+         BZ    ZWQ2                       NO. LET IT SIT                44800000
+         MVO   ZWW1+1(16),ZWW1+1(16)    SHIFT BACK 1 HEX DIGIT          44900000
+ZWQ2     MVC   ZWACC(L'ZWACC-3),ZWW1    BRING IT HOME                   45000000
+*VALUE IN ZWW1 USED LATER IN LOST PRECISION TEST                        45100000
+*                                                                       45200000
+*CALCULATE EXPONENT BYTE AND INSERT IT IN VALUE                         45300000
+         LA    ZWRB,384                 FORM                            45400000
+         SR    ZWRB,ZWRL                  CHARACTERISTIC                45500000
+         SRA   ZWRB,2                                                   45600000
+         AR    ZWRB,ZWRD                ADJUST FOR S-MODIFIER           45700000
+         LR    ZWRA,ZWRB                                                45800000
+         SRA   ZWRA,7                   TEST FOR                        45900000
+ZWQ7     LA    ZWRH,ZRCD70              CHARACTERISTIC                  46000000
+         BNZ   ZWZ3                       OUT OF BOUNDS                 46100000
+         CLI   0(ZWRJ),JMINUS           IF VALUE IS NEGATIVE            46200000
+         BNE   ZWQ6                       NOT NEG                       46300000
+         LA    ZWRB,X'80'(,ZWRB)          PUT - SIGN                    46400000
+ZWQ6     STC   ZWRB,ZWACC               PLUG IN EXPONENT                46500000
+         TM    ZWSW,BIT4                IS THIS A L-CON                 46600000
+         BZ    ZWQ3                       NO.  GO DO FINALS.            46700000
+*THIS IS AN L-CON, PROCESS LOWER EXPONENT                               46800000
+         LM    ZWRE,ZWRF,ZWACC+8        PICK LOW 2 WORDS                46900000
+         SRDL  ZWRE,8                   MAKE ROOM FOR EXPONENT          47000000
+         STM   ZWRE,ZWRF,ZWACC+8                                        47100000
+         STM   ZWRE,ZWRF,ZWW1+8         SAVE FOR LATER TEST             47200000
+         SH    ZWRB,=H'14'              LOWER EXPONENT IS 14 LESS       47300000
+         STC   ZWRB,ZWACC+8             PLUG IT IN                      47400000
+* IF LOW EXPONENT UNDERFLOWED, THE SIGN BIT WILL BE WRONG.              47500000
+*  CORRECT FOR THAT POSSIBILITY.                                        47600000
+         NI    ZWACC+8,BITFF-BIT0       KILL WHATEVER SIGN BIT          47700000
+         CLI   0(ZWRJ),JMINUS           IS VALUE NEGATIVE               47800000
+         BNE   ZWQ3                     BIF NO                          47900000
+         OI    ZWACC+8,BIT0             YES, PUT - SIGN                 48000000
+* CLODDY LOOP TO SHIFT VALUE FROM ZWACC TO DCVW, AND ALSO MOVE          48100000
+* TEST VALUE FROM ZWW1 TO LOW ZWW1.                                     48200000
+ZWQ3     AH    ZWRC,=H'127'             COMPUTE SHIFT                   48300000
+         SRDL  ZWRC,5                                                   48400000
+         SRL   ZWRD,32-5                BIT SHIFT                       48500000
+         SLL   ZWRC,2                   WORD SHIFT IN BYTES             48600000
+         XC    ZARYCON(12,ZWRARY),ZARYCON(ZWRARY)  CLEAR RECEIVING AREA 48700000
+         XC    ZWW1+16(12),ZWW1+16      CLEAR RECIEVING AREA            48800000
+         SR    ZWRI,ZWRI                CLEAR LOOP INDEX                48900000
+         SR    ZWRG,ZWRG                CLEAR CARRY REG                 49000000
+         SR    ZWRH,ZWRH                CLEAR CARRY REG                 49100000
+ZWQ4     L     ZWRE,ZWACC(ZWRI)         PICK UP WORD                    49200000
+         L     ZWRL,ZWW1(ZWRI)          PICK UP WORD                    49300000
+         SR    ZWRF,ZWRF                CLEAR RH WORD                   49400000
+         SR    ZWRJ,ZWRJ                CLEAR RH WORD                   49500000
+         SRDL  ZWRE,0(ZWRD)             SHIFT PER BIT SHIFT             49600000
+         SRDL  ZWRL,0(ZWRD)             SHIFT PER BIT SHIFT             49700000
+         OR    ZWRE,ZWRG                PUT IN BIT FROM PREVIOUS WORD   49800000
+         OR    ZWRL,ZWRH                PUT IN BIT FROM PREVIOUS WORD   49900000
+         LR    ZWRG,ZWRF                SAVE OUTSHIFT FOR NEXT WORD     50000000
+         LR    ZWRH,ZWRJ                SAVE OUTSHIFT FOR NEXT WORD     50100000
+         LA    ZWRB,0(ZWRI,ZWRC)        ADD 2 INDEX REGS TOGETHER       50200000
+         ST    ZWRE,ZARYCON(ZWRARY,ZWRB)  PUT WORD OFFSET PER WD SHIFT  50300000
+         ST    ZWRL,ZWW1+16(ZWRB)       PUT WORD OFFSET PER WD SHIFT    50400000
+         AH    ZWRI,=H'4'               BUMP INDEX                      50500000
+         CH    ZWRB,=H'12'              TEST WHERE LATEST WD STORED     50600000
+         BL    ZWQ4                       BR IF NOT LAST WORD           50700000
+* TEST THE VALUE AT ZWW1+4 FOR LOST PRECISION                           50800000
+         OC    ZWW1+16(16),ZWW1+16      ZERO IF SHIFTED OUT ALL BITS    50900000
+         BNZ   ZWZ5                       IF BIT, GO OUTPUT             51000000
+         LA    ZWRH,ZRCD109                                             51100000
+         BAL   ZWRG,MERROR              POST ERROR MESSAGE, THEN        51200000
+         B     ZWZ5                       GO OUTPUT                     51300000
+         EJECT                                                          51400000
+*S1                                                                     51500000
+*S1 STEP OVER SIGN.                                                     51600000
+*S1                                                                     51700000
+ZWS1     CLI   0(ZWRB),JPLUS            IF CHARACTER IS PLUS            51800000
+         BE    ZWS11                    BRANCH                          51900000
+         CLI   0(ZWRB),JMINUS           IF CHARACTER                    52000000
+         BCR   7,ZWRG                IS - RETURN                        52100000
+ZWS11    LA    ZWRB,1(ZWRB)        STEP TEXT POINTER                    52200000
+         BR    ZWRG                     RETURN                          52300000
+*Z                                                                      52400000
+*Z ERROR ROUTINE  AND RETURN ROUTINE.                                   52500000
+*Z                                                                      52600000
+ZWZ4     LA    ZWRH,ZRCD39              LOAD ERROR NUMBER               52700000
+ZWZ3     BAL   ZWRG,MERROR         STORE ERROR MESSAGE                  52800000
+         XC    16(16,ZWRARY),16(ZWRARY) CLEAR OUTPUT AREA               52900000
+ZWZ5     LR    R10,ZWRLAST              LOAD POINTER TO TERM CHAR       53000000
+         LR    R11,ZWRARY               RESTORE INPUT ARRAY POINTER     53100000
+XIT      JRETURN ,                      EXIT                            53200000
+*                                                                       53300000
+MERROR   STC   ZWRH,ZARYERR(0,ZWRARY)   SET ERROR                       53400000
+         BR    ZWRG                     AND RETURN                      53500000
+         EJECT                                                          53600000
+*DECON- CONVERT A PIECE OF THE VALUE                                    53700000
+*       INPUT- CONDEX POINTS TO FIRST CHAR                              53800000
+*       OUTPUT-BINVAL CONTAINS CONVERTED VALUE                          53900000
+*              CONDEX TO TERMINATING CHAR                               54000000
+*              ZWRF POINTS TO FIRST CHAR OF FIELD                       54100000
+*              VASCTL CONTAINS X'00'  NO ERRORS                         54200000
+*                        BIT1  X'40'  TOO LONG                          54300000
+*                        BIT0  X'80'  NO CHAR TO CONVERT                54400000
+         SPACE 2                                                        54500000
+DECON    MVI   VASCTL,BIT0-BIT0         AND FLAG                        54600000
+         ST    CONDEX,AFIRST            SAVE POINTER TO BEGINNING-1     54700000
+ADDIT    CLI   0(CONDEX),J9             IS CHARACTER NUMERIC            54800000
+         BH    SETUP                    NO, BRANCH                      54900000
+         LA    CONDEX,1(0,CONDEX)       UP TO NEXT CHAR                 55000000
+         B     ADDIT                    LOOP, LOOKING FOR NON-NUMERIC   55100000
+SETUP    ST    CONDEX,SAVEAD            SAVE END POINTER                55200000
+         LR    CNT,CONDEX               LOAD ENDING POINTER             55300000
+         L     CONDEX,AFIRST            BEGIN AT BEGINNING              55400000
+         SR    CNT,CONDEX               MINUS BEGINNING PTR = # OF CHAR 55500000
+         BZ    ZNONE                    BRANCH IF NO CHAR TO CONVERT    55600000
+SET1     CH    CNT,=H'10'               YES, IS IT GREATER THAN MAX     55700000
+         BL    GOTOIT                   NO, OK                          55800000
+         BH    GTTEN                    YES, TRY TO GET DOWN TO NINE    55900000
+         CLC   0(10,CONDEX),=X'02010407040803060407'  =10 CHARS, IS IT X56000000
+                                                        .GT. 2**31-1    56100000
+         BNH   GOTOIT                   NO, CONVERT                     56200000
+ZLONG    OI    VASCTL,BIT1              YES, SET FLAG                   56300000
+         LA    CNT,9                    AND CONVERT 9                   56400000
+GOTOIT   BCTR  CNT,0                    DECREMENT FOR MOVE              56500000
+         EX    CNT,PACKIT               PACK VALUE INTO HOLD            56600000
+         OI    HOLD+7,BIT4+BIT5         SET POSITIVE SIGN               56700000
+         CVB   BINVAL,HOLD              CONVERT HOLD TO BINARY          56800000
+LEAV     LR    ZWRF,CONDEX              SET TO FIRST CHAR               56900000
+         L     CONDEX,SAVEAD            SET TO TERMINATOR               57000000
+         BR    REG                      RETURN                          57100000
+GTTEN    CLI   0(CONDEX),J0             IS FIRST CHARACTER A ZERO       57200000
+         BNE   ZLONG                    NO, TOO LONG                    57300000
+         LA    CONDEX,1(0,CONDEX)       YES, IGNORE ZERO                57400000
+         BCTR  CNT,0                    DECREMENT COUNT                 57500000
+         LTR   CNT,CNT                  ARE THERE CHAR TO CONVERT       57600000
+         BNZ   SET1                    YES, NOW SEE IF SHORT ENOUGH     57700000
+ZNONE    OI    VASCTL,BIT0              SET CODE, NONE TO CONVERT       57800000
+         B     LEAV                     AND EXIT                        57900000
+PACKIT   PACK  HOLD(8),0(00,CONDEX)     EXECUTED PACK TO PACK HOLD      58000000
+         EJECT                                                          58100000
+*                                                                       58200000
+*LITERAL POOL                                                           58300000
+*                                                                       58400000
+         SPACE                                                          58500000
+         LTORG                                                          58600000
+*                                                                       58700000
+         EJECT                                                          58800000
+*                                                                       58900000
+*REGISTER EQUATES                                                       59000000
+*                                                                       59100000
+ZWRA     EQU   R0                       REGISTERS- SCALE FACTOR         59200000
+ZWRB     EQU   R1                                  POINTER TO SCAN CHAR 59300000
+ZWRARY   EQU   R2                                  POINTER TO IN ARRAY  59400000
+ZWRLAST  EQU   R5                                  LAST CONSTANT ADDR   59500000
+ZWRC     EQU   R6                                  WORKING SCALE FACTOR 59600000
+ZWRD     EQU   R7                                  LOWER LIMIT SCALE    59700000
+ZWRE     EQU   R8                                  UPPER LIMIT SCALE    59800000
+ZWRF     EQU   R9                                  LOW WORD OF RESULT   59900000
+ZWRL     EQU   R10                                 POSITION OF DEC PONT 60000000
+ZWRJ     EQU   R11                                 END POINTER          60100000
+ZWRI     EQU   R12                                 EXPONENT MODIFIER    60200000
+ZWRG     EQU   R14                                 ADJECTIVE EXPONENT   60300000
+ZWRH     EQU   R15                                 BINARY RESULT        60400000
+CONDEX   EQU   ZWRB                     POINTER TO SCAN CHAR            60500000
+CNT      EQU   ZWRF                     COUNTER FOR CHAR TO CONVERT     60600000
+REG      EQU   ZWRG                     RETURN REGISTER-DECON           60700000
+BINVAL   EQU   ZWRH                     BINARY VALUE-DECON              60800000
+*                                                                       60900000
+*ERROR CODE EQUATES                                                     61000000
+*                                                                       61100000
+ZRCD11   EQU   BIT0                     SCALE MODIFIER ERROR            61200000
+ZRCD13   EQU   BIT1                     EXPONENT MODIFIER ERROR         61300000
+DCTRUN   EQU   BIT2                     TRUNCATION ERROR                61400000
+ZRCD39   EQU   BIT3                     INVALID DELIMITER               61500000
+ZRCD70   EQU   BIT4         FLOATING POINT CHARACTERISTIC OUT OF RANGE  61600000
+ZRCD109  EQU   BIT5                     PRECISION LOST                  61700000
+*                                                                       61800000
+*MODIFIER TYPES                                                         61900000
+*                                                                       62000000
+BTYPEFL  EQU   X'08'                    MODIFIER TYPE - FLOATING POINT  62100000
+BTYPEL   EQU   X'06'                    L-CON MODIFIER TYPE             62200000
+*                                                                       62300000
+*INPUT ARRAY EQUATES                                                    62400000
+*                                                                       62500000
+*LENGTH IN BYTES IF SIGN = 0, LENGTH IN BITS IF SIGN = 1                62600000
+ZARYSGN  EQU   0                        INPUT ARRAY - SIGN              62700000
+ZARYERR  EQU   1                                      ERROR CODE        62800000
+ZARYTYPE EQU   3                                      TYPE(BUCKET CODE) 62900000
+ZARYLEN  EQU   4                                      LENGTH            63000000
+ZARYSCL  EQU   8                                      SCALE FACTOR      63100000
+ZARYEXP  EQU   12                                     EXTERNAL EXPONENT 63200000
+ZARYCON  EQU   16                                     RIGHT JUSTIFIED  X63300000
+                                                        CONSTANT        63400000
+         JPATCH X5F00,5FA                                               63450000
+         END                                                            63500000

@@ -1,0 +1,1260 @@
+         TITLE  'IGG019MR - ON-LINE-TERMINAL-TEST CONTROL MODULE'       00100016
+IGG019MR START                                                          00200016
+*********************************************************************** 00300016
+*                                                                     * 00400016
+* STATUS -                                                            * 00500002
+*                                                                     * 00600016
+* FUNCTION -          TO SERVICE ON-LINE-TEST REQUESTS - CALL SVC 66, * 00700016
+*                     TO SERVICE I/O INTERRUPTS WHILE IN TEST, FOR    * 00800016
+*                     START-STOP, TO FREE PATTERN AREA IF CURRENTLY   * 00900016
+*                     UTILIZED.                                       * 01000016
+*                                                                     * 01100016
+* ENTRY POINT -       ENTRY IS TO FIRST EXECUTABLE INSTRUCTION VIA    * 01200016
+*                     THE ASYNCHRONOUS EXIT EFFECTOR SCHEDULED BY     * 01300016
+*                     CHANNEL END.                                    * 01400016
+*                                                                     * 01500016
+* INPUT -             REGISTER 1 - ADDRESS OF IOB                     * 01600016
+*                     IOBERINF - CONTAINS ADDRESS OF START OF RFT     * 01700016
+*                        INSERTED BY CHANNEL END.                     * 01800016
+*                                                                     * 01900016
+* OUTPUT -            1. PRINTABLE MODULE NAME BUILT IN IOB           * 02000016
+*                     2. ON-LINE-TEST MESSAGE ON CONSOLE AT           * 02100016
+*                        COMPLETION OF TEST (FOR BI-SYNCH)            * 02200016
+*                                                                     * 02300016
+* EXTERNAL ROUTINES - 1. SVC 58 - RELEASE BUFFER ROUTINE.             * 02400016
+*                     2. SVC 66 - ON-LINE-TERMINAL TEST               * 02500016
+*                     3. SVC 0  - EXECUTE CHANNEL PROGRAM ROUTINE     * 02600016
+*                     4. WTO    - WRITE TO OPERATOR ROUTINE           * 02700016
+*                     5. SVC 2  - POST ROUTINE                        * 02800016
+*                     6. IGG019MA - BTAM READ-WRITE ROUTINE           * 02900016
+*                     7. FREEMAIN - TO FREE PATTERN AREA              * 03000016
+*                                                                     * 03100016
+* EXIT -              SVC 66 - TO BUILD ON-LINE-TEST CH. PROGRAM      * 03200016
+*                     SVC 3  - RETURN TO SUPERVISOR                   * 03300016
+*                                                                     * 03400016
+* IN LINE ROUTINES -  1. SETUCB - SET UP UCB ADDRESSABILITY AND       * 03500016
+*                        DETERMINE WHETHER START-STOP OR BI-SYNCH     * 03600016
+*                        AND ISSUE SVC 66 IF BI-SYNCH.                * 03700016
+*                                                                     * 03800016
+*                     2. TSTSRT - DETERMINE TYPE OF CCW INTERRUPTED,  * 03900016
+*                        ACCESS BRANCH TABLE TO APPROPRIATE ROUTINE.  * 04000016
+*                                                                     * 04100016
+*                     3. RRFTWRR - END TEST                           * 04200016
+*                                                                     * 04300016
+*                     4. SRFTNOP - RESTART ON NEXT CCW                * 04400016
+*                                                                     * 04500016
+*                     5. RRFTRDT - RESTART ON NEXT CCW                * 04600016
+*                                                                     * 04700016
+*                     6. SRFTEOT - RESTART ON NEXT CCW                * 04800016
+*                                                                     * 04900016
+*                     7. RRFTWRI - RESTART ON NEXT CCW                * 05000016
+*                                                                     * 05100016
+*                     8. SRFTPRE - RESTART SAME CCW (PREPARE)         * 05200016
+*                                                                     * 05300016
+*                     9. RRFTRDR - CHECKS FOR ERROR BIT ON IN         * 05400016
+*                        IOBINCAM.  IF NOT, RESTARTS ON NEXT CCW.     * 05500016
+*                        IF SO, TURNS OFF ERROR BIT AND ENDS TEST.    * 05600016
+*                                                                     * 05700016
+*                     10. SRFTRDI - RESTART ON NEXT CCW               * 05800016
+*                                                                     * 05900016
+*                     11. TESTMSG - ENTERED ON TEXT OR RESPONSE TO    * 06000016
+*                         TEST CCW. CHECKS WHETHER SENDING OR         * 06100016
+*                         RECEIVING MSGS. IF SENDING, GOES TO         * 06200016
+*                         SNDTST. CHECKS FOR EOT RECEIVED, IF SO      * 06300016
+*                         BRANCH TO CHKDIS. SETS UP TO RESTART.       * 06400016
+*                         CHECKS ERRORS - IF ANY GO TO RCVERR.        * 06500016
+*                                                                     * 06600016
+*                     12. CHKDIS - SETS UP DISABLE COMMAND FOR        * 06700016
+*                         DIAL LINE, OR PUTS UP READ INITIAL FOR      * 06800016
+*                         NON-DIAL.                                   * 06900016
+*                                                                     * 07000016
+*                     12. RCVERR - CHECKS FOR TYPE OF ERROR           * 07100016
+*                         ENCOUNTERED AND UPDATES COUNTER.            * 07200016
+*                                                                     * 07300016
+*                     13. SNDTST - CHECKS FOR WACK,NAK,OR TIME OUT AND* 07400020
+*                                  UPDATES COUNTERS.  CONTINUES TEST  * 07500016
+*                                                                     * 07600016
+*                     14. CHKCNT - DECREMENTS Y COUNT AND RESTARTS    * 07700016
+*                         CHANNEL PROGRAM YY NOT EQUAL TO ZERO. IF    * 07800016
+*                         YY = 0, GOES TO MSG WRITER ROUTINE.         * 07900016
+*                                                                     * 08000016
+*                     15. FINISH - BUILDS AND PUTS OUT ON-LINE-TEST   * 08100016
+*                         CONSOLE MESSAGES. DETERMINE WHETHER TO      * 08200016
+*                         RESTART READ OR ISSUE WRITE EOT AND         * 08300016
+*                         BUILDS CHANNEL PROGRAM. GOES TO EXCP.       * 08400016
+*                                                                     * 08500016
+*                     16. LAST - CHECKS FOR ERRORS AND POSTS ON-LINE- * 08600016
+*                         TEST ECB ACCORDINGLY.                       * 08700016
+*                     17. STRTSTOP - SETS UP PARAMETERS AND ISSUES    * 08800016
+*                         SVC 66. (START-STOP)                        * 08900016
+*                     18. FREEAREA - FREES PATTERN AREA IF CURRENTLY  * 09000016
+*                         UTILIZED. (START-STOP)                      * 09100016
+*                                                                     * 09150000
+*********************************************************************** 09200000
+*                                                                     * 09208000
+*  .... ...1  RFT ERROR BIT. EITHER- 1) AN INVALID REQUEST WAS RECEIVED 09216000
+*             ON READ CONTINUE OPERATION AND BTAM COULD NOT SUCCESS-  * 09224000
+*             FULLY RESET THE LINE PRIOR TO POSTING. OR 2) ON A 3275  * 09232000
+*             DIAL DEVICE, THE RFT MESSAGE WAS TRANSMITTED THE        * 09240000
+*             SPECIFIED NUMBER OF TIMES, FOLLOWED BY A WRITE RESET.   * 09248000
+*             THE RESPONSE TO THE WRITE RESET INDICATES AN ERROR      * 09256000
+*             CONDITION. REF APAR OZ06398                             * 09264000
+*                                                                     * 09272000
+*********************************************************************** 09280000
+*                                                                     * 09288000
+* ATTRIBUTES -        THIS ROUTINE IS RE-ENTRANT.                     * 09300016
+*                                                                     * 09400016
+* CHANGE ACTIVITY                                                     * 09450002
+*            APARS                          PTMS                      * 09451000
+*        YA01017  (10/19/73)            YM4056  (10/3/73)             * 09452000
+*        ZA02329  (11/20/74)            YM4090  (11/2/73)             * 09453000
+*        ZA02330  (11/20/74)                                          * 09454000
+*        ZA02331  (11/20/74)                                          * 09455000
+*        ZA02332  (11/20/74)                                          * 09456000
+*        AZ03988  (04/29/75)                                          * 09457000
+*        AZ04672  (09/24/75)                                          * 09460000
+*        AZ06398  (11/05/75)                                          * 09466000
+*        AZ06406  (11/04/75)                                          * 09472000
+*                                                                     * 09480002
+*********************************************************************** 09500016
+         EJECT                                                          09600016
+PARMREG  EQU   0                   PARAMETER REGISTER       LD @ZA02332 09650003
+PARAMREG EQU   1             ADDRESS OF TERMINAL TEST PARAMETER LIST    09700016
+DEBREG   EQU   2                       DEB ADDRESS REGISTER             09800016
+CTRREG   EQU   2             COUNT REGISTER                             09900016
+DECBREG  EQU   3             POINTER TO DECB                            10000016
+BASEREG  EQU   4             MODULE BASE REGISTER                       10100016
+IOBREG   EQU   5             POINTER TO IOB                             10200016
+DCBREG   EQU   6             POINTER TO DCB                             10300016
+CCWREG   EQU   7                                                        10400016
+WREG     EQU   8                                                        10500016
+ICREG    EQU   8                                                        10600016
+AREAREG  EQU   9             POINTER TO PATTERN AREA USED               10700016
+IOREG    EQU   9             POINTER TO IO AREA OR BUFFER DATA AREA     10800016
+W1REG    EQU   10                                                       10900016
+UCBREG   EQU   11                                                       11000016
+W3REG    EQU   12                  WORK REGISTER            LD @ZA02330 11050003
+SAVEREG  EQU   13                                                       11100016
+RETREG   EQU   14            RETURN REGISTER                            11200016
+W2REG    EQU   14                                                A28913 11250019
+LINKREG  EQU   15            REGISTER LINKAGE TO BTAM READ-WRITE RTN.   11300016
+*                                                                       11400016
+         EJECT                                                          11500016
+TIMEOUT EQU   X'01'                                                     11600016
+LOSTDATA EQU   X'02'                                                    11700016
+DATACHK  EQU   X'08'                                                    11800016
+DCBBTAM  EQU   X'10'         BTAM DCB FLAG                              11900016
+DCBTERMT EQU   X'10'         TERMINAL TEST SPECIFIED IN DCB ERROPT      12000016
+DECTTOPR EQU   X'01'         TERMINAL TEST OPERATING FLAG               12100016
+HALFBYTE EQU   X'F0'         MAXIMUM HEX VALUE IN 1/2 BYTE              12200016
+TIC      EQU   X'08'                                                    12300016
+MAXBITS  EQU   X'FF'         MAXIMUM HEX VALUE IN ONE BYTE              12400016
+RDINIT   EQU   X'01'                    READ INITIAL OP CODE            12500016
+WRD      EQU   X'10'                    WRITE DISCONNECT OP CODE   000D 12600016
+READ     EQU   X'02'                                                    12700016
+WRR      EQU   X'0A'                    WRITE RESET OP COCE        000D 12800016
+ERP      EQU   X'24'                    ERP IN CTRL FLAGS          000D 12900016
+MASKALL  EQU   X'FF'                                                    13000016
+DCBDYBFR EQU   X'08'         DYNAMIC BUFFERING FLAG IN DCB              13100016
+IOBEX    EQU   X'04'                    IOB EXCEPTION FLAG         000D 13200016
+LEADCCW  EQU   X'40'                                               000D 13300016
+RCVTST    EQU    X'C0'                                                  13400018
+UNITEX   EQU   X'01'                                                    13500016
+NOP      EQU   X'03'                                                    13600016
+NORM   EQU   X'7F'                                                 000D 13700016
+WRITE    EQU   X'01'         WRITE COMMAND CODE                         13800016
+SHTWRT   EQU   X'40'                                               000D 13900016
+REENTRY  EQU   X'40'                    REENTRY BIT IN DECONLTT    000K 13920018
+POSITIVE EQU   X'76'                    POSITIVE RESPONSE TO EOB   000K 13940018
+NOENTRY  EQU   X'BF'                    TURNS OFF REENTRY (2760)   000K 13960018
+BUFREG   EQU   11                                                A32477 13962020
+ECBREG   EQU   10                                                A32477 13964020
+BAS1REG  EQU   12                                                A32477 13966020
+ZEROREG  EQU   0                                                 A32477 13968020
+SIXT     EQU   X'10'                                             A32477 13970020
+ZONE     EQU   X'F0'                                             A28613 13980019
+NEXTCCW  EQU   8                        DISP OF NEXT CCW IN IOBCPA      13986002
+EOTLNGTH EQU   1                        LENGTH OF EOT CHARACTER         13992002
+ASCII    EQU   X'14'               DCBXCODE ASCII MASK      LD @ZA02330 13994003
+         EJECT                                                          14000016
+         BALR  BASEREG,0                                                14100016
+         SPACE                                                          14200016
+         USING *,BASEREG                                                14300016
+         USING IECTDECB,DECBREG                                         14400016
+         USING IHADCB,DCBREG                                            14500016
+         USING IECTDEB+36,DEBREG                                        14600016
+         USING UCBSTART,UCBREG                                          14700016
+         USING IECTIOB,IOBREG                                           14800016
+         B     AROUND                   BRANCH AROUND MODULE ID  YM4056 14850002
+         DC    C'IGG019MR'              MODULE ID                YM4056 14860002
+         DC    C', 4324'                                    LD @ZA02330 14870003
+         DC    C'&SYSDATE'         DATE LAST ASSEMBLY       LD @ZA02330 14872003
+         DS    0F                                                YM4056 14880002
+         DC    XL180'00'                PATCH AREA               YM4056 14890002
+AROUND   EQU   *                                                 YM4056 14892002
+         SPACE 2                                                        14900016
+         LA    SAVEREG,SAVE                                             15000016
+         LR    IOBREG,PARAMREG                                          15100016
+         L     DCBREG,IOBDCBPT                                          15200016
+         L     DECBREG,IOBECBPT                                         15300016
+         L     AREAREG,IOBERINF                                         15400016
+         L     DEBREG,DCBDEBAD                                          15500016
+         SPACE 2                                                        15600016
+         SPACE                                                          15700016
+         L     CCWREG,IOBCSW            LOAD CSW ADDRESS           000D 15800016
+         SH    CCWREG,K8                BACK UP TO INT CCW         000D 15900016
+         TM    DCBBFTEK,DYNBF           TEST FOR DYNAMIC BUFFER    000D 16000016
+         BZ    SETUCB                   IF NOT, BRANCH             000D 16100016
+         CLI   0(CCWREG),X'02'         INTERRUPT ON READ         A43796 16120002
+         BNE   SETUCB                  NO,BRANCH                 A43796 16140002
+         TM    5(CCWREG),X'11'         TEXT CCW                  A43796 16160002
+         BNO   SETUCB                  NO, BRANCH                A43796 16180002
+         CLI   8(CCWREG),TIC            WAS PCI HANDLED            000D 16200016
+         BNE   SETUCB                   IF NOT COMMAND IS STILL R-S000D 16300016
+         L     WREG,8(CCWREG)           LOAD TIC COMMAND WORD      000D 16400016
+         L     WREG,0(WREG)             LOAD NEXT BFR ADDRESS           16500016
+         LA    0,0(WREG)                LOAD INTO REG 0                 16600016
+         LTR   0,0                      TEST FOR BFR ADDRESS       000D 16700016
+         BZ    SETUCB                   IF NOT PRESENT, BRANCH     000D 16800016
+         SH    0,K4                                                     16900016
+         BZ    SETUCB                                                   17000016
+         LR    PARAMREG,DCBREG          LOAD DCB ADDRESS           000D 17100016
+         SVC   58                       RELEASE SECOND BUFFER      000D 17200016
+SETUCB   SR    UCBREG,UCBREG            CLEAR REG FOR UCB BASE          17300016
+         IC    UCBREG,IOBUCBX           FIND UCB INDEX                  17400016
+         SLL   UCBREG,2                   X 4                           17500016
+         L     UCBREG,DEBUCBAD(UCBREG)  LOAD ADDRESS FROM LIST          17600016
+RCREG    EQU   15                  RETURN CODE REG                      17650002
+         SPACE 2                                                        17700016
+*                             MOVE SVC NAME INTO IOB (USED BY SVC 66)   17800016
+         MVC   IOBNAME(8),SVCNAME                                       17900016
+         SPACE 2                                                        18000016
+*                             TEST FOR BSC                              18100016
+         TM    UCBDEVTP+3,X'90'                                         18200016
+         BNO   STRTSTOP                                                 18300016
+         TM    UCBDEVTP+3,HALFBYTE-X'90'                                18400016
+         BO    STRTSTOP                                                 18500016
+         CLI   IOBCPA+L5,INVWREOT     WRITE EOT TP OP          @ZA06398 18501000
+*                                CODE FOR INVALID RD CONT ?    @ZA06398 18502000
+         BNE   TSTENQ                  NO CONTINUE             @ZA06398 18503000
+         TM    IOBFLAG1,IOBEX           ANY ERRORS ?           @ZA06398 18504000
+         BO    TRYRDENQ           YES SET UP RECOVERY          @ZA06398 18505000
+         B     TESTMSG             PUT EOT IN BUFFER & POST    @ZA06398 18506000
+TSTENQ   CLI   IOBCPA+L5,INVRDENQ  RD ENQ FOR INVALID RD TT ?  @ZA06398 18507000
+         BE    CHKENQ             YES CHECK RESPONSE           @ZA06398 18508000
+         TM    IOBINCAM,MASKALL-RFTBIT  IS THIS A 3270 DVC?      S99245 18510002
+         BNO   TSTOLT                   NO,BRANCH                S99245 18520002
+         TM    UCBDEVTP+1,DIAL          DIAL?                    S99245 18530002
+         BNO   TSTOLT                   NO,BRANCH                S99245 18540002
+         CLI   IOBCPA+45,WRTEOT         WRITE RESET TP OP CODE   S99245 18550002
+         BE    HANDLETR                 YES,HANDLE               S99245 18560002
+TSTOLT   EQU   *                                                 S99245 18570002
+         EJECT                                                          18600016
+         TM    5(CCWREG),X'3F'          TEST FOR ONLT CCW          000D 18700016
+         BZ    TSTSTRT                  IF ZERO, THIS IS ONLT CCW  000D 18800016
+         TM    IOBINCAM,MASKALL-RFTBIT  IS IT A 2370        LD @ZA02330 18850003
+         BZ    NO3270              NO,BRANCH                LD @ZA02330 18860003
+         TM    UCBDEVTP+DISP1,DIAL  3270 DIAL ?             LD @ZA02330 18870003
+         BO    NO3270              YES, BRANCH              LD @ZA02330 18880003
+         SR    W1REG,W1REG         CLEAR REG                LD @ZA02330 18890003
+         LA    ICREG,DISP4         PUT ADDR.CNT IN ICREG    LD @ZA02330 18892003
+         LA    W3REG,DISP7(AREAREG)  GET ADDR. OF ADDRESS   LD @ZA02330 18894003
+         TM    DCBXCODE,ASCII      IS IT ASCII ?            LD @ZA02330 18896003
+         BO    ASCI                YES,BRANCH               LD @ZA02330 18898003
+         CLI   DISP6(AREAREG),XF4  IS NO. OF CHAR VALID     LD @ZA02330 18898403
+         BNE   END                 NO, INVALID TEST REQ.    LD @ZA02330 18898803
+LOOP     EQU   *                                            LD @ZA02330 18899203
+         LA    W2REG,XLTTABLE      GET ADDR OF XLATE TABLR  LD @ZA02330 18899603
+         TM    DISP0(W3REG),ZONE   IT IS NUMERIC            LD @ZA02330 18899703
+         BNO   ALPHA               NO, BRANCH               LD @ZA02330 18899803
+         NI    DISP0(W3REG),ZONEOFF STRIP OFF ZONE          LD @ZA02330 18949803
+         B     ENDNUM              BRANCH                   LD @ZA02330 18959803
+ALPHA    EQU   *                                            LD @ZA02330 18961803
+         OI    DISP0(W3REG),X40    CONVERT LOWER TO UPPER   LD @ZA02330 18963803
+         CLI   DISP0(W3REG),XC6    IS CHAR. TOO LARGE       LD @ZA02330 18965803
+         BH    END                 YES INVALID DEV. ADDR.   LD @ZA02330 18966203
+         NI    DISP0(W3REG),ZONEOFF AND OFF ZONE            LD @ZA02330 18976203
+         IC    W1REG,DISP0(W3REG) GET INDEX TO XLATE TABLE  LD @ZA02330 18986203
+         AR    W2REG,W1REG         ADD INDES TO BASE        LD @ZA02330 18988203
+         MVC   DISP0(L1,W3REG),DISP0(W2REG)  MOVE CHAR...   LD @ZA02330 18988603
+*                                  ...INTO AREA             LD @ZA02330 18988703
+ENDNUM   EQU   *                                            LD @ZA02330 18988803
+         LA W3REG,DISP1(W3REG)  BUMP TO NEXT CHAR.          LD @ZA02330 18992503
+         BCT   ICREG,LOOP          LOOP UNTIL FINISH        LD @ZA02330 18994503
+         B     BUILDADR            FINISH BUILDING ADDR.    LD @ZA02330 18994903
+ASCI     EQU   *                                            LD @ZA02330 18995303
+         CLI   DISP6(AREAREG),X34  IS NO. CHAR. VALID ?     LD @ZA02330 18995703
+         BNE   END                 NO, INVALID REQ.         LD @ZA02330 18996103
+LOOPASCI EQU   *                                            LD @ZA02330 18996203
+         LA    W2REG,XLTTABLE      GET ADDR OF XLATE TABLE  LD @ZA02330 19022103
+         TM    DISP0(W3REG),ASCZONE  IS CHAR. NUMERIC       LD @ZA02330 19032103
+         BNO   ALPHAASC            NO, GO TO ALPHAASC       LD @ZA02330 19044103
+         TM    DISP0(W3REG),ALFAZONE IT IS LOWER CASE       LD @ZA02330 19046103
+         BO    END                 YES,INVALID DEV. ADDR.   LD @ZA02330 19048103
+         NI    DISP0(W3REG),ZONEOFF  STIP OFF ZONE          LD @ZA02330 19056703
+         B     ENDNUMAS            GO LOOP BACK AROUND      LD @ZA02330 19058703
+ALPHAASC EQU   *                                            LD @ZA02330 19060703
+         OI    DISP0(W3REG),X20    CONVERT UPPER TO LOWER   LD @ZA02330 19062703
+         CLI   DISP0(W3REG),X66    IS THE CHAR. TOO LARGE   LD @ZA02330 19064703
+         BH    END                 YES, INVALID ADDR.       LD @ZA02330 19065103
+         NI    DISP0(W3REG),ZONEOFF  AND OFF ZONE           LD @ZA02330 19065203
+         IC    W1REG,DISP0(W3REG)  GET INDEX TO XLATE TABLE LD @ZA02330 19065303
+         AR    W2REG,W1REG         ADD INDEX TO THE BASE    LD @ZA02330 19065403
+         MVC   DISP0(L1,W3REG),DISP0(W2REG)  MOVE CHAR...   LD @ZA02330 19075503
+*                                  ...INTO AREA             LD @ZA02330 19078003
+ENDNUMAS EQU   *                                            LD @ZA02330 19080003
+         LA    W3REG,L1(W3REG)     BUMP TO NEXT CHAR.       LD @ZA02330 19082003
+         BCT   ICREG,LOOPASCI      LOOP UNTIL FINISH        LD @ZA02330 19082403
+BUILDADR EQU   *                                            LD @ZA02330 19082503
+         LA    W2REG,DISP7(AREAREG)  POINT TO ADDR CHAR.    LD @ZA02330 19082603
+         LA    W1REG,L2            PUT LOOP CNT IN REG      LD @ZA02330 19082703
+LOOP1    EQU   *                                            LD @ZA02330 19106103
+         IC    ICREG,DISP0(W2REG)  GET FIRST CHAR. ADDR     LD @ZA02330 19116103
+         SLL   ICREG,L4            SHIFT IT 4 BITS          LD @ZA02330 19126103
+         STC   ICREG,DISP0(W2REG)  STORE IT BACK            LD @ZA02330 19128103
+         OC    DISP0(L1,W2REG),DISP1(W2REG) OR THEM         LD @ZA02330 19128503
+         MVC   DISP1(L1,W2REG),DISP0(W2REG) MOVE INTO 2ND B LD @ZA02330 19128903
+         LA    W2REG,DISP2(W2REG)  BUMP TO DEV ADDR.        LD @ZA02330 19129703
+         BCT   W1REG,LOOP1         LOOP UNTIL FINISH        LD @ZA02330 19137503
+NO3270   EQU   *                                            LD @ZA02330 19139503
+         SVC   66                                                  000D 19145402
+         B     EXIT                                                000D 19153202
+TSTSTRT  CLI   0(CCWREG),NOP           WAS LAST CCW A NO-OP        000D 19176600
+         BE    TESTRDTT           GO SEE IF INVALID RD TT      @ZA06398 19236600
+         TM    5(CCWREG),LEADCCW       TEST FOR SETUP CCW          000D 19300016
+         BZ    TESTMSG                  IF ZERO, THIS IS NOT SETUP      19400016
+         LA    WREG,IOBCPA                                         000D 19500016
+         LR    W1REG,CCWREG                                        000D 19600016
+         SR    W1REG,WREG                                          000D 19700016
+         TM    DECDCBAD,RCVTST         CHK FOR SENDING/RECEIVING        19800018
+         BM    BR                       IF SENDING, BRANCH         000D 19900016
+         AH    W1REG,K4                ADD 4                       000D 20000016
+BR       B     BRTBL(W1REG)             BRANCH TO A CCW ROUTINE    000D 20100016
+BRTBL    B     RRFTWRR                  RCV RFT - WR RESPONSE      000D 20200016
+         B     SRFTEOT                  SNT RFT - WR EOT         A27602 20300019
+         B     RRFTRDT                  RCV RFT - RD TEXT (EOT)    000D 20400016
+         B     SRFTPRE                  SNT RFT - PREPARE        A27602 20500019
+         B     RRFTEOT                  RCV RFT - WR EOT /R NOP  A27602 20600019
+         B     SRFTNOP                  SNT RFT - NO OPERATION   A27602 20700019
+         B     RRFTWRI                  RCV RFT - WR INQUIRY     A27602 20800019
+         B     SRFTRDI                  SNT RFT   RD INQUIRY       000D 20900016
+         B     RRFTRDR                  RCV RFT - RD RESPONSE    A27602 20950019
+TESTMSG  TM    DECDCBAD,RCVTST         CHK FOR SENDING/RECEIVING        21000018
+         BM    SNDTST                   IF SENDING, BRANCH         000D 21100016
+         L     AREAREG,IOBCPA+40       GET ADDR OF READ IN AREA    000D 21200016
+         CLC   0(1,AREAREG),DCBBSEOT    CHECK FOR EOT RECEIVED     000D 21300016
+         BE    CHKDIS                  IF SO, SET UP TO END TEST   000D 21400016
+         CLC   0(2,AREAREG),DCBBSDLE    CHECK FOR DLE-EOT RECEIVED 000D 21500016
+         BE    CHKDIS                  IF SO, SET UP TO END TEST   000D 21600016
+         LA    ICREG,DCBBSAK0          GET ACK-0 ADDR FOR SENDING  000D 21700016
+         ST    ICREG,IOBCPA+32         STORE IN CCW                000D 21800016
+         MVI   IOBCPA+32,X'01'         RESTORE COMMAND CODE        000D 21900016
+         TM    IOBFLAG1,IOBEX           WAS THERE AN ERROR         000D 22000016
+         BO    RCVERR                   IF SO, GO TO ERROR ROUTINE 000D 22100016
+         SH    CCWREG,K8               BACK UP TO WRITE RESP CCW   000D 22200016
+         B     CHKCNT                                              000D 22300016
+CHKDIS   NI    IOBCSW+4,MASKALL-UNITEXCP SET OFF UNIT EXCEPTION    000D 22400016
+         CLC    IOBPARM(4),DATA        X, Y EQUAL ZERO             000D 22500016
+         BNE   YCOUNT                                              000D 22600016
+ZEROWORK EQU   *                                                   000D 22700016
+         MVI   IOBWORK,X'00'           SET Y COUNT TO ZERO         000D 22800016
+         B     FINISH2                                                  22900016
+YCOUNT    EQU   *                                                  000D 23000016
+         CLI   IOBWORK,ZEROY           HAS Y VALUE BEEN DECREMENTD 000D 23100016
+         BNE   ZEROWORK                                            000D 23200016
+DISABLE  EQU   *                                                   000D 23300016
+         TM    UCBDEVTP+1,X'90'        IS THIS A DIAL LINE         000D 23400016
+         BZ    END                     NO, PUT READ INITIAL UP     000D 23500016
+         LA    CCWREG,IOBCPA+32        GET CHANNEL PROGRAM ADDRESS 000D 23600016
+         MVC   0(16,CCWREG),DIALRST+8   MOVE IN DISABLE COMMAND    000D 23700016
+         B     RESTART                 GO ISSUE COMMAND            000D 23800016
+RCVERR   NI    IOBFLAG1,MASKALL-IOBEX   TURN OFF IOB EXCEPTION     000D 23900016
+         TM    IOBWORK,MASKALL         IS Y COUNT ZERO             000D 24000016
+         BZ     DISABLE                YES, ERRO ON READ EOT       000D 24100016
+         TM    IOBCSW+4,UNITEX          CHECK FOR EOT RECEIVED     000D 24200016
+         BO    FINISH                                              000D 24300016
+         TM    IOBSENS0,TIMEOUT         CEHCK FOR TIME OUT         000D 24400016
+         BZ    CHKLD                    IF NOT, BRANCH             000D 24500016
+         IC    ICREG,IOBWORK+2          ADD 1 TO COUNT             000D 24600016
+         LA    ICREG,1(ICREG)                                      000D 24700016
+         STC   ICREG,IOBWORK+2                                     000D 24800016
+CHKLD    TM    IOBSENS0,LOSTDATA        CHECK FOR LOST DATA        000D 24900016
+         BZ    CHKDC                    IF NOT, BRANCH             000D 25000016
+         IC    ICREG,IOBWORK+3          ADD 1 TO COUNT             000D 25100016
+         LA    ICREG,1(ICREG)                                      000D 25200016
+         STC   ICREG,IOBWORK+3                                     000D 25300016
+CHKDC    TM    IOBSENS0,DATACHK         CHECK FOR DATA CHECK       000D 25400016
+         BZ    CHKCNT                  IF NOT, BRANCH              000D 25500016
+         IC    ICREG,IOBWORK+4          ADD 1 TO COUNT             000D 25600016
+         LA    ICREG,1(ICREG)                                      000D 25700016
+         STC   ICREG,IOBWORK+4                                     000D 25800016
+         LA    ICREG,DCBBSNAK          GET NAK ADDR TO SEND        000D 25900016
+         ST    ICREG,IOBCPA+32         STORE IN CCW                000D 26000016
+         MVI   IOBCPA+32,X'01'         RESTORE COMMAND CODE        000D 26100016
+         B     CHKCNT                                              000D 26200016
+SNDTST   TM    IOBFLAG1,IOBEX           CHECK FOR AN ERROR         000D 26300016
+         BO    SNDERR                   IF SO, GO TO ERROR ROUTINE 000D 26400016
+         CLC   DECRESPN(2),DCBBSSAK     WAS WACK RECEIVED          000L 26404019
+         BNE   CHKACK                                              000L 26408019
+** THE LINE BELOW SHOULD HAVE BEEN DELETED BY AZ02329 **       @ZA03988 26409000
+*******  IC    ICREG,IOBDCBPT           ADD ONE TO COUNT        YA01266 26410000
+*                                                                       26422002
+*              6 LINES DELETED FOR ----->                   LD @ZA02329 26432003
+*                                                                       26434002
+         TM    DECFLAGS,WACK       WAS WACK REC'D BEFOR ?   LD @ZA02329 26436003
+         BNO   UPDAT1              NO, INITIALIZE CNT.      LD @ZA02329 26438003
+         CLI   IOBERINF,TWENTY5    HAVE 25 WACKS BEEN REC'D LD @ZA02329 26438403
+         BE    END                 YES, GET OUT             LD @ZA02329 26438803
+         IC    ICREG,IOBERINF      ADD ONE TO COUNT...      LD @ZA02329 26439203
+         LA    ICREG,DISP1(ICREG)  ...OF WACKS REC'D        LD @ZA02329 26439603
+         STC   ICREG,IOBERINF      STORE COUNT              LD @ZA02329 26439703
+         CLI   IOBERINF,TWENTY5    25 WACKS REC'D           LD @ZA02329 26439803
+         BE    ZEROWORK            YES, BRANCH              LD @ZA02329 26439903
+         B     FIRSTIME                                     LD @ZA02329 26443103
+UPDAT1   EQU   *                                            LD @ZA02329 26445103
+         LA    ICREG,L1            INIT. CNT OF WAKS TO 1   LD @ZA02329 26447103
+         STC   ICREG,IOBERINF      STORE COUNT              LD @ZA02329 26447403
+FIRSTIME EQU   *                                                   000L 26448002
+         OI    DECFLAGS,WACK            INDICATE WACK              000L 26450419
+         LA    WREG,DCBBSENQ            LOAD ADDR OF ENQ           000L 26453619
+         MVC   IOBCPA(TWOCCWS),WENQ     MOVE CCWS TO IOB        YA01276 26456802
+         ST    WREG,IOBCPA              STORE ADR IN CCW        YA01276 26460002
+         MVI   IOBCPA,WRITECMD          MOVE COMMAND IN CCW     YA01276 26463202
+         LA    WREG,0(CCWREG)           LOAD ADDRESS OF CURRENT CCW000L 26466419
+         ST    WREG,IOBCPA+ONECCW       STORE ADR IN CCW        YA01276 26469602
+         MVI   IOBCPA+ONECCW,TICCMD     MOVE IN COMMAND         YA01276 26472802
+         LA    CCWREG,IOBCPA                                       000L 26476019
+         B     RESTART                                             000L 26480019
+CHKACK   EQU   *                                                   000L 26484019
+         NI    DECFLAGS,NOWACK          INDICATE NO WACK           000L 26488019
+         MVI   IOBERINF,X00             ZERO OUT WACK COUNT LD @ZA02329 26492003
+         CLC   DECRESPN(2),DCBBSAK0     CHECK FOR ACK-0            000D 26500016
+         BE    CHKCNT                   IF O.K., CONTINUE TEST     000D 26600016
+         CLC   DECRESPN(1),DCBBSNAK     WAS THE RESPONSE NAK       000D 26700016
+         BNE   CHKCNT                   IF NOT, GO TO ERROR ROUTINE000D 26800016
+         IC    ICREG,IOBWORK+1          ADD 1 TO COUNT OF NAK'S    000D 26900016
+         LA    ICREG,1(ICREG)                RECEIVED              000D 27000016
+         STC   ICREG,IOBWORK+1                                     000D 27100016
+         B     CHKCNT                   CONTINUE THE TEST          000D 27200016
+SNDERR   EQU   *                                                   000L 27240019
+         NI    DECFLAGS,NOWACK          INDICATE NO WACK           000L 27280019
+         MVI   IOBERINF,X00             ZERO OUT WACK COUNT LD @ZA02329 27320003
+         TM    IOBSENS0,TIMEOUT         CHK FOR TIME OUT           000L 27360019
+         BZ    CHKUE                    IF NOT, BRANCH             000D 27400016
+         IC    ICREG,IOBWORK+2          ADD TO 1 COUNT OF TIMEOUTS 000D 27500016
+         LA    ICREG,1(ICREG)                                      000D 27600016
+         STC   ICREG,IOBWORK+2                                     000D 27700016
+         B     CHKCNT                                              000D 27800016
+CHKUE    TM    IOBCSW+4,UNITEX          CHK FOR UNIT EXCEPTION     000D 27900016
+         BZ    CHKCNT                   IF NOT, BRANCH             000D 28000016
+         CLI   0(CCWREG),WRITE          IS THIS A WRITE COMMAND    000D 28100016
+         BNE   FINISH                   IF NOT, EOT RECEIVED       000D 28200016
+         LA    CCWREG,NEXTCCW(CCWREG) IF SO, RESTART ON NEXT CCW   000D 28300002
+         B     RESTART                                             000D 28400016
+TESTRDTT CLI DECTYPE+L1,RDCONT         READ TT ?               @ZA06398 28405000
+         BNE   END                     NO END TEST             @ZA06398 28410000
+         TM    IOBINCAM,X02             ERROR BIT ON ?         @ZA06398 28415000
+         BZ    END                      NO, END TEST           @ZA06398 28420000
+         MVI   IOBWORK,X00                CLEAR Y COUNT        @ZA06398 28425000
+         NI    IOBINCAM,XFF-X02         CLEAR ERROR BIT        @ZA06398 28430000
+         MVC   IOBCPA+L4(L4),PTPTRST+L4  MOVE IN CCW .....     @ZA06398 28435000
+         LA    WREG,DCBBSEOT             .....TO WRITE EOT     @ZA06398 28440000
+         O     WREG,PTPTRST              .....TO CLEAR LINE    @ZA06398 28445000
+         ST    WREG,X00(CCWREG)                                @ZA06398 28450000
+         MVI   TPOPCODE(CCWREG),X33      SET TP OP             @ZA06398 28455000
+         MVC   IOBCPA+L12(L4),READENQ+L4    MOVE IN ......     @ZA06398 28460000
+         LA    WREG,DECRESPN              .....READ ENQ CCW    @ZA06398 28465000
+         O     WREG,READENQ               .....FOR RECOVERY    @ZA06398 28470000
+         ST    WREG,IOBCPA+L8             .....IF NEEDED       @ZA06398 28475000
+         B     RESTART                  GO START IT            @ZA06398 28480000
+RRFTWRR  B     FINISH                   IF ENTERED, END TEST       000D 28500016
+         SPACE 3                                                   000D 28600016
+RRFTRDT  EQU   *                                                   000D 28700016
+         LA    CCWREG,8(CCWREG)         STEP TO NEXT CCW           000D 28800016
+         B     RESTART                  RESTART OPERATION          000D 28900016
+         SPACE 3                                                   000D 29000016
+RRFTWRI  EQU   RRFTRDT                                             000D 29100016
+         SPACE 3                                                   000D 29200016
+SRFTNOP  EQU   RRFTRDT                  RESTART ON NEXT CCW        000D 29300016
+         SPACE 3                                                   000D 29400016
+SRFTEOT  EQU   RRFTRDT                  RESTART ON NEXT CCW        000D 29500016
+RRFTEOT  EQU   RRFTRDT                  RESTART ON NEXT CCW      A27602 29550019
+         SPACE 3                                                   000D 29600016
+RRFTRDR  EQU   *                                                   000D 29700016
+         TM    IOBINCAM,X'02'          IS ERROR BIT SET            000D 29800016
+         BZ    RRFTRDR1                                                 29900017
+         MVI   IOBWORK,X'00'                                            30000016
+         NI    IOBINCAM,X'FF'-X'02'      TURN OFF ERROR BIT        000D 30100016
+         B     SKIPWTO                                           A28610 30200019
+         SPACE   3                                                      30300016
+RRFTRDR1  EQU  *                                                        30308017
+         TM    IOBINCAM+1,X'F0'         FIRST TIME THROUGH         000L 30316019
+         BZ    TESTTIME                                                 30324017
+         B     RRFTRDT                                             000L 30326019
+TESTTIME EQU   *                                                   000L 30328019
+         CLC   DECRESPN(2),DCBBSAK0     WAS ACK0 RECEIVED          000L 30330019
+         BNE   UPDATE                                              000L 30332019
+         OI    IOBINCAM+1,X'F0'         INDICATE NOT FIRST TIME    000L 30334019
+         B     RRFTRDT                                             000L 30336019
+UPDATE   EQU   *                                                   000L 30338019
+         TM    IOBINCAM+1,ERRMAXCT      RETRY COUNT = 7            000L 30340019
+         BO    ZEROWORK                 IF SO, END TEST            000L 30342019
+         SR    ICREG,ICREG              CLEAR REGISTER             000L 30344019
+         IC    ICREG,IOBINCAM+1         GET RETRY COUNT            000L 30346019
+         LA    ICREG,1(ICREG)           ADD ONE TO RETRY COUNT     000L 30348019
+         STC   ICREG,IOBINCAM+1         STORE RETRY COUNT          000L 30350019
+         SH    CCWREG,MAXLENGT                                          30364017
+         B     RESTART                                                  30380017
+         SPACE  2                                                       30388017
+SRFTPRE  EQU   *                                                        30400016
+         B     RESTART                  RESTART PREPARE            000D 30500016
+         SPACE 3                                                   000D 30600016
+SRFTRDI  EQU   RRFTRDT                  CHECK                      000D 30700016
+CHKCNT   SR    ICREG,ICREG             ZERO OUT REGISTER           000D 30800016
+         IC    ICREG,IOBWORK           LOAD TEST COUNT             000D 30900016
+         BCT   ICREG,SNDMORE            DECREMENT & TEST           000D 31000016
+         TM    DECDCBAD,RCVTST         SEND OR RECV               M4505 31100002
+         BM    FINISH                  SEND, BRANCH               M4505 31110002
+         TM    IOBCPA+36,X'40'         IS WR ACK CC               M4505 31120002
+         BZ    FINISH                  NO, END TEST               M4505 31130002
+         NI    IOBCPA+36,X'BF'         YES, SEND ANOTHER ACK      M4505 31140002
+         B     READCONT                                           M4505 31150002
+SNDMORE  STC   ICREG,IOBWORK            RESTORE COUNT              000D 31200016
+         TM    IOBWORK,MASKALL                                          31300016
+         BO    END                                                      31400016
+LOADSTRT TM    DECDCBAD,RCVTST          SENDING OR RECEIVING     A27602 31430019
+         BNM   READCONT                 BRANCH IF RECEIVING      A27602 31460019
+         LA    CCWREG,IOBCPA+40         RESTART WRITE CONTINUE   A27602 31490019
+         B     RESTART                                           A27602 31520019
+READCONT LA    CCWREG,IOBCPA+32         RESTART READ CONTINUE    A27602 31550019
+RESTART  ST    CCWREG,IOBSTART          STORE ADDRESS OF 1ST CCW   000D 31600016
+EXCP   EQU   *                                                          31700016
+         L     PARMREG,GETPARM     SUBPOOL AND LENGTH       LD @ZA02332 31750003
+         GETMAIN R,LV=(0)          GETMAIN FOR DUMMY DECB   LD @ZA02332 31760003
+         ST    DECBREG,DISP4(PARAMREG) SAVE ADDR OF DECB    LD @ZA02332 31770003
+         MVI   DISP4(PARAMREG),FOXFOX  FLAG AS DUMMY        LD @ZA02332 31780003
+         SR    W1REG,W1REG         CLEAR REG                LD @ZA02332 31790003
+         ST    W1REG,DISP0(PARAMREG) CLEAR ECB AREA         LD @ZA02332 31792003
+         STCM  PARAMREG,MASK,IOBECBPT+L1 POINT IOB TO DUMMY LD @ZA02332 31794003
+         LR    W1REG,PARAMREG      SAVE ADDR OF DUMMY       LD @ZA02332 31796003
+         LR    PARAMREG,IOBREG                                          31800016
+*                                                                       31850002
+*              1 LINE DELETE FOR ----->                     LD @ZA02332 31900003
+*                                                                       31950002
+         SVC   0                                                        32000016
+*                                                                       32050002
+*              1 LINE DELETED FOR ----->                    LD @ZA02332 32060003
+*                                                                       32070002
+         STCM  DECBREG,MASK,IOBECBPT+L1 REPOINT IOB TO DECB LD @ZA02332 32100003
+         L     PARMREG,GETPARM     SET FOR FREEMAIN         LD @ZA02332 32150003
+         FREEMAIN R,LV=(0),A=(W1REG)  FREE THE DUMMY        LD @ZA02332 32160003
+         SVC   3                                                   000D 32200016
+FINISH   EQU   *                                                   000D 32300016
+         STC   ICREG,IOBWORK            STORE COUNT RESULT         000D 32400016
+FINISH2  MVC   MSG+12(3),13(UCBREG)     GET LINE ADDRESS           000H 32500018
+         MVC   MSG+28(2),IOBPARM        CONVERT TEST TYPE          000H 32600018
+         MVC   MSG+31(2),IOBPARM+2      GET TRANSMISSION COUNT     000H 32700018
+         SR    WREG,WREG               ZERO OUT REGISTER           000D 32800016
+         TM    DECDCBAD,RCVTST         CHK FOR SENDING/RECEIVING        32900018
+         BM    MOVEIN                  IF SENDING,, BRANCH         000D 33000016
+         XC    WORKAREA(8),WORKAREA     CLEAR AREA               000D   33100016
+         PACK  WORKAREA+6(2),IOBPARM+2(2)  PACK ORIGINAL Y VALUE   000D 33200016
+         CVB   W1REG,WORKAREA           CONVERT FOR NEXT INSTR     000D 33300016
+         IC    WREG,IOBWORK            GET RESIDUAL TRANSMSN CONT  000D 33400016
+         SR    W1REG,WREG              GET ACTUAL NO TRANSMSNS.    000D 33500016
+         CVD   W1REG,WORKAREA          CONVERT COUNT TO DECIMAL    000D 33600016
+         UNPK  MSG+31(2),WORKAREA+6(2)  UNPACK INTO MSG AREA       000H 33700018
+         OI    MSG+32,X'F0'             ADJUST SIGN BITS           000H 33800018
+MOVEIN    EQU   *                                                       33900016
+         IC    WREG,IOBUCBX+3           GET NUMBER TIME OUTS            34000016
+         CVD   WREG,WORKAREA            CONVERT TO DECIMAL              34100016
+         UNPK  MSG+34(2),WORKAREA+6(2)  AND UNPACK                 000H 34200018
+         OI    MSG+35,X'F0'             ADJUST SIGN BITS           000H 34300018
+         TM    DECDCBAD,RCVTST         CHK FOR SENDING/RECEIVING        34400018
+         BM    SENDER                    BRANCH                         34500016
+RECVER   LA    WREG,X'F8'                                               34600016
+         STC   WREG,MSG+9                                               34700016
+         IC    WREG,IOBUCBX+4           GET LOST DATA COUNT             34800016
+         CVD   WREG,WORKAREA            CONVERT TO DECIMAL              34900016
+         UNPK  MSG+37(2),WORKAREA+6(2)  AND UNPACK                 000H 35000018
+         OI    MSG+38,X'F0'             ADJUST SIGN BITS           000H 35100018
+         IC    WREG,IOBUCBX+5           GET DATA CHECK COUNT            35200016
+         CVD   WREG,WORKAREA            CONVERT TO DECIMAL              35300016
+         UNPK  MSG+40(2),WORKAREA+6(2)  AND UNPACK                 000H 35400018
+         OI    MSG+41,X'F0'             ADJUST SIGN BITS           000H 35500018
+         LA    WREG,42                  INITIALIZE MESSAGE COUNT   000H 35600018
+         B     COUNT                                                    35700016
+SENDER   LA    WREG,X'F7'                                               35800016
+         STC   WREG,MSG+9                                               35900016
+         IC    WREG,IOBUCBX+2           GET NUMBER OF NAKS              36000016
+         CVD   WREG,WORKAREA            CONVERT TO DECIMAL              36100016
+         UNPK  MSG+37(2),WORKAREA+6(2)  AND UNPACK                 000H 36200018
+         OI    MSG+38,X'F0'             ADJUST SIGN BITS           000H 36300018
+         TM    UCBDEVTP+1,X'40'         IS THIS LINE MULTIPT            36400016
+         BO    COMPX                   GO TEST X VALUE             000D 36500016
+WTOPR    LA    WREG,39                  LOAD COUNT OF 39           000H 36600018
+         B     COUNT                                               000D 36700016
+COMPX    CLC   IOBPARM(2),DATA         IS X = ZERO                 000D 36800016
+         BNE   ENTRYPT                 NO, TREAT AS USUAL MPT      000D 36900016
+         SR    WREG,WREG               ZERO OUT REGISTER           000D 37000016
+         L     W1REG,DECADRPT          GET TERMINAL LIST ADDR      000D 37100016
+CHKAGIN  CLC   0(1,W1REG),DCBBSENQ     ARE WE AT END OF LIST     A28613 37200019
+         BE    GETCHARS                YES, MOVE ADDR. CHARS IN    000D 37300016
+         LA    WREG,1(WREG)            NO, INCREMENT COUNT BY ONE  000D 37400016
+         LA    W1REG,1(W1REG)          INCREMENT ADDRESSS BY ONE   000D 37500016
+         CH    WREG,MAXLENGT           IS ENTRY AT MAXIMUM LENGTH  000D 37600016
+         BE    WTOPR                   YES, IGNORE TERM ID FIELD   000D 37700016
+         B     CHKAGIN                 NO, RESUME SCAN FOR EOL     000D 37800016
+         SPACE 2                                                   000D 37900016
+GETCHARS SR    W1REG,WREG              MOVE BACK TO START OF ENTRY 000D 38000016
+         B     EXPAND                  GO TO TRANS TO EBCDIC     A28613 38100019
+         SPACE  2                                                  000D 38300016
+ENTRYPT  LH    WREG,IOBCPA+30           GET WIDTH OF TERMINAL ID A27602 38400019
+         BCTR  WREG,0                  GET RID OF ENQ COUNT        000D 38500016
+         CH    WREG,MAXLENGT           IS TERM LIST TOO LONG     A28613 38550019
+         BNL   WTOPR                   YES, IGNORE TERM ID       A28613 38600019
+         LA    W1REG,IOBERINF+10       GET TERM LIST ADDRESS     A28613 38650019
+EXPAND   LTR   WREG,WREG               IS COUNT ZERO OR NEG      A28613 38700019
+         BNP   WTOPR                   YES, INVALID, IGNORE TID  A28613 38750019
+         LA    W2REG,MSG+40            ADDR TERM ID FIELD IN MSG A28613 38800019
+MOVE     MVC   1(1,W2REG),0(W1REG)     MOVE TWO 4 BIT DIGITS     A28613 38850019
+         MVO   0(2,W2REG),0(2,W2REG)   EXPAND TO TWO BYTES       A28613 38900019
+         OI    0(W2REG),ZONE           INSERT ZONES              A28613 38950019
+         OI    1(W2REG),ZONE           INSERT ZONES              A28613 39000019
+         TR    0(2,W2REG),TABLE        TRANS TO EBCDIC           A28613 39050019
+         LA    W2REG,2(W2REG)          INCREMENT POINTERS        A28613 39100019
+         LA    W1REG,1(W1REG)          INCREMENT POINTERS        A28613 39150019
+         BCT   WREG,MOVE               LOOP IF MOVE INCOMPLETE   A28613 39200019
+         LA    WREG,MSG                COMPUTE MSG COUNT         A28613 39250019
+         SR    W2REG,WREG                                        A28613 39300019
+         LR    WREG,W2REG                                        A28613 39350019
+COUNT    STH   WREG,MSG                                                 39500016
+         LR    W2REG,WREG          SAVE LENGTH              LD @ZA02332 39550003
+         LA    WREG,MSG            GET BEGINNING OF MSG     LD @ZA02331 39560003
+         AR    WREG,W2REG          COMPUTE MSG LENGTH       LD @ZA02331 39570003
+         MVC   DISP0(L4,WREG),MSG+FIFTYSIX                     @ZA04672 39580000
+*                        ADJUST DESCRIPTOR AND ROUTING CODES.  @ZA04672 39586000
+PRINT    WTO   MF=(E,MSG)               WRITE MESSAGE                   39600016
+SKIPWTO  CLC   IOBPARM(4),DATA         X, Y EQUAL 0              A28610 39700019
+         BE    DISABLE                 BRANCH IF YES TO DISABLE  A27627 39800019
+         CLI   IOBWORK,ZEROY           HAS Y VALUE BEEN DECREMENTD 000D 39900016
+         BH    END                     NO, RESTART READ INITIAL    000D 40000016
+         TM    DECDCBAD,RCVTST         CHK FOR SENDING/RECEIVING        40100018
+         BM    SNTTST                    BRANCH IF SENDING TESTS   000D 40200016
+         L     WREG,IOBCPA+40          GET AREA ADDRESS            000D 40300016
+         MVC  0(1,WREG),DCBBSEOT       MOVE IN EOT CHARACTER       000D 40400016
+         B     LOADSTRT                                            000D 40500016
+SNTTST   LA    CCWREG,IOBCPA+40         LOAD START CCW ADDRESS   A27602 40600019
+         TM    UCBDEVTP+1,X'90'        TEST FOR DIAL DEVICE        000D 40700016
+         BZ    PTPT                     IF NOT, BRANCH             000D 40800016
+         TM    IOBINCAM,MASKALL-RFTBIT  IS THIS A 3270 RFT ?     S99245 40805002
+         BNO   NOT3270                  NO, BRANCH               S99245 40810002
+         CLI   DECTYPE+1,RDCONT    WAS OPERATION A READ TT ?     S99245 40815002
+         BNE   NOT3270             NO, BRANCH                    S99245 40820002
+         MVC   CCWFLAGS(FIVEWORD,CCWREG),WRTRESET  MOVE IN WRT   S99245 40825002
+*                                  RESET CHANNEL PGM             S99245 40830002
+         LA    WREG,DCBBSEOT       LOAD ADDR OF EOT              S99245 40835002
+         O     WREG,DIALRST             OR IN WRITE COMMAND      S99245 40840002
+         ST    WREG,0(CCWREG)           STORE WRITE EOT IN CCW   S99245 40845002
+         LA    WREG,DECRESPN            GET ADDR OF RESPONSE     S99245 40850002
+         O     WREG,WRTRESET+RDCMD      OR IN READ COMMAND       S99245 40855002
+         ST    WREG,RDEOTCCW(CCWREG)    STORE READ RESP          S99245 40860002
+         MVI   IOBSNDPT,RESETACK        RESET ACK POINTERS       S99245 40865002
+         MVI   IOBRCVPT,RESETACK                                 S99245 40870002
+         XC    IOBINCAM+1(CNTLNG),IOBINCAM+1  CLEAR RETRY COUNT  S99245 40875002
+         B     RESTART                  START CHAN PGM           S99245 40880002
+NOT3270  EQU   *                                                 S99245 40885002
+         MVC   4(20,CCWREG),DIALRST+4                              000D 40900016
+         LA    WREG,DCBBSDLE            LOAD ADRS OF DLE-EOT       000D 41000016
+         O     WREG,DIALRST             OR IN COMMAND              000D 41100016
+         ST    WREG,0(CCWREG)           STORE IN CCW               000D 41200016
+         B     RESTART                                                  41300016
+PTPT     MVC   4(4,CCWREG),PTPTRST+4   MOVE CCW TO IOB             000D 41400016
+         LA    WREG,DCBBSEOT            LOAD ADDRESS OF EOT        000D 41500016
+         O     WREG,PTPTRST             OR IN COMMAND              000D 41600016
+         ST    WREG,0(CCWREG)           STORE IN CCW               000D 41700016
+         B     RESTART                                             000D 41707000
+TRYRDENQ LA    CCWREG,IOBCPA+L8   POINT TO READ ENQ            @ZA06398 41714000
+         CLI   IOBINCAM+L1,ERRMAXCT  RETRY COUNT 7 ?           @ZA06398 41721000
+         BE    DIALERR             YES, SET ERROR              @ZA06398 41728000
+         SR    ICREG,ICREG         CLEAR REG                   @ZA06398 41735000
+         IC    ICREG,IOBINCAM+L1   GET RETRY COUNT             @ZA06398 41742000
+         LA    ICREG,INCRE(ICREG)  ADD ONE                     @ZA06398 41749000
+         STC   ICREG,IOBINCAM+L1   STORE BACK                  @ZA06398 41756000
+         B     RESTART              TRY READ ENQ               @ZA06398 41763000
+CHKENQ   CLC   DECRESPN(L1),DCBBSENQ   ENQ READ ?              @ZA06398 41770000
+         BNE   DIALERR             NO SET ERROR                @ZA06398 41777000
+         LA    CCWREG,IOBCPA       POINT TO WRT EOT            @ZA06398 41784000
+         B     RESTART                                         @ZA06398 41791000
+HANDLETR EQU   *                                                 S99245 41802002
+         CLI   0(CCWREG),NOP            LAST CCW?                S99245 41804002
+         BE    END                      YES,CHECK FOR ENQ        S99245 41806002
+         CLI   TPOPCODE(CCWREG),WRTEOT WRITE EOT                 S99245 41808002
+         BE    OTHER                    YES,RETRY                S99245 41810002
+         CLI   TPOPCODE(CCWREG),RDRESP READ RESP TO EOT          S99245 41812002
+         BNE   DIALERR                  NO,SHOULD NOT OCCUR      S99245 41814002
+         TM    IOBSENS0,TIMEOUT    TIMEOUT ERROR ?               S99245 41816002
+         BO    RETRYTO             YES, GO RETRY                 S99245 41818002
+         CLC   DECRESPN(DLEOTLNG),DCBBSDLE  DLE EOT RECEIVED ?   S99245 41820002
+         BNE   OTHER               NO. SOMETHING ELSE            S99245 41822002
+         L     WREG,IOBERINF       GET ADDR OF USER'S BUFFER     S99245 41824002
+         MVC   0(DLEOTLNG,WREG),DCBBSDLE  MOVE DLE EOT TO BUF    S99245 41826002
+         XC    IOBWORK+1(ERRWORD),IOBWORK+1  CLEAR ERROR WORD    S99245 41828002
+*                                  TO INDICATE NRM COMPLETION    S99245 41830002
+GOPOST   EQU   *                                                 S99245 41832002
+         OI    DECDCBAD,POSTBIT    INDICATE POSTING              S99245 41834002
+         B     END                 GO POST                       S99245 41836002
+RETRYTO  EQU   *                   RETRY TIMEOUT CONDITION       S99245 41838002
+         CLI   IOBINCAM+1,RETRY25  RETRY COUNT = 25 ?            S99245 41840002
+         BE    DIALERR             YES, POST WITH X'41'          S99245 41842002
+         B     TRYAGAIN            GO RETRY                      S99245 41844002
+OTHER    EQU   *                                                 S99245 41846002
+         CLI   IOBINCAM+1,ERRMAXCT  RETRY COUNT = 7              S99245 41848002
+         BE    DIALERR             YES, POST WITH X'41'          S99245 41850002
+TRYAGAIN EQU   *                                                 S99245 41852002
+         SR    ICREG,ICREG         CLEAR REG                     S99245 41854002
+         IC    ICREG,IOBINCAM+1    GET RETRY COUNT               S99245 41856002
+         LA    ICREG,INCRE(ICREG)  INCREMENT COUNT               S99245 41858002
+         STC   ICREG,IOBINCAM+1    STORE COUNT                   S99245 41860002
+         B     RESTART             RETRY                         S99245 41862002
+DIALERR  EQU   *                                                 S99245 41864002
+         MVC   DECSENS0(SENSELNG),IOBSENS0  MOVE SENSE TO DECB   S99245 41866002
+         MVC   DECCOUNT(RESIDCNT),IOBCSW+6  RESIDUAL COUNT       S99245 41868002
+         MVI   DECTPCOD,RDTEXT     SET TP OP CODE                S99245 41870002
+         MVC   DECCSWST(STATLNG),IOBCSW+4  MOVE STATUS TO DECB   S99245 41872002
+         OI    IOBWORK+1,MASKALL   INDICATES ERROR - POST '41'   S99245 41874002
+         OI    DECERRST,RFTERROR   INDICATE RFT ERROR          @ZA06398 41876000
+         B     GOPOST              GO POST                       S99245 41878002
+END      EQU   *                                                        41900016
+         TM    DCBBFTEK,DCBDYBFR        TEST FOR DYN BUFFERING   A32477 41910020
+         BZ    END1                     NO, BRANCH               A32477 41920020
+         L     WREG,IOBERINF            GET BUFFER ADDRESS       A32477 41930020
+         N     WREG,MASKDB              ADD TO FULL WORD         A32477 41940020
+         SH    WREG,K4                  BACK UP TO BUF POINTER   A32477 41950020
+         ST    WREG,DECAREA             STORE IN DECB            A32477 41960020
+         XC    1(3,WREG),1(WREG)        ZERO POINTER             A32477 41970020
+END1     EQU   *                                                 A32477 41980020
+         NI    IOBINCAM,MASKALL-BUSY   TURN OFF BUSY BIT           000D 42000016
+         NI    IOBINCAM,MASKALL-ONLT    TURN OFF ONLT IN CTRL      000D 42100016
+         NI    IOBINCAM+1,X'00'                                    000L 42150019
+         CLI   DECTYPE+1,RDCONT    WAS OPERATION A READ CONTINUE        42160002
+         BNE   NOTRDTT             NO, BRANCH                    S99245 42170002
+         TM    UCBDEVTP+1,DIAL     DIAL ?                        S99245 42172002
+         BNO   SETEOT              NO, SET UP EOT AND POST       S99245 42174002
+         MVI   IOBCPA+45,ZEROTP    RESET TP OP CODE              S99245 42176002
+         CLI   0(CCWREG),NOP       WAS LAST CCW A NOP ?          S99245 42178002
+         BNE   NOTRDTT             NO, BRANCH                    S99245 42180002
+         CLC   DECRESPN(ENQLNG),DCBBSENQ  WAS ENQ REC'D ?        S99245 42182002
+         BNE   DIALERR             NO, POST WITH X'41'           S99245 42184002
+         NI    IOBINCAM,RFTBIT     TURN OFF 3270 RFT BIT         S99245 42186002
+         MVI   DECDCBAD,RESETBUF   RETURN BUFFER COUNT TO ZERO   S99245 42188002
+         B     SETSTART            RESET IOBSTART                S99245 42190002
+NOTRDTT  EQU   *                                                 S99245 42192002
+         TM    DECDCBAD,X'80'          SHOULD WE POST OR DO READ TI     42200018
+         BO    LAST                     IF ONE, GO POST            000D 42300016
+         MVI   DECDCBAD,X'00'          RETURN BUFFER COUNT TO ZERO      42370018
+         MVI   IOBSNDPT,X'00'          RESET ACK POINTER         A27626 42470019
+SETSTART EQU   *                                                 S99245 42520002
+         MVI   IOBERINF,X00                                 LD @ZA02329 42570003
+*                                                                       42620002
+*              1 LINE DELETED FOR ----->                    LD @ZA02332 42670003
+*                                                                       42720002
+         L     DEBREG,DCBDEBAD         LOAD DEB ADDRESS          YM4090 42910002
+         L     BAS1REG,DEBNMSUB        LOAD TCB ADDRESS          YM4056 42926002
+         USING TCB,BAS1REG             TCB ADDRESSABILITY        YM4056 42928002
+         MODESET EXTKEY=TCB,WORKREG=15 USER'S KEY                YM4056 42928402
+         DROP  BAS1REG                 DROP TCB ADDRESSABILITY   YM4056 42928802
+*                                                                       42928902
+*        GETMAIN X48 BYTES FOR IGG019MA SAVEAREA            LD @ZA02332 42929003
+*        AND X2C BYTES FOR DUMMY DECB.                      LD @ZA02332 42929103
+*                                                                       42941202
+         L     ZEROREG,REGSAVE         SUBPOOL AND LENGTH        YM4056 42953702
+         GETMAIN R,LV=(0)              GET SAVEAREA FOR R/W      YM4056 42965802
+         LA    SAVEREG,DISP2C(PARAMREG) LOAD SAVEAREA ADDR. LD @ZA02332 42975803
+         LR    WREG,PARAMREG       SAVE AREA ADDR           LD @ZA02332 42985803
+         SR    W1REG,W1REG         CLEAR REGISTER           LD @ZA02332 42987803
+         ST    W1REG,DISP0(PARAMREG) CLEAR DUMMY ECB AREA   LD @ZA02332 42993203
+         MVC   DISP4(THIRTY6,PARAMREG),DECTYPE COPY DECB... LD @ZA02332 42995203
+*                                  ...INTO DUMMY            LD @ZA02332 42995603
+         MVI   DISP17(PARAMREG),FOXFOX  FLAG AS DUMMY       LD @ZA02332 42996003
+         ST    DECBREG,DISP40(PARAMREG) SAVE ADDR OF DECB   LD @ZA02332 42996403
+*                                                                       42996502
+*              1 LINE DELETED FOR ----->                    LD @ZA02332 42998503
+*                                                                       42998902
+         L     LINKREG,DCBREAD         R/W ROUTINE ADDRESS       YM4056 43000002
+         BALR  RETREG,LINKREG          LINK TO MA                 M1181 43020002
+*                                                                       43030002
+*              1 LINE DELETED FOR ----->                    LD @ZA02332 43032003
+*                                                                       43034002
+         LR    PARAMREG,WREG       RESTORE ADDR OF DUMMY    LD @ZA02332 43036003
+         MVC   DECTYPE(THIRTY6),DISP4(PARAMREG)  COPY...    LD @ZA02332 43038003
+*                                  ...DUMMY INTO DECB       LD @ZA02332 43038803
+         STCM  DECBREG,MASK,IOBECBPT+L1  POINT IOB TO DECB  LD @ZA02332 43039203
+         TM    DISP0(PARAMREG),POSTBT  HAS DUMMY...         LD @ZA02332 43039603
+*                                  ...BEEN POSTED           LD @ZA02332 43039703
+         BZ    FREEDECB            NO, BRANCH               LD @ZA02332 43039803
+         MVC   DECTYPE(THIRTY6),DISP4(PARAMREG) COPY...     LD @ZA02332 43039900
+*                                  ...INTO DECB             LD @ZA02332 43043903
+         L     PARMREG,DISP0(PARAMREG)  LOAD POST CODE      LD @ZA02332 43045903
+         LA    PARAMREG,DISP0(DECBREG)  LOAD DECB ADDR      LD @ZA02332 43047903
+         POST  (1),(0)             POST USER'S DECB         LD @ZA02332 43056503
+FREEDECB EQU   *                                            LD @ZA02332 43058503
+         L     ZEROREG,REGSAVE         SUBPOOL AND LENGTH        YM4056 43065602
+         FREEMAIN R,LV=(0),A=(WREG)    FREE SAVEAREA        LD @ZA02332 43074203
+         LA    SAVEREG,SAVE            RESTORE SAVEAREA ADDRESS  YM4056 43082802
+         MODESET EXTKEY=ZERO           KEY ZERO                  YM4056 43091402
+*                                                                       43101402
+         MVI   DECSENS1,X00             TURN OFF DUMMY DECB    @ZA06406 43101600
+*              1 LINE DELETED FOR ----->                    LD @ZA02332 43101803
+*                                                                       43101902
+         TM    UCBDEVTP+1,X'40'         IS AUTOPOLL SPECIFIED           43102019
+         BNO   NOAUTO                   NO, DON'T RESET USAGE COUNT     43104019
+         NC    DECPOLPT+1(3),DECPOLPT+1 CHECK FOR ADDRESS PRESENT       43106019
+         BZ    NOAUTO                   NO, DON'T RESET USAGE COUNT     43108019
+         L     AREAREG,DECPOLPT         LOAD ADDRESS TERM LIST   A23123 43110018
+         BCTR  AREAREG,0                BACK UP ONE BYTE         A23123 43120018
+         TM    IOBINCAM,ONLT            IF OLT FLAG IS ON,R/W   YA01017 43121002
+         BO    NOAUTO                   DON'T INCR USER CNT     YA01017 43122002
+         TM    0(AREAREG),X'0F'         IS USAGE COUNT ZERO             43123019
+         BZ    NOAUTO                   YES, DON'T DECREMENT            43126019
+         IC    ICREG,0(AREAREG)         PICK UP USAGE COUNT      A23123 43130018
+         BCTR  ICREG,0                  REDUCE BY ONE            A23123 43140018
+         STC   ICREG,0(AREAREG)         STORE NEW COUNT          A23123 43150018
+NOAUTO   SVC   3                        RETURN                          43220019
+SETEOT   EQU   *                                                        43230002
+         NI    IOBINCAM,RFTBIT     TURN OFF RFT RECEIVED                43240002
+*                                  CONTROL UNIT CAPABLE OF              43250002
+*                                  GENERAL POLL BIT                     43260002
+         L     WREG,IOBERINF       GET AREA ADDRESS                     43270002
+         MVC   0(EOTLNGTH,WREG),DCBBSEOT PUT EOT IN AREA                43280002
+         SR    W1REG,W1REG              CLEAR REG              @ZA06398 43284000
+         LH    W1REG,DECLNGTH          GET ORGINAL COUNT       @ZA06398 43288000
+         BCTR  W1REG,X00                SUBTRACT ONE           @ZA06398 43292000
+         STH   W1REG,DECCOUNT      STORE IN RESIDUAL COUNT     @ZA06398 43296000
+LAST     MVI   DECDCBAD,X'00'          RETURN BUFFER COUNT TO ZERO      43300018
+         TM    DCBBFTEK,DCBDYBFR        TEST FOR DYN BUFFERING   A32477 43306020
+         BZ    LAST2                    NO, BRANCH               A32477 43312020
+         LR    BUFREG,WREG              PUT BUFFER IN BUFREG     A32477 43318020
+         L     ECBREG,SEVENF           STORE COMPLETION CODE     A32477 43324020
+         CLC   IOBWORK+1(4),ZERO        ANY ERRORS               A32477 43330020
+         BE    LAST1                    NO, BRANCH               A32477 43336020
+         L     ECBREG,FORTY1           STORE ABNORM COMPLETION   A32477 43342020
+LAST1    LR    ZEROREG,BASEREG          SAVE BASE REGISTER       A32477 43348020
+         L     BAS1REG,DEBNMSUB         LOAD ADDRESS OF TCB      A32477 43354020
+         USING CVT,WREG                 CVT ADDRESSABILITY       YM4056 43356002
+         L     WREG,SIXT                LOAD OFFSET OF CUT       A32477 43360020
+         L     LINKREG,CVT0PT01         LOAD ADDR OF SUP POST    YM4056 43366002
+         DROP  WREG                     DROP CVT ADDRESSABILITY  YM4056 43368002
+         BALR  RETREG,LINKREG           LINK TO POST ROUTINE     A32477 43372020
+         LR    BASEREG,ZEROREG          RESTORE BASE REGISTER    A32477 43378020
+LAST2    EQU   *                                                 A32477 43384020
+         L     0,SEVENF                                                 43400016
+         CLC   IOBWORK+1(4),ZERO        CHECK FOR ANY ERRORS            43500016
+         BE    POST                     IF NONE, POST 7F           000D 43600016
+         L     0,FORTY1                                                 43700016
+POST    EQU   *                                                         43800016
+         L     1,IOBECBPT                                               43900016
+         LA    PARAMREG,0(PARAMREG)                                000D 44000016
+         SVC   2                                                   000D 44100016
+         SVC   3                        RETURN                     000D 44200016
+ZERO     DC    F'0'                                                000D 44300016
+DATA     DC    X'F0F0F0F1'                                              44400019
+SEVENF   DC    X'7F000000'                                              44500016
+FORTY1   DC    X'41000000'                                              44600016
+DIALRST  DC    X'0100000060000002'      WRITE DLE-EOT              000D 44700016
+         DC    X'2F00000060800001'     DISABLE                     000D 44800016
+         DC    X'0300000020800001'      NOP CCW                         44900016
+WRTRESET DC    X'60310001'         WRITE RESET CHANNEL PGM       S99245 44920002
+         DC    X'0200000060320002' FOR 3275 DIAL - TO SET        S99245 44940002
+         DC    X'0300000020800001' UP USER'S READ CONTINUE       S99245 44960002
+READENQ  DC    X'0200000020340002'                             @ZA06398 44980000
+PTPTRST  DC    X'0100000020800001'      WRITE EOT                  000D 45000016
+WENQ     DC    X'0100000060000001'                                 000L 45030019
+TICRESP  DC    X'0800000020800001'                                 000L 45060019
+XLTTABLE DC    X'000A0B0C0D0E0F'   3270 XLATE TABLE         LD @ZA02330 45070003
+         DS    0D                                                       45100016
+WORKAREA  DS   2F                                                  000D 45200016
+MAXLENGT DC    H'08'                                                    45600016
+         ORG   *-240                                               000D 45700016
+TABLE    DS    0C                                                  000D 45800016
+         ORG   *+240                                               000D 45900016
+         DC    C'0123456789ABCDEF'                                      46000016
+MSG      WTO   'IEC800I CUU ONLINE TEST XX YY TT NL ID              ', *46100019
+               MF=L,ROUTCDE=(8),DESC=(4)                           000H 46200018
+ZONEOFF  EQU   X'0F'               MASK TO AND OFF ZONES    LD @ZA02330 46210003
+ASCZONE  EQU   X'30'               ASCII NUMERIC ZONE BITS  LD @ZA02330 46212003
+ALFAZONE EQU   X'70'               ZONE FOR ASCII CHARS.    LD @ZA02330 46214003
+ERRMAXCT EQU   X'07'                                               000L 46220019
+NOWACK   EQU   X'3F'                                               000L 46240019
+WACK     EQU   X'C0'                                               000L 46260019
+TWENTY5  EQU   X'19'                                               000L 46280019
+ENQCHAR  EQU   X'2D'                                               000D 46300016
+CMCH     EQU   X'40'                                                    46400016
+ERR      EQU   X'41'                    ERROR COMPLETION CODE      000D 46500016
+BUSY     EQU   X'40'                    BUSY BIT                   000D 46600016
+UNITEXCP EQU   X'01'                    UNIT EXCEPTION BIT         000D 46700016
+WRL      EQU   X'40'                    WRONG LENGTH RECORD BIT         46800016
+RESET    EQU   X'80'                                                    46900016
+DYNBF    EQU   X'08'                                                    47000016
+ONLT     EQU   X'01'                                                    47100016
+TPOPERP  EQU   X'30'                                                    47200016
+ZEROY    EQU   X'00'                                                    47300016
+RDCONT   EQU   X'03'               READ CONTINUE                        47330002
+RFTBIT   EQU   X'EF'               RFT RCVD FROM GEN POLL CU            47360002
+DIAL     EQU   X'90'               BSC2 FEATURE IN UCB           S99245 47361002
+TPOPCODE EQU   5                   DISP IN CCW OF TP OP CODE     S99245 47362002
+WRTEOT   EQU   X'31'               TP OP CODE OF WRT EOT CCW -   S99245 47363002
+*                                   DIAL 3270                    S99245 47364002
+RDRESP   EQU   X'32'               RD RESP TP CODE - DIAL 3270   S99245 47365002
+RETRY25  EQU   X'25'               # OF RETRIES FOR TIMEOUT      S99245 47366002
+INVWREOT EQU   X'33'                                           @ZA06398 47366300
+INVRDENQ EQU   X'34'               INVALID READ ENQ            @ZA06398 47366600
+INCRE    EQU   1                   USED TO INCREMENT RETRY CNT   S99245 47367002
+DLEOTLNG EQU   2                   # OF CHARS - DLE EOT          S99245 47368002
+ERRWORD  EQU   4                   LENGTH OF ERROR COUNTER       S99245 47369002
+POSTBIT  EQU   X'80'               POST INDICATOR                S99245 47370002
+SENSELNG EQU   1                   LENGTH OF DECSENS0            S99245 47371002
+RESIDCNT EQU   2                   LENGTH OF RESIDUAL COUNT      S99245 47372002
+RDTEXT   EQU   X'11'               READ TEXT TP OP CODE          S99245 47373002
+STATLNG  EQU   2                   LENGTH OF STATUS BYTES        S99245 47374002
+CCWFLAGS EQU   4                   DISP INTO CCW OF FLAGS        S99245 47375002
+FIVEWORD EQU   20                  # CHARS MOVED TO WR RESET     S99245 47376002
+CNTLNG   EQU   1                   LENGTH OF RETRY COUNTER       S99245 47377002
+ENQLNG   EQU   1                   LENGTH OF AN ENQ CHAR         S99245 47378002
+RFTERROR EQU   X'01'               3275 DIAL RFT ERROR BIT       S99245 47379002
+RDCMD    EQU   4                                                 S99245 47380002
+RDEOTCCW EQU   8                                                 S99245 47381002
+RESETACK EQU   X'00'               USED TO RESET ACK POINTERS    S99245 47382002
+RESETBUF EQU   X'00'               USED TO RESET BUFFER COUNT    S99245 47383002
+ZEROTP   EQU   X'00'               USED TO RESET TP OP CODE      S99245 47384002
+TWOCCWS  EQU   16                       LENGTH OF 2 CCWS        YA01276 47394002
+ONECCW   EQU   8                        LENGTH OF 1 CCW         YA01276 47396002
+WRITECMD EQU   X'01'                    WRITE COMMAND           YA01276 47398002
+TICCMD   EQU   X'08'                    TIC COMMAND             YA01276 47398402
+POSTBT   EQU   X'40'               POST BIT IN ECB          LD @ZA02332 47398803
+FOXFOX   EQU   X'FF'               BYTE OF ALL ONES         LD @ZA02332 47399203
+MASK     EQU   7                   MASK FOR STCM            LD @ZA02332 47399603
+DISP0    EQU   0                   DISPLACEMENT             LD @ZA02330 47416303
+DISP1    EQU   1                   DISPLACEMENT             LD @ZA02330 47426303
+DISP2    EQU   2                   DISPLACEMENT             LD @ZA02330 47428303
+DISP4    EQU   4                   DISPLACEMENT             LD @ZA02330 47430303
+DISP6    EQU   6                   DISPLACEMENT             LD @ZA02330 47432303
+DISP7    EQU   7                   DISPLACEMENT             LD @ZA02330 47432703
+DISP17   EQU   17                  DISPLACEMENT             LD @ZA02332 47432803
+DISP40   EQU   40                  DISPLACEMENT             LD @ZA02332 47432903
+DISP2C   EQU   X'2C'               DISPLACEMENT             LD @ZA02332 47433003
+X00      EQU   X'00'                                        LD @ZA02329 47433103
+X02      EQU   X'02'                                           @ZA06398 47435100
+X20      EQU   X'20'                                        LD @ZA02330 47438703
+X33      EQU   X'33'                                           @ZA06398 47439700
+X34      EQU   X'34'                                        LD @ZA02330 47440703
+X40      EQU   X'40'                                        LD @ZA02330 47442703
+X66      EQU   X'66'                                        LD @ZA02330 47443103
+XC6      EQU   X'C6'                                        LD @ZA02330 47443503
+XF4      EQU   X'F4'                                        LD @ZA02330 47443600
+XFF      EQU   X'FF'                                           @ZA06398 47443700
+L1       EQU   1                                            LD @ZA02330 47444003
+L2       EQU   2                                            LD @ZA02330 47444103
+L4       EQU   4                                            LD @ZA02330 47444203
+L5       EQU   5                                               @ZA06398 47444700
+L8       EQU   8                                               @ZA06398 47445200
+L12      EQU   12                                              @ZA06398 47445700
+THIRTY6  EQU   36                                           LD @ZA02332 47446203
+FIFTYSIX EQU   56                                           LD @ZA02331 47449803
+         DS    0F                  FULL WORD ALIGNMENT      LD @ZA02332 47455403
+GETPARM  DC    X'FA000008'         SUBPOOL AND LENGTH       LD @ZA02332 47466603
+         EJECT                                                          47483316
+         DS    0H                                                       47500016
+STRTSTOP EQU   *                                                        47600016
+*                                                                       47700016
+         LA    WREG,PATNAME                                             47800016
+         ST    WREG,PARMLIST                                            47900016
+         LA    WREG,CRIDLES                                             48000016
+         ST    WREG,PARMLIST+4                                          48100016
+         LA    WREG,GETMAIN1                                            48200016
+         ST    WREG,PATNAME                                             48300016
+         TM    DECTYPE,RCVTST           IS THIS  RECEIVE TEST      1263 48320018
+         BZ    CHKONCCW                 NO, CHECK FOR ONLT CCW     1263 48340018
+         NI    DECTYPE,MASKALL-RCVTST   TURN FLAG OFF              1263 48360018
+         B     SVC66                    GO TO TRANSIENT ROUTINE    1263 48380018
+         SPACE 2                                                        48400016
+CHKONCCW EQU   *                                                   1263 48450018
+*                             RETURNING FROM ONLT WRITE?                48500016
+         CLI   DCBERROP+2,X'21'         DEVICE A 1030             M3153 48510018
+         BE    TSTCCW                   YES, BRANCH               M3153 48520018
+         MVC   RCOUNT(2),IOBCSW+6       SAVE RESIDUAL COUNT       M3153 48550018
+TSTCCW   TM    5(CCWREG),X'3F'          TEST FOR ONLT CCW         M3153 48580018
+         BNZ   CALL                     BRANCH IF NOT              000K 48610018
+         TM    DECONLTT,MASKALL         IS THIS 1030 PATTERN      M3110 48613018
+         BO    FREEAREA                 YES, BRANCH TO FREE AREA  M3110 48616018
+         L     WREG,IOBCPA              DATA ADDR FROM FIRST CCW   000K 48620018
+         CLC   0(3,WREG),DPREO          IS TEST TO A 2760          000K 48630018
+         BNE   FREEAREA                BRANCH IF NOT TO CLEANUP  A29567 48640019
+         CLI   DECRESPN+1,POSITIVE      POSITIVE RESPONSE TO EOB   000K 48650018
+         BE    TESTRENT                 BRANCH IF POSITIVE         000K 48660018
+         NI    DECDCBAD,NOENTRY        DO NOT REENTER (2760)       000K 48670018
+         B     END                      EXIT IF RESP NOT POSITIVE  000K 48680018
+TESTRENT EQU   *                                                   000K 48690018
+         TM    DECONLTT,REENTRY         SHOULD TEST MODULE BE      000K 48700018
+*                                          REENTERED               000K 48710018
+         BZ    FREEAREA                 BRANCH IF NOT TO CLEAN UP  000K 48720018
+         SPACE 2                                                        48800016
+*                             MOVE PARAMETER LIST POINTER INTO IOB      48900016
+CALL     EQU   *                                                   00MC 48906020
+         TM    UCBDEVTP+3,X'E0'         IS THIS IBM1 ADAPTER       1263 48912018
+         BNZ   NOT2740C                 NO, NOT 2740              M3153 48916018
+         TM    UCBDEVTP,X'09'          IS THIS 2740B               00MC 48916620
+         BO    A2740                   YEX, TREAT AS 2740          00MC 48917220
+         TM    UCBDEVTP,X'0B'          IS THIS 2740                00MC 48917820
+         BNZ   NOT2740C                NO, CONTINUE                00MC 48918420
+A2740    EQU   *                                                   00MC 48919020
+         TM    UCBDEVTP+1,X'20'         IS THIS 2740 CHECKING      1263 48920018
+         BNO   NOT2740C                 NO, NOT 2740 WITH CHECKING 1263 48924018
+         TM    UCBDEVTP+1,X'0C'         OIU FEATURE                1263 48925018
+         BO    NOT2740C                 BRANCH IF YES              1263 48926018
+         OI    DECTYPE,RCVTST           SET ON RECEIVE TEST FLAG   1263 48928018
+         LA    AREAREG,CRIDLES+20       PICK UP CHARACTER ADDRESS  1263 48932018
+CHKEND   TM    5(CCWREG),X'80'          IS THIS LAST CCW           1263 48936018
+         BO    ENDFND                   YES, LAST CCW              1263 48940018
+         LA    CCWREG,8(CCWREG)         POINT TO NEXT CCW          1263 48944018
+         B     CHKEND                   BRANCH TO CHECK IT         1263 48948018
+ENDFND   LA    CCWREG,8(CCWREG)         POINT TO NEXT CCW          1263 48952018
+         MVC   0(8,CCWREG),PTPTRST      MOVE IN CCW                1263 48956018
+         ST    AREAREG,0(CCWREG)        STORE AREA ADDRESS         1263 48960018
+         MVI   0(CCWREG),X'01'          SET COMMAND CODE TO WRITE  1263 48964018
+         MVI   7(CCWREG),X'04'          SET COUNT TO FOUR          1263 48968018
+         ST    CCWREG,IOBSTART          STORE CCW ADDRESS IN IOB   1263 48972018
+         B     EXCP                     EXECUTE CHANNEL PROG       1263 48976018
+NOT2740C EQU   *                                                   1263 48980018
+SVC66    EQU   *                                                   1263 48984018
+         LA    1,PARMLIST                                               49000016
+         ST    1,IOBPARM                                                49100016
+         SPACE 2                                                        49200016
+*                             LOAD GEN REG 1 WITH IOB ADDRESS           49300016
+         LR    1,IOBREG                 LOAD IOB ADRS AS PARAMETER 000D 49400016
+         SVC   66                      FETCH TERMINAL TEST TRANSIENTS   49500016
+         SPACE                                                          49600016
+*        RETURN FROM TRANSIENT ROUTINES TO SEND TEST MESSAGE            49700016
+         SPACE                                                          49800016
+         TM    IOBINCAM,X'01'          CHECK FOR TEST NOT SET UP        49900016
+         BO    CMPISON                                             000D 50000016
+         SPACE                                                          50100016
+*        FREE TERMINAL TEST PATTERN AREA IF AREA UTILIZED               50200016
+         SPACE                                                          50300016
+FREEAREA SR    AREAREG,AREAREG         CLEAR REGISTER                   50400016
+         TM    DECONLTT,MAXBITS        TEST FOR AREA UTILIZED           50500016
+         BZ    END                      ERO MEANS AREA NOT UTILIZED     50600016
+         BO    PAT1030                 BRANCH IF 1030 SWITCH AREA       50700016
+         SR    AREAREG,AREAREG         CLEAR REGISTER                   50800016
+         IC    AREAREG,DECONLTT        INSERT PATTERN SELECT OFFSET     50900016
+         A     AREAREG,PATRNLST        ADD POINTER TO HEAD OF LIST      51000016
+         SR    CTRREG,CTRREG           CLEAR REGISTER                   51100016
+         IC    CTRREG,0(AREAREG)       INSERT PATTERN USAGE COUNT       51200016
+         SH    CTRREG,ONE              DECREMENT USAGE COUNT            51300016
+         STC   CTRREG,0(AREAREG)       STORE CORRECT COUNT BACK         51400016
+         BNZ   END                      RANCH IF AREA STILL IN USE      51500016
+FNDADDR  MVI   DECONLTT,X'00'           CLEAR USAGE INDICATOR     M3152 51580018
+         L     1,0(AREAREG)             LOAD ADDRESS OF AREA      M3152 51660018
+         SR    WREG,WREG                CLEAR REGISTER             000D 51740016
+         IC    WREG,0(1)                INSERT AREA SIZE           000D 51780016
+         LA    WREG,7(WREG)             ROUND UP TO DBL WORD       000D 51820016
+         ST    WREG,FA                  SET UP                     000D 51860016
+         NI    FA+3,X'F8'                                          000D 51900016
+         MVI   FA,X'FA'                   FOR                      000D 51940016
+         L    0,FA                          SUBPOOL 255            000D 51960016
+         FREEMAIN R,LV=(0),A=(1)       FREE AREA UTILIZED               52000016
+         B     END                                                      52100016
+FA       DC    F'0'                                                000D 52150016
+*                                                                       52200016
+PAT1030  IC    AREAREG,DCBEIOBX        INSERT IOB SIZE                  52300016
+         NI    DECFLAGS,X'00'          CLEAR DECB STATUS FLAGS          52400016
+         MH    AREAREG,DECFLAGS        MULTIPLY BY RLN                  52500016
+         A     AREAREG,DCBIOBAD        ADD DCB IOB POINTER              52600016
+         LA    AREAREG,36(AREAREG)     POINT TO PATTERN ADDRESS         52700016
+         B     FNDADDR                 GO TO RELEASE AREA               52800016
+         EJECT                                                          52900016
+*                                                                       53000016
+EXIT     EQU   *                                                        53100016
+         SVC   3                                                        53150017
+*                                                                       53200016
+CMPISON  EQU   *                                                        53201016
+         CLI   7(AREAREG),X'07'        1060 NOT COMPARED HERE      000D 53202016
+         BE    EXCP                                                000D 53203016
+         CLI   7(AREAREG),P0           2741P NOT COMPARED HERE          53203218
+         BE    EXCP                                                     53203418
+         CLI   7(AREAREG),C0           2741C NOT COMPARED HERE          53203618
+         BE    EXCP                                                     53203818
+         CLI   7(AREAREG),C4            2740C NOT COMPARED HERE    000M 53204219
+         BE    EXCP                                                000M 53204619
+         CLI   7(AREAREG),X'56'        2848 NOT COMPARED HERE      000M 53205019
+         BE    EXCP                                                000M 53205419
+         CLI   6(AREAREG),X'0B'        TEST FOR COMPARE MESSG      000D 53206016
+         BNE   EXCP                    IF NOT, BRANCH              000D 53207016
+*            ROUTINE TO FIND LENGTH OF MESSAGE                     000D 53208016
+         LH    CTRREG,DECLNGTH         INPUT AREA LENGTH           000D 53209016
+         A     CTRREG,DECAREA          - OFFSET                    000D 53210016
+         SR    CTRREG,AREAREG               FROM START OF MSG      000D 53211016
+         CLI   DCBERROP+2,X'21'         DEVICE A 1030             M3153 53211318
+         BE    SH1030                   YES, USE RESID COUNT      M3153 53211618
+         SH    CTRREG,RCOUNT            SUBTRACT RESIDUAL COUNT   M3153 53212018
+         B     SH12                                               M3153 53212518
+SH1030   SH    CTRREG,IOBCSW+6          SUBTRACT RESIDUAL COUNT   M3153 53213018
+SH12     SH    CTRREG,H12               SUBTRACT TWELVE           M3153 53213518
+         BM    NOCHAR                                              000D 53214016
+         CH    CTRREG,MAXLNG           IS LENGTH TOO GREAT         000D 53215016
+         BNH   FINDTXT                 NO                          000D 53216016
+         LH    CTRREG,MAXLNG           YES, SUBSTITUTE MAX LENGTH  000D 53217016
+FINDTXT  LA    W1REG,10(AREAREG)       POINT TO FIRST COMPARE CHAR 000D 53218016
+         CLI   7(AREAREG),X'02'        REQUEST FOR 1030            000D 53219016
+         BE    CMP1030                 1030 CARD READER REQUEST    000D 53220016
+         LA    WREG,COMPDATA                                       000D 53221016
+CMPTST   EX    CTRREG,COMPARE                                      000D 53222016
+         BNE    EXCP                   BAD COMPARE, MSG SWITCH     000D 53223016
+         B     LOADMSG                 GOOD, LOAD COMPARE MSSG     000D 53224016
+*                                                                  000D 53225016
+CMP1030  EQU   *                                                   000D 53226016
+         CLI   9(AREAREG),X'20'        COMPARE 1030 ZERO           000D 53227016
+         BNE    EXCP                   NOT VALID, MSG SWITCH       000D 53228016
+         LTR   CTRREG,CTRREG           ANY MORE CHARS              000D 53229016
+         BZ    LOADMSG                 NO,  GO GET MSG             000D 53230016
+         BCTR  CTRREG,0                DECREMENT FOR EXECUTE       000D 53231016
+         LA    WREG,COMPDATA+1         ADDRESS OF STORED DATA      000D 53232016
+         B     CMPTST                                              000D 53233016
+LOADMSG  EQU   *                                                   000D 53234016
+         MVC   0(11,AREAREG),CMPVALD   MOVE COMPARE VALID MESSG    000D 53235016
+         CLI   DCBERROP+2,X'21'        DEVICE A 1030              M2834 53235419
+         BNE   LOADOFST                NO, BRANCH                 M2834 53235819
+         LA    CTRREG,1(CTRREG)        ADD OFFSET                 M2834 53236219
+LOADOFST AR    WREG,CTRREG             ADD LENGTH TO GET OFFSET   M2834 53236619
+         MVC   8(1,AREAREG),0(WREG)    GET LAST CHARACTER          000D 53237016
+         CLI   DCBERROP+2,X'21'         DEVICE A 1030            A24922 53238018
+         BNE    EXCP                                               000D 53239016
+         L     ICREG,36(IOBREG)        ADDRESS OF GETMAIN AREA     000D 53240016
+         LA    CTRREG,11                                           000D 53241016
+         L     UCBREG,DFDF             GET PAD CHARACTERS          000D 53242016
+         IC    UCBREG,0(AREAREG)       GET MESSAGE CHARACTER       000D 53243016
+         ST    UCBREG,0(ICREG)         STORE IN MESSG AREA         000D 53244016
+         LA    ICREG,4(ICREG)          INCREMENT AREA POINTER      000D 53245016
+         LA    AREAREG,1(AREAREG)      GET NEXT MESSG CHARACTER    000D 53246016
+         BCT   CTRREG,*-16             GO STORE ANOTHER WORD       000D 53247016
+        L     ICREG,36(IOBREG)         ADDRESS OF GETMAIN AREA     000D 53248016
+         MVC   0(1,ICREG),GETMAIN1+3                               000D 53249016
+         B     EXCP                                                000D 53250016
+         SPACE  2                                                  000D 53251016
+NOCHAR   MVC   0(11,AREAREG),CMPVALD                               000D 53252016
+         B     EXCP                                                000D 53253016
+         DS    0F                                                       53254016
+COMPARE  CLC   0(0,W1REG),0(WREG)                                  000D 53255016
+MAXLNG   DC    H'35'                                               000D 53256016
+DFDF     DC    X'DFDFDFDF'                                              53257016
+H12      DC    H'12'                                                    53258016
+         EJECT                                                          53400016
+*                                                                       53500016
+*        PARAMETER LIST TO BE PASSED TO TRANSIENT ROUTINES              53600016
+*                                                                       53700016
+PARMLIST DS    0F                                                       53800016
+PATRNLST DC    F'0'                    ADDRESS OF PATTERN LIST          53900016
+         DC    F'0'                    ADDRESS OF NL & IDLES            54000016
+NOTEST   DC    X'00'                   NO TEST SWITCH                   54100016
+*                                                                       54200016
+*        SPECIAL CHARACTERS AND PARAMETERS                              54300016
+*                                                                       54400016
+SAVE     DS    18F                                                      54500016
+GETMAIN1 GETMAIN EC,LV=0,A=0,SP=250,MF=L                           000A 54600016
+CRIDLES  DC    X'16'                   TERMINAL TEST                    54700016
+         DC    3XL1'DF'                LINE                             54800016
+         DC    X'5B'                   INITIALIZATION                   54900016
+         DC    15XL1'DF'               CHARACTERS                       55000016
+         DC    X'161F1F1F'             CIRCLE D AND CIRCLE C'S          55100016
+         DC    X'761F1F1F37'           CIRCLE Y,CIRCLE C'S AND CIRCLE S 55200016
+*                                                                       55300016
+C4       EQU   X'10'                    CORRS 4 - TYPE CODE FOR 274000M 55350019
+         EJECT                                                          55400016
+*                                                                       55500016
+*        ADDRESS OF GETMAIN PARAMETERS AND TERMINAL TEST PATTERN TABLE  55600016
+*                                                                       55700016
+         DS    0F                                                       55800016
+PATNAME  EQU   *                                                        55900016
+         DC    F'0'                    ADDRESS OF GETMAIN PARAMETERS    56000016
+BTTP5TLT DC    X'00'                   1050 TILT PATTERN USAGE COUNT    56100016
+BTTA5TLT DC    AL3(0)                  1050 TILT ADDRESS                56200016
+BTTP5ROT DC    X'00'                   1050 ROTATE PATTERN USAGE COUNT  56300016
+BTTA5ROT DC    AL3(0)                  1050 ROTATE ADDRESS              56400016
+BTTP5TWS DC    X'00'                   1050 TWIST PATTERN USAGE COUNT   56500016
+BTTA5TWS DC    AL3(0)                  1050 TWIST ADDRESS               56600016
+BTTP5ALC DC    X'00'                   1050 ALL CHARACTERS USAGE COUNT  56700016
+BTTA5ALC DC    AL3(0)                  1050 ALL CHARACTERS ADDRESS      56800016
+BTTP5SLA DC    X'00'                   1050 SELECTRIC ANALYZER USAGE CT 56900016
+BTTA5SLA DC    AL3(0)                  1050 SELECTRIC ANALYZER ADDRESS  57000016
+         SPACE                                                          57100016
+BTTP6TLT DC    X'00'                   1060 TILT PATTERN USAGE COUNT    57200016
+BTTA6TLT DC    AL3(0)                  1060 TILT ADDRESS                57300016
+BTTP6ROT DC    X'00'                   1060 ROTATE PATTERN USAGE COUNT  57400016
+BTTA6ROT DC    AL3(0)                  1060 ROTATE ADDRESS              57500016
+BTTP6TWS DC    X'00'                   1060 TWIST PATTERN USAGE COUNT   57600016
+BTTA6TWS DC    AL3(0)                  1060 TWIST ADDRESS               57700016
+BTTP6ALC DC    X'00'                   1060 ALL CHARACTERS USAGE COUNT  57800016
+BTTA6ALC DC    AL3(0)                  1060 ALL CHARACTERS ADDRESS      57900016
+BTTP6SLA DC    X'00'              1060 SELECTRIC ANALYZER USAGE COUNT   58000016
+BTTA6SLA DC    AL3(0)             1060 SELECTRIC ANALYZER ADDRESS       58100016
+         SPACE                                                          58200016
+P0       EQU   X'15'                   PTTC 0 -- TYPE CODE FOR 2741     58230018
+C0       EQU   X'13'                   CORRS 0-- TYPE CODE FOR 2741     58260018
+BTTP3TLT DC    X'00'              1030 TILT PATTERN USAGE COUNT         58300016
+BTTA3TLT DC    AL3(0)             1030 TILT ADDRESS                     58400016
+BTTP3ROT DC    X'00'              1030 ROTATE PATTERN USAGE COUNT       58500016
+BTTA3ROT DC    AL3(0)             1030 ROTATE ADDRESS                   58600016
+BTTP3TWS DC    X'00'              1030 TWIST PATTERN USAGE COUNT        58700016
+BTTA3TWS DC    AL3(0)             1030 TWIST ADDRESS                    58800016
+BTTP3ALC DC    X'00'              1030 ALL CHARACTERS USAGE COUNT       58900016
+BTTA3ALC DC    AL3(0)             1030 ALL CHARACTERS ADDRESS           59000016
+BTTP3SLA DC    X'00'              1030 SELECTRIC ANALYZER USAGE COUNT   59100016
+BTTA3SLA DC    AL3(0)             1030 SELECTRIC ANALYZER ADDRESS       59200016
+         SPACE                                                          59300016
+BTTP2TLT DC    X'00'              2848 TILT PATTERN USAGE COUNT         59400016
+BTTA2TLT DC    AL3(0)             2848 TILT ADDRESS                     59500016
+BTTP2ROT DC    X'00'              2848 ROTATE PATTERN USAGE COUNT       59600016
+BTTA2ROT DC    AL3(0)             2848 ROTATE ADDRESS                   59700016
+BTTP2TWS DC    X'00'              2848 TWIST PATTERN USAGE COUNT        59800016
+BTTA2TWS DC    AL3(0)             2848 TWIST ADDRESS                    59900016
+BTTP2ALC DC    X'00'              2848 ALL CHARACTERS USAGE COUNT       60000016
+BTTA2ALC DC    AL3(0)             2848 ALL CHARACTERS ADDRESS           60100016
+*                                                                       60200016
+*                                                                       60300016
+*                                                                       60400016
+COMPDATA DC    X'15020407080B0D0E1013626467686B' STORED                 60500016
+         DC    X'6D6E7073434546494A4C4F51522526'       COMPARISON       60600016
+         DC    X'292A2C2F3132'                                   DATA   60700016
+*                                                                       60800016
+CMPVALD  DC    X'67494F012A466840235B1F' VALID COMPARE MESSG       000D 60900016
+         DS    0F                                                       60930020
+REGSAVE  DC    X'FA000074'             SUBPOOL 250 FOR...   LD @ZA02332 60940003
+*                                  SAVEAREA AND DUMMY DECB  LD @ZA02332 60950003
+MASKDB   DC    X'00FFFFFC'                                       A32477 60960020
+K4       DC    H'4'                                                     61000016
+DPREO    DC    X'163E4C'                                                61050018
+K8       DC    H'8'                                                     61100016
+ONE      DC    H'1'                                                     61200016
+SVCNAME  DC    C'IGC0006F'                                              61300016
+         SPACE                                                          61400016
+*                                                                       61500016
+         CNOP  0,8                                                      61600016
+         EJECT                                                          61700016
+         DCBD  DSORG=BX,DEVD=BS                                         61800016
+         IECTDECB                                                       61900016
+         IECTIOBX                                                       62000016
+         SPACE 2                                                   000M 62050019
+IOBNAME  EQU   IOBERCCW                                                 62100016
+IOBAREA  EQU   IOBNAME+8                                                62200016
+IOBPARM  EQU   IOBNAME+12                                               62300016
+RCOUNT   EQU   IOBWORK+5                                                62350018
+         IECTDEBX                                                       62400016
+         SPACE 3                                                        62500016
+UCBSTART DSECT                                                          62600016
+UCBDEVTP EQU   UCBSTART+16                                              62700016
+         EJECT                                                   YM4056 62750002
+         IKJTCB DSECT=YES,LIST=YES                               YM4056 62760002
+         EJECT                                                   YM4056 62770002
+CVT      DSECT                                                   YM4056 62780002
+         CVT   LIST=NO                                           YM4056 62790002
+         END                                                            62800016

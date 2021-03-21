@@ -1,0 +1,1589 @@
+         TITLE 'IEDSCPSS, SSCP SEND SCHEDULER                          *00001000
+                        '                                               00002000
+IEDSCPSS CSECT ,                                                   0001 00003000
+@PROLOG  DS    0H                                                  0002 00004000
+         USING *,RBASE                                                  00005000
+         DC    XL1'0A'              SEND SCHEDULER STCB FOR THE SSCP    00006000
+         DC    XL3'00'                                                  00007000
+         DC    XL1'40'                                                  00008000
+         DC    VL3(IEDSCPDS)        ADDR OF DEST SCHEDULER STCB         00009000
+*                                                                       00010000
+         LR    RBASE,RSTCB          SET UP BASE REGISTER                00011000
+         LA    RPARM,0(RPARM)       CLEAR HIGH-ORDER BYTE FOR COMPARE   00012000
+*                                                                       00013000
+IEDSCPSS IEDHJN  START,HJN                                              00014000
+         EJECT                                                          00015000
+*                                                                  0236 00016000
+*/********************************************************************/ 00017000
+*/*                                                                  */ 00018000
+*/*      M A I N   C O D E   S E G M E N T                           */ 00019000
+*/*                                                                  */ 00020000
+*/********************************************************************/ 00021000
+*                                                                  0236 00022000
+*   IF RPARM=SAVTSLCB THEN          /* INPUT = THE SSCP'S PERMANENTLY   00023000
+*                                      ASSIGNED PLCB?                */ 00024000
+         L     @15,AVTSAVTP(,IEDQAPTR)                             0236 00025000
+         C     RPARM,SAVTSLCB(,@15)                                0236 00026000
+         BNE   @RF00236                                            0236 00027000
+*     DO;                           /* YES                           */ 00028000
+*       RLCB=RPARM;                 /* PLCB ADDRESS                  */ 00029000
+         LR    RLCB,RPARM                                          0238 00030000
+*/*                                                                  */ 00031000
+*                                                                  0239 00032000
+*       IF SAVTSCPQ=0 THEN          /* IS THE SSCP'S DESTINATION   0239 00033000
+*                                      QUEUE CHAIN EMPTY?            */ 00034000
+         L     @15,SAVTSCPQ(,@15)                                  0239 00035000
+         LTR   @15,@15                                             0239 00036000
+         BNZ   @RF00239                                            0239 00037000
+*         CALL SHFTSTCB;            /* YES, SHIFT THE SEND SCHEDULER    00038000
+*                                      STCB FROM THE PLCB'S CHAIN  0240 00039000
+*                                      BACK INTO THE DEST QCB'S CHAIN   00040000
+*                                      AND SET UP TO BYPASS TO THE 0240 00041000
+*                                      RECEIVE SCHEDULER             */ 00042000
+         BAL   @14,SHFTSTCB                                        0240 00043000
+*       ELSE                                                       0241 00044000
+*         CALL SEND;                /* NO, REMOVE THE FIRST REQUEST     00045000
+*                                      FROM THE CHAIN, TPOST THE PLCB   00046000
+*                                      TO IEDQBD AND SET UP TO BYPASS   00047000
+*                                      TO THE STARTMH MODULE.        */ 00048000
+         B     @RC00239                                            0241 00049000
+@RF00239 BAL   @14,SEND                                            0241 00050000
+*     END;                                                         0242 00051000
+*                                                                  0242 00052000
+*/*                                                                  */ 00053000
+*                                                                  0243 00054000
+*   ELSE                            /* THE INPUT IS A REQUEST BUFFER */ 00055000
+*     RSTCB=STCBLINK;               /* SET UP TO BYPASS TO THE     0243 00056000
+*                                      DESTINATION SCHEDULER         */ 00057000
+         B     @RC00236                                            0243 00058000
+@RF00236 L     @15,STCBLINK-1(,RSTCB)                              0243 00059000
+         LA    @15,0(,@15)                                         0243 00060000
+         LR    RSTCB,@15                                           0243 00061000
+*/*                                                                  */ 00062000
+*                                                                  0244 00063000
+*   GO TO DSPBYPAS;                 /* BYPASS TO NEXT SUBTASK (RCV 0244 00064000
+*                                      SCHEDULER, DEST SCHEDULER OR     00065000
+*                                      STARTMH)                      */ 00066000
+@RC00236 LA    @15,DSPBYPAS(,RDISP)                                0244 00067000
+         BR    @15                                                 0244 00068000
+         EJECT                                                          00069000
+*                                                                  0245 00070000
+*/********************************************************************/ 00071000
+*/*                                                                  */ 00072000
+*/*      S E N D   SUBROUTINE                                        */ 00073000
+*/*                                                                  */ 00074000
+*/********************************************************************/ 00075000
+*/*                                                                  */ 00076000
+*/*      THIS SUBROUTINE REMOVES THE FIRST REQUEST FROM THE SSCP     */ 00077000
+*/*      DESTINATION QCB'S CHAIN, AND PREPARES TO SEND IT.  THE      */ 00078000
+*/*      PLCB IS TPOSTED TO IEDQBD TO BE CLEANED UP FOR THE NEXT     */ 00079000
+*/*      SEND OPERATION, AND THE PLCB, BUFFER AND REGISTERS ARE      */ 00080000
+*/*      SET UP TO BYPASS TO STARTMH TO SEND THIS REQUEST.           */ 00081000
+*/*                                                                  */ 00082000
+*/********************************************************************/ 00083000
+*                                                                  0245 00084000
+*SEND:                                                             0245 00085000
+*   PROC OPTIONS(NOSAVE,NOSAVEAREA);                               0245 00086000
+*                                                                  0245 00087000
+SEND     DS    0H                                                  0246 00088000
+*/*                                                                  */ 00089000
+*                                                                  0246 00090000
+*   RTRNADDR=RE;                    /* SAVE RETURN ADDRESS           */ 00091000
+         ST    RE,RTRNADDR(,IEDQAPTR)                              0246 00092000
+*/*                                                                  */ 00093000
+*                                                                  0247 00094000
+*                                   /* REMOVE 1ST REQUEST FROM QUEUE */ 00095000
+*   RPRF=SAVTSCPQ;                  /* ADDR OF REQUEST'S BUFFER      */ 00096000
+         L     @15,AVTSAVTP(,IEDQAPTR)                             0247 00097000
+         L     RPRF,SAVTSCPQ(,@15)                                 0247 00098000
+*   SAVTSCPQ=PRFLINK;               /* DELINK IT FROM THE CHAIN      */ 00099000
+         L     @10,PRFLINK-1(,IEDQPPTR)                            0248 00100000
+         LA    @10,0(,@10)                                         0248 00101000
+         ST    @10,SAVTSCPQ(,@15)                                  0248 00102000
+*/*                                                                  */ 00103000
+*                                                                  0249 00104000
+*                                   /* SET UP PLCB FOR THIS SEND     */ 00105000
+*   LCBSENDN=ON;                    /* MARK IT 'SENDING'             */ 00106000
+*   LCBRECVN=OFF;                   /* TURN OFF 'RECEIVING'          */ 00107000
+         OI    LCBSENDN(IEDQLPTR),B'00000001'                      0250 00108000
+         NI    LCBRECVN(IEDQLPTR),B'11111101'                      0250 00109000
+*   LCBTTCIN=PRFDEST;               /* DESTINATION'S TNT OFFSET      */ 00110000
+         LH    @15,PRFDEST(,IEDQPPTR)                              0251 00111000
+         STH   @15,LCBTTCIN(,IEDQLPTR)                             0251 00112000
+*   RPARM=LCBTTCIN;                 /* PASS INDEX AS PARM    @YM03696*/ 00113000
+         LR    RPARM,@15                                           0252 00114000
+*   CALL IEDQTNT;                   /* GET TRM ADDRESS       @YM03696*/ 00115000
+         L     @15,AVTRNMPT(,IEDQAPTR)                             0253 00116000
+         BALR  @14,@15                                             0253 00117000
+*   SCBDESTQ=RPARM->TRMDESTQ;       /* SET DEST QCB ADDRESS  @YM03696*/ 00118000
+         L     @15,LCBSCBA-1(,IEDQLPTR)                            0254 00119000
+         MVC   SCBDESTQ(3,@15),TRMDESTQ(RPARM)                     0254 00120000
+*/*                                                                  */ 00121000
+*                                                                  0255 00122000
+*                                   /* SET UP PLCB FOR TPOST TO DRIVE   00123000
+*                                      NEXT OPERATION                */ 00124000
+*   LCBQCBA=AVTMSGS->PTR31;         /* ADDR OF IEDQBD'S QCB          */ 00125000
+         L     @15,AVTMSGS-1(,IEDQAPTR)                            0255 00126000
+         MVC   LCBQCBA(3,IEDQLPTR),PTR31+1(@15)                    0255 00127000
+*   LCBPRI=PRILCB;                  /* SET SPECIAL CLEAN-UP PRIORITY */ 00128000
+         MVI   LCBPRI(IEDQLPTR),X'E7'                              0256 00129000
+*   LCBRCLLN=ON;                    /* NO BUFFERS TO FREE    @YM07396*/ 00130000
+         OI    LCBRCLLN(IEDQLPTR),B'10000000'                      0257 00131000
+*   RPARM=RLCB;                     /* ELEMENT ADDR FOR TPOST        */ 00132000
+         LR    RPARM,RLCB                                          0258 00133000
+*   CALL DSPPOSTR;                  /* TPOST PLCB TO IEDQBD          */ 00134000
+         LA    @15,DSPPOSTR(,RDISP)                                0259 00135000
+         BALR  @14,@15                                             0259 00136000
+*/*                                                                  */ 00137000
+*                                                                  0260 00138000
+*                                   /* FINISH BUFFER SETUP FOR MH    */ 00139000
+*   PRFLCB=RLCB;                    /* PLCB ADDRESS                  */ 00140000
+         STCM  RLCB,7,PRFLCB(IEDQPPTR)                             0260 00141000
+*   PRFQCBA=SAVTSSMH;               /* QCB ADDRESS                   */ 00142000
+         L     @15,AVTSAVTP(,IEDQAPTR)                             0261 00143000
+         L     @15,SAVTSSMH(,@15)                                  0261 00144000
+         STCM  @15,7,PRFQCBA(IEDQPPTR)                             0261 00145000
+*   PRFPRI=PRIMHBFR;                /* PRIORITY                      */ 00146000
+         MVI   PRFPRI(IEDQPPTR),X'E4'                              0262 00147000
+*/*                                                                  */ 00148000
+*                                                                  0263 00149000
+*                                   /* SET UP REGISTERS FOR BYPASS   */ 00150000
+*   RQCB=SAVTSSMH;                  /* ADDR OF STARTMH QCB FOR SSCP  */ 00151000
+         LR    RQCB,@15                                            0263 00152000
+*   RSTCB=STMHROUT;                 /* IEDQAA'S STCB ADDRESS         */ 00153000
+         L     RSTCB,STMHROUT-1(,RQCB)                             0264 00154000
+         LA    RSTCB,0(,RSTCB)                                     0264 00155000
+*   RPARM=RPRF;                     /* BUFFER ADDRESS                */ 00156000
+         LR    RPARM,RPRF                                          0265 00157000
+*/*                                                                  */ 00158000
+*                                                                  0266 00159000
+*   RE=RTRNADDR;                    /* RESTORE RETURN ADDRESS        */ 00160000
+         L     RE,RTRNADDR(,IEDQAPTR)                              0266 00161000
+*   END SEND;                       /* RETURN TO CALLER              */ 00162000
+@EL00002 DS    0H                                                  0267 00163000
+@EF00002 DS    0H                                                  0267 00164000
+@ER00002 BR    @14                                                 0267 00165000
+         EJECT                                                          00166000
+*                                                                  0268 00167000
+*/********************************************************************/ 00168000
+*/*                                                                  */ 00169000
+*/*      S H F T S T C B   SUBROUTINE                                */ 00170000
+*/*                                                                  */ 00171000
+*/********************************************************************/ 00172000
+*/*                                                                  */ 00173000
+*/*      THIS SUBROUTINE REMOVES THE SEND SCHEDULER STCB FROM THE    */ 00174000
+*/*      PLCB'S SUBTASK CHAIN AND SHIFTS IT BACK INTO THE DESTINATION*/ 00175000
+*/*      QCB'S SUBTASK CHAIN.                                        */ 00176000
+*/*                                                                  */ 00177000
+*/********************************************************************/ 00178000
+*                                                                  0268 00179000
+*SHFTSTCB:                                                         0268 00180000
+*   PROC OPTIONS(NOSAVE,NOSAVEAREA);                               0268 00181000
+*                                                                  0268 00182000
+SHFTSTCB DS    0H                                                  0269 00183000
+*/*                                                                  */ 00184000
+*                                                                  0269 00185000
+*   RTRNADDR=RE;                    /* SAVE RETURN ADDRESS           */ 00186000
+         ST    RE,RTRNADDR(,IEDQAPTR)                              0269 00187000
+*/*                                                                  */ 00188000
+*                                                                  0270 00189000
+*                                   /* SET UP REGISTERS FOR DSPUNAVR */ 00190000
+*   RQCBT=ADDR(SAVTSCPQ);           /* TARGET QCB ADDRESS (SOURCE QCB   00191000
+*                                      ADDRESS, RQCB, ALREADY SET UP    00192000
+*                                      TO ADDR OF SSCP'S PLCB)       */ 00193000
+         L     RQCBT,AVTSAVTP(,IEDQAPTR)                           0270 00194000
+         LA    RQCBT,SAVTSCPQ(,RQCBT)                              0270 00195000
+*   CALL DSPUNAVR;                  /* SHIFT THE SEND SCHEDULER STCB */ 00196000
+         LA    @15,DSPUNAVR(,RDISP)                                0271 00197000
+         BALR  @14,@15                                             0271 00198000
+*/*                                                                  */ 00199000
+*                                                                  0272 00200000
+*                                   /* SET UP REGISTERS FOR BYPASS TO   00201000
+*                                      RECEIVE SCHEDULER (THESE REGS    00202000
+*                                      WERE DESTROYED BY DSPUNAVR)   */ 00203000
+*   RPARM=RLCB;                     /* ELEMENT ADDRESS               */ 00204000
+         LR    RPARM,RLCB                                          0272 00205000
+*   RQCB=RLCB;                      /* QCB ADDRESS                   */ 00206000
+         LR    RQCB,RLCB                                           0273 00207000
+*   RSTCB=LCBSTCBA;                 /* STCB ADDRESS                  */ 00208000
+         L     RSTCB,LCBSTCBA-1(,IEDQLPTR)                         0274 00209000
+         LA    RSTCB,0(,RSTCB)                                     0274 00210000
+*/*                                                                  */ 00211000
+*                                                                  0275 00212000
+*   RE=RTRNADDR;                    /* RESTORE RETURN ADDRESS        */ 00213000
+         L     RE,RTRNADDR(,IEDQAPTR)                              0275 00214000
+*   END SHFTSTCB;                   /* RETURN TO CALLER              */ 00215000
+@EL00003 DS    0H                                                  0276 00216000
+@EF00003 DS    0H                                                  0276 00217000
+@ER00003 BR    @14                                                 0276 00218000
+         EJECT                                                          00219000
+*   END IEDSCPSS                                                   0277 00220000
+*                                                                  0277 00221000
+*/* THE FOLLOWING INCLUDE STATEMENTS WERE FOUND IN THIS PROGRAM.     */ 00222000
+*/*%INCLUDE SYSLIB  (TAVTD   )                                       */ 00223000
+*/*%INCLUDE SYSLIB  (TDISPD  )                                       */ 00224000
+*/*%INCLUDE SYSLIB  (TLCBD   )                                       */ 00225000
+*/*%INCLUDE SYSLIB  (TPRFD   )                                       */ 00226000
+*/*%INCLUDE SYSLIB  (TPRIOR  )                                       */ 00227000
+*/*%INCLUDE SYSLIB  (TQCBD   )                                       */ 00228000
+*/*%INCLUDE SYSLIB  (TSCBD   )                                       */ 00229000
+*/*%INCLUDE SYSLIB  (TSTCBD  )                                       */ 00230000
+*/*%INCLUDE SYSLIB  (TSTMHD  )                                       */ 00231000
+*/*%INCLUDE SYSLIB  (TTRMD   )                                       */ 00232000
+*                                                                  0277 00233000
+*       ;                                                          0277 00234000
+@DATA    DS    0H                                                       00235000
+         DS    0F                                                       00236000
+         DS    0F                                                       00237000
+         DS    0D                                                       00238000
+@00      EQU   00                      EQUATES FOR REGISTERS 0-15       00239000
+@01      EQU   01                                                       00240000
+@02      EQU   02                                                       00241000
+@03      EQU   03                                                       00242000
+@04      EQU   04                                                       00243000
+@05      EQU   05                                                       00244000
+@06      EQU   06                                                       00245000
+@07      EQU   07                                                       00246000
+@08      EQU   08                                                       00247000
+@09      EQU   09                                                       00248000
+@10      EQU   10                                                       00249000
+@11      EQU   11                                                       00250000
+@12      EQU   12                                                       00251000
+@13      EQU   13                                                       00252000
+@14      EQU   14                                                       00253000
+@15      EQU   15                                                       00254000
+IEDQAPTR EQU   @13                                                      00255000
+RDISP    EQU   @11                                                      00256000
+IEDQLPTR EQU   @04                                                      00257000
+LCBXPTR  EQU   @05                                                      00258000
+IEDQPPTR EQU   @06                                                      00259000
+IEDQQPTR EQU   @07                                                      00260000
+IEDQSPTR EQU   @03                                                      00261000
+IEDQTPTR EQU   @08                                                      00262000
+RSTCB    EQU   @03                                                      00263000
+RQCB     EQU   @07                                                      00264000
+RPARM    EQU   @01                                                      00265000
+RQCBT    EQU   @03                                                      00266000
+RLCB     EQU   @04                                                      00267000
+RPRF     EQU   @06                                                      00268000
+RBASE    EQU   @12                                                      00269000
+RAVT     EQU   @13                                                      00270000
+RE       EQU   @14                                                      00271000
+RF       EQU   @15                                                      00272000
+IEDQAVTD EQU   0                                                        00273000
+AVTSAVEX EQU   IEDQAVTD+216                                             00274000
+AVTDOUBL EQU   IEDQAVTD+272                                             00275000
+@NM00003 EQU   IEDQAVTD+316                                             00276000
+AVTCKFLG EQU   @NM00003                                                 00277000
+AVTBASE  EQU   IEDQAVTD+340                                             00278000
+AVTPKF   EQU   AVTBASE                                                  00279000
+AVTRNMPT EQU   IEDQAVTD+352                                             00280000
+AVTHG02  EQU   IEDQAVTD+456                                             00281000
+AVTDISP  EQU   IEDQAVTD+480                                             00282000
+AVTHD    EQU   IEDQAVTD+484                                             00283000
+AVTSCOPT EQU   AVTHD                                                    00284000
+AVTSAVTP EQU   IEDQAVTD+540                                             00285000
+AVTSAVTF EQU   AVTSAVTP                                                 00286000
+AVTCKPEL EQU   IEDQAVTD+580                                             00287000
+AVTCKRMV EQU   AVTCKPEL                                                 00288000
+AVTCKELF EQU   IEDQAVTD+608                                             00289000
+AVTCKBYT EQU   IEDQAVTD+619                                             00290000
+AVTHG01  EQU   IEDQAVTD+620                                             00291000
+AVTCKLNK EQU   IEDQAVTD+624                                             00292000
+AVTCRELE EQU   IEDQAVTD+636                                             00293000
+AVTCCELE EQU   AVTCRELE                                                 00294000
+AVTCLRHI EQU   IEDQAVTD+644                                             00295000
+AVTADBUF EQU   IEDQAVTD+648                                             00296000
+AVTSYSER EQU   IEDQAVTD+656                                             00297000
+AVTMSGS  EQU   IEDQAVTD+657                                             00298000
+AVTCKPQB EQU   IEDQAVTD+732                                             00299000
+AVTCKPTB EQU   AVTCKPQB                                                 00300000
+AVTCKPEC EQU   AVTCKPQB+4                                               00301000
+AVTCKPCC EQU   AVTCKPEC                                                 00302000
+AVTOPCQB EQU   IEDQAVTD+744                                             00303000
+AVTOPCOB EQU   AVTOPCQB                                                 00304000
+AVTOPCEC EQU   AVTOPCQB+4                                               00305000
+AVTOPCCC EQU   AVTOPCEC                                                 00306000
+AVTOLTQB EQU   IEDQAVTD+756                                             00307000
+AVTCWFL1 EQU   IEDQAVTD+852                                             00308000
+AVTCWFL2 EQU   IEDQAVTD+853                                             00309000
+AVTSUBT  EQU   IEDQAVTD+876                                             00310000
+AVTIOTR  EQU   IEDQAVTD+877                                             00311000
+AVTBIT1  EQU   IEDQAVTD+978                                             00312000
+AVTBIT2  EQU   IEDQAVTD+979                                             00313000
+AVTBIT3  EQU   IEDQAVTD+980                                             00314000
+AVTBIT4  EQU   IEDQAVTD+1064                                            00315000
+@NM00083 EQU   IEDQAVTD+1160                                            00316000
+IEDNSVTD EQU   0                                                        00317000
+SAVTDIAG EQU   IEDNSVTD                                                 00318000
+SAVTDIAF EQU   SAVTDIAG                                                 00319000
+SAVTLUSQ EQU   IEDNSVTD+88                                              00320000
+SAVTSLCB EQU   IEDNSVTD+104                                             00321000
+SAVTSCPQ EQU   IEDNSVTD+108                                             00322000
+SAVTSSMH EQU   IEDNSVTD+212                                             00323000
+SAVTTCPU EQU   IEDNSVTD+238                                             00324000
+SAVTZELM EQU   IEDNSVTD+270                                             00325000
+SAVTRDRV EQU   IEDNSVTD+284                                             00326000
+SAVTCKQB EQU   IEDNSVTD+300                                             00327000
+SAVTCKTB EQU   SAVTCKQB                                                 00328000
+SAVTCKEC EQU   SAVTCKQB+4                                               00329000
+SAVTCKCC EQU   SAVTCKEC                                                 00330000
+IEDQDISP EQU   0                                                        00331000
+DSPBYPAS EQU   20                                                       00332000
+DSPPOSTR EQU   28                                                       00333000
+DSPUNAVR EQU   44                                                       00334000
+IEDQLCB  EQU   0                                                        00335000
+LCBRCB   EQU   IEDQLCB                                                  00336000
+LCBQCBA  EQU   LCBRCB+1                                                 00337000
+LCBPRI   EQU   LCBRCB+4                                                 00338000
+LCBSTCBA EQU   IEDQLCB+9                                                00339000
+LCBTSOB  EQU   IEDQLCB+19                                               00340000
+LCBCHAIN EQU   IEDQLCB+20                                               00341000
+LCBSCRNN EQU   LCBCHAIN                                                 00342000
+LCBINSRC EQU   IEDQLCB+21                                               00343000
+LCBLKMDE EQU   LCBINSRC+2                                               00344000
+LCBNTXT  EQU   IEDQLCB+24                                               00345000
+LCBSTAT4 EQU   LCBNTXT                                                  00346000
+LCBPHASE EQU   LCBSTAT4                                                 00347000
+LCBSCBDA EQU   IEDQLCB+25                                               00348000
+LCBMHA   EQU   IEDQLCB+29                                               00349000
+LCBFLAG1 EQU   IEDQLCB+32                                               00350000
+LCBIOBSN EQU   IEDQLCB+33                                               00351000
+LCBSENS0 EQU   LCBIOBSN+1                                               00352000
+LCBLOSDT EQU   LCBSENS0                                                 00353000
+LCBTMOUT EQU   LCBSENS0                                                 00354000
+LCBFLAG3 EQU   LCBIOBSN+7                                               00355000
+LCBCSW   EQU   LCBIOBSN+8                                               00356000
+LCBCSWST EQU   LCBCSW+3                                                 00357000
+LCBCSWUS EQU   LCBCSWST                                                 00358000
+LCBCSWCS EQU   LCBCSWST+1                                               00359000
+LCBSIOCC EQU   LCBIOBSN+15                                              00360000
+LCBDCBPT EQU   IEDQLCB+52                                               00361000
+LCBRCQCB EQU   IEDQLCB+56                                               00362000
+LCBTHSQ  EQU   IEDQLCB+60                                               00363000
+LCBINCAM EQU   LCBTHSQ                                                  00364000
+LCBERRCT EQU   IEDQLCB+62                                               00365000
+LCBLSPCI EQU   IEDQLCB+65                                               00366000
+LCBRCBFR EQU   LCBLSPCI                                                 00367000
+LCBSTATE EQU   IEDQLCB+70                                               00368000
+LCBSTAT1 EQU   LCBSTATE                                                 00369000
+LCBRCLLN EQU   LCBSTAT1                                                 00370000
+LCBCTLMD EQU   LCBSTAT1                                                 00371000
+LCBRECVN EQU   LCBSTAT1                                                 00372000
+LCBSENDN EQU   LCBSTAT1                                                 00373000
+LCBSTAT2 EQU   LCBSTATE+1                                               00374000
+LCBSYNC  EQU   LCBSTAT2                                                 00375000
+LCBDIAL  EQU   LCBSTAT2                                                 00376000
+LCBTSTSW EQU   IEDQLCB+72                                               00377000
+LCBERB   EQU   IEDQLCB+76                                               00378000
+LCBERBST EQU   IEDQLCB+84                                               00379000
+LCBDLNKN EQU   LCBERBST                                                 00380000
+LCBERBCT EQU   IEDQLCB+88                                               00381000
+LCBRBCT2 EQU   LCBERBCT+1                                               00382000
+LCBTTCIN EQU   IEDQLCB+90                                               00383000
+LCBMSGFM EQU   IEDQLCB+92                                               00384000
+LCBSCBA  EQU   IEDQLCB+93                                               00385000
+LCBOBRCH EQU   IEDQLCB+96                                               00386000
+LCBINVPT EQU   LCBOBRCH+1                                               00387000
+LCBBFRW  EQU   LCBINVPT                                                 00388000
+LCBTPCD  EQU   IEDQLCB+100                                              00389000
+LCBSTAT5 EQU   LCBTPCD                                                  00390000
+LCBSTAT6 EQU   LCBTPCD+4                                                00391000
+LCBRSPSV EQU   LCBTPCD+8                                                00392000
+LCBSAVSN EQU   IEDQLCB+112                                              00393000
+LCBERCCW EQU   IEDQLCB+120                                              00394000
+LCBCPA   EQU   IEDQLCB+144                                              00395000
+IEDQLCBX EQU   0                                                        00396000
+LCBXCON  EQU   IEDQLCBX                                                 00397000
+LCBXFLAG EQU   LCBXCON                                                  00398000
+LCBXDCT  EQU   LCBXCON+1                                                00399000
+LCBXRADR EQU   LCBXCON+4                                                00400000
+IEDQPRF  EQU   0                                                        00401000
+PRFRCB   EQU   IEDQPRF                                                  00402000
+PRFKEY   EQU   PRFRCB                                                   00403000
+PRFQCBA  EQU   PRFRCB+1                                                 00404000
+PRFPRI   EQU   PRFRCB+4                                                 00405000
+PRFLINK  EQU   PRFRCB+5                                                 00406000
+PRFTIC   EQU   IEDQPRF+8                                                00407000
+PRFTICC  EQU   PRFTIC                                                   00408000
+PRFNBUNT EQU   IEDQPRF+12                                               00409000
+PRFSUNIT EQU   PRFNBUNT                                                 00410000
+PRFPLQCB EQU   PRFSUNIT                                                 00411000
+PRFLCB   EQU   IEDQPRF+13                                               00412000
+@NM00148 EQU   IEDQPRF+16                                               00413000
+PRFSVFFO EQU   @NM00148                                                 00414000
+PRFSTAT1 EQU   IEDQPRF+20                                               00415000
+PRFEOFN  EQU   PRFSTAT1                                                 00416000
+PRFCORE  EQU   IEDQPRF+21                                               00417000
+PRFXTRA  EQU   PRFCORE                                                  00418000
+PRFSCAN  EQU   IEDQPRF+24                                               00419000
+PRFTQBCK EQU   IEDQPRF+26                                               00420000
+PRFNTXT  EQU   PRFTQBCK                                                 00421000
+PRFEOBOF EQU   PRFNTXT                                                  00422000
+PRFCHDR  EQU   IEDQPRF+32                                               00423000
+PRFHQBCK EQU   IEDQPRF+35                                               00424000
+PRFDEST  EQU   IEDQPRF+40                                               00425000
+IEDPF1   EQU   0                                                        00426000
+PRF1FLG1 EQU   IEDPF1+3                                                 00427000
+PRF1WD2  EQU   IEDPF1+4                                                 00428000
+PRF1SEQP EQU   PRF1WD2                                                  00429000
+PRF1SQID EQU   PRF1SEQP                                                 00430000
+PRF1TAG1 EQU   PRF1SQID                                                 00431000
+IEDPF2   EQU   0                                                        00432000
+PRF2FLG2 EQU   IEDPF2                                                   00433000
+PRF2WD2  EQU   IEDPF2+4                                                 00434000
+IEDQQCB  EQU   0                                                        00435000
+QCBDSFLG EQU   IEDQQCB                                                  00436000
+QCBDISK  EQU   QCBDSFLG                                                 00437000
+QCBEOLDT EQU   IEDQQCB+16                                               00438000
+QCBBYTE1 EQU   QCBEOLDT+1                                               00439000
+QCBLKRLN EQU   IEDQQCB+18                                               00440000
+QCBRETCT EQU   QCBLKRLN                                                 00441000
+QCBSTAT  EQU   IEDQQCB+19                                               00442000
+QCBINSRC EQU   IEDQQCB+21                                               00443000
+@NM00156 EQU   QCBINSRC                                                 00444000
+QCBTSOF2 EQU   @NM00156+1                                               00445000
+QCBTSOF1 EQU   @NM00156+2                                               00446000
+QCBINTVL EQU   IEDQQCB+24                                               00447000
+QCBPREN  EQU   IEDQQCB+28                                               00448000
+QCBLKRRN EQU   QCBPREN+1                                                00449000
+QCBDCBAD EQU   IEDQQCB+33                                               00450000
+QCBFLAG  EQU   IEDQQCB+36                                               00451000
+IEDQPQCB EQU   0                                                        00452000
+QCBFHDLZ EQU   IEDQPQCB+3                                               00453000
+QCBPFEFO EQU   QCBFHDLZ+1                                               00454000
+QCBFHDTZ EQU   IEDQPQCB+6                                               00455000
+QCBINTLF EQU   IEDQPQCB+12                                              00456000
+IEDNQCB  EQU   0                                                        00457000
+QCBSTAT1 EQU   IEDNQCB+4                                                00458000
+QCBPLCBA EQU   IEDNQCB+5                                                00459000
+IEDQSCB  EQU   0                                                        00460000
+SCBSTATE EQU   IEDQSCB                                                  00461000
+SCBSEQIN EQU   SCBSTATE                                                 00462000
+SCBDESTQ EQU   IEDQSCB+1                                                00463000
+SCBRCVCT EQU   IEDQSCB+4                                                00464000
+SCBMBHEN EQU   IEDQSCB+5                                                00465000
+SCBBKFCT EQU   IEDQSCB+9                                                00466000
+SCBEOBSZ EQU   SCBBKFCT+1                                               00467000
+SCBSALEV EQU   IEDQSCB+12                                               00468000
+SCBQTYPE EQU   SCBSALEV                                                 00469000
+SCBERRST EQU   IEDQSCB+16                                               00470000
+SCBERR1  EQU   SCBERRST                                                 00471000
+SCBHDRRN EQU   SCBERR1                                                  00472000
+SCBORIGN EQU   SCBERR1                                                  00473000
+SCBNOTRM EQU   SCBERR1                                                  00474000
+SCBSEQHN EQU   SCBERR1                                                  00475000
+SCBSEQLN EQU   SCBERR1                                                  00476000
+SCBCUTFN EQU   SCBERR1                                                  00477000
+SCBERR2  EQU   SCBERRST+1                                               00478000
+SCBABRTN EQU   SCBERR2                                                  00479000
+SCBERR3  EQU   SCBERRST+2                                               00480000
+SCBLOSTN EQU   SCBERR3                                                  00481000
+SCBTMIDN EQU   SCBERR3                                                  00482000
+SCBFORMN EQU   SCBERR3                                                  00483000
+SCBATTN  EQU   SCBERR3                                                  00484000
+SCBXCEPN EQU   SCBERR3                                                  00485000
+SCBERR4  EQU   SCBERRST+3                                               00486000
+SCBTXTTN EQU   SCBERR4                                                  00487000
+SCBCTLUN EQU   SCBERR4                                                  00488000
+SCBCHANN EQU   SCBERR4                                                  00489000
+SCBDLPTR EQU   IEDQSCB+22                                               00490000
+SCBEOBAC EQU   SCBDLPTR                                                 00491000
+SCBCTBAC EQU   SCBEOBAC                                                 00492000
+SCBBSCFM EQU   IEDQSCB+24                                               00493000
+SCBDATEN EQU   SCBBSCFM                                                 00494000
+SCBITBSZ EQU   IEDQSCB+40                                               00495000
+SCBCTBSV EQU   SCBITBSZ                                                 00496000
+SCBDNSEG EQU   IEDQSCB+41                                               00497000
+SCBCLSEG EQU   IEDQSCB+45                                               00498000
+SCBITBAC EQU   IEDQSCB+48                                               00499000
+SCBCTBFL EQU   SCBITBAC                                                 00500000
+SCBBLKCT EQU   SCBCTBFL                                                 00501000
+SCBDCSEG EQU   IEDQSCB+49                                               00502000
+SCBSTAT1 EQU   IEDQSCB+60                                               00503000
+SCBCORE  EQU   IEDQSCB+61                                               00504000
+SCBSCAN  EQU   IEDQSCB+64                                               00505000
+SCBNTXT  EQU   IEDQSCB+66                                               00506000
+SCBCHDR  EQU   IEDQSCB+72                                               00507000
+SCBCCSEG EQU   IEDQSCB+75                                               00508000
+SCBEND   EQU   IEDQSCB+84                                               00509000
+IEDQSTCB EQU   0                                                        00510000
+STCBLINK EQU   IEDQSTCB+5                                               00511000
+IEDSTMH  EQU   0                                                        00512000
+STMHFLG2 EQU   IEDSTMH+4                                                00513000
+STMHAEIX EQU   IEDSTMH+12                                               00514000
+STMHROUT EQU   IEDSTMH+13                                               00515000
+STMHLMOP EQU   IEDSTMH+17                                               00516000
+IEDQTRM  EQU   0                                                        00517000
+TRMSTATE EQU   IEDQTRM                                                  00518000
+TRMLOG   EQU   TRMSTATE                                                 00519000
+TRMDESTQ EQU   IEDQTRM+1                                                00520000
+TRMINSEQ EQU   IEDQTRM+4                                                00521000
+TLISTCNT EQU   TRMINSEQ                                                 00522000
+TRMOUTSQ EQU   IEDQTRM+6                                                00523000
+TLISTEN  EQU   TRMOUTSQ                                                 00524000
+TRMDSORG EQU   TLISTEN                                                  00525000
+TRMALTD  EQU   IEDQTRM+8                                                00526000
+TRMDEVFL EQU   IEDQTRM+10                                               00527000
+TRMSTAT  EQU   IEDQTRM+12                                               00528000
+IEDNTRM  EQU   0                                                        00529000
+TRMBYTE4 EQU   IEDNTRM                                                  00530000
+TRMBYTE3 EQU   IEDNTRM+1                                                00531000
+TRMBYTE2 EQU   IEDNTRM+2                                                00532000
+TRMINPG  EQU   TRMBYTE2                                                 00533000
+TRMBYTE1 EQU   IEDNTRM+3                                                00534000
+TRMSCPRQ EQU   TRMBYTE1                                                 00535000
+TRMBYTE0 EQU   IEDNTRM+6                                                00536000
+TRMSIBPT EQU   IEDNTRM+7                                                00537000
+PTR31    EQU   0                                                        00538000
+IEDQTNT  EQU   0                                                        00539000
+DSPCHAIN EQU   12                                                       00540000
+DSPDISP  EQU   4                                                        00541000
+DSPLIFO  EQU   56                                                       00542000
+DSPLIFOR EQU   60                                                       00543000
+DSPLIST  EQU   8                                                        00544000
+DSPPOST  EQU   24                                                       00545000
+DSPPRIO  EQU   48                                                       00546000
+DSPPRIOR EQU   52                                                       00547000
+DSPTRACE EQU   64                                                       00548000
+DSPTSTQ  EQU   32                                                       00549000
+DSPTSTQR EQU   36                                                       00550000
+DSPUNAV  EQU   40                                                       00551000
+DSPWAIT  EQU   16                                                       00552000
+LCBRSPIN EQU   LCBIOBSN                                                 00553000
+LCBLUSNS EQU   LCBRSPIN+5                                               00554000
+LCBSCPRS EQU   LCBRSPIN+9                                               00555000
+LCBCSWU1 EQU   LCBSCPRS+2                                               00556000
+LCBRSPFG EQU   LCBRSPIN+15                                              00557000
+LCBCOREQ EQU   LCBTPCD                                                  00558000
+@NM00128 EQU   LCBCPA+40                                                00559000
+LCBQNXMN EQU   @NM00128                                                 00560000
+@NM00131 EQU   LCBERCCW                                                 00561000
+LCBCANCL EQU   LCBSAVSN                                                 00562000
+LCBCANFG EQU   LCBCANCL                                                 00563000
+TRMPRE1  EQU   TRMBYTE4                                                 00564000
+TRMPRE   EQU   TRMBYTE3                                                 00565000
+TRMNCP   EQU   TRMBYTE3                                                 00566000
+TRMPU    EQU   TRMBYTE3                                                 00567000
+TRMLU    EQU   TRMBYTE3                                                 00568000
+TRMLINK  EQU   TRMBYTE3                                                 00569000
+RTRNADDR EQU   AVTDOUBL                                                 00570000
+PRFSHDR  EQU   IEDQPRF+42                                               00571000
+SCBRGSAV EQU   SCBEND                                                   00572000
+TRMOPT   EQU   IEDQTRM+20                                               00573000
+         AGO   .@UNREFD                START UNREFERENCED COMPONENTS    00574000
+@NM00170 EQU   TRMLINK                                                  00575000
+TRMLSTAT EQU   TRMLINK                                                  00576000
+TRMLINT  EQU   TRMLINK                                                  00577000
+TRMEPMOD EQU   TRMLINK                                                  00578000
+TRMLULOG EQU   TRMLU                                                    00579000
+TRMINERR EQU   TRMLU                                                    00580000
+TRMLUREQ EQU   TRMLU                                                    00581000
+TRMSESRQ EQU   TRMLU                                                    00582000
+TRMTDIFF EQU   TRMLU                                                    00583000
+TRMLUTM  EQU   TRMLU                                                    00584000
+TRMLUIT  EQU   TRMLU                                                    00585000
+TRMAUTO  EQU   TRMLU                                                    00586000
+TRMPCONT EQU   TRMPU                                                    00587000
+@NM00169 EQU   TRMPU                                                    00588000
+TRMNCONT EQU   TRMNCP                                                   00589000
+TRMQUCKN EQU   TRMNCP                                                   00590000
+TRMSLOWN EQU   TRMNCP                                                   00591000
+TRMSYGEN EQU   TRMNCP                                                   00592000
+TRMNCPCL EQU   TRMNCP                                                   00593000
+TRMIPLDM EQU   TRMNCP                                                   00594000
+TRMINOUT EQU   TRMPRE                                                   00595000
+TRMRDOUT EQU   TRMPRE                                                   00596000
+TRMNLOUT EQU   TRMPRE                                                   00597000
+TRMWROUT EQU   TRMPRE                                                   00598000
+TRMASNXI EQU   TRMPRE                                                   00599000
+TRMSTMM  EQU   TRMPRE                                                   00600000
+TRMCMODE EQU   TRMPRE                                                   00601000
+TRMSTPND EQU   TRMPRE                                                   00602000
+TRMLYNCH EQU   TRMPRE1                                                  00603000
+TRMSPOUT EQU   TRMPRE1                                                  00604000
+TRMERLCK EQU   TRMPRE1                                                  00605000
+TRMQNPL  EQU   TRMPRE1                                                  00606000
+TRMSPACT EQU   TRMPRE1                                                  00607000
+TRMOCNI  EQU   TRMPRE1                                                  00608000
+TRMSESSN EQU   TRMPRE1                                                  00609000
+TRMCONT  EQU   TRMPRE1                                                  00610000
+@NM00136 EQU   LCBCANCL+3                                               00611000
+LCBCANTH EQU   LCBCANCL+1                                               00612000
+@NM00135 EQU   LCBCANFG                                                 00613000
+LCBCANCD EQU   LCBCANFG                                                 00614000
+@NM00134 EQU   LCBCANFG                                                 00615000
+LCBCANEB EQU   LCBCANFG                                                 00616000
+LCBCANXT EQU   LCBCANFG                                                 00617000
+LCBUNADD EQU   @NM00131+21                                              00618000
+LCBUASZE EQU   @NM00131+20                                              00619000
+LCBDSTEA EQU   @NM00131+16                                              00620000
+@NM00133 EQU   @NM00131+4                                               00621000
+LCBSTSAV EQU   @NM00131+1                                               00622000
+@NM00132 EQU   @NM00131                                                 00623000
+@NM00130 EQU   @NM00128+4                                               00624000
+LCBNCPPT EQU   @NM00128+1                                               00625000
+@NM00129 EQU   LCBQNXMN                                                 00626000
+LCBNX509 EQU   LCBQNXMN                                                 00627000
+LCBNX162 EQU   LCBQNXMN                                                 00628000
+LCBNX142 EQU   LCBQNXMN                                                 00629000
+LCBNX064 EQU   LCBQNXMN                                                 00630000
+LCBWRSCH EQU   LCBCOREQ+8                                               00631000
+LCBCQLNK EQU   LCBCOREQ+4                                               00632000
+LCBCQELE EQU   LCBCOREQ                                                 00633000
+LCBPAKCH EQU   LCBRSPIN+16                                              00634000
+@NM00127 EQU   LCBRSPFG                                                 00635000
+LCBRSRH  EQU   LCBRSPFG                                                 00636000
+LCBEXPI  EQU   LCBRSPFG                                                 00637000
+@NM00126 EQU   LCBRSPIN+12                                              00638000
+LCBUSUE1 EQU   LCBCSWU1                                                 00639000
+@NM00125 EQU   LCBCSWU1                                                 00640000
+@NM00124 EQU   LCBSCPRS+1                                               00641000
+LCBDFCMD EQU   LCBSCPRS                                                 00642000
+LCBUSER  EQU   LCBLUSNS+2                                               00643000
+LCBSMIN  EQU   LCBLUSNS+1                                               00644000
+LCBSMAJ  EQU   LCBLUSNS                                                 00645000
+LCBRHSV  EQU   LCBRSPIN+2                                               00646000
+LCBSNS0  EQU   LCBRSPIN+1                                               00647000
+@NM00123 EQU   LCBRSPIN                                                 00648000
+TRMSUBST EQU   IEDNTRM+12                                               00649000
+TRMTYPE  EQU   IEDNTRM+11                                               00650000
+TRMRLMCT EQU   IEDNTRM+10                                               00651000
+TRMCOHTG EQU   TRMSIBPT+1                                               00652000
+TRMGPCNT EQU   TRMSIBPT                                                 00653000
+TRMBUFRD EQU   TRMBYTE0                                                 00654000
+TRMSNA   EQU   TRMBYTE0                                                 00655000
+TRMGP    EQU   TRMBYTE0                                                 00656000
+TRMDIAL  EQU   TRMBYTE0                                                 00657000
+@NM00168 EQU   TRMBYTE0                                                 00658000
+TRMOUTPT EQU   TRMBYTE0                                                 00659000
+TRMINPUT EQU   TRMBYTE0                                                 00660000
+TRMUDEF  EQU   TRMBYTE0                                                 00661000
+TRMCOHRT EQU   IEDNTRM+4                                                00662000
+TRMSTOTE EQU   TRMBYTE1                                                 00663000
+TRMCKPRN EQU   TRMBYTE1                                                 00664000
+TRMTSATN EQU   TRMBYTE1                                                 00665000
+TRMTRACE EQU   TRMBYTE1                                                 00666000
+TRMSWBCK EQU   TRMBYTE1                                                 00667000
+TRMAUTOC EQU   TRMBYTE1                                                 00668000
+TRMINPTP EQU   TRMBYTE1                                                 00669000
+TRMWTNEG EQU   TRMSCPRQ                                                 00670000
+TRMWRBRK EQU   TRMBYTE2                                                 00671000
+TRMNOSND EQU   TRMBYTE2                                                 00672000
+TRMPREP  EQU   TRMBYTE2                                                 00673000
+TRMGPACT EQU   TRMBYTE2                                                 00674000
+TRMANDL  EQU   TRMBYTE2                                                 00675000
+TRMCLOSN EQU   TRMINPG                                                  00676000
+TRMREMB  EQU   TRMBYTE2                                                 00677000
+TRMRSACT EQU   TRMBYTE2                                                 00678000
+TRMOPTBL EQU   IEDQTRM+18                                               00679000
+TRMOPNO  EQU   IEDQTRM+17                                               00680000
+TRMCHCIN EQU   IEDQTRM+16                                               00681000
+TRMSENSE EQU   TRMSTAT+3                                                00682000
+TRMTEMPR EQU   TRMSTAT+2                                                00683000
+TRMSIO   EQU   TRMSTAT                                                  00684000
+@NM00167 EQU   TRMDEVFL+1                                               00685000
+TRMTPIN  EQU   TRMDEVFL+1                                               00686000
+TRMNCPI  EQU   TRMDEVFL+1                                               00687000
+TRMRNTRM EQU   TRMDEVFL+1                                               00688000
+@NM00166 EQU   TRMDEVFL+1                                               00689000
+TRMLMD   EQU   TRMDEVFL+1                                               00690000
+TRMCONC  EQU   TRMDEVFL+1                                               00691000
+TRMTSOB  EQU   TRMDEVFL                                                 00692000
+TRMBFDY  EQU   TRMDEVFL                                                 00693000
+TRMTBLK  EQU   TRMDEVFL                                                 00694000
+TRMSBLK  EQU   TRMDEVFL                                                 00695000
+TRMBLKS  EQU   TRMDEVFL                                                 00696000
+TRMADDC  EQU   TRMDEVFL                                                 00697000
+TRMDDIG  EQU   TRMDEVFL                                                 00698000
+TRMBUFS  EQU   TRMDEVFL                                                 00699000
+TRMPRILK EQU   TRMALTD                                                  00700000
+TRMLGB   EQU   TRMDSORG                                                 00701000
+TRMUTERM EQU   TLISTCNT                                                 00702000
+TRMSCNYN EQU   TRMSTATE                                                 00703000
+TRMOPTFN EQU   TRMSTATE                                                 00704000
+TRMHELDN EQU   TRMSTATE                                                 00705000
+TRMACPTN EQU   TRMSTATE                                                 00706000
+TRMPREF  EQU   TRMSTATE                                                 00707000
+TRMPROC  EQU   TRMLOG                                                   00708000
+TRMLIST  EQU   TRMLOG                                                   00709000
+TRMLINE  EQU   TRMSTATE                                                 00710000
+STMHOPT  EQU   IEDSTMH+18                                               00711000
+STMHCOPO EQU   STMHLMOP                                                 00712000
+STMHLOPO EQU   IEDSTMH+16                                               00713000
+STMHLMD  EQU   STMHAEIX                                                 00714000
+STMHLMDO EQU   STMHAEIX                                                 00715000
+@NM00165 EQU   STMHAEIX                                                 00716000
+STMHSTCB EQU   IEDSTMH+9                                                00717000
+STMHLENG EQU   IEDSTMH+8                                                00718000
+STMHTSO  EQU   IEDSTMH+5                                                00719000
+STMHTSFG EQU   STMHFLG2                                                 00720000
+STMHLOP  EQU   STMHFLG2                                                 00721000
+STMHLOG  EQU   STMHFLG2                                                 00722000
+STMHCOP  EQU   STMHFLG2                                                 00723000
+STMHCONV EQU   STMHFLG2                                                 00724000
+STMHSTC  EQU   STMHFLG2                                                 00725000
+STMHCONT EQU   STMHFLG2                                                 00726000
+STMHLCIN EQU   STMHFLG2                                                 00727000
+STMHALT  EQU   IEDSTMH                                                  00728000
+STCBPRI  EQU   IEDQSTCB+4                                               00729000
+STCBTCIN EQU   IEDQSTCB+2                                               00730000
+STCBINDX EQU   IEDQSTCB+1                                               00731000
+STCBVTO  EQU   IEDQSTCB                                                 00732000
+SCBTRANS EQU   IEDQSCB+81                                               00733000
+SCBUNTCT EQU   IEDQSCB+80                                               00734000
+SCBEOB   EQU   IEDQSCB+78                                               00735000
+SCBNXCPB EQU   SCBCCSEG                                                 00736000
+SCBNHDR  EQU   SCBCHDR                                                  00737000
+SCBCRCD  EQU   IEDQSCB+69                                               00738000
+SCBTQBCK EQU   SCBNTXT                                                  00739000
+SCBOSEQ  EQU   SCBSCAN                                                  00740000
+SCBXTRA  EQU   SCBCORE                                                  00741000
+SCBNOPST EQU   SCBSTAT1                                                 00742000
+SCBNIDLE EQU   SCBSTAT1                                                 00743000
+SCBCEND  EQU   SCBSTAT1                                                 00744000
+SCBCBGN  EQU   SCBSTAT1                                                 00745000
+SCBSIZE  EQU   IEDQSCB+58                                               00746000
+SCBSRCE  EQU   IEDQSCB+56                                               00747000
+SCBDEOB  EQU   IEDQSCB+52                                               00748000
+SCBFEFO  EQU   SCBDCSEG                                                 00749000
+SCBCTBND EQU   SCBBLKCT                                                 00750000
+SCBSCHDR EQU   SCBCLSEG                                                 00751000
+SCBHBFNO EQU   IEDQSCB+44                                               00752000
+SCBSCSEG EQU   SCBDNSEG                                                 00753000
+SCBBCTR  EQU   SCBCTBSV                                                 00754000
+SCBCCHDR EQU   IEDQSCB+37                                               00755000
+SCBDESTL EQU   IEDQSCB+36                                               00756000
+SCBDCHDR EQU   IEDQSCB+33                                               00757000
+SCBCPBNO EQU   IEDQSCB+32                                               00758000
+SCBMBSSA EQU   IEDQSCB+25                                               00759000
+SCBMLMTN EQU   SCBBSCFM                                                 00760000
+SCBNOEOT EQU   SCBBSCFM                                                 00761000
+@NM00164 EQU   SCBBSCFM                                                 00762000
+SCBNPDTR EQU   SCBDATEN                                                 00763000
+SCBCNTEN EQU   SCBBSCFM                                                 00764000
+SCBRCVTX EQU   SCBBSCFM                                                 00765000
+SCBNONTR EQU   SCBBSCFM                                                 00766000
+SCBTRNSP EQU   SCBBSCFM                                                 00767000
+SCBENDCR EQU   SCBCTBAC+1                                               00768000
+SCBCRLEN EQU   SCBCTBAC                                                 00769000
+SCBMRFSD EQU   IEDQSCB+20                                               00770000
+SCBUNDFN EQU   SCBERR4                                                  00771000
+SCBSTERN EQU   SCBCHANN                                                 00772000
+SCBCPMEN EQU   SCBCTLUN                                                 00773000
+@NM00163 EQU   SCBERR4                                                  00774000
+SCBTRMLN EQU   SCBERR4                                                  00775000
+SCBCONNN EQU   SCBERR4                                                  00776000
+SCBAPERR EQU   SCBTXTTN                                                 00777000
+SCBSLCTN EQU   SCBERR4                                                  00778000
+SCBPERRN EQU   SCBXCEPN                                                 00779000
+SCBTHRSN EQU   SCBATTN                                                  00780000
+SCBFIERN EQU   SCBFORMN                                                 00781000
+SCBUSERN EQU   SCBERR3                                                  00782000
+SCBSATTN EQU   SCBERR3                                                  00783000
+SCBTMINN EQU   SCBERR3                                                  00784000
+SCBXPD   EQU   SCBTMIDN                                                 00785000
+SCBXPI   EQU   SCBLOSTN                                                 00786000
+SCBSOHE  EQU   SCBERR2                                                  00787000
+SCBFRWDN EQU   SCBERR2                                                  00788000
+SCBRRJN  EQU   SCBABRTN                                                 00789000
+SCBOLTR  EQU   SCBERR2                                                  00790000
+SCBALN   EQU   SCBERR2                                                  00791000
+SCBCODER EQU   SCBERR2                                                  00792000
+SCBCRMAX EQU   SCBERR2                                                  00793000
+SCBCRMIN EQU   SCBERR2                                                  00794000
+SCBRVISL EQU   SCBCUTFN                                                 00795000
+SCBNOBFN EQU   SCBERR1                                                  00796000
+@NM00162 EQU   SCBERR1                                                  00797000
+SCBNOVAC EQU   SCBSEQLN                                                 00798000
+SCBNOTSO EQU   SCBSEQHN                                                 00799000
+SCBRVITX EQU   SCBNOTRM                                                 00800000
+SCBHANG  EQU   SCBORIGN                                                 00801000
+SCBNOLOG EQU   SCBHDRRN                                                 00802000
+SCBMRFPL EQU   IEDQSCB+13                                               00803000
+SCBBFMM  EQU   SCBQTYPE                                                 00804000
+SCBBBFTM EQU   SCBQTYPE                                                 00805000
+SCBNOFF  EQU   SCBQTYPE                                                 00806000
+SCBCONC  EQU   SCBQTYPE                                                 00807000
+SCBNREUS EQU   SCBQTYPE                                                 00808000
+SCBREUS  EQU   SCBQTYPE                                                 00809000
+SCBCOREQ EQU   SCBQTYPE                                                 00810000
+SCBNORCL EQU   SCBQTYPE                                                 00811000
+SCBCTBSZ EQU   SCBEOBSZ                                                 00812000
+@NM00161 EQU   SCBBKFCT                                                 00813000
+SCBPRI   EQU   IEDQSCB+8                                                00814000
+SCBMACR  EQU   SCBMBHEN                                                 00815000
+SCBSNDCT EQU   SCBRCVCT                                                 00816000
+SCBCODE  EQU   SCBSTATE                                                 00817000
+SCBPRER  EQU   SCBSTATE                                                 00818000
+SCBCKPT  EQU   SCBSTATE                                                 00819000
+SCBMSGLN EQU   SCBSTATE                                                 00820000
+SCBERSDS EQU   SCBSTATE                                                 00821000
+SCBLCK1N EQU   SCBSTATE                                                 00822000
+SCBMGFMN EQU   SCBSEQIN                                                 00823000
+SCBTRANP EQU   SCBSTATE                                                 00824000
+QCBTTCIN EQU   QCBPLCBA+1                                               00825000
+@NM00160 EQU   QCBPLCBA                                                 00826000
+@NM00159 EQU   QCBSTAT1                                                 00827000
+QCBFLUSH EQU   QCBSTAT1                                                 00828000
+QCBNDXRQ EQU   QCBSTAT1                                                 00829000
+QCBESIG  EQU   QCBSTAT1                                                 00830000
+QCBRCVRQ EQU   QCBSTAT1                                                 00831000
+QCBSNDRQ EQU   QCBSTAT1                                                 00832000
+QCBWAITC EQU   QCBSTAT1                                                 00833000
+QCBPLCBN EQU   QCBSTAT1                                                 00834000
+QCBCHAIN EQU   IEDNQCB                                                  00835000
+QCBPQBCK EQU   IEDQPQCB+25                                              00836000
+QCBPRIPQ EQU   IEDQPQCB+24                                              00837000
+QCBCFHDR EQU   IEDQPQCB+21                                              00838000
+QCBLFEFO EQU   IEDQPQCB+18                                              00839000
+QCBFFEFO EQU   IEDQPQCB+15                                              00840000
+QCBPREVF EQU   QCBINTLF                                                 00841000
+QCBINTFF EQU   IEDQPQCB+9                                               00842000
+QCBDATSQ EQU   QCBFHDTZ+1                                               00843000
+@NM00158 EQU   QCBFHDTZ                                                 00844000
+@NM00157 EQU   QCBPFEFO                                                 00845000
+QCBDATFL EQU   QCBFHDLZ                                                 00846000
+QCBDNHDR EQU   IEDQPQCB                                                 00847000
+QCBQBACK EQU   IEDQQCB+37                                               00848000
+QCBCKPT  EQU   QCBFLAG                                                  00849000
+QCBPROC  EQU   QCBFLAG                                                  00850000
+QCBSDFFO EQU   QCBFLAG                                                  00851000
+QCBTERMQ EQU   QCBFLAG                                                  00852000
+QCBRSRV  EQU   QCBFLAG                                                  00853000
+QCBREAD  EQU   QCBFLAG                                                  00854000
+QCBNOBRK EQU   QCBFLAG                                                  00855000
+QCBTSSES EQU   QCBFLAG                                                  00856000
+QCBLGBAD EQU   QCBDCBAD                                                 00857000
+QCBRELLN EQU   IEDQQCB+32                                               00858000
+QCBTJID  EQU   QCBLKRRN+1                                               00859000
+QCBCARCT EQU   QCBLKRRN                                                 00860000
+QCBPRLVL EQU   QCBPREN                                                  00861000
+QCBMSGCT EQU   IEDQQCB+26                                               00862000
+QCBEXTO  EQU   QCBINTVL                                                 00863000
+QCBDISC  EQU   QCBTSOF1                                                 00864000
+QCBDELAY EQU   QCBTSOF1                                                 00865000
+QCBPARTO EQU   QCBTSOF1                                                 00866000
+QCBSATRD EQU   QCBTSOF1                                                 00867000
+QCBNOBUF EQU   QCBTSOF1                                                 00868000
+QCBTPUT  EQU   QCBTSOF1                                                 00869000
+QCBTGET  EQU   QCBTSOF1                                                 00870000
+QCBWRBRK EQU   QCBTSOF1                                                 00871000
+QCBSATLC EQU   QCBTSOF2                                                 00872000
+QCBSATTI EQU   QCBTSOF2                                                 00873000
+QCBSATCH EQU   QCBTSOF2                                                 00874000
+QCBSIMRD EQU   QCBTSOF2                                                 00875000
+QCBDSSMI EQU   QCBTSOF2                                                 00876000
+QCBPOSTO EQU   QCBTSOF2                                                 00877000
+QCBBUFQ  EQU   QCBTSOF2                                                 00878000
+QCBINHBN EQU   QCBTSOF2                                                 00879000
+QCBSATCT EQU   @NM00156                                                 00880000
+QCBSCBOF EQU   IEDQQCB+20                                               00881000
+QCBTIME  EQU   QCBSTAT                                                  00882000
+QCBCLOCK EQU   QCBSTAT                                                  00883000
+QCBSCHDL EQU   QCBSTAT                                                  00884000
+QCBSMODE EQU   QCBSTAT                                                  00885000
+QCBSEND  EQU   QCBSTAT                                                  00886000
+QCBBUFRD EQU   QCBSTAT                                                  00887000
+QCBTRMHO EQU   QCBSTAT                                                  00888000
+QCBEOM   EQU   QCBSTAT                                                  00889000
+QCBHUCT  EQU   QCBRETCT                                                 00890000
+QCBIEND  EQU   QCBRETCT                                                 00891000
+QCBEND   EQU   QCBRETCT                                                 00892000
+QCBNL    EQU   QCBRETCT                                                 00893000
+QCBLOGCT EQU   QCBRETCT                                                 00894000
+@NM00155 EQU   QCBBYTE1                                                 00895000
+QCBRITRM EQU   QCBBYTE1                                                 00896000
+@NM00154 EQU   QCBEOLDT                                                 00897000
+QCBSLINK EQU   IEDQQCB+13                                               00898000
+QCBSTPRI EQU   IEDQQCB+12                                               00899000
+QCBSTCHN EQU   IEDQQCB+9                                                00900000
+QCBSTVTO EQU   IEDQQCB+8                                                00901000
+QCBLINK  EQU   IEDQQCB+5                                                00902000
+QCBPRI   EQU   IEDQQCB+4                                                00903000
+QCBELCHN EQU   IEDQQCB+1                                                00904000
+QCBHELD  EQU   QCBDSFLG                                                 00905000
+QCBFQCB  EQU   QCBDSFLG                                                 00906000
+QCBDRQQ  EQU   QCBDSFLG                                                 00907000
+QCBALTMH EQU   QCBDSFLG                                                 00908000
+QCBREUS  EQU   QCBDISK                                                  00909000
+QCBNREUS EQU   QCBDISK                                                  00910000
+QCBCORE  EQU   QCBDSFLG                                                 00911000
+QCBTSQ   EQU   QCBDSFLG                                                 00912000
+PRF2SEQP EQU   PRF2WD2                                                  00913000
+@NM00153 EQU   IEDPF2+1                                                 00914000
+@NM00152 EQU   PRF2FLG2                                                 00915000
+PRF2SMI  EQU   PRF2FLG2                                                 00916000
+PRF2FORM EQU   PRF2FLG2                                                 00917000
+PRF2TNTI EQU   PRF2FLG2                                                 00918000
+PRF1RULN EQU   PRF1SEQP+2                                               00919000
+PRF1TAG2 EQU   PRF1SQID+1                                               00920000
+@NM00151 EQU   PRF1TAG1                                                 00921000
+PRF1TAGS EQU   PRF1TAG1                                                 00922000
+@NM00150 EQU   PRF1FLG1                                                 00923000
+PRF1LOGD EQU   PRF1FLG1                                                 00924000
+PRF1USS  EQU   PRF1FLG1                                                 00925000
+PRF1FORM EQU   PRF1FLG1                                                 00926000
+PRF1EXPI EQU   PRF1FLG1                                                 00927000
+PRF1FIDI EQU   PRF1FLG1                                                 00928000
+PRF1RH   EQU   IEDPF1                                                   00929000
+PRFISEQ  EQU   IEDQPRF+38                                               00930000
+PRFSTXT  EQU   PRFHQBCK                                                 00931000
+PRFNHDR  EQU   PRFCHDR                                                  00932000
+PRFCRCD  EQU   IEDQPRF+29                                               00933000
+PRFSVSEQ EQU   PRFNTXT+1                                                00934000
+PRFSVPRI EQU   PRFEOBOF                                                 00935000
+PRFISIZE EQU   PRFSCAN+1                                                00936000
+@NM00149 EQU   PRFSCAN                                                  00937000
+PRFEOB   EQU   PRFXTRA+1                                                00938000
+PRFSTSO  EQU   PRFXTRA                                                  00939000
+PRFNHDRN EQU   PRFSTAT1                                                 00940000
+PRFNLSTN EQU   PRFSTAT1                                                 00941000
+PRFLOCK  EQU   PRFEOFN                                                  00942000
+PRFDUPLN EQU   PRFSTAT1                                                 00943000
+PRFTSMSG EQU   PRFSTAT1                                                 00944000
+PRFITCPN EQU   PRFSTAT1                                                 00945000
+PRFERMGN EQU   PRFSTAT1                                                 00946000
+PRFCNCLN EQU   PRFSTAT1                                                 00947000
+PRFSVFLG EQU   @NM00148+3                                               00948000
+PRFSIZE  EQU   PRFSVFFO+2                                               00949000
+PRFSRCE  EQU   PRFSVFFO                                                 00950000
+PRFPIUO  EQU   PRFPLQCB                                                 00951000
+PRFTI0   EQU   PRFTIC+1                                                 00952000
+@NM00147 EQU   PRFTICC                                                  00953000
+@NM00146 EQU   PRFTICC                                                  00954000
+@NM00145 EQU   PRFTICC                                                  00955000
+PRFTICON EQU   PRFTICC                                                  00956000
+@NM00144 EQU   PRFTICC                                                  00957000
+@NM00143 EQU   PRFTICC                                                  00958000
+PRFBFMM  EQU   PRFTICC                                                  00959000
+PRFEOMSG EQU   PRFTICC                                                  00960000
+PRFCOUNT EQU   PRFLINK+1                                                00961000
+@NM00142 EQU   PRFLINK                                                  00962000
+PRFFLAGS EQU   PRFPRI                                                   00963000
+PRFIOADR EQU   PRFQCBA                                                  00964000
+PRFOPCDE EQU   PRFKEY                                                   00965000
+LCBERADR EQU   LCBXRADR+1                                               00966000
+LCBPCIRC EQU   LCBXRADR                                                 00967000
+LCBDCT3  EQU   LCBXDCT+2                                                00968000
+LCBDCT2  EQU   LCBXDCT+1                                                00969000
+LCBDCT1  EQU   LCBXDCT                                                  00970000
+@NM00141 EQU   LCBXFLAG                                                 00971000
+LCBERPND EQU   LCBXFLAG                                                 00972000
+LCBSRCPF EQU   LCBXFLAG                                                 00973000
+LCBGPCTV EQU   LCBXFLAG                                                 00974000
+@NM00140 EQU   LCBXFLAG                                                 00975000
+@NM00139 EQU   LCBXFLAG                                                 00976000
+@NM00138 EQU   LCBXFLAG                                                 00977000
+@NM00137 EQU   LCBXFLAG                                                 00978000
+LCBCCW10 EQU   LCBCPA+72                                                00979000
+LCBCCW9  EQU   LCBCPA+64                                                00980000
+LCBCCW8  EQU   LCBCPA+56                                                00981000
+LCBCCW7  EQU   LCBCPA+48                                                00982000
+LCBCCW6  EQU   LCBCPA+40                                                00983000
+LCBCCW5  EQU   LCBCPA+32                                                00984000
+LCBCCW4  EQU   LCBCPA+24                                                00985000
+LCBCCW3  EQU   LCBCPA+16                                                00986000
+LCBCCW2  EQU   LCBCPA+8                                                 00987000
+LCBCCW1  EQU   LCBCPA                                                   00988000
+@NM00122 EQU   LCBERCCW                                                 00989000
+LCBCSWSV EQU   LCBSAVSN+1                                               00990000
+LCBSNSV  EQU   LCBSAVSN                                                 00991000
+LCBBFSNS EQU   LCBRSPSV                                                 00992000
+LCBWAITC EQU   LCBTPCD+5                                                00993000
+LCBINPAK EQU   LCBSTAT6                                                 00994000
+LCBMHBID EQU   LCBSTAT6                                                 00995000
+LCBRTRRO EQU   LCBSTAT6                                                 00996000
+LCBHDRPD EQU   LCBSTAT6                                                 00997000
+LCBCHN   EQU   LCBSTAT6                                                 00998000
+LCBBFRSV EQU   LCBTPCD+1                                                00999000
+@NM00121 EQU   LCBSTAT5                                                 01000000
+LCBLUS   EQU   LCBSTAT5                                                 01001000
+LCBLUNIT EQU   LCBSTAT5                                                 01002000
+LCBPERM  EQU   LCBSTAT5                                                 01003000
+LCBNXCMD EQU   LCBBFRW                                                  01004000
+LCBERMSK EQU   LCBOBRCH                                                 01005000
+LCBOLT   EQU   LCBMSGFM                                                 01006000
+LCBEOT   EQU   LCBMSGFM                                                 01007000
+LCBENQ   EQU   LCBMSGFM                                                 01008000
+LCBTTD   EQU   LCBMSGFM                                                 01009000
+LCBRSTRT EQU   LCBMSGFM                                                 01010000
+LCBVSTRT EQU   LCBMSGFM                                                 01011000
+LCBACKI  EQU   LCBMSGFM                                                 01012000
+LCBNAK   EQU   LCBMSGFM                                                 01013000
+@NM00120 EQU   LCBRBCT2                                                 01014000
+LCBDCNT  EQU   LCBRBCT2                                                 01015000
+LCBRBCT1 EQU   LCBERBCT                                                 01016000
+LCBERBCH EQU   IEDQLCB+85                                               01017000
+LCBCOMPL EQU   LCBDLNKN                                                 01018000
+LCBPRCPG EQU   LCBERBST                                                 01019000
+LCBERROR EQU   LCBERBST                                                 01020000
+@NM00119 EQU   LCBERBST                                                 01021000
+LCBINQ   EQU   LCBERBST                                                 01022000
+LCBRDERR EQU   LCBERBST                                                 01023000
+LCBEOMSG EQU   LCBERBST                                                 01024000
+LCBMSG   EQU   LCBERBST                                                 01025000
+LCBERBLK EQU   IEDQLCB+81                                               01026000
+LCBERBPY EQU   IEDQLCB+80                                               01027000
+LCBERBQB EQU   LCBERB+1                                                 01028000
+LCBERBKY EQU   LCBERB                                                   01029000
+LCBRECAD EQU   IEDQLCB+73                                               01030000
+@NM00118 EQU   LCBTSTSW                                                 01031000
+@NM00117 EQU   LCBTSTSW                                                 01032000
+@NM00116 EQU   LCBTSTSW                                                 01033000
+@NM00115 EQU   LCBTSTSW                                                 01034000
+@NM00114 EQU   LCBTSTSW                                                 01035000
+@NM00113 EQU   LCBTSTSW                                                 01036000
+@NM00112 EQU   LCBTSTSW                                                 01037000
+LCBCONCT EQU   LCBTSTSW                                                 01038000
+LCBRESP  EQU   LCBSTAT2                                                 01039000
+LCBBFRAV EQU   LCBDIAL                                                  01040000
+LCBATTN  EQU   LCBSYNC                                                  01041000
+LCBNEGRP EQU   LCBSTAT2                                                 01042000
+LCBSNDPR EQU   LCBSTAT2                                                 01043000
+LCBBEOTN EQU   LCBSTAT2                                                 01044000
+LCBMSGNN EQU   LCBSTAT2                                                 01045000
+LCBTRACE EQU   LCBSTAT2                                                 01046000
+LCBFREEN EQU   LCBSTAT1                                                 01047000
+LCBCONT  EQU   LCBSTAT1                                                 01048000
+LCBINITN EQU   LCBSTAT1                                                 01049000
+LCBOCNI  EQU   LCBSTAT1                                                 01050000
+LCBCVRSP EQU   LCBCTLMD                                                 01051000
+LCBRECOF EQU   IEDQLCB+68                                               01052000
+LCBRDBFR EQU   LCBRCBFR                                                 01053000
+LCBUCBX  EQU   IEDQLCB+64                                               01054000
+LCBTTBIN EQU   LCBERRCT                                                 01055000
+@NM00111 EQU   LCBINCAM                                                 01056000
+LCBGETMN EQU   LCBINCAM                                                 01057000
+LCBRESTR EQU   LCBRCQCB                                                 01058000
+LCBPCILK EQU   LCBDCBPT                                                 01059000
+LCBSTART EQU   LCBIOBSN+16                                              01060000
+LCBAP4OL EQU   LCBSIOCC                                                 01061000
+LCBAP3OL EQU   LCBSIOCC                                                 01062000
+LCBAP2OL EQU   LCBSIOCC                                                 01063000
+LCBAP1OL EQU   LCBSIOCC                                                 01064000
+LCBSIOC2 EQU   LCBSIOCC                                                 01065000
+LCBSIOC1 EQU   LCBSIOCC                                                 01066000
+@NM00110 EQU   LCBSIOCC                                                 01067000
+LCBCSWRC EQU   LCBCSW+5                                                 01068000
+LCBCSCHC EQU   LCBCSWCS                                                 01069000
+LCBCSICC EQU   LCBCSWCS                                                 01070000
+LCBCSCCC EQU   LCBCSWCS                                                 01071000
+LCBCSCDC EQU   LCBCSWCS                                                 01072000
+LCBCSPTC EQU   LCBCSWCS                                                 01073000
+LCBCSPGC EQU   LCBCSWCS                                                 01074000
+LCBCSIL  EQU   LCBCSWCS                                                 01075000
+LCBCSPCI EQU   LCBCSWCS                                                 01076000
+LCBUSUE  EQU   LCBCSWUS                                                 01077000
+LCBUSUC  EQU   LCBCSWUS                                                 01078000
+LCBUSDE  EQU   LCBCSWUS                                                 01079000
+LCBUSCE  EQU   LCBCSWUS                                                 01080000
+LCBUSBSY EQU   LCBCSWUS                                                 01081000
+LCBUSCUE EQU   LCBCSWUS                                                 01082000
+LCBUSSM  EQU   LCBCSWUS                                                 01083000
+LCBUSAT  EQU   LCBCSWUS                                                 01084000
+LCBCSWCA EQU   LCBCSW                                                   01085000
+LCBOBR   EQU   LCBFLAG3                                                 01086000
+LCBOBRRD EQU   LCBFLAG3                                                 01087000
+LCBIOMSG EQU   LCBFLAG3                                                 01088000
+LCBSOHC  EQU   LCBFLAG3                                                 01089000
+LCBRLAD  EQU   LCBFLAG3                                                 01090000
+LCBSOHR  EQU   LCBFLAG3                                                 01091000
+@NM00109 EQU   LCBFLAG3                                                 01092000
+LCBECBPT EQU   LCBIOBSN+4                                               01093000
+LCBECBCC EQU   LCBIOBSN+3                                               01094000
+LCBSENS1 EQU   LCBIOBSN+2                                               01095000
+LCBABORT EQU   LCBTMOUT                                                 01096000
+LCBNOTIN EQU   LCBLOSDT                                                 01097000
+LCBOVRUN EQU   LCBSENS0                                                 01098000
+LCBDATCK EQU   LCBSENS0                                                 01099000
+LCBEQUCK EQU   LCBSENS0                                                 01100000
+LCBBUSCK EQU   LCBSENS0                                                 01101000
+LCBINTRQ EQU   LCBSENS0                                                 01102000
+LCBCMDRJ EQU   LCBSENS0                                                 01103000
+LCBFLAG2 EQU   LCBIOBSN                                                 01104000
+@NM00108 EQU   LCBFLAG1                                                 01105000
+LCBUNREL EQU   LCBFLAG1                                                 01106000
+LCBEXCPN EQU   LCBFLAG1                                                 01107000
+@NM00107 EQU   LCBFLAG1                                                 01108000
+LCBERPIN EQU   LCBFLAG1                                                 01109000
+@NM00106 EQU   LCBFLAG1                                                 01110000
+LCBFSBFR EQU   LCBMHA                                                   01111000
+LCBISZE  EQU   IEDQLCB+28                                               01112000
+LCBLNENT EQU   LCBSCBDA+1                                               01113000
+@NM00105 EQU   LCBSCBDA                                                 01114000
+LCBCPGMH EQU   LCBSTAT4                                                 01115000
+LCBREAL  EQU   LCBPHASE                                                 01116000
+LCBINOP  EQU   LCBSTAT4                                                 01117000
+LCBACTRQ EQU   LCBSTAT4                                                 01118000
+LCBIPLRQ EQU   LCBSTAT4                                                 01119000
+LCBDACRQ EQU   LCBSTAT4                                                 01120000
+LCBDMPRQ EQU   LCBSTAT4                                                 01121000
+@NM00104 EQU   LCBLKMDE                                                 01122000
+LCBLOCKI EQU   LCBLKMDE                                                 01123000
+LCBLOCKR EQU   LCBLKMDE                                                 01124000
+LCBHMFLG EQU   LCBLKMDE                                                 01125000
+LCBBDFLG EQU   LCBLKMDE                                                 01126000
+@NM00103 EQU   LCBINSRC                                                 01127000
+LCBABRTN EQU   LCBCHAIN                                                 01128000
+LCBTETEN EQU   LCBCHAIN                                                 01129000
+LCBBFRSZ EQU   LCBCHAIN                                                 01130000
+LCBUREQN EQU   LCBCHAIN                                                 01131000
+LCBNORTY EQU   LCBCHAIN                                                 01132000
+LCBERMSG EQU   LCBCHAIN                                                 01133000
+LCBEXCP  EQU   LCBCHAIN                                                 01134000
+LCBINVRQ EQU   LCBSCRNN                                                 01135000
+LCB2741N EQU   LCBTSOB                                                  01136000
+LCBINHBN EQU   LCBTSOB                                                  01137000
+LCBCIRCD EQU   LCBTSOB                                                  01138000
+LCBPREP  EQU   LCBTSOB                                                  01139000
+LCBSOPL  EQU   LCBTSOB                                                  01140000
+LCBSATRD EQU   LCBTSOB                                                  01141000
+LCBTSBUF EQU   LCBTSOB                                                  01142000
+LCBWRBRK EQU   LCBTSOB                                                  01143000
+LCBTDL   EQU   IEDQLCB+18                                               01144000
+LCBEOLTD EQU   IEDQLCB+16                                               01145000
+LCBRSLNK EQU   IEDQLCB+13                                               01146000
+LCBRSPRI EQU   IEDQLCB+12                                               01147000
+LCBRSKEY EQU   IEDQLCB+8                                                01148000
+LCBLINK  EQU   LCBRCB+5                                                 01149000
+LCBKEY   EQU   LCBRCB                                                   01150000
+SAVTBITN EQU   IEDNSVTD+312                                             01151000
+@NM00102 EQU   SAVTCKQB+8                                               01152000
+@NM00101 EQU   SAVTCKEC+1                                               01153000
+@NM00100 EQU   SAVTCKCC                                                 01154000
+SAVTCKPO EQU   SAVTCKCC                                                 01155000
+SAVTCKWA EQU   SAVTCKCC                                                 01156000
+SAVTCKCH EQU   SAVTCKTB+1                                               01157000
+SAVTCKVT EQU   SAVTCKTB                                                 01158000
+@NM00099 EQU   IEDNSVTD+297                                             01159000
+SAVTRDFG EQU   SAVTRDRV+12                                              01160000
+@NM00098 EQU   SAVTRDRV+5                                               01161000
+SAVTRDPY EQU   SAVTRDRV+4                                               01162000
+SAVTRDQB EQU   SAVTRDRV+1                                               01163000
+SAVTRDKY EQU   SAVTRDRV                                                 01164000
+SAVTNID  EQU   IEDNSVTD+280                                             01165000
+SAVTDVAS EQU   IEDNSVTD+276                                             01166000
+SAVTPLSZ EQU   IEDNSVTD+274                                             01167000
+@NM00097 EQU   IEDNSVTD+273                                             01168000
+SAVTSUBL EQU   IEDNSVTD+272                                             01169000
+@NM00096 EQU   SAVTZELM+1                                               01170000
+SAVTSUBM EQU   SAVTZELM                                                 01171000
+SAVTMHDX EQU   IEDNSVTD+268                                             01172000
+SAVTNAT1 EQU   IEDNSVTD+266                                             01173000
+SAVTSH20 EQU   IEDNSVTD+264                                             01174000
+SAVTLCBS EQU   IEDNSVTD+260                                             01175000
+SAVTRNMP EQU   IEDNSVTD+256                                             01176000
+SAVTTNTX EQU   IEDNSVTD+252                                             01177000
+SAVTNAX  EQU   IEDNSVTD+248                                             01178000
+SAVTSUBV EQU   IEDNSVTD+247                                             01179000
+SAVTSUBA EQU   IEDNSVTD+246                                             01180000
+SAVTSIBC EQU   IEDNSVTD+244                                             01181000
+SAVTBSM  EQU   IEDNSVTD+240                                             01182000
+SAVTSCPT EQU   SAVTTCPU                                                 01183000
+SAVTRQTG EQU   IEDNSVTD+236                                             01184000
+SAVTRQCH EQU   IEDNSVTD+232                                             01185000
+SAVTMAND EQU   IEDNSVTD+228                                             01186000
+SAVTSPLN EQU   IEDNSVTD+224                                             01187000
+SAVTNADL EQU   IEDNSVTD+222                                             01188000
+SAVTNATL EQU   IEDNSVTD+220                                             01189000
+SAVTMHTB EQU   IEDNSVTD+216                                             01190000
+SAVTQRS  EQU   IEDNSVTD+208                                             01191000
+SAVTRQIN EQU   IEDNSVTD+204                                             01192000
+SAVTDFCO EQU   IEDNSVTD+200                                             01193000
+SAVTSAO  EQU   IEDNSVTD+196                                             01194000
+SAVTSARI EQU   IEDNSVTD+192                                             01195000
+SAVTSAC  EQU   IEDNSVTD+188                                             01196000
+SAVTSAI  EQU   IEDNSVTD+184                                             01197000
+SAVTCSCI EQU   IEDNSVTD+180                                             01198000
+SAVTSSRP EQU   IEDNSVTD+176                                             01199000
+SAVTSSRQ EQU   IEDNSVTD+172                                             01200000
+SAVTSCLU EQU   IEDNSVTD+168                                             01201000
+SAVTXTRQ EQU   IEDNSVTD+164                                             01202000
+SAVTMVBF EQU   IEDNSVTD+160                                             01203000
+@NM00095 EQU   IEDNSVTD+148                                             01204000
+SAVTIPCQ EQU   IEDNSVTD+144                                             01205000
+@NM00094 EQU   IEDNSVTD+136                                             01206000
+SAVTXFMI EQU   IEDNSVTD+132                                             01207000
+@NM00093 EQU   IEDNSVTD+124                                             01208000
+SAVTXFMO EQU   IEDNSVTD+120                                             01209000
+@NM00092 EQU   IEDNSVTD+116                                             01210000
+SAVTSSSR EQU   IEDNSVTD+112                                             01211000
+SAVTLUSR EQU   IEDNSVTD+100                                             01212000
+@NM00091 EQU   SAVTLUSQ+8                                               01213000
+SAVTLUSP EQU   SAVTLUSQ+4                                               01214000
+SAVTLUSB EQU   SAVTLUSQ                                                 01215000
+@NM00090 EQU   IEDNSVTD+84                                              01216000
+SAVTSAT  EQU   IEDNSVTD+80                                              01217000
+SAVTNAT  EQU   IEDNSVTD+76                                              01218000
+SAVTCLUP EQU   IEDNSVTD+72                                              01219000
+SAVTPIUT EQU   IEDNSVTD+68                                              01220000
+SAVTRNTA EQU   IEDNSVTD+64                                              01221000
+SAVTDNIR EQU   IEDNSVTD+60                                              01222000
+SAVTCNIR EQU   IEDNSVTD+56                                              01223000
+SAVTFLDH EQU   IEDNSVTD+52                                              01224000
+SAVTSRTN EQU   IEDNSVTD+48                                              01225000
+SAVTSREQ EQU   IEDNSVTD+44                                              01226000
+SAVTFAIL EQU   IEDNSVTD+42                                              01227000
+SAVTSUSE EQU   IEDNSVTD+40                                              01228000
+SAVTSIB  EQU   IEDNSVTD+36                                              01229000
+SAVTPRTN EQU   IEDNSVTD+32                                              01230000
+@NM00089 EQU   IEDNSVTD+28                                              01231000
+SAVTWH20 EQU   IEDNSVTD+26                                              01232000
+SAVTPWT  EQU   IEDNSVTD+24                                              01233000
+SAVTPRTQ EQU   IEDNSVTD+20                                              01234000
+SAVTPREQ EQU   IEDNSVTD+16                                              01235000
+SAVTPH20 EQU   IEDNSVTD+14                                              01236000
+SAVTPUSE EQU   IEDNSVTD+12                                              01237000
+SAVTPLCB EQU   IEDNSVTD+8                                               01238000
+SAVTPOOL EQU   IEDNSVTD+4                                               01239000
+SAVTPRMT EQU   SAVTDIAF                                                 01240000
+SAVTVIRT EQU   SAVTDIAF                                                 01241000
+AVTCPBNO EQU   IEDQAVTD+1172                                            01242000
+AVTHRESS EQU   IEDQAVTD+1171                                            01243000
+@NM00088 EQU   IEDQAVTD+1170                                            01244000
+@NM00087 EQU   IEDQAVTD+1169                                            01245000
+@NM00086 EQU   IEDQAVTD+1168                                            01246000
+@NM00085 EQU   IEDQAVTD+1165                                            01247000
+@NM00084 EQU   IEDQAVTD+1164                                            01248000
+AVTHRESE EQU   @NM00083                                                 01249000
+AVTRADDR EQU   IEDQAVTD+1156                                            01250000
+AVTNADDR EQU   IEDQAVTD+1152                                            01251000
+AVTHRESN EQU   IEDQAVTD+1148                                            01252000
+AVTVOLRN EQU   IEDQAVTD+1144                                            01253000
+AVTTOTNN EQU   IEDQAVTD+1140                                            01254000
+AVTTRCYN EQU   IEDQAVTD+1136                                            01255000
+AVTRCTRN EQU   IEDQAVTD+1132                                            01256000
+AVTNOVON EQU   IEDQAVTD+1128                                            01257000
+AVTADEBN EQU   IEDQAVTD+1124                                            01258000
+AVTVOLRR EQU   IEDQAVTD+1120                                            01259000
+AVTTOTNR EQU   IEDQAVTD+1116                                            01260000
+AVTTRCYR EQU   IEDQAVTD+1112                                            01261000
+AVTRCTRR EQU   IEDQAVTD+1108                                            01262000
+AVTNOVOR EQU   IEDQAVTD+1104                                            01263000
+AVTADEBR EQU   IEDQAVTD+1100                                            01264000
+AVTLODPT EQU   IEDQAVTD+1096                                            01265000
+AVTIOBN  EQU   IEDQAVTD+1092                                            01266000
+AVTIOBR  EQU   IEDQAVTD+1088                                            01267000
+AVTCPBPT EQU   IEDQAVTD+1084                                            01268000
+AVTFCPB  EQU   IEDQAVTD+1080                                            01269000
+@NM00082 EQU   IEDQAVTD+1076                                            01270000
+AVTINCPQ EQU   IEDQAVTD+1072                                            01271000
+@NM00081 EQU   IEDQAVTD+1068                                            01272000
+@NM00080 EQU   IEDQAVTD+1065                                            01273000
+@NM00079 EQU   AVTBIT4                                                  01274000
+@NM00078 EQU   AVTBIT4                                                  01275000
+@NM00077 EQU   AVTBIT4                                                  01276000
+@NM00076 EQU   AVTBIT4                                                  01277000
+@NM00075 EQU   AVTBIT4                                                  01278000
+@NM00074 EQU   AVTBIT4                                                  01279000
+@NM00073 EQU   AVTBIT4                                                  01280000
+AVTRUFTN EQU   AVTBIT4                                                  01281000
+@NM00072 EQU   IEDQAVTD+1060                                            01282000
+AVTNOBFQ EQU   IEDQAVTD+1056                                            01283000
+@NM00071 EQU   IEDQAVTD+1052                                            01284000
+AVTDKENQ EQU   IEDQAVTD+1048                                            01285000
+@NM00070 EQU   IEDQAVTD+1044                                            01286000
+AVTDKAPQ EQU   IEDQAVTD+1040                                            01287000
+AVTCOPY  EQU   IEDQAVTD+1036                                            01288000
+AVTIA    EQU   IEDQAVTD+1032                                            01289000
+AVTFL    EQU   IEDQAVTD+1028                                            01290000
+@NM00069 EQU   IEDQAVTD+1024                                            01291000
+AVTNCPBQ EQU   IEDQAVTD+1020                                            01292000
+AVTTOTNC EQU   IEDQAVTD+1016                                            01293000
+AVTCMAX  EQU   IEDQAVTD+1012                                            01294000
+AVTCMIN  EQU   IEDQAVTD+1008                                            01295000
+AVTHM02  EQU   IEDQAVTD+1004                                            01296000
+AVTOPCIN EQU   IEDQAVTD+1002                                            01297000
+AVTDCTLN EQU   IEDQAVTD+1000                                            01298000
+AVTOPMSK EQU   IEDQAVTD+996                                             01299000
+AVTDDFT  EQU   IEDQAVTD+992                                             01300000
+AVTSTEAL EQU   IEDQAVTD+988                                             01301000
+AVTOPTN  EQU   IEDQAVTD+984                                             01302000
+AVTDSKCT EQU   IEDQAVTD+982                                             01303000
+AVTCKRST EQU   IEDQAVTD+981                                             01304000
+AVTSTAN  EQU   AVTBIT3                                                  01305000
+AVTSTACN EQU   AVTBIT3                                                  01306000
+AVTSTAIN EQU   AVTBIT3                                                  01307000
+AVTSTAYN EQU   AVTBIT3                                                  01308000
+AVTOLTBN EQU   AVTBIT3                                                  01309000
+AVTTSAB  EQU   AVTBIT3                                                  01310000
+AVTRFULN EQU   AVTBIT3                                                  01311000
+AVTRECVN EQU   AVTBIT3                                                  01312000
+@NM00068 EQU   AVTBIT2                                                  01313000
+@NM00067 EQU   AVTBIT2                                                  01314000
+AVTOPEIN EQU   AVTBIT2                                                  01315000
+AVTSTRTN EQU   AVTBIT2                                                  01316000
+AVTTOPOL EQU   AVTBIT2                                                  01317000
+AVTCOPYN EQU   AVTBIT2                                                  01318000
+AVTREUSN EQU   AVTBIT2                                                  01319000
+AVTEXTSC EQU   AVTBIT2                                                  01320000
+AVTDISKN EQU   AVTBIT1                                                  01321000
+AVTQUCKN EQU   AVTBIT1                                                  01322000
+AVTCLOSN EQU   AVTBIT1                                                  01323000
+AVTREADN EQU   AVTBIT1                                                  01324000
+AVTDLAYN EQU   AVTBIT1                                                  01325000
+AVTAQTAN EQU   AVTBIT1                                                  01326000
+AVTTSON  EQU   AVTBIT1                                                  01327000
+AVTAPLKN EQU   AVTBIT1                                                  01328000
+AVTDUMBR EQU   IEDQAVTD+976                                             01329000
+AVTDLQX  EQU   IEDQAVTD+974                                             01330000
+AVTINTLV EQU   IEDQAVTD+972                                             01331000
+AVTSMCNT EQU   IEDQAVTD+970                                             01332000
+AVTAVFCT EQU   IEDQAVTD+968                                             01333000
+AVTOPCON EQU   IEDQAVTD+966                                             01334000
+AVTOPCNT EQU   IEDQAVTD+964                                             01335000
+AVTLNCNT EQU   IEDQAVTD+962                                             01336000
+AVTKEYLE EQU   IEDQAVTD+960                                             01337000
+AVTHA16  EQU   IEDQAVTD+958                                             01338000
+AVTHA7   EQU   IEDQAVTD+956                                             01339000
+AVTHA4   EQU   IEDQAVTD+954                                             01340000
+AVTHA3   EQU   IEDQAVTD+952                                             01341000
+AVTHA2   EQU   IEDQAVTD+950                                             01342000
+AVTGETMS EQU   IEDQAVTD+949                                             01343000
+@NM00066 EQU   IEDQAVTD+948                                             01344000
+AVTGETMD EQU   IEDQAVTD+944                                             01345000
+AVTGETMN EQU   IEDQAVTD+940                                             01346000
+AVTCWTOT EQU   IEDQAVTD+936                                             01347000
+AVTCWINT EQU   IEDQAVTD+884                                             01348000
+AVTDTRAP EQU   IEDQAVTD+880                                             01349000
+@NM00065 EQU   IEDQAVTD+878                                             01350000
+@NM00064 EQU   AVTIOTR                                                  01351000
+AVTIOTRH EQU   AVTIOTR                                                  01352000
+AVTIOTRE EQU   AVTIOTR                                                  01353000
+@NM00063 EQU   AVTSUBT                                                  01354000
+AVTSUBPT EQU   AVTSUBT                                                  01355000
+AVTSUBON EQU   AVTSUBT                                                  01356000
+AVTAFE30 EQU   IEDQAVTD+872                                             01357000
+AVTAFE20 EQU   IEDQAVTD+868                                             01358000
+AVTAFE10 EQU   IEDQAVTD+864                                             01359000
+AVTCWEC2 EQU   IEDQAVTD+860                                             01360000
+AVTCWPM2 EQU   IEDQAVTD+856                                             01361000
+AVTCWTS2 EQU   IEDQAVTD+855                                             01362000
+AVTCWTS1 EQU   IEDQAVTD+854                                             01363000
+AVTCWCLD EQU   AVTCWFL2                                                 01364000
+AVTCWRAP EQU   AVTCWFL2                                                 01365000
+@NM00062 EQU   AVTCWFL2                                                 01366000
+@NM00061 EQU   AVTCWFL2                                                 01367000
+@NM00060 EQU   AVTCWFL2                                                 01368000
+@NM00059 EQU   AVTCWFL2                                                 01369000
+@NM00058 EQU   AVTCWFL2                                                 01370000
+AVTCWACT EQU   AVTCWFL2                                                 01371000
+@NM00057 EQU   AVTCWFL1                                                 01372000
+@NM00056 EQU   AVTCWFL1                                                 01373000
+@NM00055 EQU   AVTCWFL1                                                 01374000
+@NM00054 EQU   AVTCWFL1                                                 01375000
+@NM00053 EQU   AVTCWFL1                                                 01376000
+@NM00052 EQU   AVTCWFL1                                                 01377000
+@NM00051 EQU   AVTCWFL1                                                 01378000
+AVTCOMWN EQU   AVTCWFL1                                                 01379000
+AVTCWEC1 EQU   IEDQAVTD+848                                             01380000
+AVTCWPM1 EQU   IEDQAVTD+844                                             01381000
+AVTCAREA EQU   IEDQAVTD+840                                             01382000
+AVTFZERO EQU   IEDQAVTD+836                                             01383000
+AVTCADDR EQU   IEDQAVTD+832                                             01384000
+AVTCOREC EQU   IEDQAVTD+828                                             01385000
+@NM00050 EQU   IEDQAVTD+820                                             01386000
+AVTCPBCB EQU   IEDQAVTD+816                                             01387000
+@NM00049 EQU   IEDQAVTD+808                                             01388000
+AVTDSIOB EQU   IEDQAVTD+804                                             01389000
+@NM00048 EQU   IEDQAVTD+796                                             01390000
+AVTCPRMB EQU   IEDQAVTD+792                                             01391000
+@NM00047 EQU   IEDQAVTD+784                                             01392000
+AVTCLOSB EQU   IEDQAVTD+780                                             01393000
+@NM00046 EQU   IEDQAVTD+772                                             01394000
+AVTACTIB EQU   IEDQAVTD+768                                             01395000
+@NM00045 EQU   IEDQAVTD+764                                             01396000
+AVTOLTEB EQU   IEDQAVTD+760                                             01397000
+AVTOLTCH EQU   AVTOLTQB+1                                               01398000
+AVTOLTVT EQU   AVTOLTQB                                                 01399000
+@NM00044 EQU   AVTOPCQB+8                                               01400000
+@NM00043 EQU   AVTOPCEC+1                                               01401000
+@NM00042 EQU   AVTOPCCC                                                 01402000
+AVTOPCPO EQU   AVTOPCCC                                                 01403000
+AVTOPCWA EQU   AVTOPCCC                                                 01404000
+AVTOPCCH EQU   AVTOPCOB+1                                               01405000
+AVTOPCVT EQU   AVTOPCOB                                                 01406000
+@NM00041 EQU   AVTCKPQB+9                                               01407000
+AVTCKPTS EQU   AVTCKPQB+8                                               01408000
+@NM00040 EQU   AVTCKPEC+1                                               01409000
+@NM00039 EQU   AVTCKPCC                                                 01410000
+AVTCKPPO EQU   AVTCKPCC                                                 01411000
+AVTCKPWA EQU   AVTCKPCC                                                 01412000
+AVTCKPCH EQU   AVTCKPTB+1                                               01413000
+AVTCKPVT EQU   AVTCKPTB                                                 01414000
+@NM00038 EQU   IEDQAVTD+724                                             01415000
+AVTBFRTB EQU   IEDQAVTD+720                                             01416000
+@NM00037 EQU   IEDQAVTD+712                                             01417000
+AVTBFREB EQU   IEDQAVTD+708                                             01418000
+AVTTIMQ  EQU   IEDQAVTD+704                                             01419000
+@NM00036 EQU   IEDQAVTD+700                                             01420000
+AVTIMQPS EQU   IEDQAVTD+696                                             01421000
+AVTINOUT EQU   IEDQAVTD+694                                             01422000
+AVTREFTM EQU   IEDQAVTD+692                                             01423000
+@NM00035 EQU   IEDQAVTD+680                                             01424000
+AVTDELYB EQU   IEDQAVTD+676                                             01425000
+AVTOCQPT EQU   IEDQAVTD+672                                             01426000
+AVTTSOPT EQU   IEDQAVTD+668                                             01427000
+AVTSUPPT EQU   IEDQAVTD+664                                             01428000
+AVTCBQCB EQU   IEDQAVTD+660                                             01429000
+@NM00034 EQU   AVTSYSER                                                 01430000
+@NM00033 EQU   AVTSYSER                                                 01431000
+@NM00032 EQU   AVTSYSER                                                 01432000
+@NM00031 EQU   AVTSYSER                                                 01433000
+@NM00030 EQU   AVTSYSER                                                 01434000
+@NM00029 EQU   AVTSYSER                                                 01435000
+AVTCMAXN EQU   AVTSYSER                                                 01436000
+AVTCMINN EQU   AVTSYSER                                                 01437000
+AVT2260L EQU   IEDQAVTD+652                                             01438000
+AVTABEPL EQU   AVTADBUF                                                 01439000
+AVTHFF   EQU   AVTCLRHI+2                                               01440000
+@NM00028 EQU   AVTCLRHI                                                 01441000
+AVTCCLNK EQU   AVTCRELE+5                                               01442000
+AVTCCPRI EQU   AVTCRELE+4                                               01443000
+AVTCCQCB EQU   AVTCCELE+1                                               01444000
+AVTCCKEY EQU   AVTCCELE                                                 01445000
+AVTDELAD EQU   IEDQAVTD+632                                             01446000
+AVTDELEM EQU   IEDQAVTD+628                                             01447000
+AVTBSX   EQU   AVTCKLNK                                                 01448000
+AVTOPETR EQU   AVTHG01                                                  01449000
+@NM00027 EQU   AVTCKBYT                                                 01450000
+AVTCKONQ EQU   AVTCKBYT                                                 01451000
+@NM00026 EQU   AVTCKBYT                                                 01452000
+@NM00025 EQU   AVTCKBYT                                                 01453000
+@NM00024 EQU   AVTCKBYT                                                 01454000
+@NM00023 EQU   AVTCKBYT                                                 01455000
+@NM00022 EQU   AVTCKBYT                                                 01456000
+@NM00021 EQU   AVTCKBYT                                                 01457000
+AVTOPERT EQU   IEDQAVTD+618                                             01458000
+AVTOPXCL EQU   IEDQAVTD+616                                             01459000
+AVTOPERL EQU   IEDQAVTD+615                                             01460000
+@NM00020 EQU   IEDQAVTD+614                                             01461000
+AVTCKTIM EQU   IEDQAVTD+612                                             01462000
+AVTCKELV EQU   IEDQAVTD+610                                             01463000
+AVTCPRCD EQU   IEDQAVTD+609                                             01464000
+AVTWARMN EQU   AVTCKELF                                                 01465000
+AVTCRTLN EQU   AVTCKELF                                                 01466000
+AVTCPIPN EQU   AVTCKELF                                                 01467000
+AVTCCLCN EQU   AVTCKELF                                                 01468000
+AVTCINCN EQU   AVTCKELF                                                 01469000
+@NM00019 EQU   AVTCKELF                                                 01470000
+AVTCMCPN EQU   AVTCKELF                                                 01471000
+AVTCRDYN EQU   AVTCKELF                                                 01472000
+AVTCKQAD EQU   IEDQAVTD+605                                             01473000
+AVTSCBSZ EQU   IEDQAVTD+604                                             01474000
+@NM00018 EQU   IEDQAVTD+600                                             01475000
+AVTCKELE EQU   IEDQAVTD+596                                             01476000
+@NM00017 EQU   AVTCKPEL+8                                               01477000
+AVTCKRLK EQU   AVTCKPEL+5                                               01478000
+AVTCKRPR EQU   AVTCKPEL+4                                               01479000
+AVTCKRMQ EQU   AVTCKRMV+1                                               01480000
+AVTCKRKY EQU   AVTCKRMV                                                 01481000
+AVTHK    EQU   IEDQAVTD+576                                             01482000
+AVTHI    EQU   IEDQAVTD+572                                             01483000
+AVTIOT   EQU   IEDQAVTD+568                                             01484000
+AVTNX    EQU   IEDQAVTD+564                                             01485000
+AVTTONE  EQU   IEDQAVTD+560                                             01486000
+AVTA3TL  EQU   IEDQAVTD+556                                             01487000
+AVTDMECB EQU   IEDQAVTD+552                                             01488000
+AVTABEND EQU   IEDQAVTD+546                                             01489000
+AVTPLCBN EQU   IEDQAVTD+544                                             01490000
+@NM00016 EQU   AVTSAVTP+1                                               01491000
+@NM00015 EQU   AVTSAVTF                                                 01492000
+AVTSNA   EQU   AVTSAVTF                                                 01493000
+AVTONSNA EQU   AVTSAVTF                                                 01494000
+AVTVTMCP EQU   AVTSAVTF                                                 01495000
+@NM00014 EQU   IEDQAVTD+536                                             01496000
+AVTCMBSS EQU   IEDQAVTD+532                                             01497000
+AVTRCV   EQU   IEDQAVTD+528                                             01498000
+AVTSEND  EQU   IEDQAVTD+524                                             01499000
+AVTCSCH  EQU   IEDQAVTD+520                                             01500000
+AVTQ1    EQU   IEDQAVTD+516                                             01501000
+AVTE7    EQU   IEDQAVTD+512                                             01502000
+AVTHB    EQU   IEDQAVTD+508                                             01503000
+AVTR1    EQU   IEDQAVTD+504                                             01504000
+AVTBZ    EQU   IEDQAVTD+500                                             01505000
+AVTEZ    EQU   IEDQAVTD+496                                             01506000
+AVTEC    EQU   IEDQAVTD+492                                             01507000
+AVTEW    EQU   IEDQAVTD+488                                             01508000
+AVTNDIAL EQU   AVTSCOPT                                                 01509000
+AVTN2741 EQU   AVTSCOPT                                                 01510000
+AVTCONCO EQU   AVTSCOPT                                                 01511000
+AVTCONC  EQU   AVTSCOPT                                                 01512000
+AVTCMBUF EQU   AVTSCOPT                                                 01513000
+AVTAPDMP EQU   AVTSCOPT                                                 01514000
+@NM00013 EQU   AVTSCOPT                                                 01515000
+AVTHA    EQU   AVTDISP                                                  01516000
+AVTEA    EQU   IEDQAVTD+476                                             01517000
+AVTAX    EQU   IEDQAVTD+472                                             01518000
+AVTA3    EQU   IEDQAVTD+468                                             01519000
+AVTGD    EQU   IEDQAVTD+464                                             01520000
+AVTAL    EQU   IEDQAVTD+460                                             01521000
+AVTOLTST EQU   AVTHG02                                                  01522000
+AVTE8    EQU   IEDQAVTD+452                                             01523000
+AVTUI    EQU   IEDQAVTD+448                                             01524000
+AVTCOMPT EQU   IEDQAVTD+444                                             01525000
+AVTCRSRF EQU   IEDQAVTD+440                                             01526000
+@NM00012 EQU   IEDQAVTD+436                                             01527000
+AVTKA02  EQU   IEDQAVTD+432                                             01528000
+AVTOPTPT EQU   IEDQAVTD+428                                             01529000
+AVTPCBPT EQU   IEDQAVTD+424                                             01530000
+AVTOSECB EQU   IEDQAVTD+420                                             01531000
+AVTOPECA EQU   IEDQAVTD+416                                             01532000
+AVTOLECA EQU   IEDQAVTD+412                                             01533000
+AVTCKECA EQU   IEDQAVTD+408                                             01534000
+AVTCWECA EQU   IEDQAVTD+404                                             01535000
+AVTCWTCB EQU   IEDQAVTD+400                                             01536000
+AVTOLTCB EQU   IEDQAVTD+396                                             01537000
+AVTOCTCB EQU   IEDQAVTD+392                                             01538000
+AVTCKTCB EQU   IEDQAVTD+388                                             01539000
+AVTAS    EQU   IEDQAVTD+384                                             01540000
+AVTNOLBF EQU   IEDQAVTD+382                                             01541000
+AVTNCKPR EQU   IEDQAVTD+381                                             01542000
+AVTCIB   EQU   IEDQAVTD+380                                             01543000
+AVTSPLPT EQU   IEDQAVTD+376                                             01544000
+AVTMVBFR EQU   IEDQAVTD+372                                             01545000
+AVTSBTA  EQU   IEDQAVTD+368                                             01546000
+AVTRARTN EQU   IEDQAVTD+364                                             01547000
+AVTBSCAN EQU   IEDQAVTD+360                                             01548000
+AVTRDYA  EQU   IEDQAVTD+356                                             01549000
+AVTDISTR EQU   IEDQAVTD+348                                             01550000
+AVTPARM3 EQU   IEDQAVTD+344                                             01551000
+@NM00011 EQU   AVTPKF                                                   01552000
+@NM00010 EQU   AVTPKF                                                   01553000
+@NM00009 EQU   AVTPKF                                                   01554000
+AVTFTCHF EQU   AVTPKF                                                   01555000
+@NM00008 EQU   AVTPKF                                                   01556000
+@NM00007 EQU   AVTPKF                                                   01557000
+@NM00006 EQU   AVTPKF                                                   01558000
+@NM00005 EQU   AVTPKF                                                   01559000
+AVTPARM  EQU   IEDQAVTD+336                                             01560000
+AVTEXS2A EQU   IEDQAVTD+330                                             01561000
+AVTEXA2S EQU   IEDQAVTD+324                                             01562000
+AVTOCGET EQU   IEDQAVTD+320                                             01563000
+AVTCKAVT EQU   @NM00003+1                                               01564000
+@NM00004 EQU   AVTCKFLG                                                 01565000
+AVTCKHLT EQU   AVTCKFLG                                                 01566000
+AVTCKREQ EQU   AVTCKFLG                                                 01567000
+AVTCKENV EQU   AVTCKFLG                                                 01568000
+AVTCKNAC EQU   AVTCKFLG                                                 01569000
+AVTCKTAC EQU   AVTCKFLG                                                 01570000
+@NM00002 EQU   IEDQAVTD+312                                             01571000
+AVTREADD EQU   IEDQAVTD+308                                             01572000
+AVTREADY EQU   IEDQAVTD+304                                             01573000
+AVTRACE  EQU   IEDQAVTD+300                                             01574000
+AVTTCB   EQU   IEDQAVTD+296                                             01575000
+AVTPASWD EQU   IEDQAVTD+288                                             01576000
+AVTCTLCH EQU   IEDQAVTD+280                                             01577000
+AVTDOUBX EQU   IEDQAVTD+264                                             01578000
+AVTDPARM EQU   IEDQAVTD+260                                             01579000
+AVTCSTCS EQU   IEDQAVTD+256                                             01580000
+AVTDLQ   EQU   AVTSAVEX+32                                              01581000
+@NM00001 EQU   AVTSAVEX                                                 01582000
+AVTSAVE4 EQU   IEDQAVTD+144                                             01583000
+AVTSAVE3 EQU   IEDQAVTD+72                                              01584000
+AVTSAVE2 EQU   IEDQAVTD                                                 01585000
+.@UNREFD ANOP                          END UNREFERENCED COMPONENTS      01586000
+@RC00239 EQU   @RC00236                                                 01587000
+@ENDDATA EQU   *                                                        01588000
+         END   IEDSCPSS,(C'PLS2000',0701,76363)                         01589000

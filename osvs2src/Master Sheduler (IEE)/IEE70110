@@ -1,0 +1,486 @@
+         TITLE 'IEE70110, HALT / SWITCH COMMAND PROCESSOR'              00050002
+IEE70110 CSECT                                                          00060002
+*MODULE NAME= IEE70110                                                  00100002
+*                                                                       00200002
+*DESCRIPTIVE NAME= HALT END-OF-DAY , SWITCH SMF PROCESSOR               00250002
+*                                                                       00300002
+*COPYRIGHT= N/A                                                         00350002
+*                                                                       00400002
+*STATUS= OS/VS2  RELEASE 2                                              00450002
+*                                                                       00500002
+*FUNCTION= TO PROCESS HALT-E-O-D , AND SWITCH SMF COMMANDS              00550002
+*  OPERATION=                                                           00600002
+*              ENTRY TO THIS MODULE IS VIA AN ATTACH FROM MODULE        00610002
+*              IEEVWAIT .                                               00620002
+*              0- ON ENTRY , CORE IS GOTTEN FOR A DUMMY EXTENDED SAVE   00630002
+*                 AREA ( XSA ) OF 88 BYTES. (NOT FULL XSA SIZE).        00640002
+*                 RETURN ADDRESS IS SAVED FOR EXIT PROCESSING .         00642002
+*                 BRANCH TO MODULE IEECB860 TO CREATE A STAE            00644002
+*                 ENVIRONMENT .                                         00646002
+*                 . IF NOT SUCCESSFUL , (REG15 ^= ZERO) ,               00648002
+*                   . SET XSA( XAE ) = X'80' - STAE FAIL                00648402
+*                   . PROCESS AT REF(7)                                 00648802
+*              1- ON ENTRY , REG 1 CONTAINS A PTR TO THE CSCB .         00650002
+*                 SET MSG CODE REG TO NOT SUCCESSFUL (DEFAULT)          00700002
+*                 DETERMINE WHICH VERB TO PROCESS VIA CSCB(CHVCD) -     00710002
+*                 . IF SWITCH , CHECK FOR SMF DATA SET PRESENT -        00720002
+*                   SMCA(SMCAMAN = ON )                                 00730002
+*                   . IF NOT , PROCESS AT REF(6).                       00740002
+*                   . IF YES , CHECK FOR SWITCH ALREADY IN EFFECT , OR  00742002
+*                     SMF DATA SET UNAVAILABLE - SMCA(SMCADSSW,SMCADSTR 00744002
+*                     = ON ) :                                          00744402
+*                     . IF EITHER ON , PROCESS AT REF(6) .              00744802
+*                 . IF HALT , AN SVC(76) IS EXECUTED TO UPDATE THE      00745202
+*                   SYS1.LOGREC DATA SET .                              00745602
+*              2- SAVE X OR Y PORTION OF MAN DSN IN XAN FIELD  @ZA27079 00746003
+*                 OF BLOCK XSA.                                @ZA27079 00746503
+*                 IF THE SMF VOLUME OPTION WAS SELECTED , A SCAN        00747003
+*                 OF UCBS FOR DIRECT ACCESS DEVICES IS ENTERED ,        00748002
+*                 AND AN SVC(78) LSPACE MACRO IS ISSUED FOR EACH        00748402
+*                 DEVICE .                                              00748802
+*              3- IF SMF ACTIVE SET UP SMF RECORD FOR SVC(83).          00749202
+*                 SET SECOND WORD EQUAL 'HALT' ,                        00749602
+*                 ISSUE SVC(83) , TO MAKE SMF AWARE OF HALT / SWITCH    00749702
+*                 PROCESSING .                                          00749802
+*              4- IF THE COMMAND WAS 'SWITCH SMF' , BYPASS LOG          00766602
+*                 PROCESSING , SET MSG CODE REG. = X'FF' ,              00776602
+*                 PROCESS AT REF(7) .                                   00778602
+*              5- DETERMINE IF THE SYSTEM LOG IS SUPPORTED -            00780602
+*                 BASEA(BALOG) ^=ZERO .                                 00782602
+*                 . IF ZERO , SET MSG CODE REG. = 1 FOR E-O-D           00783002
+*                   SUCCESSFUL , PROCESS AT REF(6) .                    00783102
+*                 SET UP FOR LOG TERMINATION .                          00783202
+*                 . IF LOG TERMINATION IS ALREADY TAKING PLACE -        00793202
+*                   LCA( POSTCLOZ = ON ) - BYPASS POST OF LOG ECB .     00803202
+*                   PROCESS AT REF(6) .                                 00813202
+*                 SET LCA( POSTCLOZ ) BIT ON                            00815202
+*                 POST LOG CLOSE ECB -                                  00817202
+*              6- SET UP TO BRANCH TO MSG MODULE IEE90110 .             00819202
+*                 INITIALIZE THE EXTENDED SAVE AREA ( XSA ) FIELDS      00821402
+*                 AS REQUIRED BY THE COMMAND BEING PROCESSED .          00821802
+*              7- FREE AND DELETE THE CSCB VIA SVC(34) .                00821902
+*              8- CHECK MSG CODE IN XSA(XAE) = X'FF'                    00825402
+*                 . IF YES, ENTRY IS FOR SWITCH SUCCESSFUL ,            00827402
+*                   BYPASS CALL OF MSG MODULE IEE90110 .                00827802
+*                   PROCESS AT REF(9) .                                 00828202
+*                 CHECK XSA(XAD) = X'80' -                              00828602
+*                 . IF YES , ENTRY IS FOR STAE FAILURE .                00828702
+*                   PROCESS AT REF(9) .                                 00828802
+*                 BRANCH TO IEE90110 , WHICH WILL ISSUE AN APPROP-      00829002
+*                 RIATE MSG DEPENDING ON THE MSG CODE IN XSA(XAE) .     00832502
+*              9- ON RETURN FROM IEE90110 , RESTORE RETURN ADDRESS IN   00836002
+*                 REG 14 , FREE GOTTEN CORE , , RETURN TO CALLER .      00839502
+*                                                                       00843002
+*NOTES                                                                  00846502
+*  DEPENDENCIES= REFER TO MACRO SECTION .                               00850002
+*    CHARACTER-CODE DEPENDENCIES=                                       00900002
+*              THIS MODULE HAS BEEN CODED IN SUCH A WAY THAT ,          00910002
+*              IF THE CHARACTER CODE IS CHANGED FROM EBCDIC ,           00920002
+*              REASSEMBLY WILL YIELD A VALID MODULE .                   00930002
+*  RESTRICTIONS= NONE .                                                 00950002
+*  REGISTER-CONVENTIONS= PROGRAM EQUATES SECTION , 'REGISTERS USED'     01000002
+*  PATCH-LABEL= PATCH                                                   01050002
+*                                                                       01100002
+*MODULE TYPE= CSECT                                                     01150002
+*  PROCESSOR= ASSEM                                                     01200002
+*  MODULE SIZE= 648 BYTES                                               01250002
+*  ATTRIBUTES=                                                          01300002
+*              REENTRANT                                                01310002
+*              SUPERVISOR PROTECT KEY                                   01320002
+*              SUPERVISOR MODE                                          01330002
+*              MASTER SCHEDULER REGION .                                01340002
+*                                                                       01350002
+*ENTRY POINT= IEE70110                                                  01400002
+*  PURPOSE= HALT E-O-D , SWITCH SMF                                     01450002
+*  LINKAGE= FROM IEEVWAIT , VIA ATTACH .                                01500002
+*  INPUT= REG 1 - PTR TO CSCB .                                         01550002
+*  REGISTERS SAVED= REG 14 .                                            01600002
+*  REGISTER USAGE= REFER TO REG . CONVENTION SECTION .                  01650002
+*  REGISTERS RESTORED= REG 14 .                                         01700002
+*                                                                       01750002
+*EXIT - NORMAL= RETURN TO CALLER .                                      01800002
+*  CONDITION= NORMAL PROCESSING OF THE COMMAND .                        01850002
+*  OUTPUT=                                                              01900002
+*              N/A                                                      01910002
+*  RETURN CODES= NONE .                                                 01950002
+*                                                                       02000002
+*EXIT - ERROR= N/A                                                      02050002
+*  CONDITIONS=                                                          02100002
+*  OUTPUT=                                                              02150002
+*  RETURN CODES=                                                        02200002
+*                                                                       02250002
+*EXTERNAL REFERENCES= IEEMB803 - LOG TASK - VIA POST .                  02300002
+*  ROUTINES= IEE90110 MESSAGE MODULE WITH A MSG CODE -                  02350002
+*                   01 - EOD SUCCESSFUL .                               02360002
+*                   02 - SWITCH UNSUCCESSFUL .                          02370002
+*            IEECB860  STAE ISSUING RTN .                               02380002
+*  DATA AREAS=                                                          02400002
+*              DUMMY EXTENDED SAVE AREA .                               02410002
+*  CONTROL BLOCKS=                   REFERENCES                         02450002
+*          SYMBOL DEFINITIONS - C = CREATE, F = FREE, R = READ,         02460002
+*                               W = WRITE.                              02470002
+*              CVT                     R                                02500002
+*              CSCB                    R,F                              02560002
+*              BASEA                   R,W                              02570002
+*              UCB                     R                                02580002
+*              LCA                     R,W                              02590002
+*              SMCA                    R                                02592002
+*              XSA                   C,R,W,F                            02594002
+*                                                                       02600002
+*TABLES=                                                                02650002
+*                                                                       02700002
+*MACROS=                                                                02750002
+*              MODID                                                    02760002
+*              GETMAIN / FREEMAIN                                       02770002
+*              LOAD / DELETE                                            02780002
+*              POST                                                     02790002
+*              MGCR  (SVC 34 )                                          02792002
+*              SVC (76 ) STATISTICAL UPDATE MACRO                       02794402
+*              SVC (78 ) LSPACE MACRO                                   02794802
+*              SVC ( 83 ) SMF PROCESSING MACRO                          02795202
+*                                                                       02796002
+*  SERIALIZATION= NONE .                                                02800002
+*                                                                       02900002
+*CHANGE ACTIVITY= OZ27079                                      @ZA27079 02950003
+*                                                                       03000002
+*SYSGENS=                                                               03010002
+*              LOAD MODULE NAME = IEE70110                              03020002
+*              LPALIB NAME = IEE70110                                   03030002
+*SYSTEM LIBRARIES = NONE .                                              03032002
+*                                                                       03040002
+*MESSAGES= NONE .                                                       03050002
+*                                                                       03100002
+*ABEND CODES= NONE .                                                    03150002
+*                                                                       03200002
+*********************************************************************** 03250002
+         EJECT                                                          04286002
+* A-191850                                                     @YM3373P 04386002
+* A-126000,126500,126600                                       @YA02504 04486002
+* A-NEAR LABEL STARTSMF                                        @ZA27079 04516003
+* A-NEAR LABEL ENDSRCH                                         @ZA27079 04546003
+* REGISTER USAGE                                                        04600002
+PARREG0  EQU   0                        PARAMETER REGISTER.             04650001
+R0       EQU   0                                                    SMF 04700001
+R1       EQU   1                                                    SMF 04750001
+R2       EQU   2                   CSCB BASE REG                 YM1294 04850002
+R3       EQU   3                                                        05000002
+MRC3     EQU   3                  BASE MASTER RESIDENT DATA AREA        05050002
+CVT3     EQU   3                       BASE CVT                         05100002
+R4       EQU   4                                                  M4393 05200001
+R5       EQU   5                       REG POINTS TO OPERAND            05250002
+R6       EQU   6                   DUMMY XSA ADDRESS                    05300002
+R7       EQU   7                   SMCA ADDRESS REGISTER            SMF 05350001
+R8       EQU   8                                                        05360002
+R9       EQU   9                                                        05370002
+WKREG    EQU   8                       CODE REGISTER                    05400001
+WKREG1   EQU   9                                                    SMF 05450001
+*                                      FOR EXTENDED SAVE AREA           05650001
+R10      EQU   10                                                       05700002
+R11      EQU   11                                                       05750002
+R12      EQU   12                                                       05760002
+BASEREG  EQU   12                      BASE   REGISTER                  05800001
+R13      EQU   13                                                       05810002
+R14      EQU   14                  RETURN REGISTER                      05850002
+R15      EQU   15                  BRANCH REGISTER                      05900002
+LOG15    EQU   15                      POINTER TO LOG CONTROL AREA      05910002
+* PROGRAM EQUATES                                                       05920002
+EODSUCC  EQU   1                   MSG CODE - 'EOD SUCCESSFUL'          05930002
+RECSIZE  EQU   88                  SIZE OF GOTTEN CORE .                05950002
+STATS    EQU   76                  SVC STATISTICAL UPDATE               06000002
+WRITERCD EQU   83                  SVC NUMBER FOR SMF WRITE         SMF 06350001
+D4       EQU   4                                                        06400002
+D12      EQU   12                                                       06450002
+DEC0     EQU   0                                                        06600002
+DEC2     EQU   2                                                        06650002
+DEC4     EQU   4                                                        06652002
+DEC16    EQU   16                                                       06700002
+DEC64    EQU   64                      OFFSET TO XSA SAVE AREA          06750002
+HEX40    EQU   64                                                       06850002
+HEX3C    EQU   60                                                       06900002
+HEX0F    EQU   X'0F'                                              M4393 06950001
+HEXFF    EQU   X'FF'                   NO MESSAGE INDICATOR             07000002
+LSPACE   EQU   78                                                       07050002
+NOEOD    EQU   02                                                YM1294 07100001
+         EJECT                                                          07250001
+         BALR  BASEREG,0               ESTABLISH ADDRESSIBILITY FOR     07350001
+*                                      MODULE                           07400001
+         USING *,BASEREG                                                07450001
+         MODID BRANCH=YES                                        Y01886 07460002
+         LR    R2,R1                    SET UP CSCB WORK REG     Y02669 07462002
+         L     R0,SIZE                  GETMAIN SIZE             Y02669 07470002
+         GETMAIN R,LV=(0)                                        Y02669 07480002
+         LR    R6,R1                    SET XSA ADDRESSIBILITY   Y02669 07490002
+         XC    0(RECSIZE,R6),0(R6)      ZERO OUT WORK CORE       Y02669 07500002
+         USING EXSAVSEC,R6              XSA ADDRESSIBILITY              07510002
+         ST    R14,XASVRB(R6)           SAVE RETURN ADDRESS      Y02669 07520002
+         USING CCHAIN,R2                BASE CSCB                YM1294 07550001
+         BAL   R5,STAERTN               SET UP STAE ENVIRONMENT  Y02669 07600002
+         CLC   XAD,HIORDER              STAE SUCCESSFUL ?        Y02669 07650002
+         BE    PXCTL2                   NO , SET UP RETURN TO CALLER    07700002
+         L     R7,CVTPTR                SET UP TO CHECK                 09250002
+         USING HCVT,R7                  FOR SMF OPTION                  09300002
+         L     R7,CVTSMCA               GET OPTION INDICATOR            09350002
+         LA    WKREG,NOEOD              SET POSSIBLE NOT         YM1294 09400002
+*                                            SUCCESSFUL MESSAGE  YM1294 09410002
+         DROP R7                                                        09450002
+         USING SMCABASE,R7              SET ADDRESSIBILITY-SMCA         09500002
+         CLI   CHVCD,HEX3C              IS THE VERB HALT?        YM1017 09510001
+         BE    SWCHK                    YES, BYPASS CHECK FOR    YM1017 09520002
+*                                            SWITCH DATA SETS    YM1017 09530002
+         LTR   R7,R7                    SMF ACTIVE ?                    09540002
+         BZ    PXCTL                    NO , SKIP SWITCH PROCESSING     09542002
+         TM    SMCAMISC,SMCAMAN         SYS1.MAN PRESENT?        YM1294 09550001
+         BZ    PXCTL                    NO, SKIP SMF PROCESSING  YM1294 09600001
+SWCHK    EQU   *                                                 YM1017 09810002
+         CLI   CHVCD,HEX3C              ENTRY FOR HALT?          YM1294 09850001
+         BNE   SMFSTART                 NO- GO DIRECTLY TO SMF          09900002
+*    *    *    *    *    *    *     *     *     *     *     *           09950002
+* ENTRY WAS MADE FOR A HALT COMMAND IN A SYSTEM WITH SMF                10000002
+*     *     *     *     *     *     *     *     *     *     *           10050002
+         SR    PARREG0,PARREG0          CLREA PARM REGISTER             10100002
+         SVC   STATS                    UPDATE STATISTICS               10150002
+         LTR   R7,R7                    SMF IN SYSTEM ?          Y02669 10200002
+         BZ    CKSMF                    NO , BYPASS SMF PROCESSING      10202002
+         EJECT                                                          10210002
+* THE FOLLOWING ROUTINE WILL GENERATE A HALT MESSAGE FOR SMF,       SMF 10250001
+* IF SMF IS SUPPORTED, AND WILL CAUSE THE SMF BUFFER TO BE PURGED.  SMF 10300001
+*                                                                   SMF 10350001
+SMFSTART EQU   *                                                    SMF 10400001
+*                                                              *        10450002
+*  THIS IS A COMMON ENTRY POINT FOR BOTH HALT AND SWITCH SMF CMNDS .    10460002
+*  THE FOLLOWING CODE ISSUES THE LSPACE SVC AGAINST ALL ONLINE *        10500002
+*  DIRECT ACCESS DEVICES. THIS CAUSES SMF TYPE 19 RECORDS TO BE*        10550002
+*  ISSUED THUS SUPPLYING VOLUME SPACE USAGE AT HALT TIME       *        10600002
+*                                                              *        10650002
+         TM    SMCAMISC,SMCAMAN          MAN=ALL?                Y02669 10660002
+         BZ    CKSMF               CONTINUE WITH HALT PROCESSING YM1294 10670001
+         MVC   XAN,SMCAXORY        SAVE X OR Y BYTE OF         @ZA27079 10680003
+*                                  RECORDING DATA SET NAME     @ZA27079 10690003
+         TM    SMCAOPT,SMCAVOL     IS VOLUME ACCTING SUPPORTED          10700002
+         BZ    ENDSRCH             NO, PROCEED TO BUFFER PURGE          10750002
+         L     WKREG,CVTPTR        PT TO CVT AND ESTABLISH ADDR         10900002
+         USING   HCVT,WKREG                                             10950002
+         L     WKREG,CVTILK2        OF UCB POINTER TABLE                11000002
+         LR    R3,WKREG                 SAVE TABLE START ADDR     M4393 11050001
+         DROP  WKREG                                                    11100002
+         L     R1,HIORDER          SETUP R1 INTERFACE TO LSPACE         11150002
+SEARCH   EQU   *                                                        11200002
+         LH    WKREG1,DEC0(WKREG)  GET POSSIBLE UCB PTR                 11250002
+         LA    WKREG,DEC2(WKREG)   GET ADDR OF NEXT UCB PTR             11300002
+         CH    WKREG1,FFFF         HAS END OF TABLE BEEN REACHED        11350002
+         BE    ENDSRCH             YES, END SEARCH                      11400002
+         LTR   WKREG1,WKREG1       IS THE PTR ZERO                      11450002
+         BZ    SEARCH              IF SO, GET NEXT PTR                  11500002
+         SLL   WKREG1,DEC16        CLEAR PROPAGATION                    11550002
+         SRL   WKREG1,DEC16          BITS                               11600002
+         USING UCBOB,WKREG1                                             11650002
+         TM    SRTESTAT,SRTEONLI   IS DEVIC ONLINE                      11700002
+         BZ    SEARCH              NO                                   11750002
+         TM    UCBTBYT3,UCB3DACC   IS DEVICE DIRECT ACCESS              11800002
+         BZ    SEARCH              NO                                   11850002
+         TM    UCBFL1,UCBNRY       IS DEVICE NOT READY           Y02669 11900002
+         BO    SEARCH              DEVICE NOT READY, GET NEXT           11950002
+         TM    UCBFL5,UCBALTPH     DEVICE HAVE ALTERNATE PATHS ? Y02669 12000002
+         BZ    PATHOK              NO , GO ISSUE LSPACE MACRO     M4393 12050002
+*                                                                       12052002
+* SET UP TO SCAN UCB TABLE FOR PREVIOUS ENTRY FOR SAME UCB .            12060002
+* IF FOUND , BYPASS LSPACE MACRO FOR THIS ENTRY .                       12070002
+* IF NOT FOUND , PROCESS LSPACE MACRO FOR ENTRY .                       12080002
+*                                                                       12090002
+         LR    R4,R3                    INITIALIZE SEARCH INDEX   M4393 12100001
+         LR    R10,R8                  PICK UP NEXT ENTRY ADDR   Y02669 12110002
+         SH    R10,TWO                 POINT BACK TO CURRENT ENTRY ADDR 12120002
+CKPATH   EQU   *                                                        12122002
+         CR    R10,R4                  IS THIS CURRENT ENTRY ?   Y02669 12130002
+         BE    PATHOK                  YES, NO DUPLICATE FOUND   Y02669 12140002
+         CH    WKREG1,DEC0(R4)         DUPLICATE UCB ADDRESS ?   Y02669 12142002
+         BE    SEARCH                   BRANCH IF YES             M4393 12400001
+         LA    R4,DEC2(R4)              INCREMENT INDEX           M4393 12450001
+         B     CKPATH                   CONTINUE SEARCH           M4393 12500001
+PATHOK   EQU   *                                                  M4393 12550001
+* VTOC POINTER CAN ONLY BE ZERO IF NO VOLUME OR NON-OSVOLUME.  @YA02504 12580002
+         OC    UCBVTOC(3),UCBVTOC CHECK FOR INVALID VOLUME     @YA02504 12610002
+         BZ    SEARCH             BRANCH NOT VALID FOR LSPACE  @YA02404 12640002
+         LR    R0,WKREG1           POINT LSPACE TO UCB                  12700002
+         SVC   LSPACE              ISSUE LSPACE SVC                     12750002
+         B     SEARCH              GET NEXT UCB CANDIDATE               12800002
+ENDSRCH  EQU   *                                                        13550002
+         CLC   XAN,SMCAXORY        WAS AN INTERNAL SWITCH DONE @ZA27079 13600003
+         BE    HALT                NO CONTINUE                 @ZA27079 13650003
+         CLI   CHVCD,HEX3C         IS THIS A HALT COMMAND      @ZA27079 13700003
+         BNE   CKSMF               NO, BYPASS THE HALT         @ZA27079 13750003
+HALT     EQU   *                                               @ZA27079 13800003
+         MVC   4(4,R6),AHALT      PLACE HALT IN RECORD TO        Y01034 19050001
+         LR    R1,R6              INDICATE BUFFER PURGE          Y01034 19100001
+         SVC   WRITERCD                                           SMF1  19150001
+         XC    4(4,R6),4(R6)            ZERO FIELD               Y02669 19160002
+         LTR   R15,R15                 SVC SUCCESSFUL ?          Y02669 19170002
+         BZ    CKSMF                   YES , CONTINUE PROCESSING Y02669 19180002
+         LA    WKREG,NOEOD          RESET NOT SUCCESSFUL CODE  @YM3373P 19185002
+         CLI   CHVCD,HEX3C             THIS HALT COMMAND ?       Y02669 19190002
+         BNE   PXCTL                   NO , INDICATE SWITCH FAILED      19200002
+         EJECT                                                          19210002
+CKSMF    EQU   *                                                        19350002
+         LA    WKREG,HEXFF             INDICATE NO MESSAGE              19400002
+         LA    R5,CHBUF                PICK UP COMMAND OPERAND   YM1294 19410001
+         CLC   0(4,R5),ASMF            CHECK SMF                        19450002
+         BE    PXCTL3                  BRANCH IF YES             Y02669 19500002
+         L     CVT3,16                 SET POINTER TO CVT               19600002
+         USING HCVT,CVT3               AND BASE CVT                     19650002
+         L     MRC3,CVTMSER            GET POINTER TO MASTER RESIDENT   19700002
+         USING BASE,MRC3               CORE AND BASE IT.                19750002
+         L     LOG15,BALOG             GET POINTER TO LOG CONTROL       19800002
+         LTR   LOG15,LOG15             IS LOG SUPPORTED?                19850002
+         BZ    GXCTL                   NO ISSUE EOD SUCCESS MSG.        19900002
+         USING LCABASE,LOG15           YES- THEN BASE LCA AND           19950002
+*                                      INTERNALLY SIMULATE A            19952002
+*                                      WRITELOG CLOSE COMMAND IF        19954002
+*                                      ONE IS NOT PENDING               19956002
+         TM    LCAPOSTT,POSTCLOZ       IS WRITE CLOSE PENDING ?         19960002
+         BO    GXCTL                   IF YES , BRANCH PAST POST        19970002
+         STM   R7,R9,DEC64(R6)         SAVE REGS ACCROSS OIL MACRO      19972002
+* THE FOLLOWING MACRO SERIALIZES ON THE POSTCLOZ BIT                    19972402
+         OIL   LCAPOSTT,POSTCLOZ,WREGS=(7,8,9),REF=LCABASE              19974002
+         LM    R7,R9,DEC64(R6)         RESTORE REGS                     19976002
+         USING POSTFLD,R1              PARM LIST FOR POST               19990002
+         LA    R1,POSTCORE(R6)         ADDRESS OF LIST CORE             19992002
+         MVC   POSTFLD(D12),POSTLIST                                    19994002
+         USING HCVT,R11                CVT PTR TO CVTBRET               19994402
+         L     R11,16                  LOAD CVT PTR                     19994802
+         L     R10,LCAASCB             LOG ASCB ADDRESS                 19996002
+         POST  MSLGCLOZ,ASCB=(10),ERRET=CVTBRET,MF=(E,(1))              19998002
+*                                                                       20102002
+         EJECT                                                          20498802
+GXCTL    LA    WKREG,EODSUCC           SET FOR XCTL                     20500002
+*                                                                       20550001
+PXCTL    EQU   *                                                 YM1294 20560001
+         CLI   CHVCD,HEX3C             IS VERB HALT?             YM1294 20596001
+         BNE   SWITCH                  NO, MUST BE SWITCH        YM1294 20598001
+         MVC   XAV(8),AHALT            SET UP XSA FOR HALT       YM1294 20598401
+         B     PXCTL2                                            YM1294 20599201
+SWITCH   EQU   *                                                 YM1294 20599601
+         MVC   XAV(8),ASWITCH          SET UP XSA FOR SWITCH     YM1294 20599701
+PXCTL2   EQU   *                                                 YM1294 20599901
+         MVC   XAU,CHUCMP              GET UCMI INFO             YM1294 20660001
+PXCTL3   EQU   *                                                 Y02669 20670002
+         STC   WKREG,XAE               STORE CODE IN EXT SAVE AREA.     20680002
+         MVI   CHSTS,CHFC              SET FREE CSCB BITS        YM1294 20710002
+         LR    R1,R2                   GET CSCB POINTER          YM1294 20720001
+         MGCR (1),CHAIN                FREE CSCB                 YM1294 20730002
+         CLC   XAD,HIORDER              STAE IN EFFECT ?         Y02669 20740002
+         BE    NOMSG                    NO , BYPASS MSG MODULE   Y02669 20750002
+         CLI   XAE,HEXFF                MSG CODE = SWITCH SUCCESSFUL ?  20760002
+         BE    NOMSG                    YES, BYPASS MSG MODULE   Y02669 20770002
+         LR    R1,R6                    XSA ADDR TO REG          Y02669 20800002
+         L     R15,VMSGMOD              MESSAGE MOD ADDR         Y02669 20830002
+         BALR  14,15                    ISSUE MSG                Y02669 20880002
+NOMSG    EQU   *                                                 Y02669 20890002
+         L     R14,XASVRB(R6)           RESTORE RETURN ADDR      Y02669 20930002
+         LR    R1,R6                    SET UP FREEMAIN          Y02669 21110002
+         L     R0,SIZE                  FREE THIS AMOUNT OF CORE Y02669 21120002
+         FREEMAIN R,LV=(0),A=(1)        FREE THE CORE            Y02669 21130002
+         BR    R14                      RETURN TO CALLER         Y02669 21140002
+         EJECT                                                          21140402
+STAERTN  EQU   *                                                 Y02653 21142002
+* THE FOLLOWING CODE WAS ADDED FOR OS/VS2 R2 ESTAE SUPPORT ,     Y02653 21142402
+* UNDER SUPPORT CODE - Y02653                                    Y02653 21142802
+* ENTRY HERE IS TO CREATE A STAE ENVIRONMENT FOR THIS RTN VIA A  Y02653 21144002
+* BRANCH TO MODULE IEECB860 . IF STAE FAILS , SET XSA(XAD) FIELD Y02653 21146002
+* HI-BIT ON FOR CHECK IN MAIN-LINE PATH , RETURN ON LINK REG 5 . Y02653 21148002
+         LA    R7,PARMCORE(R6)          PARM LIST ADDRESS        Y02653 21148402
+         USING STAEPARM,R7                                       Y02653 21148802
+         ST    R2,CSCBADDR              CSCB ADDR TO LIST        Y02653 21149202
+         ST    R5,REG5SAVE              LINK REG TO LIST         Y02653 21149602
+         ST    R6,REG6SAVE              XSA PTR                  Y02653 21149702
+         ST    R12,REG12SAV             BASE REG                 Y02653 21149802
+         LOAD  EP=IEECB860              LOAD STAE CREATE RTN     Y02653 21149902
+         CLI   CHVCD,HEX3C              HALT COMMAND ?           Y02653 21166602
+         BNE   NOTHALT                  NO , ITS SWITCH COMMAND  Y02653 21176602
+         LA    R8,HALTCMD               COMMAND PTR FOR HALT     Y02653 21178602
+         B     CALLSTAE                                          Y02653 21180602
+NOTHALT  EQU   *                                                 Y02653 21182602
+         LA    R8,SWITCHCD              COMMAND PTR FOR SWITCH   Y02653 21183002
+CALLSTAE EQU   *                                                 Y02653 21183102
+         ST    R8,COMMAND               COMMAND PTR TO LIST      Y02653 21183202
+         LR    R15,R0                   STAE RTN ADDRESS         Y02653 21188802
+         LR    R1,R7                    PARM LIST REG            Y02653 21190802
+         BALR  14,15                    GO ISSUE STAE            Y02653 21192802
+         LR    R8,R15                   SAVE STAE RETURN CODE    Y02653 21193202
+* RESTORE CRITICAL REGS FROM PARM LIST SAVE AREA .               Y02653 21193302
+         LR    R7,R1                    RESTORE PARM LIST ADDR   Y02653 21193402
+         L     R2,CSCBADDR              CSCB PTR                 Y02653 21193602
+         L     R5,REG5SAVE              LINK REG                 Y02653 21194102
+         L     R6,REG6SAVE              XSA PTR                  Y02653 21194202
+         L     R12,REG12SAV             BASE REG                 Y02653 21194302
+         DELETE EP=IEECB860                                      Y02653 21208202
+         LTR   R8,R8                    TEST STAE RETURN CODE    Y02653 21218202
+         BZ    LINKBK                   O.K.,RETURN VIA LINK REG Y02653 21220202
+         MVC   XAD,HIORDER              SET STAE FAIL SWITCH     Y02653 21220602
+LINKBK   EQU   *                                                 Y02653 21220702
+         BR    R5                       RETURN                   Y02653 21221002
+*                                                                       21222202
+*                                                                       21236102
+         EJECT                                                          21246102
+*                                                                       21260402
+*                                                                       21260802
+*   PROGRAM CONSTANTS                                                   21264002
+         DS    0F                                                       21267202
+VMSGMOD  DC    V(IEE90110)                                       Y02669 21270402
+SIZE     DC    AL1(250),AL3(88)  SIZE OF GETMAIN                 Y01034 21273602
+HALTCMD  DC    AL1(L'HC)                COMMAND LENGTH           Y02653 21276802
+HC       DC    C'HALT'                  COMMAND VERB             Y02653 21280002
+SWITCHCD DC    AL1(L'SC)                COMMAND LENGTH           Y02653 21290002
+SC       DC    C'SWITCH'                COMMAND VERB             Y02653 21300002
+PATCH    DS    CL52'IEE70110PATCH' AREA FOR TEMPORARY FIXES             21310002
+HIORDER  DS    0F                                                       21450002
+         DC    X'80000000'         R1 INTERFACE TO LSPACE               21500002
+AHALT    DC    CL8'HALT'           HALT VERB                            21600001
+ASWITCH  DC    CL8'SWITCH'         SWITCH VERB                   YM1294 21650001
+FFFF     DS    0H                                                       21750002
+         DC    X'FFFF'             COMPARAND FOR END OF UCB TBL         21800002
+TWO      DC    H'2'                UCB SCAN VALUE                       21810002
+ASMF     DC    C'SMF '                                                  21850002
+POSTLIST POST  ASCB=0,ERRET=0,MF=L                               Y02669 21900002
+*                                                                       22000001
+*                                                                       22550001
+         EJECT                                                          22552002
+EXSAVSEC  DSECT                   DSECT FOR EXTENDED SAVE AREA          22560002
+         IEEXSA                                                         22570002
+         EJECT                                                          22580002
+* THIS DSECT IS USED TO MAP THE PARAMETER LIST USED BY STAE RTN .       22590002
+STAEPARM DSECT                                                   Y02669 22592002
+CSCBADDR DS    F                                                 Y02669 22594002
+COMMAND  DS    F                                                 Y02669 22596002
+REG5SAVE DS    F                                                 Y02669 22598002
+REG6SAVE DS    F                                                 Y02669 22598402
+REG12SAV DS    F                                                 Y02669 22598802
+PARMEND  EQU   *                                                 Y02669 22599202
+PARMSIZE EQU   PARMEND-STAEPARM                                  Y02669 22599602
+PARMCORE EQU  XASVRB+DEC4                 STAE PARM LIST ADDR           22599702
+POSTCORE EQU  PARMCORE+PARMSIZE           OFFSET OF POST CORE           22606402
+* THIS DSECT IS USED TO MAP THE PARM LIST FOR LOG TERMINATION POST .    22613102
+POSTFLD  DSECT                                                   Y02669 22619802
+ECBAD    DS    F                                                 Y02669 22626502
+ASCBAD   DS    F                                                 Y02669 22633202
+ERRAD    DS    F                                                 Y02669 22683202
+         EJECT                                                          22693202
+         IEESMCA                                                        22695202
+         EJECT                                                          22697202
+CCHAIN   DSECT                                                          22699202
+         IEECHAIN                                                       22699602
+         EJECT                                                          22700002
+UCBSECT  DSECT                                                          23650002
+         IEFUCBOB                                                       23700001
+         EJECT                                                          23710002
+         TITLE ' COMMUNICATIONS VECTOR TABLE '                          23750001
+HCVT     DSECT                                                          23800001
+         CVT                                                            23850001
+         EJECT                                                          23860002
+         TITLE ' MASTER RESIDENT CORE '                                 23900001
+         IEEBASEA                                                       23950001
+         EJECT                                                          24000001
+         TITLE ' LOG CONTROL AREA '                                     24050001
+         IEELCA                                                         24100001
+         EJECT                                                          24150001
+         IEFPTRS                                                        24160002
+         END                                                            24299902

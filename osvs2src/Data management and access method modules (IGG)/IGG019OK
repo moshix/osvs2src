@@ -1,0 +1,287 @@
+*TITLE 'ATTENTION INQUIRY ROUTINE'                                      00300002
+*STATUS:CHANGE LEVEL 0                                                  00600002
+*FUNCTION:MODE DEPENDENT                                                00900002
+*        1.MODE=R-RELINQUISH CONTROL FOR USER ATTENTION ROUTINE IF EP   01200002
+*         IN GACB NOT EQUAL TO ZERO. WHEN USER GAINS CONTROL IT WILL    01500002
+*         BE GIVEN AT NSI AFTER MODE=R.IF EP IN GACB=0 R IS TREATED AS  01800002
+*         MODE=W.                                                       02100002
+*        2.MODE=W-IF REQUESTED DATA NOT AVAILABLE IT WILL PLACE ISSUING 02400002
+*          ROUTINE IN WAIT STATE.IF DATA IS AVAILABLE,MOVES DATA TO     02700002
+*          USER COMAREA AND RETURNS CONTROL TO NSI AFTER MODE=W.        03000002
+*        3.MODE=C-IF DATA DESIRED IS AVAILABLE IT IS SELECTIVELY        03300002
+*          DEQUEUED AND PLACED IN COMAREA;CONTROL RETURNED VIA BRANCH   03600002
+*          ADDRESS.IF DATA NOT AVAILABLE CONTROL RETURNED TO NSI        03900002
+*          AFTER MODE=C.                                                04200002
+*        4.MODE=CLEAR-REMOVES ALL DATA FROM USER INPUT QUEUE(MUST LEAVE 04500002
+*          ONE IQE ON USER IRB RBIQE FIELD FOR SYSTEM TO REMOVE)AND     04800002
+*          RETURNS CONTROL TO THE ROUTINE THAT WAS INTERRUPTED TO GIVE  05100002
+*          ATTENTION ROUTINE CONTROL.                                   05400002
+*ENTRY POINT:VIA BALR 14,15 FROM ISSUING ROUTINE.                       05700002
+*INPUT:GR#1 POINTS TO PARAMETER LIST;GRS#13,14,15 AS PER CONVENTIONS.   06000002
+*OUTPUT:MODE DEPENDENT;SEE FUNCTION.                                    06300002
+*EXTERNAL ROUTINES:DEQUEUE(SVC 72)                                      06600002
+*EXITS:VIA RETURN MACRO OR SVC 3.                                       06900002
+*TABLES/WORK AREAS:N/A                                                  07200002
+*ATTRIBUTES:1.RESIDENT WITH GRAPHIC JOB                                 07500002
+*           2.RE-ENTRANT                                                07800002
+*           3.PROBLEM PROGRAM STATE                                     08100002
+*NOTES:N/A                                                              08400002
+*                                                                       08700002
+*        REGISTER DEFINITION                                            09000002
+*                                                                       09300002
+PAR0     EQU   0                       PARAM REG 0                      09600002
+PAR1     EQU   1                       PARAM REG 1                      09900002
+BASERG   EQU   2                       BASE REG                         10200002
+RGACB    EQU   3                       GACB ADR REG                     10500002
+REBRG    EQU   4                       ROUTINE ENTRY BLOCK ADR REG      10800002
+RLIST    EQU   5                       LIST DSECT REG                   11100002
+RPFK     EQU   6                       SAVE REG FOR PFK MASK            11400002
+RSAVE    EQU   7                       SAVE REG FOR GACB MASK ATTNTYP   11700002
+R8       EQU   8                       WORK REG                         12000002
+R9       EQU   9                       WORK REG                         12300002
+R10      EQU   10                      WORK REG                         12600002
+R11      EQU   11                      WORK REG                         12900002
+R12      EQU   12                      WORK REG                         13200002
+SAVRG    EQU   13                      SAVE AREA PTR                    13500002
+RTNRG    EQU   14                      RETURN REG                       13800002
+RCODE    EQU   15                      RETURN CODE REG                  14100002
+*                                                                       14400002
+*                                                                       14700002
+FOUR     EQU   4                       FOUR                             15000002
+ZERO     EQU   0                       ZERO                             15300002
+REL      EQU   X'01'                   RELINQUISH MODE                  15600002
+WAIT     EQU   X'02'                   WAIT MODE                        15900002
+COND     EQU   X'04'                   CONDITIONAL MODE                 16200002
+CLEAR    EQU   X'08'                   CLEAR MODE                       16500002
+ANY      EQU   X'00'                   TYPE ANY(USE GACB MASK)          16800002
+END      EQU   X'01'                   END OR A/N TYPE                  17100002
+LP       EQU   X'02'                   LIGAT PEN TYPE                   17400002
+EOS      EQU   X'03'                   END ORDER SEQUENCE TYPE          17700002
+CANCEL   EQU   X'04'                   CANCEL TYPE                      18000002
+AE       EQU   X'05'                   ASYNCHRONOUS ERROR               18300002
+A2260    EQU   X'06'                   2260 TYPE                        18600002
+POSTED   EQU   X'00'                   WAIT/POST BYTE OF ECB    YA03228 18650002
+IRB      EQU   16                      IRB ADR IN REB                   18900002
+CVTADR   EQU   16                      ADR OF CVT TABLE                 19200002
+TCBP     EQU   0                       TABLE OF TCB ADRS                19500002
+TCBCUR   EQU   4                       CURRENT TCB ADR                  19800002
+TCBIRB   EQU   0                       CURRENT(ACTIVE)RB                20100002
+EXIT     EQU   3                       EXIT FROM ROUTINE SVC NO.        20400002
+DEQUEUE  EQU   75                      DEQUEUE RTN SVC NO.              20700002
+WAITST   EQU   X'80'                   WAIT BIT                         21000002
+RTN      EQU   12                      OFF SET TO RTN REG IN SAVE AREA  21300002
+RTNIRB   EQU   16                      IRB ADR                          21600002
+RTNTCB   EQU   32                      OFFSET FOR REB TCB ADR           21900002
+SIX      EQU   6                       SIX                              22200002
+EIGHT    EQU   8                       EIGHT                            22500002
+ONE      EQU   1                       ONE                              22800002
+RBIQE    EQU   24                      NEXT IQE OFF IRB                 23100002
+ATTNERR  EQU   X'41'                                          LI F40815 23200002
+IGG019OK CSECT                                                          23400002
+* 465000-470000,516000                                           A31230 23800002
+*A232000,A442000-445000,A541000-542000,A697000                LI F40815 24000002
+*A186500,A443500-443600,A516500,D528000                         YA03228 24050002
+*C496000-497000,A684020-687050                              E12 ZA20103 24100000
+*                                                                       24150002
+*                                                                       24200002
+         SAVE  (14,12)                                                  24300002
+         BALR  BASERG,PAR0             SET UP BASE REG                  24600002
+         USING *,BASERG                DEFINE BASE REG                  24900002
+         USING PARLIST,RLIST           DEFINE DSECT REG                 25200002
+         USING GACB,RGACB              DEFINE DSECT REG                 25500002
+         LR    RLIST,PAR1              LOAD PARAM LIST REG              25800002
+         L     RGACB,GACBADR           LOAD GACB ADDRESS                26100002
+         LA    RGACB,ZERO(0,RGACB)     ZERO HIGH ORDER BYTE             26400002
+         LTR   RGACB,RGACB             REG=0                            26700002
+         BC    7,AT01                  BRANCH IF NO                     27000002
+         WTO   'IFF321I ATTNINQ FOUND NO GACB ADDRESS IN PARAMETER LISTX27100002
+               ',ROUTCDE=11,DESC=7                               S21016 27200002
+         LA    RCODE,X'10'              NO GACB ADDR IN            JFCC 27300002
+         B     RTNUSCD                  PARAM LIST--RETURN         JFCC 27600002
+AT01     L     R8,EP2                  LOAD EP2 ADR                     27900002
+         LA    R8,ZERO(0,R8)           ZERO HI ORDER BYTE               28200002
+         LTR   R8,R8                   EP2=0                            28500002
+         BC    8,AT02                  BRANCH IF YES                    28800002
+         WTO   'IFF322I ATTNINQ FOUND NON-ZERO VALUE IN WORD SIX OF GACX28900002
+               B',ROUTCDE=11,DESC=7                              S21016 29000002
+         LA    RCODE,X'14'              EP2 CONTAINS ERRONEOUS     JFCC 29100002
+         B     RTNUSCD                  DATA--RETURN               JFCC 29400002
+AT02     L     REBRG,REBADR            LOAD REB ADR FROM GACB           29700002
+         LA    REBRG,ZERO(0,REBRG)      ZERO HI ORDER BYTE              30000002
+         LTR   REBRG,REBRG              ADDRESS EQUAL ZERO              30300002
+         BC    7,AT00                  BRANCH IF NOT ZERO               30600002
+         WTO   'IFF323I ATTNINQ FOUND GACB NOT INITIALIZED BY SPAR MACRX30700002
+               O',ROUTCDE=11,DESC=7                              S21016 30800002
+         LA    RCODE,X'18'              GACB NOT SPARED            JFCC 30900002
+         B     RTNUSCD                  RETURN                     JFCC 31200002
+*                                                                       31500002
+*                   GET CURRENT TCB ADDRESS                             31800002
+*                                                                       32100002
+AT00     L     R8,CVTADR               LOAD CVT ADR                     32400002
+         L     R8,TCBP(R8)             LOAD OLD/NEW TCB                 32700002
+         L     R8,TCBCUR(R8)           LOAD CURRENT TCB ADR             33000002
+         LA    R8,ZERO(R8)             CLEAR HI-ORDER BYTE              33300002
+         L     R9,RTNTCB(REBRG)        LOAD REB TCB ADR                 33600002
+         LA    R9,ZERO(R9)             CLEAR HI-ORDER BYTE              33900002
+         CR    R8,R9                   DOES CURRENT TCB ADR = REBTCB    34200002
+         BE    AT14                    BRANCH IF WQUAL                  34500002
+         WTO   'IFF324I ATTNINQ NOT ISSUED IN SAME TASK AS SPAR MACRO FX34600002
+               OR GACB',ROUTCDE=11,DESC=7                        S21016 34700002
+         LA    RCODE,X'1C'              ATTNINQ ISSUED FROM OTHER  JFCC 34800002
+         B     RTNUSCD                  THAN SPARED TASK--RETURN   JFCC 35100002
+*                                                                       35400002
+AT14     CLI   MODE,REL                 MODE=R                          35700002
+         BC    7,AT03                  BRANCH IF NO                     36000002
+         L     R8,EP1                  LOAD EP1 ADR FROM GACB           36300002
+         LA    R8,ZERO(0,R8)           ZERO HI ORDER BYTE               36600002
+         LTR   R8,R8                   EP1=0                            36900002
+         BC    8,AT04                  BRANCH IF YES                    37200002
+         L     R8,IRB(0,REBRG)         LOAD ROUTINE IRB ADR             37500002
+         LA    R8,ZERO(0,R8)           ZERO HIGH ORDER BYTE             37800002
+         L     R9,CVTADR               LOAD CVT TABLE ADR               38100002
+         L     R9,TCBP(0,R9)           LOAD OLD/NEW TCBS                38400002
+         L     R9,TCBCUR(0,R9)         LOAD CURRENT TCB ADR             38700002
+         L     R9,TCBIRB(0,R9)         LOAD CURRENT IRB ADR             39000002
+         LA    R9,ZERO(0,R9)           ZERO HI ORDER BYTE               39300002
+         CLR   R8,R9                   IRB ADRS COMPARE                 39600002
+         BC    7,AT04                  BRANCH IF NO                     39900002
+         ST    RTNRG,EP2               STORE IN LINE RETURN ADR OF      40200002
+*                                      CALLING ROUTINE IN EP2 FIELD     40500002
+*                                      OF GACB                          40800002
+         ST    SAVRG,REG13             STORE CALLING ROUTINES SAVE      41100002
+*                                      AREA PTR IN GACB                 41400002
+         SVC   EXIT                    RETURN TO IOS                    41700002
+AT03     CLI   MODE,CLEAR              MODE=CLEAR                       42000002
+         BC    8,ATCLEAR               BRANCH IF YES                    42300002
+         CLI   MODE,COND               MODE=C                           42600002
+         BC    8,ATCOND                BRANCH IF YES                    42900002
+         CLI   MODE,WAIT               MODE=W                           43200002
+         BC    8,AT04                  BRANCH IF YES                    43500002
+         WTO   'IFF325I ATTNINQ FOUND INVALID MODE FIELD IN PARAMETER LX43600002
+               IST',ROUTCDE=11,DESC=7                            S21016 43700002
+         LA    RCODE,X'20'              INVALID MODE IN PARAM      JFCC 43800002
+         B     RTNUSCD                  LIST--RETURN               JFCC 44100002
+AT04     TM    ECB,WAITST              ALREADY IN WAIT        LI F40815 44200002
+         BO    AT04A                   YES, BRANCH            LI F40815 44300002
+         CLI   ECB,POSTED            ECB ALREADY POSTED?        YA03228 44350002
+         BNE   AT04A                 YES,DON'T INITIALIZE       YA03228 44360002
+         MVC   ECB(FOUR),INIT          INITIALIZE ECB         LI F40815 44400002
+AT04A    LR    PAR1,RGACB              GACB ADDRESS IN REG 1  LI F40815 44500002
+         LA    PAR0,ZERO               ZERO PAR REG0                    44700002
+         IC    R10,RSVD                INSERT OFFSET                    45000002
+         SLL   R10,24                  POSITION OFFSET                  45300002
+         OR    PAR1,R10                ADD OFF SET TO PARAM             45600002
+         SVC   DEQUEUE                 CALL DEQUEUE ROUTINE             45900002
+         CLI   MODE,COND               MODE=C                           46200002
+         BNE   AT06                    BRANCH IF NO              A31230 46600002
+         CLI   TYPE,ANY                ATTNINQ TYPE=ANY?         A31230 47000002
+         BC    7,AT05                  BRANCH IF NO TO RESTORE GACB     47400002
+*                                      MASKS                            47700002
+AT06     LA    R8,ZERO                 LOAD ZERO                        48000002
+         CLR   RCODE,R8                RETURN CODE=0                    48300002
+         BC    8,AT07                  BRANCH IF YES                    48600002
+         LA    R8,FOUR                 LOAD FOUR                        48900002
+         CLR   RCODE,R8                RETURN CODE=4                    49200002
+         BC    8,AT08                  BRANCH IF YES                    49500002
+DEQUEBAD WTO   'IFF326I ATTNINQ UNSUCCESSFUL DUE TO INTERNAL DEQUEUE ERX49600000
+               ROR',ROUTCDE=11,DESC=7                       E12 ZA20103 49700000
+         LA    RCODE,X'24'              RTN CODE FROM DEQUEUE      JFCC 49800002
+         B     RTNUSCD                  NOT ZERO--RETURN           JFCC 50100002
+AT07     CLI   MODE,WAIT               MODE=W                           50400002
+         BC    8,AT09                  BRANCH IF YES                    50700002
+         CLI   MODE,REL                MODE=R                           51000002
+         BC    8,AT09                  BRANCH IF YES                    51300002
+RTNUSER  SR    RCODE,RCODE             SET RC=0 - OK             A31230 51600002
+         ST    RCODE,ECB             CLEAR ECB                  YA03228 51650002
+RTNUSCD  RETURN (14,12),RC=(15)                                         51900002
+AT09     TM    ECB,WAITST              RTN ALREADY IN WAIT STATE        52200002
+         BC    1,AT10                  BRANCH IF YES                    52500002
+         SRL   R10,24                  POSITION OFFSET                  53100002
+         STC   R10,RESERVED            STORE OFFSET IN GACB             53400002
+         LA    PAR1,ECB                LOAD ECB ADR                     53700002
+         WAIT  ECB=(1)                                                  54000002
+         CLI   ECB,ATTNERR             COMP. CODE=X'41'       LI F40815 54100002
+         BE    AT04A                   YES, RETRY             LI F40815 54200002
+         B     RTNUSER                 BRANCH                           54300002
+AT10     EQU   *                                                        54400002
+         WTO   'IFF327I ATTNINQ FOR MODE=R OR W FOUND ATTENTION ROUTINEX54500002
+                ALREADY WAITING',ROUTCDE=11,DESC=7               S21016 54600002
+         LA    RCODE,X'28'              ROUTINE ALREADY IN       JFCC   54700002
+         B     RTNUSCD                  WAIT STATE--RETURN         JFCC 54900002
+AT05     ST    RPFK,PFKMSK             RESTORE PF MASK IN GACB          55200002
+         ST    RSAVE,ATNTYP            RESTORE ATTNTYP MASK IN GACB     55500002
+         B     AT06                    BRANCH                           55800002
+AT08     CLI   MODE,WAIT               MODE=W                           56100002
+         BC    8,RTNUSER               RETURN IN LINE TO CALLER         56400002
+         CLI   MODE,REL                MODE=R                           56700002
+         BC    8,RTNUSER               BRANCH IF YES                    57000002
+         L     R8,BRADR                LOAD BRANCH ADR                  57300002
+         LA    R8,ZERO(0,R8)           ZERO HIGH ORDER BYTE             57600002
+         LTR   R8,R8                   BRANCH ADR=0                     57900002
+         BC    8,AT11                  BRANCH IF YES                    58200002
+         ST    R8,RTN(SAVRG)           REPLACE IN LINE ADR WITH         58500002
+*                                      BRANCH ADR                       58800002
+         B     RTNUSER                 BRANCH                           59100002
+AT11     EQU   *                                                        59200002
+         WTO   'IFF328I ATTNINQ FOR MODE=C FOUND NO BRANCH ADDRESS IN PX59300002
+               ARAMETER LIST',ROUTCDE=11,DESC=7                  S21016 59400002
+         LA    RCODE,X'2C'              MODE 'C' BR ADDR          JFCC  59500002
+         B     RTNUSCD                  EQUAL ZERO--RETURN         JFCC 59700002
+ATCOND   CLI   TYPE,ANY                ATTNINQ TYPE=ANY                 60000002
+         BC    8,AT04                  BRANCH IF YES                    60300002
+         L     RPFK,PFKMSK             SAVE PFK MASK FROM GACB          60600002
+         L     RSAVE,ATNTYP            SAVE ATNTYP MASK FROM GACB       60900002
+         SR    R8,R8                   CLEAR REGISTER                   61200002
+         IC    R8,TYPE                 INSERT TYPE FIELD                61500002
+         LA    R9,SIX                  LOAD CONSTANT                    61800002
+         CLR   R8,R9                   COMPARE                          62100002
+         BC    2,AT13                  BRANCH IF TYPE GREATER THAN SIX  62400002
+         LA    R9,ONE                  LOAD CONSTANT                    62700002
+         SR    R8,R9                   SUBTRACT ONE FROM TYPE           63000002
+         SLL   R9,0(R8)                DETERMINE SEARCH ARGUMENT        63300002
+         ST    R9,ATNTYP               PUT NEW TYPE IN GACB             63600002
+         LA    R9,ZERO                 LOAD ZERO                        63900002
+         ST    R9,PFKMSK               PUT NEW TYPE IN GACB             64200002
+         B     AT04                    BRANCH                           64500002
+AT13     LA    R9,EIGHT                LOAD CONSTANT                    64800002
+         SR    R8,R9                   DETERMINE KEY NUMBER             65100002
+         L     R9,PFKCODE              LOAD MASK                        65400002
+         SRL   R9,ZERO(R8)             DETERMINE PF KEY ARGUMENT        65700002
+         ST    R9,PFKMSK               STORE NEW PF MASK IN GACB        66000002
+         LA    R9,ZERO                 ZERO REG                         66300002
+         ST    R9,ATNTYP               STORE NEW ATNTYP MASK IN GACB    66600002
+         B     AT04                    BRANCH                           66900002
+ATCLEAR  LR    PAR1,RGACB              GACB ADR TO PARAM REG            67200002
+         L     R8,RTNIRB(0,REBRG)      LOAD IRB ADR                     67500002
+         LA    R8,RBIQE(0,R8)          LOAD RBIQE ADR                   67800002
+         LR    PAR0,R8                 ADR TO PARAM REG                 68100002
+         SVC   DEQUEUE             CALL DEQUEUE ROUTINE                 68400002
+         LTR   RCODE,RCODE             RETURN CODE = ZERO   E12 ZA20103 68450000
+         BZ    RTNUSCD             RETURN TO USER ATTN RTN  E12 ZA20103 68700000
+         B     DEQUEBAD               GIVE MSG,NON-ZERO RC  E12 ZA20103 68750000
+         DS    0F                                                       69000002
+PFKCODE  DC    X'80'                                                    69300002
+         DC    AL3(0)                                                   69600002
+INIT     DC    X'00FFFFFF'                                    LI F40815 69700002
+         CNOP  0,8                                                      69900002
+PARLIST  DSECT                                                          70200002
+GACBADR  DS    1F                                                       70500002
+MODE     DS    BL1                                                      70800002
+RSVD     DS    BL1                                                      71100002
+TYPE1    DS    BL1                                                      71400002
+TYPE     DS    BL1                                                      71700002
+BRADR    DS    1F                                                       72000002
+GACB     DSECT                                                          72300002
+COMARA   DS    1F                                                       72600002
+DCB      DS    1F                                                       72900002
+PFKMSK   DS    1F                                                       73200002
+ATNTYP   DS    1F                                                       73500002
+EP1      DS    1F                                                       73800002
+EP2      DS    1F                                                       74100002
+REG13    DS    1F                                                       74400002
+PFKEY    DS    1F                                                       74700002
+ATNTYPS  DS    1F                                                       75000002
+ECB      DS    1F                                                       75300002
+REBADR   DS    1F                                                       75600002
+RESERVED DS    1F                                                       75900002
+         END                                                            76200002

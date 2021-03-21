@@ -1,0 +1,574 @@
+         TITLE 'IGG019JI - BISAM DYNAMIC BUFFERING'                     00020000
+IGG019JI CSECT                                                          00024000
+*        RELEASE OS/VS2-02 DELETIONS                                    00024102
+*                                                               YM01380 00024202
+*                                                               YM01146 00024302
+*                                                               YM01165 00026302
+*          RELEASE 21 DELETIONS                                         00028402
+*3512022850                                                      S21045 00030402
+*3512016200,020800,032200,032800                                 A33533 00032402
+*3512014600                                                       M0186 00034402
+*3512                                                            M1792  00036421
+*          RELEASE 19 DELETIONS                                         00060000
+*1324010600,011200,011600,017100,024440,024500-024520,024780,    A26738 00061019
+*1324024880-024903,024906-024978,033400-033600                   A26738 00062019
+*          RELEASE 20 DELETIONS                                         00064000
+*0751026000                                                      A36336 00068020
+*0751022800,024984,024987-025000,032100,034200,041400,041600,    S20201 00069020
+*0751041800-047000,047400,049008-049184,049450,049500-052000,    S20201 00070020
+*0751052400,052600-053200,053400-053600,053800-054000            S20201 00071020
+*                                                                       00073021
+*STATUS CHANGE LEVEL 010                                                00076002
+* FUNCTION/OPERATION' DYNAMIC BUFFERING ROUTINE FOR READ AND UPDATE.    00080000
+*        1. WHEN A RECORD IS ABOUT TO BE READ, IF THE USER REQUESTS     00100000
+*            DYNAMIC BUFFERING, A TEST IS MADE TO DETERMINE IF A BUFFER 00120000
+*            IS AVAILABLE.  IF SO, POINTERS ARE SET TO THE BUFFER       00140000
+*            AND PROCESSING OF THE MACRO CONTINUES.  IF NOT, THE IOB    00160000
+*            IS PLACED ON A QUEUE OF IOB'S AWAITING BUFFERS AND         00180000
+*            PROCESSING OF THIS IOB IS TEMPORARILY HALTED.              00200000
+*        2. AFTER THE RECORD IS READ, THE USER MUST EITHER WRITE IT     00220000
+*            BACK OR ISSUE A FREEDBUF MACRO.  WHEN THE WRITE HAS BEEN   00240000
+*            COMPLETED OR WHEN THE FREEDBUF MACRO ISSUED, THIS ROUTINE  00260000
+*            WILL TEST TO SEE IF ANY IOB IS AWAITING A BUFFER.  IF SO,  00280000
+*            THE BUFFER IS ASSIGNED TO THE NEXT IOB AND PROCESSING OF   00300000
+*            THAT IOB IS RESUMED.  IF NOT, THE BUFFER IS PLACED ON A    00320000
+*            QUEUE OF AVAILABLE BUFFERS.                                00340000
+* ENTRY POINTS'                                                         00360000
+*        ENTRY PNT     CALLING ROUTINE                FUNCTION          00380000
+*        ---------     ---------------                --------          00400000
+*        BUFFREED   FREEDBUF MACRO              DESCRIBED IN 2. ABOVE   00420000
+*        BUFSIO     SIO ENTRY FROM APPENDAGE    DESCRIBED IN 1. ABOVE   00440000
+*                    ROUTINE                                            00460000
+*        BUFASYN    ASYNCHRONOUS ROUTINE        DESCRIBED IN 2. ABOVE   00480000
+* INPUT - N/A                                                           00500000
+* OUTPUT - N/A                                                          00520000
+* EXTERNAL ROUTINES - N/A                                               00540000
+* EXITS' FROM BUFFREED RETURN TO FREEDBUF SVC ROOT VIA REGISTER 12      00560000
+*        FROM BUFSIO   RETURN TO IO SUPERVISOR - NORMAL RETURN IF A     00580000
+*             BUFFER HAS BEEN OBTAINED OR THE SKIP POSTING RETURN IF    00600000
+*             IT HAS NOT.  SEE THE DSECT LABELED IHAAPPRV FOR THE       00620000
+*             FORMAT AND USE OF THE RETURN VECTOR TABLE.                00640000
+*        FROM BUFASYN  RETURN TO THE ASYNCHRONOUS ROUTINE VIA REGISTER  00660000
+*             12.                                                       00680000
+* TABLES/WORK AREAS'  DECB, DCB, IOB AND EXTENTION, DCB WA (DCW), DEB,  00700000
+*        BCB - SEE DSECTS AT END OF MODULE FOR FORMAT AND DESCRIPTIONS. 00720000
+* ATTRIBUTES' REENTRANT. DISABLED.                                      00740000
+* NOTES - NONE                                                          00760000
+* GENERAL REGISTERS ARE USED AS FOLLOWS                                 00800000
+*                          FUNCTION  1                FUNCTION  2       00820000
+R0       EQU   0    * -----                     WORK REGISTER           00840000
+R1       EQU   1    * 12 STAR                 * COMPLETED IOB ON ENTRY  00860000
+*                                                FROM ASYNCH ROUTINE,   00880000
+*                                                ADDR OF NEXT IOB WILL  00900000
+*                                                REPLACE IT TEMPORARILY 00920000
+R2       EQU   2    * IOB                     * COMPLETED DECB          00940000
+R3       EQU   3    * DEB                     * -----                   00960000
+R4       EQU   4    * DCB                     * DCB                     00980000
+R5       EQU   5    * -----                   * -----                   01000000
+R6       EQU   6    * -----                     WORK REGISTER           01020000
+R7       EQU   7    * UCB                       WORK REGISTER           01040000
+R8       EQU   8    * -----                     BASE REGISTER    A26738 01060019
+R9       EQU   9    # WORK REGISTER           * -----                   01080000
+R10      EQU   10     WORK REGISTER             WORK REGISTER           01100000
+R11      EQU   11     WORK REGISTER             WORK REGISTER    A26738 01120019
+R12      EQU   12   * -----                     RETURN ADDRESS          01140000
+R13      EQU   13     WORK REGISTER             WORK REGISTER    A26738 01160019
+R14      EQU   14   * IOS VECTOR RETURN TABLE * ON FREEDBUF ENTRY -     01180000
+*                                                RETURN ADDRESS         01200000
+R15      EQU   15   * BASE REGISTER             BASE ADDRESS UPON ENTRY 01220000
+READ     EQU   X'00'                    READ REQUEST             Y02072 01230002
+*        * MEANS THIS REGISTER IS SET UP UPON ENTRY AND MAY NOT BE      01240000
+*            DESTROYED BECAUSE OF THE NEEDS OF THE CALLING ROUTINE      01260000
+*        # MEANS THIS REGISTER MAY BE CHANGED, BUT UPON RETURN MUST     01280000
+*            BE IN THE FORM 000X BECAUSE OF THE NEEDS OF IOS            01300000
+         USING IGG019JI,R15                                             01320000
+         USING IHAIOB,R2                                                01340000
+         USING IHAAPPRV,R14                                             01360000
+         USING IHADCB,R4                                                01380000
+         USING IHADEB,R3                                         S20201 01390020
+*                                                                       01400000
+*                                                                       01420000
+BUFFREED B     ASYATA3                  BRANCH TO FREEDBUF MACRO        01440000
+         USING *,R15                                              M0186 01460021
+SIOAPP   SH    R15,FOUR                 ADJUST BASE TO COMMON ADR M0186 01470021
+         USING IGG019JI,R15                                       M0186 01472021
+BUFSIO   B     APPAFB2                  BRANCH TO APPENDAGE ROUTINE     01480000
+BUFASYN  B     ASYNCH                   ASYNCHRONOUS RTN ENTRY   Y02072 01500002
+FOUR     DC    H'4'                     G.P. CONSTANT             M0186 01510021
+         EJECT                                                          01512002
+*********************************************************************   01514002
+*        SIO DYNAMIC BUFFERING - AN APPENDAGE ROUTINE.  CALLED          01520002
+*        FROM IGG019JG IN PROTECT KEY ZERO, HOLDING THE LOCAL LOCK      01530002
+*        AND REGISTER 13 POINTING TO A SAVE AREA.                       01540002
+*********************************************************************   01550002
+*                                                                       01560000
+APPAFB2  EQU   *                        APPENDAGE ROUTINE        Y02072 01580002
+         USING RQE,R1                   RQE ADDRESSABILITY       Y02072 01590002
+         SPACE 2                                                        01590402
+         MODESET  KEYADDR=RQEPRT,WORKREG=10  CHANGE TO USER KEY  Y02072 01592002
+         SPACE 2                                                        01594002
+         CLI   IOBAPP,READ              THIS REQUEST A READ      Y02072 01596002
+         BNE   APPRVNOR                                                 01600000
+         L     R10,IOBBCHAD             ADDR OF DECB             A33533 01620021
+         USING IHADECB,R10                                              01640000
+         TM    DECBTYP1,X'01'           DYN BUFF WANTED           VLR2  01646018
+         BZ    APPRVNOR                 NORMAL RETURN TO IOS      VLR2  01652018
+         L     R10,DECBAREA             IF AREA HAS BEEN OBTAINED       01660000
+         LA    R10,0(R10)                                         VLR2  01665018
+         DROP  R10                                                VLR2  01670018
+         L     R9,DCBBUFCB               PICK UP ADDR OF  BCB     VLR2  01675018
+         USING IHABCB,R9                                          VLR2  01680018
+         LA    R4,0(R9)                                           VLR2  01685018
+         CR    R10,R4                                             VLR2  01690018
+         BL    APPAFB3              IF LOW,  PICK UP BUFFER       VLR2  01695018
+         A     R4,BCBSIZE                                         VLR2  01700018
+         CR    R10,R4                                             VLR2  01705018
+         BNL   APPAFB3                  IF NOT LOW, BR TO GET    A26738 01708019
+*                                       BUF                      A26738 01711019
+         L     R4,IOBDCBAD-1           PICK UP DCB ADDR.          VLR2  01715018
+         SR    R9,R9                                              VLR2  01720018
+         SR    R10,R10                                            VLR2  01725018
+         B     APPRVNOR               NORMAL RETURN TO IOS        VLR2  01730018
+APPAFB3  EQU   *                                                  VLR2  01735018
+         L     R4,IOBDCBAD-1           PICK UP DCB ADDR.          VLR2  01740018
+         SR    R9,R9                                              VLR2  01745018
+         SR    R10,R10                                            VLR2  01750018
+         L     R10,DCBBUFCB                                       VLR2  01755018
+         USING IHABCB,R10                                               01760000
+         L     R9,BCBNAVB               R9   FIRST AVAILABLE BUFFER     01780000
+         LTR   R9,R9                    IS THERE AN AVAILABLE BUFFER{   01800000
+         BNE   APPAFE2                                                  01820000
+         L     R9,BCBLIOB               NONE.                           01840000
+         LTR   R9,R9                    R9   LAST IOB AWAITING BUFFER   01860000
+         BNE   APPAFD31                 PLACE NEW IOB ON Q AWAITING BFR 01880000
+         ST    R2,BCBFIOB                                               01900000
+         B     APPAFD32                                                 01920000
+APPAFD31 ST    R2,IOBFCHAD-IHAIOB(R9)                                   01940000
+APPAFD32 ST    R2,BCBLIOB                                               01960000
+         XC    IOBFCHAD,IOBFCHAD                                        01980000
+         SPACE 2                                                        01992002
+         MODESET  KEYADDR=KEY0,WORKREG=9  SET PROTECTION KEY 0   Y02072 01994002
+         SPACE 2                                                        01996002
+         SR    R9,R9                    CLEAR R9 FOR IOS                02000000
+         B     APPRVSKP                 SKIP POST IOS RETURN            02020000
+         SPACE 2                                                        02030002
+APPAFE2  MVC   BCBNAVB,0(R9)            BUFFER AVAILABLE, REMOVE FROM Q 02040000
+         DROP  R10                                                      02060000
+         L     R10,IOBBCHAD             ADDR OF DECB             A33533 02080021
+         USING IHADECB,R10                                              02100000
+         ST    R9,DECBAREA              INSERT ADDRESS OF AREA IN DECB  02120000
+         DROP  R10                                                      02140000
+         L     R10,IOBCCWAD             R10  ADDRESS OF CHANNEL PROGRAM 02160000
+         USING CP4,R10                                                  02180000
+         TM    DCBRECFM,X'80'           TEST FOR  FIXED           VLR   02185018
+         BO    APPAFIX                  BRANCH FOR FIXED          VLR   02190018
+         LA    R9,12(R9)                VLR- READ TO AREA+12      VLR   02195018
+         B     APPAFIX2                                           VLR   02200018
+APPAFIX  LA    R9,16(R9)                FIX-READ TO AREA+16       VLR   02205018
+APPAFIX2 EQU   *                                        +16       VLR   02210018
+         STH   R9,CA23+2                SET ADDRESS IN CHANNEL PROGRAM  02220000
+         SRL   R9,16                                                    02240000
+         STC   R9,CA23+1                                                02260000
+APPRVNOR TM    DEBRPSID,RPSFLAGS        IS RPS PRESENT           S20201 02265020
+         BZ    IOSRETRN                 NO, RETURN TO IOS        Y02072 02270002
+         SPACE 2                                                        02272002
+         MODESET  KEYADDR=KEY0,WORKREG=10  CHANGE TO KEYZERO     Y02072 02275002
+         SPACE 2                                                        02277002
+         L     R15,DEBEXPTR              GET ADDR OF DEB         S21045 02282021
+*                                       EXTENSION PTR            S21045 02284021
+         USING DEBEXT,R15                                        S21045 02286021
+         L     R15,DEBRPSIO              ADDR OF 2ND SIO APPEND  S21045 02288021
+         BR    R15                      GO TO RPS APPENDAGE      S20201 02290020
+         USING IGG019JI,R15             BASE ADDRESSABILITY      Y02072 02290402
+         SPACE 2                                                        02292002
+IOSRETRN MODESET  KEYADDR=KEY0,WORKREG=10  CHANGE TO KEYZERO     Y02072 02294002
+         SPACE 2                                                        02294102
+         BR    R14                      RETURN TO IOS            Y02072 02294402
+RPSFLAGS EQU   X'E0'                                             S20201 02295020
+         DROP  R2,R4,R10,R14                                     Y02072 02300002
+         EJECT                                                          02320002
+**********************************************************************  02322002
+*        ENTRY FROM FREEDBUF.   ENTERED IN STORAGE PROTECT KEY ZERO,    02330002
+*        A VALIDATED DEB ADDRESS IS IN REGISTER 3, REGISTER 5 POINTS    02332002
+*        TO THE SVRB, REGISTER 4 POINTS TO THE DCB, REGISTER 2 POINTS   02334002
+*        TO THE DECB, AND THE USER'S PROTECT KEY HAS BEEN PLACED IN     02334102
+*        THE SECOND BYTE OF THE EXTENDED SVRB REGISTER SAVE AREA.       02334202
+**********************************************************************  02334402
+         SPACE 2                                                        02336002
+         USING RBBASIC,R5               SVRB ADDRESSABILITY      Y02072 02338002
+         USING IHADECB,R2                                               02340000
+         USING IHADCB,R4                                                02360000
+         USING IHABCB,R10                                               02380000
+         USING IHAIOB,R1                                                02400000
+         USING IHADCW,R7                                          VLR2  02410018
+         SPACE 2                                                        02420002
+         USING IGG019JI,R15                                      S21045 02430021
+ASYATA3  STM   R11,R15,RBEXSV3          SAVE REGS ACROSS LCK RTN Y02072 02440002
+         SPACE 2                                                        02440102
+**********************************************************************  02440202
+*    OBTAIN THE LOCAL LOCK.  WILL BE RELEASED PRIOR TO RETURNING TO     02440302
+*    FREEDBUF ROUTINE (IGC0005G - SVC 57).                              02441602
+**********************************************************************  02443602
+         SPACE 2                                                        02445602
+GLCL1    SETLOCK OBTAIN,TYPE=LOCAL,MODE=UNCOND,  OBTAIN THE      Y02072*02445702
+               RELATED=(IOB,IGG019JI)            LOCAL LOCK      Y02072 02445802
+         SPACE 2                                                        02445902
+         LM    R11,R15,RBEXSV3          RESTORE REGS 11-15       Y02072 02446402
+         LR    R12,R14                  EXIT ADDR IN REG 12      Y02072 02446802
+         SPACE 2                                                        02447202
+         MODESET  KEYADDR=RBEXUKEY,WORKREG=13 SET USER'S KEY     Y02072 02447302
+         SPACE 2                                                        02447402
+         LR    R13,R3                   VALIDATED DEB ADDR,      Y02072 02447502
+*                                       NONZERO R13 INDICATES    Y02072 02448002
+*                                       FREEDBUF ENTRY           Y02072 02448402
+*                                                                       02448502
+         L     R7,232(0,R1)             WKAREA PTR IN REG 7       13264 02448602
+         TM    DECBTYP2,X'20'           READ KEY FOR UPDATE       13264 02449902
+         BZ    ASYATB9                                            VLR2  02451202
+         LA    R11,DCWFUPDI             POINT TO UPDATE QUEUE    A26738 02452502
+         BAL   R10,SCHQUEUE             SEE IF IOB IS HERE       A26738 02453802
+         B     ASYATB9                  NO, TRY ERROR QUEUE      A26738 02455102
+         B     ASYATB2                  YES, GO FREE BUFFER      A26738 02456402
+*                                                                       02457702
+*                                                                       02459002
+*                                                                       02460302
+SCHQUEUE L     R1,0(R11)                GET FIRST IOB            A26738 02461602
+         LA    R1,0(R1)                 CLEAR HIGH ORDER BYTE    A26738 02462902
+ASYATA31 LTR   R1,R1                    ANY IOB                  A26738 02464202
+         BCR   8,R10                    BR, NO IOB FOUND         A26738 02465502
+         L     R6,IOBECBAD                                        13264 02466802
+         LA    R6,0(0,R6)               ZERO HIGH ORDER BYTE      13264 02468102
+         LA    R2,0(0,R2)               ZERO HIGH ORDER BYTE      13264 02469402
+         CLR   R2,R6                                              13264 02470702
+         BE    ASYATA32                                           13264 02472002
+         L     R1,IOBFCHAD                                        13264 02473302
+         B     ASYATA31                                           13264 02474602
+ASYATA32 L     R6,IOBBCHAD                                        13264 02475902
+         LTR   R6,R6                                              13264 02477202
+         BZ    ASYATA33                                           13264 02478502
+         MVC   IOBFCHAD-IHAIOB(4,R6),IOBFCHAD                     13264 02479802
+         B     ASYATA34                                           13264 02481102
+ASYATA33 MVC   1(3,R11),IOBFCHAD+1      SET 1ST IOB PTR          A26738 02482402
+ASYATA34 L     R6,IOBFCHAD                                        13264 02483702
+         LTR   R6,R6                                              13264 02485002
+         BZ    ASYATA35                                           13264 02486302
+         MVC   IOBBCHAD-IHAIOB(4,R6),IOBBCHAD                     13264 02487602
+         B     4(R10)                   FOUND IOB RETURN         A26738 02488902
+ASYATA35 MVC   5(3,R11),IOBBCHAD+1      SET LAST IOB PTR         A26738 02490202
+         B     4(R10)                   FOUND IOB RETURN         A26738 02491502
+*                                                                       02492802
+*                                                                       02494102
+*                                                                       02495402
+ASYATB9  LA    R11,DCWFIOBE             POINT TO ERROR QUEUE     A26738 02496702
+         IC    R8,DCWFIOBE              SAVE ERROR QUEUE CONNT   A26738 02498002
+         BAL   R10,SCHQUEUE             SEE IF IOB IS HERE       A26738 02499302
+         B     ASYATB2                  NO, FREE BUFFER          A26738 02500602
+         LA    R8,1(R8)                 ROOM FOR ONE MORE IOB    A26738 02501902
+         STC   R8,DCWFIOBE              SAVE NEW COUNT           A26738 02503202
+         O     R9,F8                    MAKE REGISTER NEGATIVE   A26738 02504502
+         B     ASYATB5                                            VLR2  02505802
+         DROP  R3,R7,R15                                         S20201 02507102
+         EJECT                                                          02508402
+**********************************************************************  02510402
+*        ENTRY FROM ASYNCHRONOUS ROUTINE.  ENTERED WITH LOCAL LOCK      02518402
+*        HELD, IN USER PROTECT KEY, AND REGISTER 14 POINTER TO          02518802
+*        A SAVE AREA (IGGBISAV).  REGISTER 13 SET TO ZERO TO INDICATE   02519202
+*        ASYNCHRONOUS ENTRY.                                            02519602
+**********************************************************************  02519702
+         SPACE 2                                                        02519802
+         USING IGGSAVE,R14              SAVEAREA ADDRESSABILITY  Y02072 02519902
+ASYNCH   SR    R13,R13                  INDICATE ENTRY WAS FROM  Y02072 02520002
+*                                       ASYNCHRONOUS ROUTINE     Y02072 02526602
+ASYATB2  BALR  R8,0               R8  BASE REGISTER.R15 NOT USED        02533302
+         USING *,R8                BECAUSE OF EXCP                      02540000
+         N     R9,F0                   HIGH ORDER BIT ZERO        VLR2  02550018
+ASYATB5  BALR  R8,0          R8 BASE REG,R15 NOT USED BECAUSE OF  8M603 02556018
+*                                       EXCP                      8M603 02562018
+         USING *,R8                                               8M603 02568018
+         L     R7,DECBAREA                                        8M603 02574018
+         LTR   R7,R7                    WAS A BFR ASSIGNED TO THIS DECB 02580000
+         BZ    ASYATC4                  NO, BRANCH               A36336 02590020
+         TM    DECBTYP1,X'01'           DYNAMIC BUFFERING         21810 02606018
+         BZ    ASYATC4                  NO--DON'T PUT IN POOL     21810 02612018
+*                                                                       02620000
+         L     R10,DCBBUFCB            R10 BUFFER CONTROL BLOCK         02640000
+*                                                                 19953 02642018
+*              IF BUFFER IS ALLREADY ON THE                       19953 02644018
+*              FREE QUEUE, DO NOT FREE AGAIN                      19953 02646018
+*                                                                 19953 02648018
+         L     R6,BCBNAVB               FIRST FREE BUFFER         19953 02650018
+         LA    R7,0(0,R7)               ZERO HIGH ORDER BYTE      19953 02652018
+ASYATB3  LA    R6,0(0,R6)               ZERO HIGH ORDER BYTE      19953 02654018
+         LTR   R6,R6                    LAST BUFFER ON QUEUE      19953 02656018
+         BC    8,ASYATB4                BRANCH TO FREE BUF IF YES 19953 02658018
+         CR    R6,R7                    IS BUFFER OF FREE QUEUE   19953 02660018
+         BC    8,ASYATC4                BRANCH IF YES             19953 02662018
+         L     R6,0(0,R6)               NEXT FREE BUFFER          19953 02664018
+         B     ASYATB3                                            19953 02666018
+ASYATB4  L     R6,BCBFIOB               R6 ADDRESS OF NEXT IOB    19953 02668018
+         LTR   R6,R6                    IF ZERO, NO IOBS AWAITING       02680000
+         BC    7,ASYATC2                 A BUFFER. THEREFORE, PUT       02700000
+*                                        BUFFER ON AVAILABLE QUEUE.     02720000
+         MVC   0(4,R7),BCBNAVB                                          02740000
+         ST    R7,BCBNAVB                                               02760000
+         XC    DECBAREA(4),DECBAREA     CLEAR BUFF PTR            VLR   02770018
+         B     ASYATC4                                             7829 02780000
+ASYATC2  LR    R11,R1                   IF IOB AWAITING BUFFER,         02800000
+         LR    R1,R6                    R11  ADDR OLD IOB               02820000
+         MVC   BCBFIOB(4),IOBFCHAD      R1   ADDR NEW IOB               02840000
+         CL    R1,BCBLIOB               REMOVE NEW IOB FROM BUFFER Q    02860000
+         BNE   ASYATC3                                                  02880000
+         MVC   BCBLIOB(4),BCBFIOB       ZERO LIOB IF NO MORE IOBS ON Q  02900000
+ASYATC3  L     R7,IOBECBAD              R7   ADDRESS OF NEXT DECB       02920000
+         MVC   DECBAREA-IHADECB(4,R7),DECBAREA  ADDR OF BFR TO NEW DECB 02940000
+         XC    DECBAREA,DECBAREA                                  VLR2  02950018
+         USING IHADECB,R7                                               02960000
+         L     R6,IOBCCWAD              R6   ADDRESS OF NEXT CHAN PROG  02980000
+         USING CP4,R6                                                   03000000
+         L     R10,DECBAREA             SET ADDR OF BUFFER IN CP        03020000
+         TM    DCBRECFM,X'80'           TEST FOR FIXED            VLR   03025018
+         BO    APPAFIX3                 BRANCH FOR FIXED          VLR   03030018
+         LA    R10,12(R10)                                        VLR   03035018
+         B     APPAFIX4                                           VLR   03040018
+APPAFIX3 LA    R10,16(R10)              FIX - READ TO AREA+16     VLR   03045018
+APPAFIX4 EQU  *                                                   VLR   03050018
+         STH   R10,CA23+2                                               03060000
+         SRL   R10,16                                                   03080000
+         STC   R10,CA23+1                                               03100000
+*                                                                       03102002
+*        DEB ADDRESS IN REGISTER 13 IF ENTRY FROM FREEDBUF       Y02072 03110002
+*                                                                       03112002
+         LTR   R10,R13                  DEB ADDR IN REG          Y02072 03120002
+         BNZ   CONTINU                  BR YES                   Y02072 03130002
+         L     R10,IGGPDEB              VALIDATED DEB ADDR       Y02072 03132002
+CONTINU  EQU   *                                                 Y02072 03134002
+         USING IHADEB,R10                                        S20201 03140020
+         SR    R6,R6                                                    03160000
+         IC    R6,IOBDADAD             GET BB AND MOVE INTO IOB         03180000
+         SLL   R6,4                     PRIOR TO EXCP                   03200000
+         LA    R6,DEBUCBAD(R6)                                   S20201 03205020
+         DROP  R10                                               S20201 03212020
+         MVC   IOBDADAD+1(2),4(R6)                                      03240000
+         MVC   IOBBCHAD+1(3),IOBECBAD+1 SAVE ECB                 A33533 03245021
+         LA    R6,IOBCSW                IOS WILL ZERO OUT CSW    A33533 03250021
+         ST    R6,IOBECBAD              INSTEAD OF ECB           A33533 03255021
+         LTR   R13,R13                  ASYNCH ROUTINE ENTRY     Y02072 03255802
+         BZ    SAVEREGS                 BR IF YES                Y02072 03256202
+         SPACE 2                                                        03256302
+         MODESET  KEYADDR=KEY0,WORKREG=6  CHANGE TO KEYZERO      Y02072 03256402
+         SPACE 2                                                        03256502
+         STM   R9,R15,RBEXSV3           SAVE REGISTERS 9-15      Y02072 03256602
+         LA    R9,RBEXSV3               ADDR TO RESTORE REGS     Y02072 03256702
+         LA    R10,RBEXUKEY             ADDR OF USER KEY FIELD   Y02072 03256802
+*                                       SET UP IN IGC005G-SVC57  Y02072 03256902
+         B     FREELOCK                 RELEASE LOCAL LOCK       Y02072 03257002
+         SPACE 2                                                        03258902
+SAVEREGS EQU   *                        SAVE REGS IN KEY 5 CORE  Y02072 03259302
+         MODESET  EXTKEY=DATAMGT        SET DATA MGT KEY (5)     Y02072 03259702
+         SPACE 2                                                        03259802
+         STM   R9,R15,IGGREGS           SAVE REGISTERS 9-15      Y02072 03260102
+         LA    R9,IGGREGS               ADDR TO RESTORE REGS     Y02072 03262102
+         LA    R10,IGGUKEY              ADDR OF USER KEY FIELD   Y02072 03262502
+         USING KEYADDR,R10              USER KEY ADDRESSABILITY  Y02072 03262902
+         SPACE 2                                                        03263002
+         MODESET  KEYADDR=KEY0,WORKREG=6  CHANGE TO KEYZERO      Y02072 03263102
+         SPACE 2                                                        03263302
+FREELOCK EQU   *                        RELEASE LOCAL LOCK       Y02072 03263402
+         SPACE 2                                                        03263502
+**********************************************************************  03265502
+*        RELEASE LOCAL LOCK.  WAS OBTAINED BY IGG019JI IF FREEDBUF      03266802
+*        ENTRY OR BY ASYNCHRONOUS ROUTINE.  LOCK WILL BE RE-ACQUIRED    03275002
+*        FOLLOWING EXCP SVC.                                            03277002
+**********************************************************************  03277402
+         SPACE 2                                                        03279002
+FLCL1    SETLOCK  RELEASE,TYPE=LOCAL,   FREE LOCAL LOCK          Y02072*03279802
+               RELATED=('HELD ON ENTRY, OBTAINED AFTER EXCP')    Y02072 03279902
+         SPACE 2                                                        03287002
+         MODESET  KEYADDR=USERKEY,WORKREG=11 CHANGE TO USER KEY  Y02072 03290402
+         SPACE 2                                                        03290802
+         LR    R6,R1                    SAVE IOB ADDRESS         M1792  03291502
+         EXCP  (1)                                                      03297202
+         LR    R1,R6                    RESTORE IOB ADDRESS      M1792  03302902
+         SPACE 2                                                        03304902
+         MODESET  KEYADDR=KEY0,WORKREG=11  CHANGE TO KEYZERO     Y02072 03306902
+         SPACE 2                                                        03307002
+**********************************************************************  03307102
+*        OBTAIN LOCAL LOCK.  WAS HELD ON ENTRY TO ROUTINE AND FREED     03307702
+*        AT STATEMENT FLCL.                                             03308102
+**********************************************************************  03308202
+         SPACE 2                                                        03308502
+GLCL2    SETLOCK  OBTAIN,TYPE=LOCAL,MODE=UNCOND,  OBTAIN LOCAL   Y02072*03322802
+               RELATED=('REOBTAIN LOCK FOLLOWING EXCP')  LOCK    Y02072 03332802
+         SPACE 2                                                        03333202
+         MODESET  KEYADDR=USERKEY,WORKREG=11 CHANGE TO USER KEY  Y02072 03334802
+         SPACE 2                                                        03336802
+         LM    R9,R15,0(R9)             RESTORE REGISTERS        Y02072 03336902
+         DROP  R10                      END USING FOR USER KEY   Y02072 03337002
+         SPACE 2                                                        03341802
+         MVC   IOBECBAD+1(3),IOBBCHAD+1 RESTORE ECB              A33533 03346602
+         LR    R1,R11                   RESTORE OLD IOB ADDRESS IN R1   03351402
+ASYATC4  EQU   *                                                   7829 03365702
+         LTR   R1,R1        IS THERE AN IOB                        7829 03380000
+         BNZ   DEBTEST                  BR YES                   Y02072 03400002
+         LTR   R13,R13                  ENTERED FROM FREEDBUF    Y02072 03400102
+         BNZ   FREEDBUF                 BRANCH IF YES            Y02072 03400202
+         BR    R12                      RETURN TO ASYN ROUTINE   Y02072 03400302
+*                                                                       03400402
+*        REGISTER 13 HAS DEB ADDRESS IF ENTRY FROM FREEDBUF.            03400802
+*                                                                       03401202
+DEBTEST  LTR   R10,R13                  DEB ADDR IN REG          Y02072 03402402
+         BNZ   CONTINU2                 BR YES                   Y02072 03404402
+         L     R10,IGGPDEB              VALIDATED DEB ADDR       Y02072 03406402
+CONTINU2 EQU   *                        FREE IOB                 Y02072 03406502
+         LA    R0,SP250IOB              GET IOB LENGTH           Y02072 03406802
+         USING IHADEB,R10                                        S20201 03411600
+         TM    DEBRPSID,RPSFLAGS        IS RPS PRESENT           S20201 03414000
+         BZ    ASYATC41                 NO, BRANCH               S20201 03416400
+         AH    R0,RPSCCW                YES, ALLOW FOR RPS CCWS  S20201 03418800
+ASYATC41 EQU   *                        *                        S20201 03421200
+         DROP  R10                      END DEB ADDRESSABILITY  YM01146 03421602
+         SR    R10,R10                  CLEAR REGISTER           Y02072 03423202
+         LTR   R13,R13                  DETERMINE TYPE OF ENTRY YM01165 03423602
+         BZ    ASYNENTY                 BR ZERO, ASYNCH ENTRY    Y02072 03425702
+         SPACE 2                                                        03428002
+         MODESET  KEYADDR=KEY0,WORKREG=10 CHANGE TO KEY ZERO    YM01380 03430002
+         SPACE 2                                                        03430402
+         IC    R10,RBEXUKEY             USERS PROTECT KEY        Y02072 03431002
+         STM   R14,R7,RBEXSV3           SAVE REGISTERS 14-7      Y02072 03433302
+         LR    R4,R13                   VALIDATED DEB ADDRESS   YM01165 03435302
+         LA    R5,RBEXSV3               ADDR OF REG SAVE AREA    Y02072 03437902
+         B     INIT                     CHANGE TO KEY ZERO       Y02072 03440202
+*                                                                       03442502
+ASYNENTY EQU   *                        SAVE REGS IN KEY 5 CORE YM01380 03444502
+         MODESET  EXTKEY=DATAMGT        SET DATA MGT KEY        YM01380 03444602
+         SPACE 2                                                        03444702
+         IC    R10,IGGUKEY              USERS PROTECT KEY        Y02072 03444802
+         STM   R14,R7,IGGREGS           SAVE REGISTERS 14-7      Y02072 03447102
+         L     R4,IGGPDEB               VALIDATED DEB ADDR       Y02072 03449402
+         LA    R5,IGGREGS               ADDR OF REG SAVE AREA    Y02072 03451702
+INIT     EQU   *                        INIT REGS FOR FREEMAIN   Y02072 03454002
+         LR    R2,R10                   USERS PROTECT KEY        Y02072 03456302
+         USING IHADEB,R4                DEB ADDRESSABILITY       Y02072 03458602
+         L     R4,DEBTCBAD              TCB ADDRESS              Y02072 03460902
+         USING PSA,R0                   LOW CORE ADDRESSABILITY  Y02072 03463202
+         L     R7,PSAAOLD               ASCB ADDRESS             Y02072 03465502
+         SPACE 2                                                        03467802
+         MODESET  KEYADDR=KEY0,WORKREG=3 CHANGE TO KEYZERO       Y02072 03470102
+         SPACE 2                                                        03472402
+         FREEMAIN RU,LV=(0),A=(1),SP=SP250,KEY=(10),BRANCH=YES   Y02072 03474702
+         SPACE 2                                                        03477002
+         MODESET  KEYADDR=(2)           CHANGE TO USER KEY       Y02072 03479302
+         SPACE 2                                                        03481602
+         LM    R14,R7,0(R5)             RESTORE REGS 14 THRU 7   Y02072 03483902
+         USING IHADCB,R4                DCB ADDRESSABILITY       Y02072 03486202
+         LTR   R9,R9                                              VLR2  03488502
+         BM    ASYATP1                                            VLR2  03490802
+         L     R6,DCBWKPT2       GET WORK AREA                     7830 03493102
+         IC    R11,37(R6)              REDUCE                      7830 03495402
+         BCTR  R11,0                   DCWNACT                     7830 03497702
+         STC   R11,37(R6)              BY ONE                      7830 03500013
+ASYATP1  N     R9,F0             RESET HIGH ORDER BIT ZERO        VLR2  03520018
+         LTR   R13,R13                  ENTERED FROM FREEDBUF    Y02072 03530002
+         BNZ   FREEDBUF                 BR IF YES                Y02072 03532002
+         BR    R12                                                VLR2  03540018
+         SPACE 2                                                        03542002
+FREEDBUF EQU   *                        EXIT ROUTINE TO FREEDBUF Y02072 03544002
+         SPACE 2                                                        03546002
+         MODESET  KEYADDR=KEY0,WORKREG=15  SET PROTECTION KEY 0  Y02072 03546402
+         SPACE 2                                                        03546802
+**********************************************************************  03548002
+*    RELEASE THE LOCAL LOCK.  WAS OBTAINED UPON ENTRY FROM              03548402
+*    FREEDBUF (IGC005G - SVC 57).                                       03548802
+**********************************************************************  03549202
+*                                                                       03549302
+         STM   R11,R15,RBEXSV3          SAVE REGS ACROSS LCK RTN Y02072 03549402
+         SPACE 2                                                        03549602
+FLCL2    SETLOCK RELEASE,TYPE=LOCAL,    RELEASE THE LOCAL LOCK   Y02072*03549702
+               RELATED=(IOB,IGG019JI)   AND EXIT TO FREEDBUF     Y02072 03549802
+         SPACE 2                                                        03549902
+         LM    R11,R15,RBEXSV3          RESTORE REGISTERS        Y02072 03553202
+         BR    R12                      RETURN TO FREEDBUF       Y02072 03555202
+         SPACE 5                                                        03555602
+RPSCCW   DC    H'16'                    LENGTH OF RPS CCWS       S20201 03556702
+         DS    0F                                                 VLR2  03560018
+F8       DC    X'80000000'                                        VLR2  03580018
+F0       DC    X'00FFFFFF'                                        VLR2  03600018
+SP250IOB EQU   56                       56 BYTES FOR IOB         Y02072 03620002
+SP250    EQU   250                      SUBPOOL ID FOR IOB       Y02072 03622002
+KEY0     DC    X'00'                    STORAGE PROTECT KEY 0    Y02072 03630002
+*                                                                       03630402
+PATCH    DC    XL50'00'                 ZEROED PATCH AREA        Y02072 03630802
+*                                                                       03631202
+         EJECT                                                          03632002
+*              DATA EVENT CONTROL BLOCK                                 03682002
+IHADECB  DSECT                                                          03732002
+         DS    0F                                                       03782002
+DECBECB  DS    CL4                      EVENT CONTROL BLOCK (ECB)       03832002
+DECBTYP1 DS    BL1                      TYPE B6 - 1 IF LENGTH IS S      03882002
+*                                            B7 - 1 IF AREA IS S        03932002
+DECBTYP2 DS    BL1                           B0 - 1 IF READ K           03982002
+*                                            B1 - 1 IF READ KX          04032002
+*                                            B2 - 1 IF READ KU          04082002
+*                                            B4 - 1 IF WRITE K          04092002
+*                                            B5 - 1 IF WRITE KN         04102002
+DECBLGTH DS    CL2                      LENGTH OF BLOCK                 04112002
+DECBDCBA DS    A                        POINTER TO DCB                  04114002
+DECBAREA DS    A                        ADDRESS OF AREA                 04114402
+DECBLOGR DS    A                        POINTER TO LOGICAL RECORD       04114802
+DECBKEY  DS    A                        POINTER TO KEY                  04115202
+DECBEXC1 DS    BL1                      EXCPTN CD B0-RECORD NOT FOUND   04115602
+*                                                 B1-RECORD LGTH CHK    04115702
+*                                                 B3-INVALID REQUEST    04115802
+*                                                 B4-UNCORRECTABLE IO   04115902
+*                                                 B5-UNREACHABLE BLOCK  04117102
+*                                                 B6-OVERFLOW RECORD    04119102
+*                                                 B7-DUPLICATE RECORD   04119202
+DECBEXC2 DS    BL1                                B7-SET BY READ KU     04119302
+         SPACE 4                                                        04119402
+IGGSAVE  IGGBISAV                                                       04119502
+         SPACE 2                                                        04121502
+KEYADDR  DSECT                          DSECT FOR USER KEY              04126402
+USERKEY  DS    X                        ADDRESSABILITY                  04127602
+         EJECT                                                          04128002
+         DCBD  DSORG=(IS)                                               04128802
+         EJECT                                                          04129202
+IHAIOB   IGGIOBD                                                        04130020
+         SPACE 5                                                        04132002
+IHADCW   IGGBISAM                                                       04140020
+         SPACE 5                                                        04150002
+IHADEB   IGGDEBD                                                        04160020
+         SPACE 5                                                        04210002
+IHAAPPRV DSECT                                                          04720000
+APPNORM  DS    CL4                      NORMAL                   S20201 04740020
+APPRVSKP DS    CL4       SKIP POST                                      04760000
+APPRVXCP DS    CL4       EXCP                                           04780000
+APPRVBYP DS    CL4       BYPASS                                         04800000
+IHABCB   DSECT                    BUFFER CONTROL BLOCK                  04820000
+BCBFIOB  DS    A                   FIRST IOB AWAITING BUFFER            04840000
+BCBLIOB  DS    A                   LASTT IOB AWAITING BUFFER            04860000
+BCBNAVB  DS    A                   NEXT AVAILABLE BUFFER                04880000
+BCBSIZE  DS    A                   SIZE OF BCB AND BUFFERS              04900000
+IHACP47  DSECT                      CHANNEL PROGRAMS                    04920000
+CP4      DS    0D                       CP4                             04940000
+         IGGCP4                                                         04945020
+CP5      DS    0D                       CP5 AND CP5W                    05220000
+         IGGCP5     OPTCD=W                                      S20201 05240020
+****     CCWS AFTER CA24 FOR CP5 OR CP5W                                05290020
+****     DIFFER BUT ARE NOT USED BY THIS MODULE                         05330020
+         SPACE 4                                                        05380002
+         IECDRQE                                                 Y02072 05390002
+         EJECT                                                          05400002
+CVT      DSECT                                                   Y02072 05410002
+         CVT                                                     Y02072 05412002
+         SPACE 5                                                        05414002
+         IKJTCB                                                  Y02072 05416002
+         EJECT                                                          05418002
+         IKJRB                                                   Y02072 05418402
+RBEXUKEY EQU   RBEXSAVE+1               USER'S PROTECT KEY       Y02072 05468402
+RBEXSV3  EQU   RBEXSAVE+8               THIRD WORD IN EXTENDED   Y02072 05518402
+*                                       REGISTER SAVE AREA              05568402
+         EJECT                                                          05618402
+         IHAPSA                                                  Y02072 05668402
+         EJECT                                                          05718402
+         IHASCVT                                                 Y02072 05768402
+         END                                                            05818402

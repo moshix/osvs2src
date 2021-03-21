@@ -1,0 +1,617 @@
+IEFSDTTE CSECT                                                          00100020
+         TITLE 'IEFSDTTE - 3211 PRINTER SUPPORT MODULE'                 00200020
+*********************************************************************** 00300020
+*1320                                                            A53806 00320021
+*0000                                                            M5709  00350020
+*0000                                                            M5878  00370020
+*0000                                                            M5882  00380020
+*1320                                                            A42459 00390021
+*                                                                     * 00400020
+*TITLE-- IEFSDTTE - 3211 PRINTER SUPPORT MODULE                       * 00500020
+*                                                                     * 00600020
+* STATUS CHANGE LEVEL 001                                               00700021
+*                                                                     * 00800020
+*FUNCTION/OPERATION-- THIS ROUTINE ANALYZES THE USER REQUESTS FOR     * 00900020
+*   UCS/FCB ENVIRONMENTS AND DYNAMICALLY CAUSES LOADING OF THE 3211   * 01000020
+*   PRINTER UNIVERSAL CHARACTER SET BUFFER AND THE FORMS CONTROL      * 01100020
+*   BUFFER FOR EACH OUTPUT DATA SET.                                  * 01200020
+*                                                                     * 01300020
+*ENTRY POINT-- IEFSDTTE - FROM THE STANDARD SYSTEM OUTPUT WRITER IN   * 01400020
+*   IEFSD087 PRIOR TO OPENING EACH INPUT DATA SET DESTINED FOR OUTPUT * 01500020
+*   TO THE 3211 PRINTER.                                              * 01600020
+*   FROM THE SMB PROCESSOR IN IEFSD086 PRIOR TO THE WRITING OF EACH   * 01700020
+*   GROUP OF SMBS TO:                                                 * 01800020
+*        1. FORCE BLOCKING OF DATA CHECKS                             * 01900020
+*        2. PROVIDE UCS/FCB IMAGE-IDS WHICH ARE DEFAULTS              * 02000020
+*   FROM THE LINKOR ROUTINE IN IEFSD078 PRIOR TO PROCESSING           * 02100020
+*   JOB SEPERATORS TO.                                                * 02200020
+*        1. FORCE BLOCKING OF DATA CHECKS                             * 02300020
+*        2. PROVIDE UCS/FCB IMAGE-IDS WHICH ARE DEFAULTS              * 02400020
+*                                                                     * 02500020
+*INPUT-- REGISTER 7 POINTS TO THE WORK LIST USED BY DSD AND SMB       * 02600020
+*        ROUTINE.                                                     * 02700020
+*        REGISTER 8 POINTS TO THE WORK AREA FOR STANDARD OUTPUT       * 02800020
+*        ROUTINE.                                                     * 02900020
+*                                                                     * 03000020
+*OUTPUT-- ON RETURN, REGISTER 15 WILL CONTAIN A RETURN                * 03100020
+*   CODE INDICATING UCS/FCB ENVIRONMENTAL CONDITIONS.                 * 03200020
+*        REGISTER 15 RETURN CODE=00 - SUCCESSFUL COMPLETION.          * 03300020
+*        REGISTER 15 RETURN CODE<0C AND                               * 03400020
+*             SWITCH SORS1=INERS - INPUT ERROR.                       * 03500020
+*        REGISTER 15 RETURN CODE>08 - OUTPUT ERROR.                   * 03600020
+*                                                                     * 03700020
+*EXTERNAL ROUTINES--                                                  * 03800020
+*        IEFSD089 TO OUTPUT ERROR MESSAGE                             * 03900020
+*                                                                     * 04000020
+*EXIT-NORMAL-- RETURNS TO THE INSTRUCTION FOLLOWING THE ONE WHICH     * 04100020
+*   LINKED TO THIS ROUTINE TO RESUME NORMAL WRITER PROCESSING.        * 04200020
+*                                                                     * 04300020
+*EXIT-ERROR-- RETURNS TO FREE WORKFILES AND ON                        * 04400020
+*   INPUT ERRORS-- SKIP INPUT DATA SET.                               * 04500020
+*   OUTPUT ERRORS-- REENQUEUE DATA SET AND TERMINATE WRITER.          * 04600020
+*                                                                     * 04700020
+*TABLES/WORK AREAS-- THE WORKLST AND WKSOR WRITER COMMUNICATION LISTS,* 04800020
+*   THE PARLIST COMMUNICATION REGION,                                 * 04900020
+*   THE OUTPUT DCB, THE INPUT JFCB, AND THE OUTPUT UCB.               * 05000020
+*                                                                     * 05100020
+*ATTRIBUTES-- THIS ROUTINE IS REENTRANT AND REFRESHABLE.              * 05200020
+*                                                                     * 05300020
+*NOTES-- THE SETPRT MACRO IS USED TO REQUEST DATA MANAGEMENT LOADING  * 05400020
+*   OF THE UCS/FCB BUFFERS.                                           * 05500020
+*                                                                     * 05600020
+*********************************************************************** 05700020
+*                                                                     * 05800020
+         EJECT                                                          05900020
+*DEFINE DCB                                                             06000020
+         DCBD  DSORG=PS                                                 06100020
+*DEFINE JFCB                                                            06200020
+IEFJFCBN DSECT                                                          06300020
+         IEFJFCBN                                                       06400020
+*DEFINE UCB                                                             06500020
+IEFUCBOB DSECT                                                          06600020
+         IEFUCBOB                                                       06700020
+*DEFINE PARAMETER LIST                                                  06800020
+         IEFSDPAR                                                       06900020
+*DEFINE SETPRT LIST                                                     07000020
+         IEFSDSET                                                       07100020
+*DEFINE WKSOR WORK AREA                                                 07200020
+         IEFSDSDR                                                       07300020
+*DEFINE WORKLST                                                         07400020
+         IEFSDWKT                                                       07500020
+         EJECT                                                          07600020
+*                                                                     * 07700020
+*********************************************************************** 07800020
+*                                                                     * 07900020
+*        ESSENTIAL EQUATES                                              08000020
+*********************************************************************** 08100020
+ZERO     EQU   0                        LENGTH OF ZERO                  08200020
+ONE      EQU   1                        LENGTH OF ONE                   08300020
+XZERO    EQU   X'00'                    ZERO FCB RETURN CODE            08400020
+TWO      EQU   2                        LENGTH OF TWO                   08500020
+THREE    EQU   3                        CONSTANT OF THREE               08600020
+FOUR     EQU   4                        LENGTH OF FOUR                  08700020
+NINETEEN EQU   19                       CONSTANT OF 19                  08800020
+ONEBYTE  EQU   8                        LENGTH OF 1-BYTE SHIFT          08900020
+TWOBYTES EQU   16                       LENGTH OF 2-BYTE SHIFT          09000020
+THREEBYT EQU   24                       LENGTH OF 3-BYTE SHIFT          09100020
+INERR    EQU   4                        INPUT ERR RET CODE TO 087       09200020
+OUTERR   EQU   8                        OUTPUT ERR RET CODE TO 087      09300020
+DDDOFSET EQU   16                            WTR DEVICE ADDR OFFSET     09400020
+RCOFFSET EQU   19                       RET CODE IN GR15 SAVE AREA      09500020
+SDTTMLGN EQU   102                      WTO MAX MESSAGE LENGTH          09600020
+SDTTMLG1 EQU   78                       WTO MESSAGE LENGTH              09700020
+FCBTST   EQU   X'80'                    FCB TEST IN PROCESS INDICATOR   09800020
+ASAS1    EQU   C' '                     ASA CNTRL CHAR SPACE 1          09900020
+MCCS1    EQU   X'09'                    MACHINE CNTRL CHAR SPACE 1      10000020
+MACSW    EQU   2                        MACHINE CNTRL CHAR              10100020
+RCHIGH   EQU   X'1C'                    HIGHEST VALID RETURN CODE       10200020
+FLAGF    EQU   X'FF'                    ONE BYTE FLAG OF F              10300020
+ENTSW    EQU   FLAGF-PARTTE-PARTTE1     USED TO TURN OFF ENTRYSW M5878  10350020
+DCBLK    EQU   X'80'                    DATA CHECK BLOCK REQUEST        10400020
+DCUNBLK  EQU   X'40'                    DATA CHECK UNBLOCK REQUEST      10500020
+DCFOLD   EQU   X'04'                    DATA CHECK FOLD REQUEST         10600020
+DCUNFOLD EQU   X'08'                    DATA CHECK UNFOLD REQUEST       10700020
+DCBUNBLK EQU   X'40'                    DATA CHECKS UNBLOCKED           10800020
+DEBUCBAD EQU   32                       UCB ADDR OFFSET IN DEB          10900020
+FCBVERFY EQU   X'80'                    FCB VERIFY REQUEST              11000020
+FCBALIGN EQU   X'01'                    FCB ALIGN REQUEST               11100020
+JFCBFVR  EQU   X'04'                    JFCB FCB VERIFY REQUEST         11200020
+JFCBFAL  EQU   X'08'                    JFCB FCB ALIGN REQUEST          11300020
+JFCBUVR  EQU   X'10'                    JFCB UCS VERIFY REQUEST         11400020
+JFCBUF   EQU   X'40'                    JFCB UCS FOLD REQUEST           11500020
+JFCBUBLK EQU   X'40'                    JFCB UNBLOCK (ALLOW DATA CHECK) 11600020
+LMFOLD   EQU   X'40'                    LOAD MODE FOLD REQUEST          11700020
+LMUNFOLD EQU   X'00'                    LOAD MODE UNFOLD                11800020
+UCBFDF   EQU   X'80'                    UCB FCB ID IS A DEFAULT ID      11900020
+UCBUDF   EQU   X'80'                    UCB UCS ID IS A DEFAULT ID      12000020
+UCBUPE   EQU   X'01'                    UCB UCS PARITY ERROR            12100020
+UCBUF    EQU   X'40'                    UCB UCS FOLD MODE               12200020
+EIGHT    EQU   8                       LENGTH OF EIGHT           M5709  12230020
+SVSIZE   EQU   72                       SIZE OF SAVE AREA        M5709  12260020
+UCSVERFY EQU   X'10'                    UCS VERIFY REQUEST              12300020
+*                                                                       12400020
+*********************************************************************** 12500020
+*                                                                       12600020
+*        REGISTER EQUATES                                               12700020
+*********************************************************************** 12800020
+*                                                                       12900020
+PR0      EQU   0                        PARAMETER REGISTER 0            13000020
+PR1      EQU   1                        PARAMETER REGISTER 1            13100020
+MSGRET   EQU   2                        ERROR MSG RETURN REG            13200020
+PARLISTR EQU   3                        PARLIST BASE                    13300020
+JFCBR    EQU   4                        INPUT JFCB BASE                 13400020
+UCBR     EQU   5                        OUTPUT UCB PRT EXTENSION BASE   13500020
+DCBR     EQU   6                        OUTPUT DCB BASE                 13600020
+WORKLSTR EQU   7                        WORKLIST BASE                   13700020
+WKSOREG  EQU   8                        WKSOR BASE                      13800020
+BASER    EQU   9                        BASE REGISTER                   13900020
+SETPR    EQU   10                       SETPRT LIST BASE                14000020
+MSGSTRTR EQU   11                       ERROR MSG STARTING ADDRESS      14100020
+BRTABR   EQU   11                       BRANCH TABLE BASE REGISTER      14200020
+MSGLGNR  EQU   12                       ERROR MSG LENGTH                14300020
+WORKR    EQU   12                       WORK REGISTER                   14400020
+RCREG    EQU   12                       RETURN CODE PROCESSING REG      14500020
+SAVER    EQU   13                       SAVE AREA POINTER               14600020
+RETR     EQU   14                       RETURN REGISTER                 14700020
+BRANCHR  EQU   15                       MSG WTR BRANCH REGISTER         14800020
+         EJECT                                                          14900020
+*                                                                     * 15000020
+*********************************************************************** 15100020
+*                                                                     * 15200020
+*        THE 3211 PRINTER PROCESSOR MODULE                            * 15300020
+*                                                                     * 15400020
+*********************************************************************** 15500020
+*                                                                     * 15600020
+IEFSDTTE CSECT                                                          15700020
+         SPACE                                                          15800020
+*INITIALIZE REGISTERS                                                   15900020
+         SAVE  (14,12)                  SAVE REGISTERS                  16000020
+         BALR  BASER,0                  ESTABLISH                       16100020
+         USING *,BASER                    CSECT BASE                    16200020
+         LR    PARLISTR,PR1             SAVE CONTENTS OF REG 1   M5709  16210020
+         LA    PR0,SVSIZE               LOAD SIZE OF SAVE AREA   M5709  16220020
+         GETMAIN R,LV=(0)               GET CORE FOR SAVE AREA   M5709  16230020
+         ST    SAVER,FOUR(PR1)          BUILD SAVE AREA CHAIN    M5709  16240020
+         ST    PR1,EIGHT(SAVER)                                  M5709  16250020
+         LR    SAVER,PR1                POINTER TO NEW SAVE AREA M5709  16260020
+         LR    PR1,PARLISTR             RESTORE REG 1            M5709  16270020
+         USING WORKLST,WORKLSTR           WORK LIST BASE                16300020
+         L     PARLISTR,WOSPS           GET ADDR OF PARLIST             16400020
+         USING PARLIST,PARLISTR         ESTABLISH ADDRESSIBILITY        16500020
+         USING WKSOR,WKSOREG              WKSOR BASE                    16600020
+         USING INFMJFCB,JFCBR             INPUT JFCB BASE               16700020
+         L     DCBR,DCBOT               ESTABLISH                       16800020
+         USING IHADCB,DCBR                OUTPUT DCB BASE               16900020
+         L     UCBR,PARUCB              GET OUTPUT UCB ADDRESS          17000020
+         USING UCBOB,UCBR                 OUTPUT UCB BASE               17100020
+         L     UCBR,UCBXTADR            SHIFT TO UCB/UCS EXTENSIONTTE0K 17200020
+         DROP  UCBR                                              A42459 17230021
+         USING UCBUCS,UCBR              BASE FOR UCS EXTENSION   A42459 17260021
+         SPACE                                                          17300020
+*GET CORE FOR DYNAMICALLY CHANGED SETPRT LIST                           17400020
+         LR    WORKR,PR1          COPY ADDR OF 089 PASSED BY     TEST   17500020
+*                                         086 OR 087             TEST   17600020
+         LA    PR0,184+SPLEND-SPLIST   GET SIZE OF SETPRT LIST   TEST   17700020
+         GETMAIN R,LV=(0)               GET CORE FOR LIST               17800020
+         LR    SETPR,PR1                ESTABLISH                       17900020
+         USING SPLIST,SETPR               SETPRT LIST BASE              18000020
+*INITIALIZE GOTTEN CORE                                                 18100020
+         XC    SPLIST(SPLLGN),SPLIST   CLEAR SETPRT LIST AREA    TEST   18200020
+         MVC   0(SPLLGN-8,SETPR),SETPRTL                         TEST   18300020
+*                                 COPY SETPRT LIST TO GOT CORE   TEST   18400020
+         ST    WORKR,SPLOP        SAVE ADDR OF 089 IN GOT CORE   TEST   18500020
+         OI    SPLDACK,DCBLK            DEFAULT TO BLOCK DATA CHECKS    18600020
+         OI    SPLDACK,DCUNFOLD         DEFAULT TO UNFOLD IMAGE         18700020
+         MVC   SPLDCBAD(FOUR),DCBOT     GET OUTPUT DCB ADDR FOR SETPRT  18800020
+         TM    PARSWCH,PARTTE+PARTTE1   IS ENTRY FROM 086 OR 078        18900020
+         BZ    FCBID1                   NO, ENTRY FROM IEFSD087         19000020
+         SPACE                                                          19100020
+*                                                                       19200020
+*********************************************************************** 19300020
+*                                                                       19400020
+         TM    UCBUCSOP,UCBUDF          PRESENT UCS IMAGE DEFAULT       19500020
+         BO    DEFAULT3                 YES, DONT CHANGE IT             19600020
+         CLC   UCBUCSID(FOUR),PARUCSID  DEFAULT IMAGE ALREADY LOADED    19700020
+         BE    DEFAULT3                 YES, DONT RELOAD IT             19800020
+         MVC   SPLUCSID(FOUR),PARUCSID  PLACE DEFAULT UCS IMAGE-ID      19900020
+*                                         SAVED IN PARLIST INTO SETPRT  20000020
+DEFAULT3 EQU   *                                                        20100020
+         TM    UCBFCBOP,UCBFDF          PRESENT FCB IMAGE DEFAULT       20200020
+         BO    DEFAULT4                 YES, DONT CHANGE IT             20300020
+         CLC   UCBFCBID(FOUR),PARFCBID  DEFAULT IMAGE ALREADY LOADED    20400020
+         BE    DEFAULT4                 YES, DONT RELOAD IT             20500020
+         MVC   SPLFCBID(FOUR),PARFCBID  PLACE DEFAULT FCB IMAGE-ID      20600020
+*                                         SAVED IN PARLIST INTO SETPRT  20700020
+DEFAULT4 EQU   *                                                        20800020
+         TM    DCBOPTCD,DCBUNBLK        DATA CHECKS PRESENTLY UNBLOCKED 20900020
+         BZ    MAC1                     NO, ISSUE SETPRT FOR IMAGE-IDS  21000020
+         NI    SPLDACK,FLAGF-DCUNBLK    TURN OFF UNBLOCK DATA CK BIT    21100020
+         OI    SPLDACK,DCBLK            PLACE BLOCK REQ IN SETPRT LIST  21200020
+         B     MAC1                     ISSUE SETPRT MACRO              21300020
+*                                                                       21400020
+*********************************************************************** 21500020
+         EJECT                                                          21600020
+*ENVIRONMENTAL ANALYSIS                                                 21700020
+*                                                                     * 21800020
+*********************************************************************** 21900020
+*                                                                     * 22000020
+*   THE INPUT JFCB CONTAINS THE USER REQUESTS FOR THE ENVIRONMENT     * 22100020
+*   REQUIRED FOR EACH OUTPUT DATA SET AS DESCRIBED ON THE USERS OUTPUT* 22200020
+*   DD CARDS.  THE OUTPUT UCB CONTAINS THE PRESENT 3211 OUTPUT UCS/FCB* 22300020
+*   DESCRIPTION.  THIS CODE CHECKS THE JFCB FOR REQUESTS WHICH DIFFER * 22400020
+*   FROM THE PRESENT UCB ENTRIES.  THOSE THAT DIFFER CONSTITUTE CHANGE* 22500020
+*   REQUESTS VIA THE SETPRT MACRO TO ESTABLISH A NEW ENVIRONMENT FOR  * 22600020
+*   THE NEXT OUTPUT DATA SET.                                         * 22700020
+*                                                                     * 22800020
+*********************************************************************** 22900020
+*                                                                     * 23000020
+         SPACE                                                          23100020
+FCBID1   EQU   *                                                        23200020
+         L     JFCBR,WJFCB              LOAD JFCB POINTER        M5882  23250020
+         CLC   JFCFCBID(FOUR),INVALADR  FCB IMAGE-ID SPECIFIED          23300020
+         BNE   FCBID1P                  YES, COMPARE WITH PRESENT ID    23400020
+         TM    UCBFCBOP,UCBFDF          PRESENT IMAGE-ID A DEFAULT      23500020
+         BZ    DEFAULT1                 NO, USE DEFAULT PARAMETERS      23600020
+FCBVER1  EQU   *                                                        23700020
+         TM    JFCUCSOP,JFCBFVR         FCB IMAGE-ID VERIFY REQUEST     23800020
+         BO    FCBVERM                  YES, OUTPUT NO IMAGE MSG.       23900020
+FCBALN1  EQU   *                                                        24000020
+         TM    JFCUCSOP,JFCBFAL         FCB IMAGE-ID ALIGNMENT REQUEST  24100020
+         BO    FCBALNM                  YES, OUTPUT NO IMAGE MSG.       24200020
+UCSID1   EQU   *                                                        24300020
+         CLC   JFCUCSID(FOUR),INVALADR  UCS IMAGE-ID SPECIFIED          24400020
+         BNE   UCSID1P                  YES, COMPARE WITH PRESENT ID    24500020
+         TM    UCBUCSOP,UCBUPE          RELOAD REQUEST FROM OPEN        24600020
+         BO    RELOAD                   YES, PREPARE TO RELOAD          24700020
+         TM    UCBUCSOP,UCBUDF          PRESENT IMAGE-ID A DEFAULT      24800020
+         BZ    DEFAULT2                 NO, USE DEFAULT PARAMETERS      24900020
+UCSVER1  EQU   *                                                        25000020
+         TM    JFCUCSOP,JFCBUVR         UCS IMAGE-ID VERIFY REQUEST     25100020
+         BO    UCSVER1P                 YES, OUTPUT NO IMAGE MSG.       25200020
+FOLD1    EQU   *                                                        25300020
+         TM    JFCUCSOP,JFCBUF          UCS FOLD MODE REQUEST           25400020
+         BO    FOLD1P                   YES, PREPARE TO FOLD            25500020
+UNBLK1   EQU   *                                                        25600020
+         TM    JFCOPTCD,JFCBUBLK        ALLOW DATA CK.-UNBLOCK REQUEST  25700020
+         BO    UNBLKREQ                 YES, PREPARE TO UNBLOCK         25800020
+*                                         ELSE DEFAULT TO BLOCK         25900020
+*********************************************************************** 26000020
+*                                                                       26100020
+LISTCLR1 EQU   *                                                        26200020
+         LA    PR0,184+SPLEND-SPLIST   GET SIZE OF SETPRT LIST   TEST   26300020
+         LR    PR1,SETPR                GET ADDR OF AREA TO FREE        26400020
+         FREEMAIN R,LV=(0),A=(1)        FREE SETPRT LIST CORE           26500020
+*LEAVE THIS MODULE                                                      26600020
+WRAPUP   EQU   *                                                        26700020
+         NI    PARSWCH,ENTSW            TURN OFF ENTRY SW 78/86  M5878  26710020
+         LR    PR1,SAVER                AREA TO FREE             M5709  26720020
+         L     SAVER,FOUR(PR1)          REST SAVE AREA POINTER   M5709  26740020
+         LA    PR0,SVSIZE               SIZE OF CORE TO FREE     M5709  26760020
+         FREEMAIN  R,LV=(0),A=(1)       FREE SAVE AREA CORE      M5709  26780020
+         RETURN  (14,12)                                                26800020
+*                                         RETURN TO CALLER              26900020
+*                                                                       27000020
+*********************************************************************** 27100020
+*                                                                       27200020
+         EJECT                                                          27300020
+*COMPARE NEW JFCB REQUEST WITH PRESENT UCB                              27400020
+FCBID1P  EQU   *                                                        27500020
+         OC    JFCFCBID(FOUR),BLANKS    BLANK OUT TRAILING ZEROES       27600020
+         CLC   JFCFCBID(FOUR),UCBFCBID  JFCB AND UCB ID EQUAL           27700020
+         BE    FCBVER2                  YES, IGNORE CHANGE REQUEST      27800020
+         MVC   SPLFCBID(FOUR),JFCFCBID  PLACE NEW FCB-ID REQ. IN SETPRT 27900020
+FCBVER2  EQU   *                                                        28000020
+         TM    JFCUCSOP,JFCBFVR         FCB IMAGE-ID VERIFY REQUEST     28100020
+         BZ    FCBALN2                  NO, SKIP REQUEST                28200020
+         OI    SPLFCBVA,FCBVERFY        PLACE NEW FCB VERIFY REQ. IN    28300020
+*                                         SETPRT LIST                   28400020
+         B     UCSID2                   GO TO CHECK UCS ID REQUEST      28500020
+FCBALN2  EQU   *                                                        28600020
+         TM    JFCUCSOP,JFCBFAL         FCB IMAGE-ID ALIGNMENT REQUEST  28700020
+         BZ    UCSID2                   NO, GO TO CHECK UCS ID REQUEST  28800020
+FCBALP   EQU   *                                                        28900020
+         OI    SPLFCBVA,FCBALIGN        PLACE NEW FCB ALIGN REQUEST     29000020
+*                                         IN SETPRT LIST                29100020
+UCSID2   EQU   *                                                        29200020
+         CLC   JFCUCSID(FOUR),INVALADR  UCS IMAGE-ID SPECIFIED          29300020
+         BNE   UCSID1P                  YES, COMPARE WITH PRESENT ID    29400020
+         TM    UCBUCSOP,UCBUPE          RELOAD REQUEST FROM OPEN        29500020
+         BO    RELOAD                   YES, PREPARE TO RELOAD          29600020
+         TM    UCBUCSOP,UCBUDF          PRESENT IMAGE-ID A DEFAULT      29700020
+         BZ    DEFAULT2                 NO, USE DEFAULT PARAMETERS      29800020
+UCSVER3  EQU   *                                                        29900020
+         TM    JFCUCSOP,JFCBUVR         UCS IMAGE-ID VERIFY REQUEST     30000020
+         BO    UCSVER3P                 YES, OUTPUT NO IMAGE MSG.       30100020
+FOLD3    EQU   *                                                        30200020
+         TM    JFCUCSOP,JFCBUF          UCS FOLD MODE REQUEST           30300020
+         BO    FOLD1P                   YES, PREPARE TO FOLD            30400020
+UNBLK2   EQU   *                                                        30500020
+         TM    JFCOPTCD,JFCBUBLK        ALLOW DATA CK.-UNBLOCK REQUEST  30600020
+         BZ    MAC1                     NO, ISSUE SETPRT MACRO          30700020
+UNBLKREQ EQU   *                                                        30800020
+         NI    SPLDACK,FLAGF-DCBLK      TURN OFF BLOCK DATA CK BIT      30900020
+         OI    SPLDACK,DCUNBLK          PLACE UNBLOCK REQ IN SETPRT     31000020
+         SPACE                                                          31100020
+MAC1     EQU   *                                                        31200020
+         LR    PR1,SETPR                GET ADDR OF SETPRT LIST         31300020
+         SETPRT (DCBR),OPTCD=B,MF=(E,(PR1))                             31400020
+         SPACE                                                          31500020
+*********************************************************************** 31600020
+*                                                                       31700020
+*TEST RETURN CODES FROM SETPRT MACRO                                    31800020
+         LTR   BRANCHR,BRANCHR          SUCCESSFUL SETPRT EXEC          31900020
+         BZ    LISTCLR                  YES, CLEAR SETPRT LIST          32000020
+*PICK UP FIRST FCB THEN UCS RETURN CODE                                 32100020
+         LR    JFCBR,BRANCHR            SAVE RETURN CODE         A53806 32150021
+         L     UCBR,PARUCB             RESTORE POINTER TO UCB           32200020
+         OI    SPLOP,FCBTST             TURN ON FCB TEST ENTRY SWITCH   32300020
+RCTST    EQU   *                                                        32400020
+         LA    BRTABR,BRTABLE           GET ADDR OF BRANCH TABLE        32500020
+         TM    PARSWCH,PARTTE1          IS ENTRY FROM 078               32600020
+         BZ    RCTST1                  NO, CONTINUE                     32700020
+         LA    BRTABR,BRTABLE1          YES, ADVANCE TO SECOND BRANCH   32800020
+*                                         TABLE                         32900020
+RCTST1   EQU   *                                                        33000020
+         LR    RCREG,BRANCHR            COPY FCB RETURN CODE            33100020
+         SLL   RCREG,TWOBYTES           CLEAR TWO HIGH BYTES            33200020
+         TM    SPLOP,FCBTST             FCB RET CODE TEST IN PROCESS    33300020
+         BO    TESTGO                   YES, BYPASS UCS PROCESS         33400020
+         SLL   RCREG,ONEBYTE            CLEAR EXTRA BYTE W/FCB CODE     33500020
+TESTGO   EQU   *                                                        33600020
+         SRL   RCREG,THREEBYT           RIGHT JUSTIFY RET CODE          33700020
+         LA    PR1,RCHIGH               HIGHEST VALID RETURN CODE       33800020
+         CR    RCREG,PR1                IS RET CODE > 1C                33900020
+         BNH   TESTGO1                  NO, ANALIZE IT                  34000020
+         B     WTO1                     YES, OUTPUT MESSAGE IEF327I     34100020
+TESTGO1  EQU   *                                                        34200020
+         AR    BRTABR,RCREG             INCREMENT INTO BRTABLE          34300020
+         BR    BRTABR                     TO ACT ON RETURN CODE         34400020
+*RETURN CODE DETERMINES BRANCH TABLE ENTRY                              34500020
+*TABLE IF ENTRY IS FROM 086 OR 087                                      34600020
+BRTABLE  EQU   *                                                        34700020
+*                                  RETURN CODE =                        34800020
+         B     LISTCLR             00 - SUCCESSFUL                      34900020
+         B     IDNAM               04 - INPUT ERROR MSG WRITE  IEF325I  35000020
+         B     IDBLEM              08 - INPUT ERROR MSG WRITE  IEF326I  35100020
+         B     WTO1                0C - OUTPUT ERROR MSG WRITE IEF327I  35200020
+         B     WTO2                10 - OUTPUT ERROR MSG WRITE IEF328I  35300020
+         B     WTO3                14 - OUTPUT ERROR MSG WRITE IEF329I  35400020
+         B     PLIM                18 - INPUT ERROR MSG WRITE  IEF311I  35500020
+         B     WTO4                1C - OUTPUT ERROR MSG WRITE IEF331I  35600020
+*                                                                       35700020
+*TABLE IF ENTRY IS FROM 078                                             35800020
+BRTABLE1 EQU   *                                                        35900020
+*                                  RETURN CODE =                        36000020
+         B     LISTCLR             00 - SUCCESSFUL                      36100020
+         B     WTO5                04 - INPUT ERROR MSG WRITE  IEF325I  36200020
+         B     WTO6                08 - INPUT ERROR MSG WRITE  IEF326I  36300020
+         B     WTO1                0C - OUTPUT ERROR MSG WRITE IEF327I  36400020
+         B     WTO2                10 - OUTPUT ERROR MSG WRITE IEF328I  36500020
+         B     WTO3                14 - OUTPUT ERROR MSG WRITE IEF329I  36600020
+         B     WTO7                18 - INPUT ERROR MSG WRITE  IEF311I  36700020
+         B     WTO4                1C - OUTPUT ERROR MSG WRITE IEF331I  36800020
+*********************************************************************** 36900020
+         SPACE                                                          37000020
+UCSID1P  EQU   *                                                        37100020
+         OC    JFCUCSID(FOUR),BLANKS    BLANK OUT TRAILING ZEROES       37200020
+         CLC   JFCUCSID(FOUR),UCBUCSID  JFCB AND UCB ID EQUAL           37300020
+         BE    UCSVER2                  YES, IGNORE CHANGE REQUEST      37400020
+         MVC   SPLUCSID(FOUR),JFCUCSID  PLACE NEW UCS-ID REQ. IN SETPRT 37500020
+UCSVER2  EQU   *                                                        37600020
+         TM    JFCUCSOP,JFCBUVR         UCS IMAGE ID VERIFY REQUEST     37700020
+         BZ    FOLD2                    NO, SKIP REQUEST                37800020
+UCSVER2P EQU   *                                                        37900020
+         OI    SPLUCSV,JFCBUVR          PLACE NEW UCS VERIFY REQ. IN    38000020
+*                                         SETPRT LIST                   38100020
+FOLD2    EQU   *                                                        38200020
+         TM    JFCUCSOP,JFCBUF          UCS FOLD MODE REQUEST           38300020
+         BZ    UNBLK2                   NO, TEST FOR UNBLOCK REQUEST    38400020
+FOLD2P   EQU   *                                                        38500020
+         OI    SPLLMO,JFCBUF            PLACE FOLD REQ. IN SETPRT LIST  38600020
+         B     UNBLK2                   CONTINUE WITH UNBLOCK TEST      38700020
+FOLD1P   EQU   *                                                        38800020
+         OI    SPLDACK,JFCBUF           PLACE FOLD REQ. IN SETPRT LIST  38900020
+         B     UNBLK2                   CONTINUE WITH UNBLOCK TEST      39000020
+RELOAD   EQU   *                                                        39100020
+         MVC   SPLUCSID(FOUR),UCBUCSID  PLACE UCS IMAGE-ID PRESENTLY    39200020
+*                                         IN UCB INTO SETPRT LIST       39300020
+         B     UCSVER2                  CONTINUE WITH VERIFY TEST       39400020
+DEFAULT1 EQU   *                                                        39500020
+         CLC   UCBFCBID(FOUR),PARFCBID  DEFAULT IMAGE ALREADY LOADED    39600020
+         BE    FCBVER2                  YES, DONT RELOAD IN             39700020
+         MVC   SPLFCBID(FOUR),PARFCBID  PLACE DEFAULT FCB IMAGE-ID      39800020
+*                                         SAVED IN PARLIST INTO SETPRT  39900020
+         B     FCBVER2                  CONTINUE WITH VERIFY TEST       40000020
+DEFAULT2 EQU   *                                                        40100020
+         CLC   UCBUCSID(FOUR),PARUCSID  DEFAULT IMAGE ALREADY LOADED    40200020
+         BE    UCSVER2                  YES, DONT RELOAD IN             40300020
+         MVC   SPLUCSID(FOUR),PARUCSID  PLACE DEFAULT UCS IMAGE-ID      40400020
+*                                         SAVED IN PARLIST INTO SETPRT  40500020
+         B     UCSVER2                  CONTINUE WITH VERIFY TEST       40600020
+*                                                                       40700020
+*********************************************************************** 40800020
+*                                                                       40900020
+FCBVERM  EQU   *                                                        41000020
+         LA    MSGRET,FCBALN1           LD REG FOR RET AFTER MSG WRT    41100020
+         LA    MSGSTRTR,MSFCBV          GET START OF MESSAGE IEF322I    41200020
+         LA    MSGLGNR,MSFCBVE-MSFCBV   GET LENGTH OF MESSAGE           41300020
+ERRMSGOT EQU   *                                                        41400020
+*PUT IN ERROR MESSAGE CONTROL CHARACTER                                 41500020
+         MVI   CONCH,ASAS1              INIT TO ASA SPACE 1 CNTRL CHAR  41600020
+         TM    DCBRECFM,MACSW           MACH CNTRL CHAR SPECIFIED       41700020
+         BZ    OUTMSG                   NO, OUTPUT MSG                  41800020
+         MVI   CONCH,MCCS1              GET MACH SPACE 1 CNTRL CHAR     41900020
+*TURN ON OLD SWITCH                                                     42000020
+OUTMSG   EQU   *                                                        42100020
+         OI    SORS1,OLDSW                                              42200020
+         L     PR1,WOSAP                GET ADDR ERR RET PUT AT         42300020
+         CLI   RCOFFSET(PR1),OUTERR     IS PRESENT RC OUTPUT ERROR      42400020
+         BNL   OUTMSG1                  YES, LEAVE CODE TO CAUSE TERM   42500020
+         MVI   RCOFFSET(PR1),INERR      INDICATE I/O INPUT ERROR        42600020
+         OI    SORS1,INERS              TURN ON INPUT I/O ERR SW        42700020
+OUTMSG1  EQU   *                                                        42800020
+*OUTPUT MESSAGE                                                         42900020
+         STM   MSGSTRTR,MSGLGNR,INLSF   PASS MSG START AND LENGTH       43000020
+         LR    RCREG,BRANCHR            COPY AND SAVE RETURN CODE       43100020
+         L     BRANCHR,SPLOP            GET ADDR OF 089 PUT ROUTINE     43200020
+         LA    BRANCHR,ZERO(BRANCHR)    CLEAR HI BYTE FLAG              43300020
+         BALR  RETR,BRANCHR             OUTPUT MESSAGE                  43400020
+         LR    BRANCHR,RCREG            RESTORE RETURN CODE             43500020
+         BR    MSGRET                   RETURN TO NEXT OPERATION        43600020
+UCSVER1P EQU   *                                                        43700020
+         LA    MSGRET,FOLD1             LD REG FOR RET AFTER MSG WRT    43800020
+UCSVER1X EQU   *                                                        43900020
+         LA    MSGSTRTR,MSUCSV          GET START OF MESSAGE IEF324I    44000020
+         LA    MSGLGNR,MSUCSVE-MSUCSV   GET LENGTH OF MESSAGE           44100020
+         B     ERRMSGOT                 OUTPUT ERROR MSG                44200020
+UCSVER3P EQU   *                                                        44300020
+         LA    MSGRET,FOLD3             LD REG FOR RET AFTER MSG WRT    44400020
+         B     UCSVER1X                 PICK UP MESSAGE LGN AND START   44500020
+FCBALNM  EQU   *                                                        44600020
+         LA    MSGRET,UCSID1            LD REG FOR RET AFTER MSG WRT    44700020
+         LA    MSGSTRTR,MSFCBAL         GET START OF MESSAGE IEF323I    44800020
+         LA    MSGLGNR,MSFCBALE-MSFCBAL GET LENGTH OF MESSAGE           44900020
+         B     ERRMSGOT                 OUTPUT ERROR MESSAGE            45000020
+IDNAM    EQU   *                                                        45100020
+         LA    MSGSTRTR,MSIDNA          GET START OF MESSAGE IEF325I    45200020
+         LA    MSGLGNR,MSIDNAE-MSIDNA   GET LENGTH OF MESSAGE           45300020
+         LA    MSGRET,LISTCLR           LOAD REG FOR RET AFT MSG WRT    45400020
+         B     ERRMSGOT                 OUTPUT ERROR MESSAGE            45500020
+IDBLEM   EQU   *                                                        45600020
+         LA    MSGSTRTR,MSBLE           GET START OF MESSAGE IEF326I    45700020
+         LA    MSGLGNR,MSBLEE-MSBLE     GET LENGTH OF MESSAGE           45800020
+         LA    MSGRET,LISTCLR           LOAD REG FOR RET AFT MSG WRT    45900020
+         B     ERRMSGOT                 OUTPUT ERROR MESSAGE            46000020
+PLIM     EQU   *                                                        46100020
+         LA    MSGSTRTR,MSPLI           GET START OF MESSAGE IEF311I    46200020
+         LA    MSGLGNR,MSPLIE-MSPLI     GET LENGTH OF MESSAGE           46300020
+         LA    MSGRET,LISTCLR           LOAD REG FOR RET AFT MSG WRT    46400020
+         B     ERRMSGOT                 OUTPUT ERROR MESSAGE            46500020
+         SPACE                                                          46600020
+*********************************************************************** 46700020
+         SPACE                                                          46800020
+*A WTO IS ISSUED WHEN THE SYSOUT PRINTER CANNOT BE USED                 46900020
+WTO1     EQU   *                                                        47000020
+         LA    MSGSTRTR,SDTTM1          GET START OF MESSAGE IEF327I    47100020
+         B     WTOUT                    OUTPUT MSG                      47200020
+WTO2     EQU   *                                                        47300020
+         LA    MSGSTRTR,SDTTM2          GET START OF MESSAGE IEF328I    47400020
+         B     WTOUT                    OUTPUT MSG                      47500020
+WTO3     EQU   *                                                        47600020
+         LA    MSGSTRTR,SDTTM3          GET START OF MESSAGE IEF329I    47700020
+         B     WTOUT                    OUTPUT MSG                      47800020
+WTO4     EQU   *                                                        47900020
+         LA    MSGSTRTR,SDTTM4          GET START OF MESSAGE IEF331I    48000020
+WTOUT    EQU   *                                                        48100020
+         LA    PR0,SDTTMLGN             GET LENGTH OF MESSAGE           48200020
+         GETMAIN R,LV=(0)               GETCORE FOR MESSAGE BUILD       48300020
+         MVC   0(SDTTMLGN,PR1),0(MSGSTRTR)   MOVE IN MESSAGE LIST       48400020
+         DROP  UCBR                                              A42459 48430021
+         USING UCBOB,UCBR               BASE FOR UCB             A42459 48460021
+         MVC   DDDOFSET(THREE,PR1),UCBNAME   PUT IN WTR NAME            48500020
+         LR    MSGSTRTR,PR1             SAVE ADDR OF GOTTEN CORE        48600020
+         WTO   MF=(E,(1))               WRITE MSG TO CONSOLE            48700020
+         LA    PR0,SDTTMLGN             GET LENGTH OF AREA TO FREE      48800020
+         LR    PR1,MSGSTRTR             GET ADDR OF AREA TO FREE        48900020
+         FREEMAIN R,LV=(0),A=(1)        FREE MSG BUILD CORE             49000020
+         L     WORKR,WOSAP              GET ADDR ERR RET PUT AT         49100020
+         MVI   NINETEEN(WORKR),OUTERR   IND I/O OUTPUT ERROR            49200020
+LISTCLR  EQU   *                                                        49300020
+         TM    SPLOP,FCBTST             RET CODE TESTS COMPLETED        49400020
+         BZ    HICODE                   YES, RETURN HI ERROR CODE       49500020
+         NI    SPLOP,FLAGF-FCBTST       NO, SET UP TO DO                49600020
+         LR    BRANCHR,JFCBR            RESTORE RETURN CODE      A53806 49650021
+         B     RCTST                      UCS RETURN CODE TEST          49700020
+*RETURN HIGHER OF UCS AND FCB RETURN CODES TO CALLER                    49800020
+HICODE   ST    BRANCHR,SPLWORK          STORE RETURN CODES              49900020
+         OC    SPLUCS,SPLFCB            COMBINE RETURN CODES            50000020
+         NI    SPLFCB,XZERO             SET FCB RET CODE TO ZERO        50100020
+         L     BRANCHR,SPLWORK          RELOAD SINGLE RETURN CODE       50200020
+         B     LISTCLR1                 RETURN TO LEAVE MODULE   M5709  50250020
+*A WTO IS ISSUED IN PLACE OF A SYSOUT MESSAGE IF INPUT ERROR IS ON THE  50300020
+*JOB SEPERATOR ROUTINE.                                                 50400020
+WTO5     EQU   *                                                        50500020
+         LA    MSGSTRTR,SDTTM5          GET START OF MESSAGE IEF325I    50600020
+         B     WTOUT1                   OUTPUT MSG                      50700020
+WTO6     EQU   *                                                        50800020
+         LA    MSGSTRTR,SDTTM6          GET START OF MESSAGE IEF326I    50900020
+         B     WTOUT1                   OUTPUT MSG                      51000020
+WTO7     EQU   *                                                        51100020
+         LA    MSGSTRTR,SDTTM7          GET START OF MESSAGE IEF311I    51200020
+WTOUT1   EQU   *                        OUTPUT MSG                      51300020
+         LA    PR0,SDTTMLG1             GET LENGTH OF MESSAGE           51400020
+         GETMAIN R,LV=(0)               GETCORE FOR MESSAGE BUILD       51500020
+         MVC   0(SDTTMLG1,PR1),0(MSGSTRTR)   MOVE IN MESSAGE LIST       51600020
+         LR    MSGSTRTR,PR1             SAVE ADDR OF GOTTEN CORE        51700020
+         WTO   MF=(E,(1))               WRITE MESSAGE TO CONSOLE        51800020
+         LA    PR0,SDTTMLG1             GET LENGTH OF AREA TO FREE      51900020
+         LR    PR1,MSGSTRTR             GET ADDRESS OF AREA TO FREE     52000020
+         FREEMAIN R,LV=(0),A=(1)        FREE MSG BUILD CORE             52100020
+         B     LISTCLR                  CK FOR RC TESTS COMPLETE        52200020
+         SPACE                                                          52300020
+*********************************************************************** 52400020
+SETPRTL  SETPRT OPTCD=B,MF=L            DEFAULT TO BLOCK DATA CHECKS    52500020
+BLANKS   DC    CL4' '                                                   52600020
+INVALADR DC    1F'0'                    INVALID ADDRESS CONSTANT        52700020
+         DC    C'ZAPSZAPSZAPSZAPS'                                 VS0H 52800020
+         DC    C'ZAPSZAPSZAPSZAPS'                                 VS0H 52900020
+         DC    C'ZAPSZAPSZAPSZAPS'                                 VS0H 53000020
+         DC    C'ZAPSZAPSZAPSZAPS'                                 VS0H 53100020
+         DC    C'ZAPSZAPSZAPSZAPS'                                 VS0H 53200020
+*********************************************************************** 53300020
+         EJECT                                                          53400020
+IEFSDTTM EQU   *                                                        53500020
+         DS    0F                                                       53600020
+MSPLI    DC    C'IEF311I NOP--SETPRT PARAMETER LIST INVALID.'           53700020
+MSPLIE   EQU   *                                                        53800020
+MSFCBV   DC    C'IEF322I NO FCB IMAGE-ID SPECIFIED FOR VERIFICATION.'   53900020
+MSFCBVE  EQU   *                                                        54000020
+MSFCBAL  DC    C'IEF323I NO FCB IMAGE-ID SPECIFIED FOR ALIGNMENT.'      54100020
+MSFCBALE EQU   *                                                        54200020
+MSUCSV   DC    C'IEF324I NO UCS IMAGE-ID SPECIFIED FOR VERIFICATION.'   54300020
+MSUCSVE  EQU   *                                                        54400020
+MSIDNA   DC    C'IEF325I OPERATOR CANCELLED LOAD.  UCS/FCB IMAGE-ID/'   54500020
+         DC    C'CHAIN NOT AVAILABLE.'                                  54600020
+MSIDNAE  EQU   *                                                        54700020
+MSBLE    DC    C'IEF326I PERMANENT I/O ERROR ON BLDL LOCATE OF UCS/FCB' 54800020
+         DC    C' IMAGE IN SYSTEM LIBRARY.'                             54900020
+         DS    0F                       ASSURE FWD BDY ALIGNMENT        55000020
+MSBLEE   EQU   *                                                        55100020
+SDTTM1   EQU   *                                                        55200020
+         WTO   'IEF327I WTR DDD CLOSED.  PERMANENT I/O ERROR WHILE LOADX55300020
+               ING UCS/FCB BUFFER.                            ',       X55400020
+               MF=L,ROUTCDE=(2,7,10,11),DESC=(4)                        55500020
+         DS    0F                       ASSURE FWD BDY ALIGNMENT        55600020
+SDTTM2   EQU   *                                                        55700020
+         WTO   'IEF328I WTR DDD CLOSED.  PERMANENT I/O ERROR ON UCS/FCBX55800020
+                IMAGE VERIFICATION.                           ',       X55900020
+               MF=L,ROUTCDE=(2,7,10,11),DESC=(4)                        56000020
+         DS    0F                       ASSURE FWD BDY ALIGNMENT        56100020
+SDTTM3   EQU   *                                                        56200020
+         WTO   'IEF329I WTR DDD CLOSED.  OPERATOR CANCELLED LOAD.  INCOX56300020
+               RRECT UCS/FCB IMAGE DISPLAYED FOR VERIFICATION.',       X56400020
+               MF=L,ROUTCDE=(7,11),DESC=(5)                             56500020
+         DS    0F                       ASSURE FWD BDY ALIGNMENT        56600020
+SDTTM4   EQU   *                                                        56700020
+         WTO   'IEF331I WTR DDD CLOSED.  SETPRT NOP-UNCORRECTABLE OUTPUX56800020
+               T ERROR ON PREVIOUS OPERATION.                 ',       X56900020
+               MF=L,ROUTCDE=(2,7,10,11),DESC=(6)                        57000020
+         DS    0F                       ASSURE FWD BDY ALIGNMENT        57100020
+SDTTM5   EQU   *                                                        57200020
+         WTO   'IEF325I OPERATOR CANCELLED LOAD.  UCS/FCB IMAGE-ID/CHAIX57300020
+               N NOT AVAILABLE.       ',                               *57400020
+               MF=L,ROUTCDE=(2,7,11),DESC=(5)                           57500020
+         DS    0F                       ASSURE FWD BDY ALIGNMENT        57600020
+SDTTM6   EQU   *                                                        57700020
+         WTO   'IEF326I PERMANENT I/O ERROR ON BLDL LOCATE OF UCS/FCB IX57800020
+               MAGE IN SYSTEM LIBRARY.',                               *57900020
+               MF=L,ROUTCDE=(2,7,10,11),DESC=(4)                        58000020
+         DS    0F                       ASSURE FWD BDY ALIGNMENT        58100020
+SDTTM7   EQU   *                                                        58200020
+         WTO   'IEF311I NOP--SETPRT PARAMETER LIST INVALID.            X58300020
+                                      ',                               *58400020
+               MF=L,ROUTCDE=(2,7,11),DESC=(6)                           58500020
+*                                                                       58600020
+*********************************************************************** 58700020
+*                                                                       58800020
+         END                                                            58900020

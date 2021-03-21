@@ -1,0 +1,339 @@
+ IEAVSPSA: PROC(FREEPTR) OPTIONS(NOSAVE(1,15),NOSAVEAREA);              00100002
+ /********************************************************************/ 00150002
+ /*                                                                  */ 00200002
+ /*                                                                  */ 00250002
+ /********************************************************************/ 00300002
+ /*                                                                  */ 00350002
+ /* STATUS:   CHANGE LEVEL=001  12/12/74                             */ 00400003
+ /*                                                                  */ 00450002
+ /* FUNCTION:  1) FOR GETMAIN REQUESTS, TO GET A SA/WA AND VECTOR    */ 00500002
+ /*               TABLE AND INITIALIZE IT                            */ 00550002
+ /*            2) FOR FREEMAIN REQUESTS, TO FREE A SA/WA AND VECTOR  */ 00600002
+ /*               TABLE                                              */ 00650002
+ /*            3) FOR FORMAT REQUESTS, TO FORMAT THE SA/WA VECTOR    */ 00700003
+ /*               TABLE                                              */ 00710003
+ /*                                                                  */ 00720003
+ /* ENTRY POINT: IEAVSPSA                                            */ 00750002
+ /*                                                                  */ 00800002
+ /* INPUT:    REGISTER 1  CONTAINS: 1)ADDRESS TO FREEMAIN, OR        */ 00850002
+ /*                                 2)ZERO IF REQUEST FOR GETMAIN    */ 00900002
+ /*                                 3)COMPLEMENT FOR FORMAT          */ 00920003
+ /*           REGISTER 13 POINTS TO A REGISTER SAVEAREA              */ 00950002
+ /*           REGISTER 14 CONTAINS THE RETURN ADDRESS                */ 01000002
+ /*           REGISTER 15 CONTAINS THE ENTRY POINT ADDRESS           */ 01050002
+ /*                                                                  */ 01100002
+ /* OUTPUT:   REGISTER 1  CONTAINS 1)ADDRESS OF VECTOR TABLE         */ 01150002
+ /*                                2)ZERO - ON RETURN FROM FREEMAIN  */ 01200002
+ /*                                         REQUEST                  */ 01250002
+ /*           REGISTER 15 CONTAINS 1)A RETURN CODE OF ZERO, IF NO    */ 01300002
+ /*                                  ERROR                           */ 01350002
+ /*                                2)A RETURN CODE OF FOUR FOR ERRORS*/ 01400002
+ /*                                   FROM AT LEAST ONE OF THESE     */ 01450002
+ /*                                   SOURCES:                       */ 01500002
+ /*                                  - ISSUING A GETMAIN             */ 01550002
+ /*                                  - ISSUING A FREEMAIN            */ 01600002
+ /*                                  - ISSUING A SETLOCK TO OBTAIN OR*/ 01650002
+ /*                                    FREE SALLOC                   */ 01700002
+ /*           REGISTER 14 CONTAINS THE RETURN ADDRESS                */ 01750002
+ /*           REGISTER 13 POINTS TO A REGISTER SAVEAREA              */ 01800002
+ /*                                                                  */ 01850002
+ /* EXTERNAL REFERENCES: NONE.                                       */ 01900002
+ /*                                                                  */ 01950002
+ /* EXITS:    RETURN TO CALLER VIA A BR 14                           */ 02000002
+ /*                                                                  */ 02050002
+ /* ERROR CODES:                                                     */ 02100002
+ /*           REGISTER 15 CONTAINS THE RETURN CODE                   */ 02150002
+ /*                                                                  */ 02200002
+ /* TABLES/WORK AREAS: IHAWSAVT                                      */ 02250002
+ /* NOTE: THE ROUTINE THAT INCLUDES THIS ROUTINE MUST CONTAIN        */ 02300002
+ /*       MAPPING MACROS FOR THE CVT (MARCO: CVT) AND THE PSA        */ 02310002
+ /*       (MACRO: IHAPSA).                                           */ 02320002
+ /*                                                                  */ 02350002
+ /* ATTRIBUTES: SERIALLY REUSABLE                                    */ 02400002
+ /*                                                                  */ 02450002
+ /* RESOURCES:                                                       */ 02500002
+ /*           NONE.                                                  */ 02550002
+ /*                                                                  */ 02600002
+ /* SVCS:     NONE.  BRANCH ENTRIES TO GETMAIN,FREEMAIN              */ 02650002
+ /*                                                                  */ 02700002
+ /* MESSAGES: NONE.                                                  */ 02750002
+ /*                                                                  */ 02800002
+ /* NOTES:                                                           */ 02850002
+ /*    THIS ROUTINE INCLUDES THE MAPPING MACRO 'IHAWSAVT' AND        */ 02860002
+ /*    SPECIFIES THE MAPPING OF THE GLOBAL WORK/SAVE AREAS, EVEN     */ 02870002
+ /*    THOUGH THIS ROUTINE BUILDS THE WORK/SAVE AREAS FOR A CPU.     */ 02880002
+ /*    THIS IS BECAUSE THIS ROUTINE USES 'GETMAIN' TO OBTAIN THE     */ 02890002
+ /*    SPACE FOR THE WORK/SAVE AREA IT IS BUILDING BUT 'GETMAIN'     */ 02892002
+ /*    ITSELF USES THE GLOBAL WORK/SAVE AREAS.                       */ 02894002
+ /*    THE MAPPING MACRO FOR THE CPU RELATED WORK/SAVE AREA IS NOT   */ 02896002
+ /*    USED IN BUILDING OR INITIALIZING THAT WORK/SAVE AREA BY THIS  */ 02898002
+ /*    THIS ROUTINE, THUS THE MAPPING OF THE CPU RELATED WORK/SAVE   */ 02898402
+ /*    AREA IS NOT NEEDED BY THIS ROUTINE BUT THE MAPPING OF THE     */ 02898802
+ /*    GLOBAL WORK/SAVE AREA IS NEEDED.                              */ 02899202
+ /*                                                                  */ 02900002
+ /********************************************************************/ 02950002
+ @LISTOFF;                                                              03040003
+ %NONSENSE='X';                                                         03050002
+ %WSALOCAL='NO';                                                        03250002
+ %WSACPU='NO';                                                          03300002
+ %INCLUDE SYSLIB(IHAWSAVT);                                             03350002
+  @LISTON;                                                              03400003
+         DCL REGSAPTR PTR(31) REG(13);      /* PTR. TO REGISTER         03450002
+                                               SAVE AREAS            */ 03500002
+         DCL PARMX FIXED(31) REG(1);  /* INPUT PARM @ZM30488*/          03520003
+         DCL PARM POINTER(31) REG(1);       /*INPUT AND OUTPUT PARM  */ 03550002
+         DCL RTCODE FIXED(31) REG(15);      /*RETURN CODE            */ 03600002
+         DCL TBLPTR PTR(31) REG(1);         /*PTR TO VECTOR TABLE    */ 03650002
+         DCL LNGREG FIXED(31) REG(0);       /*LENGTH TO GET OR FREE  */ 03750002
+         DCL LOCKRC FIXED(31) REG(15);      /*RETURN CODE FROM          03800002
+                                              SETLOCK                */ 03850002
+         DCL GMREG FIXED(31) REG(3);        /*PARMS FOR GETMAIN      */ 03860002
+         DCL 1 LGTHTBL BASED(CVTWSAC),      /*CPU SA/WA SIZES        */ 03900002
+             (2 NUM,                        /*NUMBER OF ENTRIES      */ 03950002
+              2 LGTH,                       /*VECTOR TBL + SAVEAREAS */ 04000002
+              2 FSIZE)  FIXED(15);          /* SIZE OF FIRST SA/WA   */ 04050002
+         DCL SVPTR BASED(P) PTR(31);        /*VECTOR TABLE           */ 04100002
+         DCL P PTR(31);                     /*POINT TO VECTOR        */ 04200002
+                                            /*ENTRIES                */ 04250002
+         DCL SAPTR PTR(31);                 /*PTR TO SAVEAREAS       */ 04260002
+  DCL NSIZEPTR PTR(31);                     /*POINTER TO SIZE ENTRIES*/ 04300002
+         DCL 1 GMTBL FIXED(31),             /*GET/FREEMAIN PARMS     */ 04400002
+              (2 RSVD,                      /*RESERVED BYTE          */ 04450002
+               2 STKEY,                     /*STORAGE PROTECT KEY    */ 04500002
+               2 SBPOOL,                    /*SUBPOOL REQUESTED      */ 04550002
+               2 FLAGS)  FIXED(8);          /*TYPE OF GET/FREEMAIN   */ 04600002
+         DCL HOLDRC FIXED(31);              /*RETAINER OF RETURN CODE*/ 04650002
+         DCL CDGM FIXED(8) CONSTANT(0);     /*X'00' INDICATOR OF     */ 04700002
+                                            /*CONDITIONAL GETMAIN    */ 04750002
+         DCL CDFM FIXED(8) CONSTANT(1);     /*X'01' INDICATOR OF     */ 04800002
+                                            /*CONDITIONAL FREEMAIN   */ 04850002
+         DCL LUPONE FIXED(8) CONSTANT(1);   /*LOOP CONTROL CONSTANT  */ 04900002
+         DCL ZZERO FIXED(8) CONSTANT(0);    /*ZERO RETURN CODE       */ 04950002
+         DCL FFOUR FIXED(8) CONSTANT(4);    /*RETURN CODE FOUR       */ 05000002
+         DCL SQAPOOL FIXED(8) CONSTANT(245);/*SUBPOOL 245            */ 05050002
+         DCL KEYZERO FIXED(8) CONSTANT(0);  /*KEY                    */ 05100002
+         DCL INCSIZE FIXED(8) CONSTANT(2);  /*INCREMENT VALUE        */ 05150002
+         DCL GETID FIXED(8) CONSTANT(0);    /*R1=0 ON GETMAIN REQUEST*/ 05200002
+         DCL LOOP FIXED(31);                /*LOOP INDEX             */ 05250002
+     DCL R3SAVAR PTR(31);         /* SAVE AREA FOR REG. 3 ACROSS        05250402
+                                     GET/FREEMAIN'S                  */ 05250802
+         DCL SAVAREA PTR(31);        /* SAVE AREA FOR POINTER TO        05252002
+                                        REGISTER SAVE AREAS          */ 05254002
+         DCL 1 SETLOKSA BDY(WORD),  /* SETLOCK REG. SAVE AREA        */ 05260002
+              2 * FIXED(31),        /* SAVE AREA FOR REG. 11         */ 05270002
+              2 * FIXED(31),        /* SAVE AREA FOR REG. 12         */ 05280002
+              2 * FIXED(31),        /* SAVE AREA FOR REG. 13         */ 05290002
+              2 * FIXED(31),        /* SAVE AREA FOR REG. 14         */ 05292002
+              2 * FIXED(31);        /* FIFTH WORD OF SAVE AREA       */ 05292402
+  DCL NWSASIZE FIXED(15) BASED(NSIZEPTR);                               05294002
+  RFY (PARM,RTCODE) RSTD;           /* THESE REG'S ARE RSTD THRUOUT     05300402
+                                       THIS MODULE                   */ 05301202
+  RFY (REGSAPTR,LOCKRC) RSTD;                                           05302402
+    SAVAREA = REGSAPTR;             /* PRESERVE REG. 13              */ 05302802
+     REGSAPTR = ADDR(SETLOKSA);     /* PUT ADDR. OF 5 WORD SAVE AREA    05304402
+                                       FOR SETLOCK IN REG. 13        */ 05306402
+ /* TRY TO GET SALLOC LOCK, MAKE SETLOCK SAVE REG'S 11-14 IN SAVE    */ 05308402
+ /* AREA POINTED TO BY REG. 13,  RETURN CODE WILL BE IN REG. 15      */ 05308802
+  GLOCK:  GEN REFS(FLC,PSALITA);                                        05310002
+          SETLOCK   OBTAIN,TYPE=SALLOC,MODE=UNCOND,REGS=SAVE,          X05320002
+                RELATED=('SALLOC LOCK, THIS SETLOCK IS ISSUED IN THIS  X05330002
+                MACRO WHICH IS INCLUDED IN VARIOUS MODULES, THE LOCK   X05334002
+                IS RELEASED AT THE LABEL: FLOCK, IN THIS MACRO')        05336002
+ @ENDGEN                                                                05340002
+   REGSAPTR = SAVAREA;              /* RESTORE REGISTER 13           */ 05350002
+  RFY (REGSAPTR) UNRSTD;                                                05390002
+  RFY (LNGREG) RSTD;                                                    05460002
+         IF LOCKRC=ZZERO | LOCKRC=FFOUR THEN /*WAS LOCK SET?         */ 05500002
+ LOCKSET:       DO;                         /*YES PROCEED FOR GM/FM  */ 05550002
+     RFY (LOCKRC) UNRSTD;                                               05560002
+                LNGREG = LGTH               /*LENGTH IN REGISTER 0   */ 05600002
+                        * EIGHT;            /* LENGTH IN TABLE IS       05610002
+                                               NUMBER OF DOUBLE WORDS*/ 05620002
+                SBPOOL=SQAPOOL;             /* PUT SUBPOOL IN TABLE  */ 05650002
+                STKEY=KEYZERO;              /*PROTECT KEY REQUESTED  */ 05700002
+       /* CHECK FOR FORMAT REQUEST */                                   05707003
+            IF PARMX<0 THEN  /* REGISTER NEGITIVE? @ZM30488*/           05714003
+         DO;                                                            05721003
+          TBLPTR=-PARMX; /* CORRECT ADDR @ZM30488*/                     05728003
+          GOTO WSTFORMT;  /* GO FORMAT TABLE @ZM30488*/                 05735003
+         END;                                                           05742003
+                IF PARM=GETID  THEN         /*GETMAIN OR FREEMAIN    */ 05750002
+                                                                        05800002
+ /********************************************************************/ 05900002
+ /*                                                                  */ 05950002
+ /*                   GETMAIN PATH                                   */ 06000002
+ /*  REGISTER ONE CONTAINS ZERO ON INPUT FOR A GETMAIN REQUEST.      */ 06050002
+ /*  IF R1 IS ZERO, THEN SPACE IS OBTAINED FOR A SA/WA AND VECTOR    */ 06100002
+ /*  TABLE.  AFTER A SUCCESSFUL RETURN FROM GETMAIN, THE TABLE       */ 06150002
+ /*  IS INITIALIZED.                                                 */ 06200002
+ /*                                                                  */ 06250002
+ /********************************************************************/ 06300002
+                                                                        06350002
+                                                                        06400002
+ GMAIN:                 DO;                 /*GETMAIN PATH           */ 06450002
+                       FLAGS=CDGM;         /*CONDITIONAL GETMAIN    */  06500002
+             RFY (GMREG,TBLPTR)RSTD;                                    06510002
+      R3SAVAR = GMREG;            /* SAVE CONTENTS OF REG. 3         */ 06520002
+                       GMREG=GMTBL;        /*PARMS IN REG. 3        */  06550002
+ /* GETMAIN VECTOR TABLE AND SAVEAREAS FROM SUBPOOL 245             */  06560002
+  SGTWSA: GEN  REFS(CVTSPSA,CVTGLMN,CVTPTR,CVTMAP,WSAGGMFM,WSAG);       06600002
+          GETMAIN RC,LV=(0),BRANCH=(YES,GLOBAL),KEY=(3),SP=(3),        X06650002
+                RELATED=('SUPERVISOR ROUTINE WORK/SAVE AREAS FOR A CPU.X06660002
+                THIS GETMAIN IS ISSUED IN THIS MACRO WHICH IS INCLUDED X06670002
+                IN VARIOUS MODULES.  THE CORRESPONDING FREEMAIN IS AT  X06680002
+                LABEL: SFRWSA, IN THIS MACRO')                          06690002
+ @ENDGEN                                                                06692002
+  GMREG = R3SAVAR;  /* RESTORE REG. 3,                                  06880002
+                       BRANCH ENTRY TO GETMAIN DESTROYS REG. 3       */ 06890002
+                       IF RTCODE ^= ZZERO   /*ERROR IN GETMAIN       */ 06900002
+                         THEN               /*YES                    */ 06950002
+                             HOLDRC=FFOUR;  /*RETAIN RETURN CODE     */ 07000002
+                         ELSE                                           07050002
+   WSTFORMT:   DO;          /*INITIALIZE VECTOR TABLE  @ZM30488 */      07100003
+                             HOLDRC=ZZERO;  /*RETAIN RETURN CODE     */ 07150002
+                             P=TBLPTR;      /*POINT TO START OF TABLE*/ 07200002
+                             SAPTR=TBLPTR+(NUM*FFOUR);                  07250002
+                                            /*GET PTR TO SAVEAREAS   */ 07300002
+ /* ROUND ADDR. OF FIRST WORK/SAVE AREA UP TO AN 8-BYTE MULT.  ALL   */ 07300402
+ /* WORK/SAVE AREAS MUST BEGIN ON DOUBLE WORD BOUNDARIES.  ALL WORK/ */ 07300802
+ /* SAVE AREAS ARE MULTIPLES OF 8 BYTES IN SIZE.  THUS IF THE FIRST  */ 07301202
+ /* WORK/SAVE AREA IS ON A DOUBLE WORD BOUNDARY, THEY ALL WILL BE.   */ 07301602
+    SAPTR = ((SAPTR + SEVEN) | SEVEN) && SEVEN;                         07302002
+          RFY (TBLPTR) UNRSTD;                                          07310002
+   NSIZEPTR = ADDR(FSIZE);         /* PICK UP ADDR. OF FIELD            07320002
+                                      CONTAINING FIRST WORK/SAVE        07330002
+                                      AREA SIZE                      */ 07340002
+ INTZE:                      DO LOOP = LUPONE TO NUM;                   07350002
+                                            /*DO FOR EACH ENTRY IN   */ 07400002
+                                            /*VECTOR TABLE           */ 07450002
+                              SVPTR = SAPTR;/*SET PTR TO SAVEAREA    */ 07500002
+                              SAPTR = SAPTR + NWSASIZE;                 07550002
+                                            /*INCREMENT PTR BY SIZE  */ 07600002
+                                            /* OF SAVEAREA           */ 07650002
+                    P=P+ LENGTH(SVPTR);     /*POINT TO NEXT VECTOR   */ 07700002
+                                            /*TABLE ENTRY            */ 07750002
+          NSIZEPTR = NSIZEPTR               /*POINT TO NEXT SIZE     */ 07800002
+                    + LENGTH(NWSASIZE);                                 07810002
+                             END INTZE;                                 07850002
+                         END;               /*END PROCESSING FROM    */ 07900002
+                                            /*SUCCESSFUL GETMAIN     */ 07950002
+                       END GMAIN;                                       08000002
+                  ELSE                                                  08050002
+ /********************************************************************/ 08200002
+ /*                                                                  */ 08250002
+ /*                  FREEMAIN PATH                                   */ 08300002
+ /*  REGISTER ONE CONTAINS THE ADDRESS OF THE AREA TO BE FREE'D.     */ 08350002
+ /*  THIS REQUEST IS ONLY FROM VARY CPU OFFLINE, OR IEAVNIP0         */ 08400002
+ /*                                                                  */ 08450002
+ /********************************************************************/ 08500002
+                                                                        08550002
+                                                                        08600002
+ FMAIN:                DO;                  /*FREEMAIN PATH          */ 08650002
+  RFY (GMREG,LNGREG) RSTD;                                              08660002
+                        FLAGS=CDFM;         /*CONDITIONAL FREEMAIN   */ 08700002
+      R3SAVAR = GMREG;            /* PRESERVE CONTENTS OF REG. 3     */ 08710002
+                       GMREG=GMTBL;         /*PARMS IN REG. 3        */ 08750002
+     /*FREEMAIN AREA PROVIDED BY CALLER (VARY CPU OFFLINE OR NIP)    */ 08790002
+  SFRWSA:  GEN REFS(CVTSPSA,CVTGLMN,CVTPTR,CVTMAP,WSAGGMFM,WSAG);       08800002
+          FREEMAIN      RC,LV=(0),BRANCH=(YES,GLOBAL),                 X08850002
+                KEY=(3),A=(1),SP=(3),                                  X08900002
+                RELATED=('SUPERVISOR ROUTINE WORK/SAVE AREAS FOR A CPU.X08902002
+                THIS FREEMAIN IS ISSUED IN THIS MACRO WHICH IS INCLUDEDX08904002
+                IN VARIOUS MODULES.  THE CORRESPONDING GETMAIN IS AT   X08906002
+                LABEL: SGTWSA, IN THIS MACRO')                          08908002
+ @ENDGEN                                                                08910002
+  GMREG = R3SAVAR;  /* RESTORE REG. 3,                                  08960002
+                       BRANCH ENTRY TO FREEMAIN DESTROYS REG. 3      */ 09010002
+                       IF RTCODE ^= ZZERO   /*ERROR                  */ 09100002
+                         THEN               /*YES                    */ 09150002
+                           HOLDRC=FFOUR;    /*SET RETURN CODE        */ 09200002
+                         ELSE                                           09250002
+                           HOLDRC=ZZERO;    /*SAVE 0 RETURN CODE     */ 09300002
+   RFY (LNGREG,TBLPTR) UNRSTD;                                          09310002
+                       PARM=ZZERO;          /*INDICATOR FOR FREEMAIN */ 09350002
+                       END FMAIN;                                       09400002
+  RFY (LOCKRC,REGSAPTR) RSTD;                                           09400802
+   SAVAREA = REGSAPTR;              /* PRESERVE REGISTER 13          */ 09400902
+     REGSAPTR = ADDR(SETLOKSA);     /* PUT ADDR. OF 5 WORD SAVE AREA    09401202
+                                       FOR SETLOCK IN REG. 13        */ 09401602
+ /* RELEASE SALLOC LOCK, MAKE SETLOCK SAVE REG'S 11-14 IN SAVE AREA  */ 09402802
+ /* POINTED TO BY REG. 13, RETURN CODE WILL BE IN REG. 15            */ 09404802
+  FLOCK: GEN REFS(FLC,PSALITA);                                         09410002
+          SETLOCK RELEASE,TYPE=SALLOC,REGS=SAVE,                       *09420002
+                RELATED=('SALLOC LOCK, THIS SETLOCK IS ISSUED IN THIS  X09430002
+                MACRO WHICH IS INCLUDED IN VARIOUS MODULES, THE LOCK   X09432002
+                IS OBTAINED AT THE LABEL: GLOCK, IN THIS MACRO')        09434002
+ @ENDGEN                                                                09440002
+   REGSAPTR = SAVAREA;              /* RESTORE REGISTER 13           */ 09450002
+  RFY (REGSAPTR) UNRSTD;                                                09490002
+                IF (LOCKRC=ZZERO) |                                     09600002
+                (LOCKRC=FFOUR)              /*LOCK NOT RELEASED?     */ 09650002
+                  THEN RTCODE=HOLDRC;       /*RETURN CODE INDICATOR  */ 09700002
+                  ELSE RTCODE=FFOUR;        /*0 RETURN FROM SETLOCK  */ 09750002
+                                            /*SET RETURN CODE TO THAT*/ 09800002
+                                            /*FROM GET/FREEMAIN      */ 09850002
+  RFY (LOCKRC) UNRSTD;                                                  09860002
+                END LOCKSET;                                            09900002
+                ELSE                        /*SETLOCK ERROR          */ 09950002
+                  RTCODE = FFOUR;           /*RETURN CODE INDICATOR  */ 10000002
+   RFY (PARM,RTCODE) UNRSTD;                                            10010002
+   @LISTOFF;                                                            10030003
+*/*IEAVSPSA: CHART (AMODE,SEQ,IBM68,AREF) */                            10050002
+*/*IEAVSPSA: E ENTER */                                                 10100002
+*/* N ON ENTRY IF REG. 1 IS ZERO, THE REQUEST IS TO ALLOCATE */         10110002
+*/* N A CPU RELATED WORK/SAVE AREA.  IF REG. 1 IS NON-ZERO, */          10130002
+*/* N THE REQUEST IS TO FREE A CPU RELATED WORK/SAVE AREA AND THE */    10140002
+*/* N VIRT. ADDRESS OF THE AREA TO BE FREED IS IN REG. 1 */             10142002
+*/* P SAVE REGS EXCEPT REG. 1 AND REG. 15 */                            10150002
+*/* P SAVE REGISTER 13 */                                               10160002
+*/* P PUT ADDR. OF 5 WORD SAVEAREA FOR SETLOCK IN REG. 13 */            10170002
+*/* L SETLOCK TO OBTAIN 'SALLOC' LOCK*/                                 10200002
+*/* P RESTORE REG. 13 */                                                10210002
+*/* D (YES,,NO,P2A1) WAS LOCK OBTAINED ? */                             10250002
+*/* P PUT SIZE OF AREA TO BE GOTTEN/FREED IN REG. 0 */                  10260002
+*/* P INDICATE SUBPOOL 245 AND KEY 0 IN GET/FREEMAIN WORKAREA */        10300002
+*/* D (YES,,NO,FMAIN) IS THIS A GETMAIN REQUEST ? */                    10400002
+*/*GMAIN: P SET FLAGS IN GETMAIN WORKAREA FOR CONDITIONAL GETMAIN */    10450002
+*/* P SAVE CONTENTS OF REGISTER 3 */                                    10462002
+*/* N BRANCH ENTRY TO GET/FREEMAIN DESTROYS REG. 3 */                   10464002
+*/* P PUT GETMAIN PARAMETERS IN REG. 3 */                               10470002
+*/*SGTWSA: L BRANCH TO GETMAIN TO ALLOC. WORK/SAVE AREA*/               10500002
+*/* N VIRT. ADDR. OF GOTTEN AREA IS IN REG. 1 */                        10510002
+*/* P RESTORE CONTENTS OF REGISTER 3 */                                 10520002
+*/* D (YES,,NO,P2A2) GETMAIN SUCCESSFUL ?*/                             10550002
+*/* P SET UP A CODE OF ZERO, TO BE RETURNED BY THIS MODULE*/            10600002
+*/* P CALC. VIRT. ADDR. OF FIRST SAVEAREA IN THE GOTTEN SPACE */        10650002
+*/* P ROUND THIS ADDR. UP TO A DOUBLE WORD BOUNDARY */                  10660002
+*/* P PICK UP ADDR. OF FIELD CONTAINING FIRST WORK/SAVE AREA SIZE */    10670002
+*/* P PICK UP NUMBER OF SAVE AREAS TO BE BUILT */                       10700002
+*/* P INITIALIZE A COUNTER OF SAVE AREAS BUILT TO 1 */                  10710002
+*/*INTZE: D (YES,P2B1,NO,) ALL SAVE AREAS BUILT ? */                    10800002
+*/* P SET CURR. VECTOR TABLE ENTRY TO POINT TO CURR. SAVE AREA */       10850002
+*/* P UPDATE POINTER TO NEXT SAVE AREA */                               10860002
+*/* P UPDATE POINTER TO NEXT VECTOR TABLE ENTRY */                      10870002
+*/* P (,INTZE) INCREMENT COUNTER BY 1 */                                10900002
+*/*P2A1: P SET UP A CODE OF 4, TO BE RETURNED BY THIS MODULE */         10950002
+*/* P (,P2J5) PUT RETURN CODE FOR THIS MODULE IN REG. 15 */             10960002
+*/*P2A2: P (,P2B1) SET UP A CODE OF 4, TO BE RETURNED BY THIS MODULE */ 11000002
+*/*FMAIN: P SET FLAGS IN FREEMAIN WORKAREA FOR CONDITIONAL FREEMAIN */  11050002
+*/* P SAVE CONTENTS OF REGISTER 3 */                                    11062002
+*/* N BRANCH ENTRY TO GET/FREEMAIN DESTROYS REG. 3 */                   11064002
+*/* P PUT FREEMAIN PARAMETERS IN REG. 3 */                              11070002
+*/* N REG. 1 ALREADY CONTAINS THE VIRT. ADDR. OF AREA TO BE FREED */    11080002
+*/*SFRWSA: L BRANCH TO FREEMAIN TO FREE WORK/SAVE AREA*/                11150002
+*/* P RESTORE CONTENTS OF REGISTER 3 */                                 11160002
+*/* D (YES,,NO,P2A3) FREEMAIN SUCCESSFUL ?*/                            11200002
+*/* P SET UP A CODE OF 0, TO BE RETURNED BY THIS MODULE*/               11250002
+*/*P2B1: P SAVE REG. 13 */                                              11260002
+*/* P PUT ADDR. OF 5 WORD SAVEAREA FOR SETLOCK IN REG. 13 */            11270002
+*/*FLOCK: L SETLOCK TO RELEASE 'SALLOC' LOCK*/                          11300002
+*/* P RESTORE REG. 13 */                                                11310002
+*/* D (YES,,NO,P2A4) WAS LOCK RELEASED ?*/                              11350002
+*/* P PUT RETURN CODE FOR THIS MODULE IN REG. 15*/                      11400002
+*/*P2J5: P RESTORE REGS EXCEPT REG. 1 AND REG. 15 */                    11450002
+*/* R RETURN TO CALLER */                                               11500002
+*/*P2A3: P (,P2B1) SET UP A CODE OF 4, TO BE RETURNED BY THIS MODULE*/  11550002
+*/*P2A4: P (,P2J5) SET RETURN CODE FOR THIS MODULE (REG. 15) TO 4*/     11600002
+*/*IEAVSPSA: END */                                                     11650002
+  @LISTON;                                                              11670003
+         END IEAVSPSA;                                                  11700002

@@ -1,0 +1,1382 @@
+         TITLE 'IEFAB452 - DD PROCESSING CONTROL ROUTINE               *00001000
+                        '                                               00002000
+IEFAB452 CSECT ,                                                01S0001 00003000
+@MAINENT DS    0H                                               01S0001 00004000
+         USING *,@15                                            01S0001 00005000
+         B     @PROLOG                                          01S0001 00006000
+         DC    AL1(16)                                          01S0001 00007000
+         DC    C'IEFAB452  73.325'                              01S0001 00008000
+         DROP  @15                                                      00009000
+@PROLOG  STM   @14,@12,12(@13)                                  01S0001 00010000
+         BALR  @12,0                                            01S0001 00011000
+@PSTART  DS    0H                                               01S0001 00012000
+         USING @PSTART,@12                                      01S0001 00013000
+         L     @00,@SIZDATD                                     01S0001 00014000
+         MODESET EXTKEY=SCHED,SAVEKEY=(2)                               00015000
+         GSPACE  R,LV=(0)                                               00016000
+         LR    @11,@01                                          01S0001 00017000
+         USING @DATD,@11                                        01S0001 00018000
+         ST    @13,@SA00001+4                                   01S0001 00019000
+         STC   @02,@OLDKEY                                      01S0001 00020000
+         MODESET KEYADDR=(2)                                            00021000
+         LM    @00,@02,20(@13)                                  01S0001 00022000
+         ST    @11,8(,@13)                                      01S0001 00023000
+         LR    @13,@11                                          01S0001 00024000
+         MODESET EXTKEY=ZERO                                            00025000
+         MVC   @PC00001(16),0(@01)                              01S0001 00026000
+         MODESET EXTKEY=SCHED                                           00027000
+JSCBDISP EQU 188                                                        00028000
+JSCBAOS1 EQU  72                                                        00029000
+JSCBAOS2 EQU 192                                                        00030000
+*                                                                    */ 00031000
+*   DATAPREG=HWDATAP;               /* MAP HSKP DATA AND RETURN      */ 00032000
+         L     @10,@PC00001+4                                   01S0037 00033000
+         L     DATAPREG,HWDATAP(,@10)                           01S0037 00034000
+*   RTNPREG=HWRTNP;                 /* AREAS FOR PROCESSING SPEED    */ 00035000
+         L     @10,@PC00001+8                                   01S0038 00036000
+         L     RTNPREG,HWRTNP(,@10)                             01S0038 00037000
+*   RFY                                                         01S0039 00038000
+*     HWDATA BASED(DATAPREG);                                   01S0039 00039000
+*   RFY                                                         01S0040 00040000
+*     HWRETURN BASED(RTNPREG);                                  01S0040 00041000
+*   IF HWNOSCAT=OFF&                /* STEPCAT PROCESSING ALLOWED    */ 00042000
+*       SCTPCAT^=0 THEN             /* STEP-CATALOGS ARE INDICATED   */ 00043000
+         L     @10,@PC00001                                     01S0041 00044000
+         L     @10,HWCNTRLP(,@10)                               01S0041 00045000
+         TM    HWNOSCAT(@10),B'00000001'                        01S0041 00046000
+         BNZ   @RF00041                                         01S0041 00047000
+         SLR   @10,@10                                          01S0041 00048000
+         L     @02,HWSCTP(,DATAPREG)                            01S0041 00049000
+         CL    @10,SCTPCAT(,@02)                                01S0041 00050000
+         BE    @RF00041                                         01S0041 00051000
+*     DO;                                                       01S0042 00052000
+*                                                               02S0043 00053000
+*/********************************************************************/ 00054000
+*/* SEGMENT NAME - CATSPEC                                           */ 00055000
+*/*                                                                  */ 00056000
+*/* DESCRIPTIVE NAME - STEPCAT PROCESSING                            */ 00057000
+*/*                                                                  */ 00058000
+*/* FUNCTION    - CHECK THE INFORMATION OF THE STEPCAT DD(S) AND     */ 00059000
+*/*               INITIATE HOUSEKEEPING PROCESSING OF THEM.          */ 00060000
+*/*                                                                  */ 00061000
+*/*   OPERATION-1.THIS COULD BE A CHECKPOINT RESTART, SO ALL         */ 00062000
+*/*               JOB/STEPCATS MUST BE PROPER (NOT A DUPLICATE       */ 00063000
+*/*               REQUEST FOR A PREVIOUS CATALOG). IF NOT PROPER     */ 00064000
+*/*               THE REQUEST IS NOT SYNTAX CHECKED.                 */ 00065000
+*/*             2.THE SIOT WILL BE CHECKED, INSURING THAT NO VOLUME  */ 00066000
+*/*               OR UNIT INFORMATION WAS SPECIFIED, NO 'DEFER'      */ 00067000
+*/*               MOUNTING WAS REQUESTED, AND THE DISPOSITION IS     */ 00068000
+*/*               OLD AND 'KEEP' IS SPECIFIED OR IMPLIED.            */ 00069000
+*/*             3.IEFAB454 ( DD FUNCTION CONTROL ) IS THEN CALLED    */ 00070000
+*/*               TO PROCESS THE DD.                                 */ 00071000
+*/*             4.THE PCCB ROUTINE (IEFAB4EF) WILL THEN BE CALLED TO */ 00072000
+*/*               CREATE A PCCB FOR THE CATALOG IF THERE IS NO ERROR */ 00073000
+*/*               INDICATED BY HOUSEKEEPING, AND THE DATA SET EXISTS */ 00074000
+*/*               ON ONLY ONE DEVICE AND VOLUME AND IS NOT A GDG.    */ 00075000
+*/*               IF THE PCCB ALREADY EXISTED, THE 'STEPCAT' AND     */ 00076000
+*/*               'CATALOGUED DATA SET' BITS ARE TURNED OFF IN THE   */ 00077000
+*/*               SIOT, BECAUSE ONLY ONE STEPCAT DD CAN REPRESENT    */ 00078000
+*/*               ONE CATALOG DATA SET. THE DD WILL BE PROCESSED     */ 00079000
+*/*               WITH AND AS A NORMAL DD IN THE JOBSTREAM.          */ 00080000
+*/*                                                                  */ 00081000
+*/*             5.RETURN AND REASON CODES ARE SET INTO THE HOUSE-    */ 00082000
+*/*               KEEPING WORKAREA IF ANY OF THE ABOVE ERRORS EXIST. */ 00083000
+*/*                                                                  */ 00084000
+*/* ENTRY - IF ANY STEPCATS EXIST                                    */ 00085000
+*/*                                                                  */ 00086000
+*/* INPUT DATA - THE NUMBER OF STEPCATS IN THE STEP AND A POINTER TO */ 00087000
+*/*              THE FIRST STEPCAT'S SIOT.                           */ 00088000
+*/*                                                                  */ 00089000
+*/* EXIT - INLINE IN ALL CASES                                       */ 00090000
+*/*                                                                  */ 00091000
+*/*   OUTPUT DATA - PROCESSED STEPCAT SIOT,JFCBS.                    */ 00092000
+*/*               ERROR REASON CODES                                 */ 00093000
+*/*               JCL STATEMENT ERROR - 75                           */ 00094000
+*/*               CATALOG RETURN INFORMATION ERROR - 76              */ 00095000
+*/*                                                                  */ 00096000
+*/*   RETURN CODES - NO ERROR - 0                                    */ 00097000
+*/*                - ERROR    - 4                                    */ 00098000
+*/*                                                                  */ 00099000
+*/********************************************************************/ 00100000
+*                                                               02S0043 00101000
+*       SWACTLS=0;                  /* CALL SWA INTERFACE TO READ    */ 00102000
+         STH   @10,SWACTLS                                      02S0043 00103000
+*       SWREAD=ON;                  /* LOCATE THE FIRST STEPCAT SIOT,*/ 00104000
+         OI    SWREAD,B'00100000'                               02S0044 00105000
+*       IF HWLEPARP=0 THEN          /* CREATING A NEW EPA IF NEEDED, */ 00106000
+         C     @10,HWLEPARP(,DATAPREG)                          02S0045 00107000
+         BNE   @RF00045                                         02S0045 00108000
+*         SWNEW=ON;                                             02S0046 00109000
+         OI    SWNEW,B'00001000'                                02S0046 00110000
+*       ELSE                        /* ELSE, USING THE OLD HSKP EPA  */ 00111000
+*         SWMOD=ON;                                             02S0047 00112000
+         B     @RC00045                                         02S0047 00113000
+@RF00045 OI    SWMOD,B'00000010'                                02S0047 00114000
+*       CALL IEFAB4F7(SWACTLS,HWLEPARP,0,ADDR(SCTPCAT),ADDR(SCAT1),0,1) 00115000
+*           ;                       /* SWA INTERFACE                 */ 00116000
+@RC00045 LA    @10,SWACTLS                                      02S0048 00117000
+         ST    @10,@AL00001                                     02S0048 00118000
+         LA    @10,HWLEPARP(,DATAPREG)                          02S0048 00119000
+         ST    @10,@AL00001+4                                   02S0048 00120000
+         LA    @10,@CF00528                                     02S0048 00121000
+         ST    @10,@AL00001+8                                   02S0048 00122000
+         L     @10,HWSCTP(,DATAPREG)                            02S0048 00123000
+         LA    @10,SCTPCAT(,@10)                                02S0048 00124000
+         ST    @10,@TF00001                                     02S0048 00125000
+         LA    @10,@TF00001                                     02S0048 00126000
+         ST    @10,@AL00001+12                                  02S0048 00127000
+         LA    @10,SCAT1                                        02S0048 00128000
+         ST    @10,@TF00002                                     02S0048 00129000
+         LA    @10,@TF00002                                     02S0048 00130000
+         ST    @10,@AL00001+16                                  02S0048 00131000
+         LA    @10,@CF00528                                     02S0048 00132000
+         ST    @10,@AL00001+20                                  02S0048 00133000
+         LA    @10,@CF00043                                     02S0048 00134000
+         ST    @10,@AL00001+24                                  02S0048 00135000
+         L     @15,@CV00085                                     02S0048 00136000
+         LA    @01,@AL00001                                     02S0048 00137000
+         BALR  @14,@15                                          02S0048 00138000
+*       SIOTPTR=SCAT1;              /* FIRST STEPCAT TO PROCESS      */ 00139000
+         L     SIOTPTR,SCAT1                                    02S0049 00140000
+*       DO STEPCATS=1 TO SCTCATCT WHILE/* NUMBER OF STEPCATS IN SCT  */ 00141000
+*             (HWRTCD=0);           /* AND NO ERRORS DETECTED        */ 00142000
+         LA    STEPCATS,1                                       02S0050 00143000
+         B     @DE00050                                         02S0050 00144000
+@DL00050 SLR   @10,@10                                          02S0050 00145000
+         CH    @10,HWRTCD(,RTNPREG)                             02S0050 00146000
+         BNE   @DC00050                                         02S0050 00147000
+*         HWCSIOTP=SIOTPTR;         /* SIOTPTR TO HSKP WORKAREA      */ 00148000
+         ST    SIOTPTR,HWCSIOTP(,DATAPREG)                      02S0051 00149000
+*         DISPTEMP=SCTSDISP&NODISP; /* FOR CHECKING SCHEDULER AND    */ 00150000
+         LA    DISPTEMP,31                                      02S0052 00151000
+         SLR   @15,@15                                          02S0052 00152000
+         IC    @15,SCTSDISP(,SIOTPTR)                           02S0052 00153000
+         NR    DISPTEMP,@15                                     02S0052 00154000
+*         ALTDTEMP=SIOTALTD&NOALTDSP;/* ALTERNATE DISPOSITIONS       */ 00155000
+         LA    ALTDTEMP,15                                      02S0053 00156000
+         SLR   @15,@15                                          02S0053 00157000
+         IC    @15,SIOTALTD(,SIOTPTR)                           02S0053 00158000
+         NR    ALTDTEMP,@15                                     02S0053 00159000
+*         IF SIOTJSCT=ON THEN       /* MAKE CHECKS ONLY IF THIS IS A    00160000
+*                                      PROPER JOB/STEPCAT. IT MAY BE    00161000
+*                                      A RESTART WITH BIT TURNED OFF.*/ 00162000
+         TM    SIOTJSCT(SIOTPTR),B'00000001'                    02S0054 00163000
+         BNO   @RF00054                                         02S0054 00164000
+*           IF SCTUTYPE=BLANK&SCTUNAFF=OFF&/* NO UNIT INFORMATION AND*/ 00165000
+*               SCTVOLCT=0&         /* NO VOLUME INFO, NOT A SUB-    */ 00166000
+*               SIOTSSDS=OFF&SCTDEFER=OFF&/* SYSTEM DS,OR DEFER 02S0055 00167000
+*                                      MOUNT,                        */ 00168000
+*               SCTVOLAF=OFF&SCTSOLD=ON&/* NO VOL=REF= , AND    02S0055 00169000
+*                                      DISP=OLD,                     */ 00170000
+*               (SIOTKEEP=ON|DISPTEMP=0)&/* DISPOSITIONS ARE KEEP,   */ 00171000
+*               (SIOTAKEP=ON|ALTDTEMP=0)&/* (OR WILL DEFAULT TO 02S0055 00172000
+*                                      KEEP),                        */ 00173000
+*               SCTDUMMY=OFF&       /* VSAM 'DUMMY' ILLEGAL,         */ 00174000
+*               SCTSGDGS=OFF THEN   /* AND NOT A GDG SINGLE, THEN IT */ 00175000
+         CLC   SCTUTYPE(8,SIOTPTR),@CC00050                     02S0055 00176000
+         BNE   @RF00055                                         02S0055 00177000
+         TM    SCTUNAFF(SIOTPTR),B'00000010'                    02S0055 00178000
+         BNZ   @RF00055                                         02S0055 00179000
+         CLI   SCTVOLCT(SIOTPTR),0                              02S0055 00180000
+         BNE   @RF00055                                         02S0055 00181000
+         TM    SIOTSSDS(SIOTPTR),B'10000000'                    02S0055 00182000
+         BNZ   @RF00055                                         02S0055 00183000
+         TM    SCTDEFER(SIOTPTR),B'00100010'                    02S0055 00184000
+         BNZ   @RF00055                                         02S0055 00185000
+         TM    SCTSOLD(SIOTPTR),B'00000001'                     02S0055 00186000
+         BNO   @RF00055                                         02S0055 00187000
+         TM    SIOTKEEP(SIOTPTR),B'00001000'                    02S0055 00188000
+         BO    @GL00004                                         02S0055 00189000
+         CR    DISPTEMP,@10                                     02S0055 00190000
+         BNE   @RF00055                                         02S0055 00191000
+@GL00004 TM    SIOTAKEP(SIOTPTR),B'00001000'                    02S0055 00192000
+         BO    @GL00003                                         02S0055 00193000
+         CH    ALTDTEMP,@CH00528                                02S0055 00194000
+         BNE   @RF00055                                         02S0055 00195000
+@GL00003 TM    SCTDUMMY(SIOTPTR),B'10000000'                    02S0055 00196000
+         BNZ   @RF00055                                         02S0055 00197000
+         TM    SCTSGDGS(SIOTPTR),B'10000000'                    02S0055 00198000
+         BNZ   @RF00055                                         02S0055 00199000
+*             DO;                   /* MAY BE PROCESSED AS A STEPCAT.*/ 00200000
+*               DDNUMSAV=JSCDDNUM;  /* NO SIOTS (DDS) MAY BE CREATED */ 00201000
+         L     @10,HWJSCBP(,DATAPREG)                           02S0057 00202000
+         LH    DDNUMSAV,JSCDDNUM(,@10)                          02S0057 00203000
+*               CALL IEFAB453(HWCNTRLP,HWDATAP,HWRTNP,HWCSIOTP);        00204000
+         L     @10,@PC00001                                     02S0058 00205000
+         ST    @10,@AL00001                                     02S0058 00206000
+         L     @10,@PC00001+4                                   02S0058 00207000
+         ST    @10,@AL00001+4                                   02S0058 00208000
+         L     @10,@PC00001+8                                   02S0058 00209000
+         ST    @10,@AL00001+8                                   02S0058 00210000
+         LA    @10,HWCSIOTP(,DATAPREG)                          02S0058 00211000
+         ST    @10,@AL00001+12                                  02S0058 00212000
+         L     @15,@CV00077                                     02S0058 00213000
+         LA    @01,@AL00001                                     02S0058 00214000
+         BALR  @14,@15                                          02S0058 00215000
+*               IF HWRTCD=0 THEN    /* NO ERROR IN DD PREPARATION    */ 00216000
+         ICM   @10,3,HWRTCD(RTNPREG)                            02S0059 00217000
+         BNZ   @RF00059                                         02S0059 00218000
+*                 CALL IEFAB454(HWCNTRLP,HWDATAP,HWRTNP,HWCSIOTP,       00219000
+*                     HWCJFCBP);    /* DD FUNCTION CONTROL           */ 00220000
+         L     @10,@PC00001                                     02S0060 00221000
+         ST    @10,@AL00001                                     02S0060 00222000
+         L     @10,@PC00001+4                                   02S0060 00223000
+         ST    @10,@AL00001+4                                   02S0060 00224000
+         L     @10,@PC00001+8                                   02S0060 00225000
+         ST    @10,@AL00001+8                                   02S0060 00226000
+         LA    @10,HWCSIOTP(,DATAPREG)                          02S0060 00227000
+         ST    @10,@AL00001+12                                  02S0060 00228000
+         LA    @10,HWCJFCBP(,DATAPREG)                          02S0060 00229000
+         ST    @10,@AL00001+16                                  02S0060 00230000
+         L     @15,@CV00083                                     02S0060 00231000
+         LA    @01,@AL00001                                     02S0060 00232000
+         BALR  @14,@15                                          02S0060 00233000
+*               IF HWRTCD=0&DDNUMSAV=JSCDDNUM&/* DS FOUND,NOT MULTI- */ 00234000
+*                   SIOTGALL=OFF&JFCBNVOL=ONE THEN/* DEVICE OR GDG   */ 00235000
+@RF00059 SLR   @10,@10                                          02S0061 00236000
+         CH    @10,HWRTCD(,RTNPREG)                             02S0061 00237000
+         BNE   @RF00061                                         02S0061 00238000
+         L     @06,HWJSCBP(,DATAPREG)                           02S0061 00239000
+         CH    DDNUMSAV,JSCDDNUM(,@06)                          02S0061 00240000
+         BNE   @RF00061                                         02S0061 00241000
+         TM    SIOTGALL(SIOTPTR),B'00100000'                    02S0061 00242000
+         BNZ   @RF00061                                         02S0061 00243000
+         L     @06,HWCJFCBP(,DATAPREG)                          02S0061 00244000
+         CLI   JFCBNVOL(@06),1                                  02S0061 00245000
+         BNE   @RF00061                                         02S0061 00246000
+*                 DO;               /* HAVE A PCCB CREATED, (IF NONE */ 00247000
+*                   PCCNTRLS=0;     /* EXIST FOR THIS CATALOG).      */ 00248000
+         STH   @10,PCCNTRLS                                     02S0063 00249000
+*                   PCCSTPCT=ON;    /* STEP CATALOG                  */ 00250000
+*                   PCCMAKE=ON;     /* CREATE AND CHAIN A PCCB       */ 00251000
+         OI    PCCSTPCT,B'10100000'                             02S0065 00252000
+*                   IF CTGCVCC=JFCBDSNM THEN/* STEPCAT NAME NOT AN      00253000
+*                                      ALIAS                         */ 00254000
+         L     @02,HWCRIP(,DATAPREG)                            02S0066 00255000
+         L     @02,CTGCVOL(,@02)                                02S0066 00256000
+         CLC   CTGCVCC(44,@02),JFCBDSNM(@06)                    02S0066 00257000
+         BNE   @RF00066                                         02S0066 00258000
+*                     CTGCONP=0;    /* INDICATE 'NO ALIAS'           */ 00259000
+         ST    @10,CTGCONP                                      02S0067 00260000
+*                   ELSE                                        02S0068 00261000
+*                     CTGCONP=ADDR(CTGCVCC);/* ADDRESS OF ALIAS NAME */ 00262000
+         B     @RC00066                                         02S0068 00263000
+@RF00066 L     @10,HWCRIP(,DATAPREG)                            02S0068 00264000
+         L     @10,CTGCVOL(,@10)                                02S0068 00265000
+         LA    @10,CTGCVCC(,@10)                                02S0068 00266000
+         ST    @10,CTGCONP                                      02S0068 00267000
+*                   CALL IEFAB4EF(PCCNTRLS,HWRTNP,JSCBACT,ADDR(JFCBDSNM 00268000
+*                       ),CTGCONP,0,0,0,0);/* PCCB MAKE              */ 00269000
+@RC00066 LA    @10,PCCNTRLS                                     02S0069 00270000
+         ST    @10,@AL00001                                     02S0069 00271000
+         L     @10,@PC00001+8                                   02S0069 00272000
+         ST    @10,@AL00001+4                                   02S0069 00273000
+         L     @10,HWJSCBP(,DATAPREG)                           02S0069 00274000
+         LA    @10,JSCBACT(,@10)                                02S0069 00275000
+         ST    @10,@AL00001+8                                   02S0069 00276000
+         LA    @10,HWCJFCBP(,DATAPREG)                          02S0069 00277000
+         ST    @10,@AL00001+12                                  02S0069 00278000
+         LA    @10,CTGCONP                                      02S0069 00279000
+         ST    @10,@AL00001+16                                  02S0069 00280000
+         LA    @10,@CF00528                                     02S0069 00281000
+         ST    @10,@AL00001+20                                  02S0069 00282000
+         LA    @10,@CF00528                                     02S0069 00283000
+         ST    @10,@AL00001+24                                  02S0069 00284000
+         LA    @10,@CF00528                                     02S0069 00285000
+         ST    @10,@AL00001+28                                  02S0069 00286000
+         LA    @10,@CF00528                                     02S0069 00287000
+         ST    @10,@AL00001+32                                  02S0069 00288000
+         L     @15,@CV00084                                     02S0069 00289000
+         LA    @01,@AL00001                                     02S0069 00290000
+         BALR  @14,@15                                          02S0069 00291000
+*                   IF HWRTCD=DUPCTLG THEN/* PCCB FOUND FOR THE 02S0070 00292000
+*                                                             STEPCAT*/ 00293000
+         CLC   HWRTCD(2,RTNPREG),@CH00054                       02S0070 00294000
+         BNE   @RF00070                                         02S0070 00295000
+*                     DO;           /* INDICATED BY THIS DD          */ 00296000
+*                       HWRETURN=0; /* RESET 'INVALID' RETURN CODE   */ 00297000
+         SLR   @10,@10                                          02S0072 00298000
+         ST    @10,HWRETURN(,RTNPREG)                           02S0072 00299000
+*                       SIOTJSCT=OFF;/* ONLY ONE STEPCAT DD ALLOWED  */ 00300000
+         NI    SIOTJSCT(SIOTPTR),B'11111110'                    02S0073 00301000
+*                       SIOTCATL=OFF;/* TO REPRESENT ONE CATALOG     */ 00302000
+         NI    SIOTCATL(SIOTPTR),B'10111111'                    02S0074 00303000
+*                     END;                                      02S0075 00304000
+*                 END;                                          02S0076 00305000
+*               ELSE                /* ERROR FROM IEFAB454 OR ERROR  */ 00306000
+*                 IF HWRTCD=0 THEN  /* IN THE CATALOG INFORMATION    */ 00307000
+         B     @RC00061                                         02S0077 00308000
+@RF00061 ICM   @10,3,HWRTCD(RTNPREG)                            02S0077 00309000
+         BNZ   @RF00077                                         02S0077 00310000
+*                   DO;             /* DATA SET NOT A PROPER STEPCAT */ 00311000
+*                     HWRTCD=DDERR; /* RETURN CODE - 4               */ 00312000
+         MVC   HWRTCD(2,RTNPREG),@CH00054                       02S0079 00313000
+*                     HWRSNCD=SCATERR;/* REASON CODE - 76            */ 00314000
+         MVC   HWRSNCD(2,RTNPREG),@CH00059                      02S0080 00315000
+*                   END;                                        02S0081 00316000
+*             END;                                              02S0082 00317000
+*           ELSE                    /* SYNTAX ERROR ON DD STATEMENT  */ 00318000
+*             DO;                                               02S0083 00319000
+         B     @RC00055                                         02S0083 00320000
+@RF00055 DS    0H                                               02S0084 00321000
+*               HWRTCD=DDERR;       /* RETURN CODE - 4               */ 00322000
+         MVC   HWRTCD(2,RTNPREG),@CH00054                       02S0084 00323000
+*               HWRSNCD=SCATJCL;    /* REASON CODE - 75              */ 00324000
+         MVC   HWRSNCD(2,RTNPREG),@CH00057                      02S0085 00325000
+*             END;                                              02S0086 00326000
+*         SIOTPTR=SIOTNPTR;         /* GET NEXT STEPCAT, IF ANY      */ 00327000
+@RC00055 DS    0H                                               02S0087 00328000
+@RF00054 L     SIOTPTR,SIOTNPTR(,SIOTPTR)                       02S0087 00329000
+*       END;                        /* STEPCAT PROCESSING LOOP  02S0088 00330000
+*                                                                    */ 00331000
+         AH    STEPCATS,@CH00043                                02S0088 00332000
+@DE00050 L     @10,HWSCTP(,DATAPREG)                            02S0088 00333000
+         SLR   @06,@06                                          02S0088 00334000
+         ICM   @06,3,SCTCATCT(@10)                              02S0088 00335000
+         CR    STEPCATS,@06                                     02S0088 00336000
+         BNH   @DL00050                                         02S0088 00337000
+@DC00050 DS    0H                                               02S0089 00338000
+*     END;                          /* END STEPCAT PROCESSING GROUP  */ 00339000
+*   SIOTPTR=FRSTSIOT;               /* MAP FIRST SIOT                */ 00340000
+@RF00041 L     @10,@PC00001+12                                  01S0090 00341000
+         L     @10,FRSTSIOT(,@10)                               01S0090 00342000
+         LR    SIOTPTR,@10                                      01S0090 00343000
+*   SCNSIOTP=FRSTSIOT;              /* GET 1ST SIOT IN CHAIN.        */ 00344000
+         LR    SCNSIOTP,@10                                     01S0091 00345000
+*   DO WHILE(SCNSIOTP^=0&SCTSTPLB=OFF);/* SCAN DDS IN THIS STEP FOR  */ 00346000
+         B     @DE00092                                         01S0092 00347000
+@DL00092 DS    0H                                               01S0093 00348000
+*     IF SCNSIOTP->SCTDDNAM=STEPLIB THEN/* FOR A DDNAME OF STEPLIB,  */ 00349000
+         CLC   SCTDDNAM(8,SCNSIOTP),@CC00061                    01S0093 00350000
+         BNE   @RF00093                                         01S0093 00351000
+*       SCTSTPLB=ON;                /* INDICATE IN SCT IF A          */ 00352000
+         L     @10,HWSCTP(,DATAPREG)                            01S0094 00353000
+         OI    SCTSTPLB(@10),B'00001000'                        01S0094 00354000
+*     ELSE                          /* STEPLIB IS FOUND.             */ 00355000
+*       SCNSIOTP=SCNSIOTP->SIOTNPTR;/* GET PTR TO NEXT DD.           */ 00356000
+         B     @RC00093                                         01S0095 00357000
+@RF00093 L     SCNSIOTP,SIOTNPTR(,SCNSIOTP)                     01S0095 00358000
+*   END;                            /* STEPLIB SCAN END.             */ 00359000
+@RC00093 DS    0H                                               01S0096 00360000
+@DE00092 LTR   SCNSIOTP,SCNSIOTP                                01S0096 00361000
+         BZ    @DC00092                                         01S0096 00362000
+         L     @10,HWSCTP(,DATAPREG)                            01S0096 00363000
+         TM    SCTSTPLB(@10),B'00001000'                        01S0096 00364000
+         BZ    @DL00092                                         01S0096 00365000
+@DC00092 DS    0H                                               01S0097 00366000
+*   DO WHILE(HWRTCD=0&              /* NO ERRORS OCCURED             */ 00367000
+*         SIOTPTR^=0);              /* THERE IS ANOTHER SIOT         */ 00368000
+         B     @DE00097                                         01S0097 00369000
+@DL00097 DS    0H                                               01S0098 00370000
+*     IF SIOTJSCT^=ON THEN          /* DO NOT REPROCESS STEPCATS     */ 00371000
+         TM    SIOTJSCT(SIOTPTR),B'00000001'                    01S0098 00372000
+         BO    @RF00098                                         01S0098 00373000
+*       DO;                         /* PROCESS NORMAL DD(S)          */ 00374000
+*         HWCSIOTP=SIOTPTR;         /* UPDATE WORKAREA POINTER       */ 00375000
+         ST    SIOTPTR,HWCSIOTP(,DATAPREG)                      01S0100 00376000
+*         CALL IEFAB453(HWCNTRLP,HWDATAP,HWRTNP,HWCSIOTP);      01S0101 00377000
+         L     @10,@PC00001                                     01S0101 00378000
+         ST    @10,@AL00001                                     01S0101 00379000
+         L     @10,@PC00001+4                                   01S0101 00380000
+         ST    @10,@AL00001+4                                   01S0101 00381000
+         L     @10,@PC00001+8                                   01S0101 00382000
+         ST    @10,@AL00001+8                                   01S0101 00383000
+         LA    @10,HWCSIOTP(,DATAPREG)                          01S0101 00384000
+         ST    @10,@AL00001+12                                  01S0101 00385000
+         L     @15,@CV00077                                     01S0101 00386000
+         LA    @01,@AL00001                                     01S0101 00387000
+         BALR  @14,@15                                          01S0101 00388000
+*         IF HWDDDONE^=COMPLETE&    /* PROCESSING NOT COMPLETE       */ 00389000
+*             HWRTCD=0 THEN         /* NO ERROR IN DD PREPARATION    */ 00390000
+         L     @10,@PC00001                                     01S0102 00391000
+         L     @02,HWCNTRLP(,@10)                               01S0102 00392000
+         TM    HWDDDONE(@02),B'00010000'                        01S0102 00393000
+         BO    @RF00102                                         01S0102 00394000
+         ICM   @02,3,HWRTCD(RTNPREG)                            01S0102 00395000
+         BNZ   @RF00102                                         01S0102 00396000
+*           CALL IEFAB454(HWCNTRLP,HWDATAP,HWRTNP,HWCSIOTP,HWCJFCBP);   00397000
+         ST    @10,@AL00001                                     01S0103 00398000
+         L     @10,@PC00001+4                                   01S0103 00399000
+         ST    @10,@AL00001+4                                   01S0103 00400000
+         L     @10,@PC00001+8                                   01S0103 00401000
+         ST    @10,@AL00001+8                                   01S0103 00402000
+         LA    @10,HWCSIOTP(,DATAPREG)                          01S0103 00403000
+         ST    @10,@AL00001+12                                  01S0103 00404000
+         LA    @10,HWCJFCBP(,DATAPREG)                          01S0103 00405000
+         ST    @10,@AL00001+16                                  01S0103 00406000
+         L     @15,@CV00083                                     01S0103 00407000
+         LA    @01,@AL00001                                     01S0103 00408000
+         BALR  @14,@15                                          01S0103 00409000
+*                                   /* DD FUNCTION CONTROL           */ 00410000
+*       END;                                                    01S0104 00411000
+@RF00102 DS    0H                                               01S0105 00412000
+*     SIOTPTR=SIOTNPTR;             /* GET NEXT SIOT POINTER         */ 00413000
+@RF00098 L     SIOTPTR,SIOTNPTR(,SIOTPTR)                       01S0105 00414000
+*   END;                                                        01S0106 00415000
+@DE00097 SLR   @10,@10                                          01S0106 00416000
+         CH    @10,HWRTCD(,RTNPREG)                             01S0106 00417000
+         BNE   @DC00097                                         01S0106 00418000
+         CR    SIOTPTR,@10                                      01S0106 00419000
+         BNE   @DL00097                                         01S0106 00420000
+@DC00097 DS    0H                                               01S0107 00421000
+*   END IEFAB452                                                01S0107 00422000
+*                                                               01S0107 00423000
+*/* THE FOLLOWING INCLUDE STATEMENTS WERE FOUND IN THIS PROGRAM.     */ 00424000
+*/*%INCLUDE SYSUT5  (DDPROCPR)                                       */ 00425000
+*/*%INCLUDE SYSUT5  (DDPROCDC)                                       */ 00426000
+*/*%INCLUDE SYSLIB  (IEFZB436)                                       */ 00427000
+*/*%INCLUDE SYSLIB  (IEFZB437)                                       */ 00428000
+*/*%INCLUDE SYSLIB  (IEFZB450)                                       */ 00429000
+*/*%INCLUDE SYSLIB  (IEFASIOT)                                       */ 00430000
+*/*%INCLUDE SYSLIB  (IEFASCTB)                                       */ 00431000
+*/*%INCLUDE SYSLIB  (IEZJSCB )                                       */ 00432000
+*/*%INCLUDE SYSLIB  (IEFJFCBN)                                       */ 00433000
+*/*%INCLUDE SYSLIB  (IEZCTGPL)                                       */ 00434000
+*/*%INCLUDE SYSLIB  (IEZCTGWA)                                       */ 00435000
+*/*%INCLUDE SYSLIB  (IEZCTGVL)                                       */ 00436000
+*/*%INCLUDE SYSLIB  (IEZCTGCV)                                       */ 00437000
+*/*%INCLUDE SYSUT5  (CATSPEC )                                       */ 00438000
+*/*%INCLUDE SYSUT5  (CATPROC )                                       */ 00439000
+*                                                               01S0107 00440000
+*       ;                                                       01S0107 00441000
+@EL00001 IC    @02,@OLDKEY                                      01S0107 00442000
+         L     @13,4(,@13)                                      01S0107 00443000
+@EF00001 L     @00,@SIZDATD                                     01S0107 00444000
+         LR    @01,@11                                          01S0107 00445000
+         FSPACE   R,LV=(0),A=(1)                                        00446000
+         MODESET KEYADDR=(2)                                            00447000
+@ER00001 LM    @14,@12,12(@13)                                  01S0107 00448000
+         BR    @14                                              01S0107 00449000
+@DATA    DS    0H                                                       00450000
+@CH00054 DC    H'4'                                                     00451000
+@CH00057 DC    H'75'                                                    00452000
+@CH00059 DC    H'76'                                                    00453000
+@DATD    DSECT                                                          00454000
+         DS    0F                                                       00455000
+@SA00001 DS    18F                                                      00456000
+@PC00001 DS    4F                                                       00457000
+@AL00001 DS    9A                                                       00458000
+@TF00001 DS    F                                                        00459000
+@TF00002 DS    F                                                        00460000
+IEFAB452 CSECT                                                          00461000
+         DS    0F                                                       00462000
+@CF00528 DC    F'0'                                                     00463000
+@CH00528 EQU   @CF00528+2                                               00464000
+@CF00043 DC    F'1'                                                     00465000
+@CH00043 EQU   @CF00043+2                                               00466000
+@DATD    DSECT                                                          00467000
+         DS    0D                                                       00468000
+CTGCONP  DS    A                                                        00469000
+SCAT1    DS    A                                                        00470000
+SWACTLS  DS    FL2                                                      00471000
+         ORG   SWACTLS                                                  00472000
+SWASN    DS    BL1                                                      00473000
+SWDEL    EQU   SWACTLS+0                                                00474000
+SWREAD   EQU   SWACTLS+0                                                00475000
+SWWRT    EQU   SWACTLS+0                                                00476000
+SWNEW    EQU   SWACTLS+0                                                00477000
+SWFREE   EQU   SWACTLS+0                                                00478000
+SWMOD    EQU   SWACTLS+0                                                00479000
+SWOLD    EQU   SWACTLS+0                                                00480000
+SWCHN    DS    BL1                                                      00481000
+@NM00001 EQU   SWACTLS+1                                                00482000
+         ORG   SWACTLS+2                                                00483000
+PCCNTRLS DS    FL2                                                      00484000
+         ORG   PCCNTRLS                                                 00485000
+PCCMAKE  DS    BL1                                                      00486000
+PCCFREE  EQU   PCCNTRLS+0                                               00487000
+PCCSTPCT EQU   PCCNTRLS+0                                               00488000
+PCCFREAL EQU   PCCNTRLS+0                                               00489000
+PCCVOL   EQU   PCCNTRLS+0                                               00490000
+@NM00012 EQU   PCCNTRLS+0                                               00491000
+         ORG   PCCNTRLS+2                                               00492000
+@OLDKEY  DS    AL1                                                      00493000
+IEFAB452 CSECT                                                          00494000
+         DS    0F                                                       00495000
+@SIZDATD DC    AL1(230)                                                 00496000
+         DC    AL3(@ENDDATD-@DATD)                                      00497000
+@CV00077 DC    V(IEFAB453)                                              00498000
+@CV00083 DC    V(IEFAB454)                                              00499000
+@CV00084 DC    V(IEFAB4EF)                                              00500000
+@CV00085 DC    V(IEFAB4F7)                                              00501000
+         DS    0D                                                       00502000
+@CC00050 DC    C'        '                                              00503000
+@CC00061 DC    C'STEPLIB '                                              00504000
+IEFAB452 CSECT                                                          00505000
+         DS   0H                                                        00506000
+PATCHLOC DC ((@DATA-@PSTART)/20)X'00'                                   00507000
+@DATD    DSECT                                                          00508000
+         ORG   *+1-(*-@DATD)/(*-@DATD) INSURE DSECT DATA                00509000
+@ENDDATD EQU   *                                                        00510000
+IEFAB452 CSECT                                                          00511000
+@00      EQU   00                      EQUATES FOR REGISTERS 0-15       00512000
+@01      EQU   01                                                       00513000
+@02      EQU   02                                                       00514000
+@03      EQU   03                                                       00515000
+@04      EQU   04                                                       00516000
+@05      EQU   05                                                       00517000
+@06      EQU   06                                                       00518000
+@07      EQU   07                                                       00519000
+@08      EQU   08                                                       00520000
+@09      EQU   09                                                       00521000
+@10      EQU   10                                                       00522000
+@11      EQU   11                                                       00523000
+@12      EQU   12                                                       00524000
+@13      EQU   13                                                       00525000
+@14      EQU   14                                                       00526000
+@15      EQU   15                                                       00527000
+STEPCATS EQU   @07                                                      00528000
+DDNUMSAV EQU   @02                                                      00529000
+SCNSIOTP EQU   @02                                                      00530000
+ALTDTEMP EQU   @06                                                      00531000
+DISPTEMP EQU   @02                                                      00532000
+DATAPREG EQU   @03                                                      00533000
+RTNPREG  EQU   @04                                                      00534000
+SIOTPTR  EQU   @05                                                      00535000
+HWRETURN EQU   0                                                        00536000
+HWRTCD   EQU   HWRETURN                                                 00537000
+HWRSNCD  EQU   HWRETURN+2                                               00538000
+HWCNTRL  EQU   0                                                        00539000
+HWNOSCAT EQU   HWCNTRL                                                  00540000
+HWDSNRQD EQU   HWCNTRL+2                                                00541000
+HWDDDONE EQU   HWCNTRL+3                                                00542000
+HWTBLCTL EQU   HWCNTRL+6                                                00543000
+HWJLCTLS EQU   HWCNTRL+7                                                00544000
+HWDATA   EQU   0                                                        00545000
+HWSCTP   EQU   HWDATA+4                                                 00546000
+HWJSCBP  EQU   HWDATA+20                                                00547000
+HWCRIP   EQU   HWDATA+36                                                00548000
+HWCSIOTP EQU   HWDATA+44                                                00549000
+HWCJFCBP EQU   HWDATA+48                                                00550000
+HWUCLPTR EQU   HWDATA+56                                                00551000
+HWLEPARP EQU   HWDATA+60                                                00552000
+HWSTPNBR EQU   HWDATA+172                                               00553000
+HWUCLST  EQU   0                                                        00554000
+HWDEV    EQU   0                                                        00555000
+HWOBYTE  EQU   HWDEV+1                                                  00556000
+HWCTBYT  EQU   HWDEV+2                                                  00557000
+INDMSIOT EQU   0                                                        00558000
+SCTDDNAM EQU   INDMSIOT+4                                               00559000
+SCTUSADD EQU   INDMSIOT+20                                              00560000
+SIOTBYT1 EQU   INDMSIOT+43                                              00561000
+SIOTBYT3 EQU   INDMSIOT+46                                              00562000
+SIOTTSTC EQU   INDMSIOT+47                                              00563000
+SCTVOLCT EQU   INDMSIOT+49                                              00564000
+SIOTBYT0 EQU   INDMSIOT+52                                              00565000
+SIOTSSDS EQU   SIOTBYT0                                                 00566000
+SCTSDISP EQU   INDMSIOT+55                                              00567000
+SIOTKEEP EQU   SCTSDISP                                                 00568000
+SCTSBYT1 EQU   INDMSIOT+56                                              00569000
+SCTDUMMY EQU   SCTSBYT1                                                 00570000
+SCTUNAFF EQU   SCTSBYT1                                                 00571000
+SIOTJSCT EQU   SCTSBYT1                                                 00572000
+SCTSBYT2 EQU   INDMSIOT+57                                              00573000
+SIOTCATL EQU   SCTSBYT2                                                 00574000
+SCTVOLAF EQU   SCTSBYT2                                                 00575000
+SCTDEFER EQU   SCTSBYT2                                                 00576000
+SCTSBYT3 EQU   INDMSIOT+58                                              00577000
+SCTSOLD  EQU   SCTSBYT3                                                 00578000
+SCTSBYT4 EQU   INDMSIOT+59                                              00579000
+SCTSGDGS EQU   SCTSBYT4                                                 00580000
+SCTUTYPE EQU   INDMSIOT+60                                              00581000
+SIOTDEVT EQU   SCTUTYPE                                                 00582000
+SIOUBYT3 EQU   SIOTDEVT+2                                               00583000
+SIOTALTD EQU   INDMSIOT+92                                              00584000
+SIOTAKEP EQU   SIOTALTD                                                 00585000
+SIOTBYT2 EQU   INDMSIOT+103                                             00586000
+SIOTGALL EQU   SIOTBYT2                                                 00587000
+SIOTNPTR EQU   INDMSIOT+152                                             00588000
+INSMSCT  EQU   0                                                        00589000
+SCTSSTAT EQU   INSMSCT+4                                                00590000
+SCTSTYPE EQU   INSMSCT+67                                               00591000
+SCTPCAT  EQU   INSMSCT+84                                               00592000
+SCTSDPTY EQU   INSMSCT+94                                               00593000
+SCTSTAT2 EQU   INSMSCT+104                                              00594000
+SCTBCT   EQU   SCTSTAT2                                                 00595000
+SCTSTPLB EQU   SCTBCT                                                   00596000
+SCTCDENT EQU   INSMSCT+118                                              00597000
+SCTCATCT EQU   INSMSCT+166                                              00598000
+SCTSTEND EQU   INSMSCT+172                                              00599000
+@NM00051 EQU   0                                                        00600000
+SCTABCND EQU   @NM00051                                                 00601000
+IEZJSCB  EQU   0                                                        00602000
+JSCBSEC1 EQU   IEZJSCB+188                                              00603000
+JSCHPCE  EQU   JSCBSEC1+4                                               00604000
+JSCBDCB  EQU   JSCBSEC1+36                                              00605000
+JSCBOPTS EQU   JSCBSEC1+48                                              00606000
+JSCBSWT1 EQU   JSCBSEC1+55                                              00607000
+JSCBWTP  EQU   JSCBSEC1+64                                              00608000
+JSCBWTFG EQU   JSCBWTP                                                  00609000
+JSCBEND1 EQU   IEZJSCB+260                                              00610000
+INFMJFCB EQU   0                                                        00611000
+JFCBDSNM EQU   INFMJFCB                                                 00612000
+JFCBELNM EQU   INFMJFCB+44                                              00613000
+JFCBTSDM EQU   INFMJFCB+52                                              00614000
+JFCFCBID EQU   INFMJFCB+56                                              00615000
+JFCBFRID EQU   JFCFCBID                                                 00616000
+JFCBLTYP EQU   INFMJFCB+66                                              00617000
+JFCBOTTR EQU   INFMJFCB+67                                              00618000
+JFCBUFOF EQU   JFCBOTTR                                                 00619000
+JFCBFLSQ EQU   JFCBOTTR+1                                               00620000
+JFCFUNC  EQU   JFCBFLSQ                                                 00621000
+JFCBMASK EQU   INFMJFCB+72                                              00622000
+JFCBFLG1 EQU   JFCBMASK+5                                               00623000
+JFCOPEN  EQU   JFCBFLG1                                                 00624000
+JFCBFLG2 EQU   JFCBMASK+6                                               00625000
+JFCDEFER EQU   JFCBFLG2                                                 00626000
+JFCBIND1 EQU   INFMJFCB+86                                              00627000
+JFCBIND2 EQU   INFMJFCB+87                                              00628000
+JFCAMPTR EQU   INFMJFCB+88                                              00629000
+JFCBUFRQ EQU   JFCAMPTR                                                 00630000
+JFCBUFNO EQU   JFCBUFRQ                                                 00631000
+JFCBGNCP EQU   JFCAMPTR+1                                               00632000
+JFCBHIAR EQU   JFCBGNCP                                                 00633000
+JFCBFALN EQU   JFCBHIAR                                                 00634000
+JFCBFTEK EQU   JFCBFALN                                                 00635000
+JFCBBFTA EQU   JFCBFTEK                                                 00636000
+JFCEROPT EQU   INFMJFCB+92                                              00637000
+JFCTRTCH EQU   INFMJFCB+93                                              00638000
+CTGPL    EQU   0                                                        00639000
+CTGOPTN1 EQU   CTGPL                                                    00640000
+CTGOPTN2 EQU   CTGPL+1                                                  00641000
+CTGERASE EQU   CTGOPTN2                                                 00642000
+CTGSMF   EQU   CTGERASE                                                 00643000
+CTGREL   EQU   CTGSMF                                                   00644000
+CTGPURG  EQU   CTGOPTN2                                                 00645000
+CTGVMNT  EQU   CTGPURG                                                  00646000
+CTGOPTN3 EQU   CTGPL+2                                                  00647000
+CTGOPTN4 EQU   CTGPL+3                                                  00648000
+CTGENT   EQU   CTGPL+4                                                  00649000
+CTGCAT   EQU   CTGPL+8                                                  00650000
+CTGCVOL  EQU   CTGCAT                                                   00651000
+CTGWKA   EQU   CTGPL+12                                                 00652000
+CTGDSORG EQU   CTGPL+16                                                 00653000
+CTGDDNM  EQU   CTGPL+20                                                 00654000
+CTGNEWNM EQU   CTGDDNM                                                  00655000
+CTGFBFLG EQU   CTGNEWNM+2                                               00656000
+CTGJSCB  EQU   CTGPL+24                                                 00657000
+CTGWA    EQU   0                                                        00658000
+CTGWAVL  EQU   CTGWA                                                    00659000
+CTGVL    EQU   0                                                        00660000
+CTGVLX   EQU   0                                                        00661000
+CTGCV    EQU   0                                                        00662000
+CTGCVDSN EQU   CTGCV+6                                                  00663000
+CTGCVCC  EQU   CTGCV+50                                                 00664000
+INDMDSNT EQU   0                                                        00665000
+HWCNTRLP EQU   0                                                        00666000
+HWDATAP  EQU   0                                                        00667000
+HWRTNP   EQU   0                                                        00668000
+FRSTSIOT EQU   0                                                        00669000
+JSCBSEC2 EQU   JSCBEND1                                                 00670000
+JSCBSEC3 EQU   JSCBEND1                                                 00671000
+JSCBJCT  EQU   JSCBSEC3                                                 00672000
+JSCBJCTA EQU   JSCBJCT+1                                                00673000
+JSCBASID EQU   JSCBSEC3+8                                               00674000
+JSCBJNL  EQU   JSCBSEC3+28                                              00675000
+JSCBJJSB EQU   JSCBJNL                                                  00676000
+JSCBSUB  EQU   JSCBSEC3+40                                              00677000
+JSCSCT   EQU   JSCBSEC3+68                                              00678000
+JSCDDNUM EQU   JSCBSEC3+84                                              00679000
+JSCBACT  EQU   JSCBSEC3+88                                              00680000
+JSCRSV35 EQU   JSCBSEC3+96                                              00681000
+JSCRSV36 EQU   JSCRSV35                                                 00682000
+JSCRSV37 EQU   JSCRSV35+2                                               00683000
+JSCRSV45 EQU   JSCBSEC3+112                                             00684000
+JSCRSV46 EQU   JSCRSV45                                                 00685000
+JSCRSV47 EQU   JSCRSV45+2                                               00686000
+JFCKEYLE EQU   JFCTRTCH                                                 00687000
+JFCCODE  EQU   JFCKEYLE                                                 00688000
+JFCSTACK EQU   JFCTRTCH                                                 00689000
+JFCMODE  EQU   JFCSTACK                                                 00690000
+JFCSPPRT EQU   JFCTRTCH                                                 00691000
+JFCBABFS EQU   JFCSPPRT+2                                               00692000
+JFCLIMCT EQU   JFCBABFS                                                 00693000
+JFCDSORG EQU   JFCSPPRT+5                                               00694000
+JFCDSRG1 EQU   JFCDSORG                                                 00695000
+JFCDSRG2 EQU   JFCDSORG+1                                               00696000
+JFCRECFM EQU   JFCSPPRT+7                                               00697000
+JFCRCFM  EQU   JFCRECFM                                                 00698000
+JFCOPTCD EQU   JFCSPPRT+8                                               00699000
+JFCWVCSP EQU   JFCOPTCD                                                 00700000
+JFCWVCIS EQU   JFCWVCSP                                                 00701000
+JFCWVCBD EQU   JFCWVCIS                                                 00702000
+JFCALLOW EQU   JFCOPTCD                                                 00703000
+JFCRSV17 EQU   JFCALLOW                                                 00704000
+JFCOVER  EQU   JFCRSV17                                                 00705000
+JFCPCIBT EQU   JFCOPTCD                                                 00706000
+JFCMAST  EQU   JFCPCIBT                                                 00707000
+JFCEXT   EQU   JFCMAST                                                  00708000
+JFCBCKPT EQU   JFCOPTCD                                                 00709000
+JFCIND   EQU   JFCBCKPT                                                 00710000
+JFCRSV18 EQU   JFCOPTCD                                                 00711000
+JFCCYL   EQU   JFCRSV18                                                 00712000
+JFCACT   EQU   JFCCYL                                                   00713000
+JFCREDUC EQU   JFCOPTCD                                                 00714000
+JFCRSV19 EQU   JFCREDUC                                                 00715000
+JFCRSV20 EQU   JFCRSV19                                                 00716000
+JFCRSV21 EQU   JFCOPTCD                                                 00717000
+JFCDEL   EQU   JFCRSV21                                                 00718000
+JFCRSV23 EQU   JFCOPTCD                                                 00719000
+JFCREORG EQU   JFCRSV23                                                 00720000
+JFCBLKSI EQU   JFCSPPRT+9                                               00721000
+JFCBUFSI EQU   JFCBLKSI                                                 00722000
+JFCAMSYN EQU   JFCSPPRT+11                                              00723000
+JFCNCP   EQU   JFCAMSYN+2                                               00724000
+JFCNTM   EQU   JFCAMSYN+3                                               00725000
+JFCBFSEQ EQU   JFCNTM                                                   00726000
+JFCPCI   EQU   JFCBFSEQ                                                 00727000
+JFCRESRV EQU   JFCAMSYN+4                                               00728000
+JFCUCSEG EQU   JFCRESRV                                                 00729000
+JFCUCSOP EQU   JFCUCSEG+4                                               00730000
+JFCOUTLI EQU   JFCUCSEG+5                                               00731000
+JFCTHRSH EQU   JFCOUTLI                                                 00732000
+JFCCPRI  EQU   JFCTHRSH                                                 00733000
+JFCBNVOL EQU   JFCUCSEG+9                                               00734000
+JFCBVOLS EQU   JFCUCSEG+10                                              00735000
+JFCBPQTY EQU   JFCUCSEG+44                                              00736000
+JFCBCTRI EQU   JFCUCSEG+47                                              00737000
+JFCBSQTY EQU   JFCUCSEG+48                                              00738000
+JFCBIND3 EQU   JFCBSQTY+2                                               00739000
+JFCFLGS1 EQU   JFCUCSEG+51                                              00740000
+         AGO   .@UNREFD                START UNREFERENCED COMPONENTS    00741000
+JFCBEND  EQU   JFCUCSEG+68                                              00742000
+JFCBSPTN EQU   JFCUCSEG+67                                              00743000
+JFCBVLCT EQU   JFCUCSEG+66                                              00744000
+JFCBDRLH EQU   JFCUCSEG+63                                              00745000
+JFCBSBNM EQU   JFCUCSEG+60                                              00746000
+JFCBABST EQU   JFCUCSEG+58                                              00747000
+JFCBSPNM EQU   JFCUCSEG+55                                              00748000
+JFCBDQTY EQU   JFCUCSEG+52                                              00749000
+JFCBUAFF EQU   JFCFLGS1                                                 00750000
+JFCRSV45 EQU   JFCFLGS1                                                 00751000
+JFCVRDS  EQU   JFCFLGS1                                                 00752000
+JFCRSV43 EQU   JFCFLGS1                                                 00753000
+JFCRSV42 EQU   JFCFLGS1                                                 00754000
+JFCRSV41 EQU   JFCFLGS1                                                 00755000
+JFCTOPEN EQU   JFCFLGS1                                                 00756000
+JFCRSV39 EQU   JFCFLGS1                                                 00757000
+JFCRSV52 EQU   JFCBIND3                                                 00758000
+JFCRSV51 EQU   JFCBIND3                                                 00759000
+JFCRSV50 EQU   JFCBIND3                                                 00760000
+JFCRSV49 EQU   JFCBIND3                                                 00761000
+JFCRSV48 EQU   JFCBIND3                                                 00762000
+JFCRSV47 EQU   JFCBIND3                                                 00763000
+JFCRSV46 EQU   JFCBIND3                                                 00764000
+JFCBDLET EQU   JFCBIND3                                                 00765000
+JFCRQID  EQU   JFCBSQTY                                                 00766000
+JFCROUND EQU   JFCBCTRI                                                 00767000
+JFCALX   EQU   JFCBCTRI                                                 00768000
+JFCMIXG  EQU   JFCBCTRI                                                 00769000
+JFCONTIG EQU   JFCBCTRI                                                 00770000
+JFCRSV29 EQU   JFCBCTRI                                                 00771000
+JFCRSV28 EQU   JFCBCTRI                                                 00772000
+JFCBSPAC EQU   JFCBCTRI                                                 00773000
+JFCRUNIT EQU   JFCBPQTY                                                 00774000
+JFCBEXAD EQU   JFCUCSEG+41                                              00775000
+JFCBEXTL EQU   JFCUCSEG+40                                              00776000
+JFCAVOLS EQU   JFCBVOLS                                                 00777000
+JFCBNTCS EQU   JFCUCSEG+8                                               00778000
+JFCSOWA  EQU   JFCOUTLI+1                                               00779000
+JFCSEND  EQU   JFCCPRI                                                  00780000
+JFCEQUAL EQU   JFCCPRI                                                  00781000
+JFCRECV  EQU   JFCCPRI                                                  00782000
+JFCRSV34 EQU   JFCCPRI                                                  00783000
+JFCRSV33 EQU   JFCCPRI                                                  00784000
+JFCRSV55 EQU   JFCCPRI                                                  00785000
+JFCRSV54 EQU   JFCCPRI                                                  00786000
+JFCRSV53 EQU   JFCCPRI                                                  00787000
+JFCRSV27 EQU   JFCUCSOP                                                 00788000
+JFCRSV26 EQU   JFCUCSOP                                                 00789000
+JFCFCBVR EQU   JFCUCSOP                                                 00790000
+JFCFCBAL EQU   JFCUCSOP                                                 00791000
+JFCVER   EQU   JFCUCSOP                                                 00792000
+JFCRSV25 EQU   JFCUCSOP                                                 00793000
+JFCFOLD  EQU   JFCUCSOP                                                 00794000
+JFCRSV24 EQU   JFCUCSOP                                                 00795000
+JFCUCSID EQU   JFCUCSEG                                                 00796000
+JFCINTVL EQU   JFCSPPRT+19                                              00797000
+JFCDBUFN EQU   JFCRESRV+3                                               00798000
+JFCCYLOF EQU   JFCRESRV+2                                               00799000
+JFCRKP   EQU   JFCRESRV                                                 00800000
+JFCPCIR2 EQU   JFCPCI                                                   00801000
+JFCPCIR1 EQU   JFCPCI                                                   00802000
+JFCPCIN2 EQU   JFCPCI                                                   00803000
+JFCPCIN1 EQU   JFCPCI                                                   00804000
+JFCPCIA2 EQU   JFCPCI                                                   00805000
+JFCPCIA1 EQU   JFCPCI                                                   00806000
+JFCPCIX2 EQU   JFCPCI                                                   00807000
+JFCPCIX1 EQU   JFCPCI                                                   00808000
+JFCBUFMX EQU   JFCNCP                                                   00809000
+JFCLRECL EQU   JFCAMSYN                                                 00810000
+JFCBAXBF EQU   JFCBUFSI                                                 00811000
+JFCREL   EQU   JFCREORG                                                 00812000
+JFCRSV22 EQU   JFCDEL                                                   00813000
+JFCSRCHD EQU   JFCRSV20                                                 00814000
+JFCOPTQ  EQU   JFCACT                                                   00815000
+JFCFEED  EQU   JFCIND                                                   00816000
+JFCCBWU  EQU   JFCEXT                                                   00817000
+JFCWUMSG EQU   JFCOVER                                                  00818000
+JFCSDNAM EQU   JFCWVCBD                                                 00819000
+@NM00060 EQU   JFCRECFM                                                 00820000
+JFCCHAR  EQU   JFCRECFM                                                 00821000
+JFCRFS   EQU   JFCRECFM                                                 00822000
+JFCRFB   EQU   JFCRECFM                                                 00823000
+JFCRFO   EQU   JFCRCFM                                                  00824000
+JFCFMREC EQU   JFCRCFM                                                  00825000
+JFCRSV16 EQU   JFCDSRG2                                                 00826000
+JFCRSV15 EQU   JFCDSRG2                                                 00827000
+JFCORGTR EQU   JFCDSRG2                                                 00828000
+JFCORGAM EQU   JFCDSRG2                                                 00829000
+JFCRSV13 EQU   JFCDSRG2                                                 00830000
+JFCORGTQ EQU   JFCDSRG2                                                 00831000
+JFCORGTX EQU   JFCDSRG2                                                 00832000
+JFCORGGS EQU   JFCDSRG2                                                 00833000
+JFCORGU  EQU   JFCDSRG1                                                 00834000
+JFCORGPO EQU   JFCDSRG1                                                 00835000
+JFCORGMQ EQU   JFCDSRG1                                                 00836000
+JFCORGCQ EQU   JFCDSRG1                                                 00837000
+JFCORGCX EQU   JFCDSRG1                                                 00838000
+JFCORGDA EQU   JFCDSRG1                                                 00839000
+JFCORGPS EQU   JFCDSRG1                                                 00840000
+JFCORGIS EQU   JFCDSRG1                                                 00841000
+JFCTRKBL EQU   JFCLIMCT+1                                               00842000
+@NM00059 EQU   JFCLIMCT                                                 00843000
+JFCDEN   EQU   JFCSPPRT+1                                               00844000
+JFCPRTSP EQU   JFCSPPRT                                                 00845000
+JFCONE   EQU   JFCMODE                                                  00846000
+JFCTWO   EQU   JFCMODE                                                  00847000
+JFCRSV07 EQU   JFCMODE                                                  00848000
+JFCRSV06 EQU   JFCMODE                                                  00849000
+JFCMODER EQU   JFCMODE                                                  00850000
+JFCMODEO EQU   JFCMODE                                                  00851000
+JFCEBCD  EQU   JFCMODE                                                  00852000
+JFCBIN   EQU   JFCMODE                                                  00853000
+JFCRSV32 EQU   JFCCODE                                                  00854000
+JFCTTY   EQU   JFCCODE                                                  00855000
+JFCASCII EQU   JFCCODE                                                  00856000
+JFCNCR   EQU   JFCCODE                                                  00857000
+JFCBUR   EQU   JFCCODE                                                  00858000
+JFCFRI   EQU   JFCCODE                                                  00859000
+JFCBCD   EQU   JFCCODE                                                  00860000
+JFCNOCON EQU   JFCCODE                                                  00861000
+JSCBEND3 EQU   JSCBSEC3+120                                             00862000
+JSCRSV52 EQU   JSCBSEC3+116                                             00863000
+JSCRSV51 EQU   JSCRSV47+1                                               00864000
+JSCRSV50 EQU   JSCRSV47                                                 00865000
+JSCRSV49 EQU   JSCRSV46+1                                               00866000
+JSCRSV48 EQU   JSCRSV46                                                 00867000
+JSCRSV44 EQU   JSCBSEC3+108                                             00868000
+JSCRSV43 EQU   JSCBSEC3+104                                             00869000
+JSCRSV42 EQU   JSCBSEC3+100                                             00870000
+JSCRSV41 EQU   JSCRSV37+1                                               00871000
+JSCRSV40 EQU   JSCRSV37                                                 00872000
+JSCRSV39 EQU   JSCRSV36+1                                               00873000
+JSCRSV38 EQU   JSCRSV36                                                 00874000
+JSCBUFPT EQU   JSCBSEC3+92                                              00875000
+JSCBSWSP EQU   JSCBSEC3+87                                              00876000
+JSCRSV33 EQU   JSCBSEC3+86                                              00877000
+JSCRSV53 EQU   JSCBSEC3+82                                              00878000
+JSCDDNNO EQU   JSCBSEC3+80                                              00879000
+JSCBVATA EQU   JSCBSEC3+76                                              00880000
+JSCTMCOR EQU   JSCBSEC3+72                                              00881000
+JSCSCTP  EQU   JSCSCT+1                                                 00882000
+JSCRSV55 EQU   JSCSCT                                                   00883000
+JSCRSV54 EQU   JSCBSEC3+64                                              00884000
+JSCDSABQ EQU   JSCBSEC3+60                                              00885000
+JSCBSSIB EQU   JSCBSEC3+56                                              00886000
+JSCRSV30 EQU   JSCBSEC3+52                                              00887000
+JSCRSV29 EQU   JSCBSEC3+48                                              00888000
+JSCRSV28 EQU   JSCBSEC3+46                                              00889000
+JSCBSONO EQU   JSCBSEC3+44                                              00890000
+JSCBSUBA EQU   JSCBSUB+1                                                00891000
+JSCRSV31 EQU   JSCBSUB                                                  00892000
+JSCBSMLR EQU   JSCBSEC3+36                                              00893000
+JSCBJNLR EQU   JSCBSEC3+32                                              00894000
+JSCBJNLA EQU   JSCBJNL+1                                                00895000
+JSCBJSBT EQU   JSCBJJSB                                                 00896000
+JSCBJSBX EQU   JSCBJJSB                                                 00897000
+JSCBJSBA EQU   JSCBJJSB                                                 00898000
+JSCBJSBI EQU   JSCBJJSB                                                 00899000
+@NM00057 EQU   JSCBJJSB                                                 00900000
+JSCBJNLE EQU   JSCBJJSB                                                 00901000
+JSCBJNLF EQU   JSCBJJSB                                                 00902000
+JSCBJNLN EQU   JSCBJJSB                                                 00903000
+@NM00056 EQU   JSCBSEC3+24                                              00904000
+JSCRSV27 EQU   JSCBSEC3+20                                              00905000
+JSCRSV26 EQU   JSCBSEC3+16                                              00906000
+JSCBIECB EQU   JSCBSEC3+12                                              00907000
+JSCRSV25 EQU   JSCBSEC3+10                                              00908000
+JSCBTJID EQU   JSCBASID                                                 00909000
+JSCBPSCB EQU   JSCBSEC3+4                                               00910000
+JSCJCTP  EQU   JSCBJCTA                                                 00911000
+JSCRSV24 EQU   JSCBJCT                                                  00912000
+JSCBEND2 EQU   JSCBSEC2                                                 00913000
+CTGCVDEV EQU   CTGCVDSN                                                 00914000
+CTGCVVOL EQU   CTGCV                                                    00915000
+CTGVLTTR EQU   CTGVLX+12                                                00916000
+@NM00065 EQU   CTGVLX                                                   00917000
+CTGVLSEQ EQU   CTGVL+10                                                 00918000
+CTGVLDEV EQU   CTGVL+6                                                  00919000
+CTGVLVOL EQU   CTGVL                                                    00920000
+CTGWAGB  EQU   CTGWA+12                                                 00921000
+CTGWAGCT EQU   CTGWA+10                                                 00922000
+CTGWAUCT EQU   CTGWA+8                                                  00923000
+CTGWAVCT EQU   CTGWA+6                                                  00924000
+CTGWALV  EQU   CTGWA+4                                                  00925000
+CTGFIELD EQU   CTGPL+28                                                 00926000
+CTGPSWD  EQU   CTGJSCB                                                  00927000
+@NM00064 EQU   CTGFBFLG                                                 00928000
+CTGNGDSN EQU   CTGFBFLG                                                 00929000
+CTGGDGB  EQU   CTGFBFLG                                                 00930000
+CTGKEEP  EQU   CTGFBFLG                                                 00931000
+CTGPAR   EQU   CTGFBFLG                                                 00932000
+CTGFDBK  EQU   CTGNEWNM                                                 00933000
+CTGNOFLD EQU   CTGPL+19                                                 00934000
+CTGTYPE  EQU   CTGPL+18                                                 00935000
+@NM00063 EQU   CTGDSORG                                                 00936000
+CTGOPTNS EQU   CTGDSORG                                                 00937000
+CTGFVT   EQU   CTGENT                                                   00938000
+@NM00062 EQU   CTGOPTN4                                                 00939000
+CTGDOCAT EQU   CTGOPTN4                                                 00940000
+CTGLBASE EQU   CTGOPTN4                                                 00941000
+CTGAM0   EQU   CTGOPTN3                                                 00942000
+CTGNUM   EQU   CTGOPTN3                                                 00943000
+CTGSRH   EQU   CTGOPTN3                                                 00944000
+CTGGDGL  EQU   CTGOPTN3                                                 00945000
+CTGSUPLT EQU   CTGOPTN3                                                 00946000
+CTGFUNC  EQU   CTGOPTN3                                                 00947000
+@NM00061 EQU   CTGOPTN2                                                 00948000
+CTGSCR   EQU   CTGOPTN2                                                 00949000
+CTGOVRID EQU   CTGOPTN2                                                 00950000
+CTGDISC  EQU   CTGOPTN2                                                 00951000
+CTGGTNXT EQU   CTGOPTN2                                                 00952000
+CTGRCATN EQU   CTGVMNT                                                  00953000
+CTGGTALL EQU   CTGREL                                                   00954000
+CTGEXT   EQU   CTGOPTN2                                                 00955000
+CTGGENLD EQU   CTGOPTN1                                                 00956000
+CTGCNAME EQU   CTGOPTN1                                                 00957000
+CTGNAME  EQU   CTGOPTN1                                                 00958000
+CTGREAD  EQU   CTGOPTN1                                                 00959000
+CTGUPD   EQU   CTGOPTN1                                                 00960000
+CTGCI    EQU   CTGOPTN1                                                 00961000
+CTGMAST  EQU   CTGOPTN1                                                 00962000
+CTGBYPSS EQU   CTGOPTN1                                                 00963000
+JFCRSV05 EQU   JFCEROPT                                                 00964000
+JFCRSV04 EQU   JFCEROPT                                                 00965000
+JFCRSV03 EQU   JFCEROPT                                                 00966000
+JFCRSV02 EQU   JFCEROPT                                                 00967000
+JFCTOPT  EQU   JFCEROPT                                                 00968000
+JFCABN   EQU   JFCEROPT                                                 00969000
+JFCSKP   EQU   JFCEROPT                                                 00970000
+JFCACC   EQU   JFCEROPT                                                 00971000
+JFCBUFL  EQU   JFCAMPTR+2                                               00972000
+JFCFWORD EQU   JFCBFTEK                                                 00973000
+JFCDWORD EQU   JFCBFTEK                                                 00974000
+JFCHIER1 EQU   JFCBFTEK                                                 00975000
+JFCDYN   EQU   JFCBFTEK                                                 00976000
+JFCEXC   EQU   JFCBFTEK                                                 00977000
+JFCBBFTR EQU   JFCBBFTA                                                 00978000
+JFCSIM   EQU   JFCBBFTA                                                 00979000
+JFCHIER  EQU   JFCBFTEK                                                 00980000
+JFCBFOUT EQU   JFCBUFNO                                                 00981000
+JFCBUFIN EQU   JFCBUFNO                                                 00982000
+JFCTEMP  EQU   JFCBIND2                                                 00983000
+JFCREQ   EQU   JFCBIND2                                                 00984000
+JFCENT   EQU   JFCBIND2                                                 00985000
+JFCSHARE EQU   JFCBIND2                                                 00986000
+JFCSECUR EQU   JFCBIND2                                                 00987000
+JFCDISP  EQU   JFCBIND2                                                 00988000
+JFCPDS   EQU   JFCBIND1                                                 00989000
+JFCGDG   EQU   JFCBIND1                                                 00990000
+JFCADDED EQU   JFCBIND1                                                 00991000
+JFCLOC   EQU   JFCBIND1                                                 00992000
+JFCRLSE  EQU   JFCBIND1                                                 00993000
+JFCBXPDT EQU   INFMJFCB+83                                              00994000
+JFCBCRDT EQU   INFMJFCB+80                                              00995000
+JFCBOPS2 EQU   JFCBMASK+7                                               00996000
+JFCRCTLG EQU   JFCBFLG2                                                 00997000
+JFCBBUFF EQU   JFCBFLG2                                                 00998000
+JFCTRACE EQU   JFCBFLG2                                                 00999000
+JFCSDRPS EQU   JFCBFLG2                                                 01000000
+JFCMODNW EQU   JFCBFLG2                                                 01001000
+JFCNRPS  EQU   JFCDEFER                                                 01002000
+JFCOUTOP EQU   JFCBFLG2                                                 01003000
+JFCINOP  EQU   JFCBFLG2                                                 01004000
+JFCBPWBP EQU   JFCOPEN                                                  01005000
+@NM00058 EQU   JFCOPEN                                                  01006000
+JFCDUAL  EQU   JFCBFLG1                                                 01007000
+JFCSLDES EQU   JFCBFLG1                                                 01008000
+JFCSLCRE EQU   JFCBFLG1                                                 01009000
+JFCSTAND EQU   JFCBFLG1                                                 01010000
+JFCBOPS1 EQU   JFCBMASK                                                 01011000
+JFCBVLSQ EQU   INFMJFCB+70                                              01012000
+JFCRSV31 EQU   JFCFUNC                                                  01013000
+JFCFNCBT EQU   JFCFUNC                                                  01014000
+JFCFNCBX EQU   JFCFUNC                                                  01015000
+JFCFNCBD EQU   JFCFUNC                                                  01016000
+JFCFNCBW EQU   JFCFUNC                                                  01017000
+JFCFNCBP EQU   JFCFUNC                                                  01018000
+JFCFNCBR EQU   JFCFUNC                                                  01019000
+JFCFNCBI EQU   JFCFUNC                                                  01020000
+JFCBFOFL EQU   JFCBUFOF                                                 01021000
+JFCNL    EQU   JFCBLTYP                                                 01022000
+JFCSL    EQU   JFCBLTYP                                                 01023000
+JFCNSL   EQU   JFCBLTYP                                                 01024000
+JFCSUL   EQU   JFCBLTYP                                                 01025000
+JFCBLP   EQU   JFCBLTYP                                                 01026000
+JFCBLTM  EQU   JFCBLTYP                                                 01027000
+JFCBAL   EQU   JFCBLTYP                                                 01028000
+JFCRSV38 EQU   JFCBLTYP                                                 01029000
+JFCRSV01 EQU   INFMJFCB+64                                              01030000
+JFCNLREC EQU   INFMJFCB+62                                              01031000
+JFCBADBF EQU   INFMJFCB+60                                              01032000
+JFCAMSTR EQU   JFCBFRID+2                                               01033000
+JFCAMCRO EQU   JFCBFRID                                                 01034000
+JFCBDSCB EQU   INFMJFCB+53                                              01035000
+JFCPAT   EQU   JFCBTSDM                                                 01036000
+JFCNDCB  EQU   JFCBTSDM                                                 01037000
+JFCNDSCB EQU   JFCBTSDM                                                 01038000
+JFCNWRIT EQU   JFCBTSDM                                                 01039000
+JFCTTR   EQU   JFCBTSDM                                                 01040000
+JFCSDS   EQU   JFCBTSDM                                                 01041000
+JFCVSL   EQU   JFCBTSDM                                                 01042000
+JFCCAT   EQU   JFCBTSDM                                                 01043000
+JFCIPLTX EQU   JFCBELNM                                                 01044000
+JFCBQNAM EQU   JFCBDSNM                                                 01045000
+JSCBCSCB EQU   JSCBSEC1+68                                              01046000
+JSCBPMG  EQU   JSCBWTP+2                                                01047000
+JSCBWTSP EQU   JSCBWTP+1                                                01048000
+JSCRSV23 EQU   JSCBWTFG                                                 01049000
+JSCRSV22 EQU   JSCBWTFG                                                 01050000
+JSCRSV21 EQU   JSCBWTFG                                                 01051000
+JSCRSV20 EQU   JSCBWTFG                                                 01052000
+JSCRSV19 EQU   JSCBWTFG                                                 01053000
+JSCRSV18 EQU   JSCBWTFG                                                 01054000
+JSCBRET  EQU   JSCBWTFG                                                 01055000
+JSCBIOFG EQU   JSCBWTFG                                                 01056000
+@NM00055 EQU   JSCBSEC1+60                                              01057000
+JSCBQMPI EQU   JSCBSEC1+56                                              01058000
+JSCBPMSG EQU   JSCBSWT1                                                 01059000
+JSCRSV16 EQU   JSCBSWT1                                                 01060000
+JSCRSV15 EQU   JSCBSWT1                                                 01061000
+JSCRSV14 EQU   JSCBSWT1                                                 01062000
+JSCRSV13 EQU   JSCBSWT1                                                 01063000
+JSCRSV12 EQU   JSCBSWT1                                                 01064000
+JSCRSV11 EQU   JSCBSWT1                                                 01065000
+JSCBPASS EQU   JSCBSWT1                                                 01066000
+JSCBTTTR EQU   JSCBSEC1+52                                              01067000
+JSCRSV10 EQU   JSCBSEC1+49                                              01068000
+JSCBAUTH EQU   JSCBOPTS                                                 01069000
+JSCSIOTS EQU   JSCBOPTS                                                 01070000
+JSCRSV08 EQU   JSCBOPTS                                                 01071000
+JSCRSV07 EQU   JSCBOPTS                                                 01072000
+JSCRSV06 EQU   JSCBOPTS                                                 01073000
+JSCBLONG EQU   JSCBOPTS                                                 01074000
+JSCRSV05 EQU   JSCBOPTS                                                 01075000
+JSCRSV04 EQU   JSCBOPTS                                                 01076000
+JSCBSECB EQU   JSCBSEC1+44                                              01077000
+JSCRSV03 EQU   JSCBSEC1+41                                              01078000
+JSCBSTEP EQU   JSCBSEC1+40                                              01079000
+JSCBDCBA EQU   JSCBDCB+1                                                01080000
+JSCRSV02 EQU   JSCBDCB                                                  01081000
+JSCBID   EQU   JSCBSEC1+32                                              01082000
+JSCBDBTB EQU   JSCBSEC1+28                                              01083000
+JSCBIJSC EQU   JSCBSEC1+24                                              01084000
+JSCBTCBP EQU   JSCBSEC1+20                                              01085000
+JSCBPCC  EQU   JSCBSEC1+16                                              01086000
+JSCBTCP  EQU   JSCBSEC1+12                                              01087000
+JSCBSHR  EQU   JSCBSEC1+8                                               01088000
+JSCHPCEA EQU   JSCHPCE+1                                                01089000
+JSCRSV32 EQU   JSCHPCE                                                  01090000
+JSCRSV01 EQU   JSCBSEC1                                                 01091000
+@NM00054 EQU   IEZJSCB                                                  01092000
+@NM00053 EQU   @NM00051+1                                               01093000
+SCTONLY  EQU   SCTABCND                                                 01094000
+SCTEVEN  EQU   SCTABCND                                                 01095000
+SCTABEND EQU   SCTABCND                                                 01096000
+SCTONLYC EQU   SCTABCND                                                 01097000
+SCTABCAN EQU   SCTABCND                                                 01098000
+@NM00052 EQU   SCTABCND                                                 01099000
+@NM00050 EQU   INSMSCT+173                                              01100000
+@NM00049 EQU   SCTSTEND                                                 01101000
+SCTSYSCK EQU   SCTSTEND                                                 01102000
+SCTSTPND EQU   SCTSTEND                                                 01103000
+SCTSTSRT EQU   SCTSTEND                                                 01104000
+@NM00048 EQU   INSMSCT+168                                              01105000
+SCTSDPSA EQU   SCTCDENT+3                                               01106000
+SCTSDPOP EQU   SCTCDENT+2                                               01107000
+SCTSDPCD EQU   SCTCDENT                                                 01108000
+@NM00047 EQU   INSMSCT+117                                              01109000
+SCTPRFMF EQU   INSMSCT+116                                              01110000
+SCTPGMNM EQU   INSMSCT+108                                              01111000
+SCTTIOT  EQU   INSMSCT+105                                              01112000
+@NM00046 EQU   SCTBCT                                                   01113000
+SCTJBEND EQU   SCTBCT                                                   01114000
+SCTSPSYS EQU   SCTBCT                                                   01115000
+@NM00045 EQU   SCTBCT                                                   01116000
+SCTMCVOL EQU   SCTBCT                                                   01117000
+@NM00044 EQU   SCTBCT                                                   01118000
+SCTGOTTR EQU   INSMSCT+100                                              01119000
+SCTSMF   EQU   INSMSCT+96                                               01120000
+@NM00043 EQU   SCTSDPTY+1                                               01121000
+SCTSDP   EQU   SCTSDPTY                                                 01122000
+SCTFSTEP EQU   SCTSDPTY                                                 01123000
+@NM00042 EQU   SCTSDPTY                                                 01124000
+@NM00041 EQU   SCTSDPTY                                                 01125000
+SCTNIUSL EQU   INSMSCT+92                                               01126000
+@NM00040 EQU   INSMSCT+90                                               01127000
+SCTMSSZE EQU   INSMSCT+88                                               01128000
+SCTLDSTB EQU   INSMSCT+80                                               01129000
+SCTSRBT  EQU   INSMSCT+76                                               01130000
+SCTMSADR EQU   INSMSCT+72                                               01131000
+@NM00039 EQU   INSMSCT+71                                               01132000
+SCTXBTTR EQU   INSMSCT+68                                               01133000
+SCTJSCAT EQU   SCTSTYPE                                                 01134000
+SCTINITB EQU   SCTSTYPE                                                 01135000
+SCTSJFHK EQU   SCTSTYPE                                                 01136000
+SCTOUTMC EQU   SCTSTYPE                                                 01137000
+SCTINPUT EQU   SCTSTYPE                                                 01138000
+SCTGOSTP EQU   SCTSTYPE                                                 01139000
+@NM00038 EQU   INSMSCT+66                                               01140000
+SCTNSMSG EQU   INSMSCT+65                                               01141000
+SCTSNUMB EQU   INSMSCT+64                                               01142000
+@NM00037 EQU   INSMSCT+62                                               01143000
+SCTRPACT EQU   INSMSCT+60                                               01144000
+SCTSNAME EQU   INSMSCT+52                                               01145000
+SCTSCLPC EQU   INSMSCT+44                                               01146000
+@NM00036 EQU   INSMSCT+43                                               01147000
+SCTADSTB EQU   INSMSCT+40                                               01148000
+@NM00035 EQU   INSMSCT+36                                               01149000
+@NM00034 EQU   INSMSCT+35                                               01150000
+SCTAFACT EQU   INSMSCT+32                                               01151000
+SCTDDNT  EQU   INSMSCT+28                                               01152000
+@NM00033 EQU   INSMSCT+27                                               01153000
+SCTLSIOT EQU   INSMSCT+24                                               01154000
+@NM00032 EQU   INSMSCT+23                                               01155000
+SCTANSCT EQU   INSMSCT+20                                               01156000
+@NM00031 EQU   INSMSCT+19                                               01157000
+SCTAALOC EQU   INSMSCT+16                                               01158000
+@NM00030 EQU   INSMSCT+15                                               01159000
+SCTFSIOT EQU   INSMSCT+12                                               01160000
+SCTLALOC EQU   INSMSCT+10                                               01161000
+SCTSEXEC EQU   INSMSCT+8                                                01162000
+SCTSTIME EQU   INSMSCT+5                                                01163000
+INCMSSTS EQU   SCTSSTAT                                                 01164000
+SCTGRPH  EQU   SCTSSTAT                                                 01165000
+SCTKEY0  EQU   SCTSSTAT                                                 01166000
+SCTDORST EQU   SCTSSTAT                                                 01167000
+SCTNOCKP EQU   SCTSSTAT                                                 01168000
+SCTNORST EQU   SCTSSTAT                                                 01169000
+EACAUSER EQU   SCTSSTAT                                                 01170000
+EAADDRBT EQU   SCTSSTAT                                                 01171000
+SCTTBLID EQU   INSMSCT+3                                                01172000
+SCTDISKA EQU   INSMSCT                                                  01173000
+SIODDSNL EQU   INDMSIOT+173                                             01174000
+SIOVDSNL EQU   INDMSIOT+172                                             01175000
+SIOVDSNT EQU   INDMSIOT+170                                             01176000
+SVOLUNNO EQU   INDMSIOT+168                                             01177000
+SIOTVMVP EQU   INDMSIOT+164                                             01178000
+SIOTJFX  EQU   INDMSIOT+160                                             01179000
+SJFCBPTR EQU   INDMSIOT+156                                             01180000
+SIOTETIO EQU   INDMSIOT+148                                             01181000
+SIOTATE  EQU   INDMSIOT+144                                             01182000
+SVOLUNAD EQU   INDMSIOT+140                                             01183000
+SIOTEDLP EQU   INDMSIOT+136                                             01184000
+SIOTEDLS EQU   INDMSIOT+132                                             01185000
+SIOTRSNC EQU   INDMSIOT+130                                             01186000
+SCTANAME EQU   INDMSIOT+122                                             01187000
+@NM00029 EQU   INDMSIOT+108                                             01188000
+SIOTSSNM EQU   INDMSIOT+104                                             01189000
+SIODDQCR EQU   SIOTBYT2                                                 01190000
+SIOVDQCR EQU   SIOTBYT2                                                 01191000
+SIOTCVOL EQU   SIOTBYT2                                                 01192000
+SIOTCNEW EQU   SIOTBYT2                                                 01193000
+SIOTCALC EQU   SIOTBYT2                                                 01194000
+SIOTDSPD EQU   SIOTBYT2                                                 01195000
+SIOTDMND EQU   SIOTBYT2                                                 01196000
+SIOTOPUC EQU   INDMSIOT+99                                              01197000
+SIOTOUTR EQU   INDMSIOT+97                                              01198000
+SIOTOUTC EQU   INDMSIOT+96                                              01199000
+@NM00028 EQU   INDMSIOT+93                                              01200000
+SIOTAUNC EQU   SIOTALTD                                                 01201000
+SIOTACAT EQU   SIOTALTD                                                 01202000
+SIOTADEL EQU   SIOTALTD                                                 01203000
+SIOTNPRV EQU   SIOTALTD                                                 01204000
+SIOJCATS EQU   SIOTALTD                                                 01205000
+@NM00027 EQU   SIOTALTD                                                 01206000
+@NM00026 EQU   SIOTALTD                                                 01207000
+@NM00025 EQU   INDMSIOT+91                                              01208000
+SIOTNDSB EQU   INDMSIOT+88                                              01209000
+@NM00024 EQU   INDMSIOT+84                                              01210000
+SIOTDPCD EQU   INDMSIOT+82                                              01211000
+@NM00023 EQU   INDMSIOT+81                                              01212000
+SCTOUTPN EQU   INDMSIOT+80                                              01213000
+SCTOUTNO EQU   INDMSIOT+76                                              01214000
+SCTOUTNM EQU   INDMSIOT+68                                              01215000
+SIOUCBAD EQU   SCTUTYPE+5                                               01216000
+SIOUCNVT EQU   SCTUTYPE+4                                               01217000
+SIOUBYT4 EQU   SIOTDEVT+3                                               01218000
+@NM00022 EQU   SIOUBYT3                                                 01219000
+SIO3UREC EQU   SIOUBYT3                                                 01220000
+SIO3DISP EQU   SIOUBYT3                                                 01221000
+SIO3DACC EQU   SIOUBYT3                                                 01222000
+SIO3COMM EQU   SIOUBYT3                                                 01223000
+SIO3TAPE EQU   SIOUBYT3                                                 01224000
+SIOUBYT2 EQU   SIOTDEVT+1                                               01225000
+SIOUBYT1 EQU   SIOTDEVT                                                 01226000
+SIOTOMN  EQU   SCTSBYT4                                                 01227000
+SIOTIPDI EQU   SCTSBYT4                                                 01228000
+SIOTVAFF EQU   SCTSBYT4                                                 01229000
+SIOTSTEP EQU   SCTSBYT4                                                 01230000
+SIOTASCI EQU   SCTSBYT4                                                 01231000
+@NM00021 EQU   SCTSBYT4                                                 01232000
+SIOTGDGA EQU   SCTSBYT4                                                 01233000
+SCTSMOD  EQU   SCTSBYT3                                                 01234000
+SCTSNEW  EQU   SCTSBYT3                                                 01235000
+SCTSYSOU EQU   SCTSBYT3                                                 01236000
+SCTVREF  EQU   SCTSBYT3                                                 01237000
+@NM00020 EQU   SCTSBYT3                                                 01238000
+SCTSYSNE EQU   SCTSBYT3                                                 01239000
+SCTDSNRF EQU   SCTSBYT3                                                 01240000
+SCTRECVD EQU   SCTSBYT2                                                 01241000
+SCTLABEL EQU   SCTSBYT2                                                 01242000
+SCTUNLBD EQU   SCTSBYT2                                                 01243000
+SCTJOBLB EQU   SCTSBYT2                                                 01244000
+SIOCLUNL EQU   SCTSBYT2                                                 01245000
+SCTPARLM EQU   SCTSBYT1                                                 01246000
+SIOTQDSN EQU   SCTSBYT1                                                 01247000
+SIOTGDSN EQU   SCTSBYT1                                                 01248000
+SIOTCCAT EQU   SCTSBYT1                                                 01249000
+SCTSYSIN EQU   SCTSBYT1                                                 01250000
+SIOTUNCT EQU   SCTSDISP                                                 01251000
+SIOTCTLG EQU   SCTSDISP                                                 01252000
+SIOTDLET EQU   SCTSDISP                                                 01253000
+SIOTPASS EQU   SCTSDISP                                                 01254000
+SIOTPRIV EQU   SCTSDISP                                                 01255000
+S3400DSP EQU   SCTSDISP                                                 01256000
+@NM00019 EQU   SCTSDISP                                                 01257000
+SIOTVLCT EQU   INDMSIOT+54                                              01258000
+SCTNMBUT EQU   INDMSIOT+53                                              01259000
+SIOTRTRY EQU   SIOTBYT0                                                 01260000
+SIOTPUPV EQU   SIOTBYT0                                                 01261000
+SIOTNOPV EQU   SIOTBYT0                                                 01262000
+SIOTGIGN EQU   SIOTBYT0                                                 01263000
+SPVTAMSG EQU   SIOTBYT0                                                 01264000
+SIOTFUDA EQU   SIOTBYT0                                                 01265000
+SIOTDYAL EQU   SIOTBYT0                                                 01266000
+SIOTGIID EQU   INDMSIOT+50                                              01267000
+SCTSPOOL EQU   INDMSIOT+48                                              01268000
+SIOTQNAM EQU   SIOTTSTC                                                 01269000
+@NM00018 EQU   SIOTTSTC                                                 01270000
+SIOTTERM EQU   SIOTTSTC                                                 01271000
+@NM00017 EQU   SIOTTSTC                                                 01272000
+@NM00016 EQU   SIOTBYT3                                                 01273000
+SIOTJES3 EQU   SIOTBYT3                                                 01274000
+SIOCDEVT EQU   SIOTBYT3                                                 01275000
+SIOALIAS EQU   SIOTBYT3                                                 01276000
+SCTDDINO EQU   INDMSIOT+44                                              01277000
+SIOTDDNT EQU   SIOTBYT1                                                 01278000
+SIOTALCD EQU   SIOTBYT1                                                 01279000
+SIODADSM EQU   SIOTBYT1                                                 01280000
+SIOTDADR EQU   SIOTBYT1                                                 01281000
+SIODUNAL EQU   SIOTBYT1                                                 01282000
+SIOVAMDS EQU   SIOTBYT1                                                 01283000
+SIOTHOLD EQU   SIOTBYT1                                                 01284000
+SIOTOCKP EQU   SIOTBYT1                                                 01285000
+SIOPSCNT EQU   INDMSIOT+42                                              01286000
+SIOTREFN EQU   INDMSIOT+40                                              01287000
+SIOTOTUN EQU   INDMSIOT+39                                              01288000
+SIOTVRSB EQU   INDMSIOT+36                                              01289000
+@NM00015 EQU   INDMSIOT+35                                              01290000
+SCTPJFCB EQU   INDMSIOT+32                                              01291000
+@NM00014 EQU   INDMSIOT+31                                              01292000
+SCTPSIOT EQU   INDMSIOT+28                                              01293000
+SIOTAFID EQU   INDMSIOT+26                                              01294000
+@NM00013 EQU   INDMSIOT+24                                              01295000
+SIODSNTE EQU   INDMSIOT+22                                              01296000
+SIOTUNAF EQU   SCTUSADD                                                 01297000
+SIOTDEST EQU   INDMSIOT+12                                              01298000
+SIOTTYPE EQU   INDMSIOT+3                                               01299000
+SIOTDSKA EQU   INDMSIOT                                                 01300000
+HWTYPE   EQU   HWCTBYT+1                                                01301000
+@NM00011 EQU   HWCTBYT                                                  01302000
+HWDA     EQU   HWCTBYT                                                  01303000
+@NM00010 EQU   HWCTBYT                                                  01304000
+HWTAPE   EQU   HWCTBYT                                                  01305000
+HW7TRK   EQU   HWOBYTE                                                  01306000
+HWMBYTE  EQU   HWDEV                                                    01307000
+HWUCBP   EQU   HWUCLST+8                                                01308000
+HWDEVTYP EQU   HWUCLST+4                                                01309000
+HWEDTLUV EQU   HWUCLST                                                  01310000
+HWRSVCHR EQU   HWDATA+954                                               01311000
+HWCRI    EQU   HWDATA+220                                               01312000
+HWDSNAME EQU   HWDATA+176                                               01313000
+HWDSNLN  EQU   HWDATA+174                                               01314000
+HWSTEPNO EQU   HWSTPNBR+1                                               01315000
+@NM00009 EQU   HWSTPNBR                                                 01316000
+HWGETLN  EQU   HWDATA+168                                               01317000
+HWGETSPN EQU   HWDATA+164                                               01318000
+HWRSVPTR EQU   HWDATA+80                                                01319000
+HWDSENQP EQU   HWDATA+76                                                01320000
+HWRPDIEP EQU   HWDATA+72                                                01321000
+HWLPDIBP EQU   HWDATA+68                                                01322000
+HWGDGBSP EQU   HWDATA+64                                                01323000
+HWGETADD EQU   HWDATA+52                                                01324000
+HWRSIOTP EQU   HWDATA+40                                                01325000
+HWIOSLTP EQU   HWDATA+32                                                01326000
+HWGDGNTP EQU   HWDATA+28                                                01327000
+HWPDIP   EQU   HWDATA+24                                                01328000
+HWGEPACP EQU   HWDATA+16                                                01329000
+HWLEPAP  EQU   HWDATA+12                                                01330000
+HWFSIOTP EQU   HWDATA+8                                                 01331000
+HWJCTP   EQU   HWDATA                                                   01332000
+@NM00008 EQU   HWCNTRL+14                                               01333000
+HWDDCTR  EQU   HWCNTRL+12                                               01334000
+HWDDSTEP EQU   HWCNTRL+10                                               01335000
+@NM00007 EQU   HWCNTRL+9                                                01336000
+@NM00006 EQU   HWJLCTLS+1                                               01337000
+HWDOMOD  EQU   HWJLCTLS+1                                               01338000
+HWVSAME  EQU   HWJLCTLS                                                 01339000
+HWLOCCAT EQU   HWJLCTLS                                                 01340000
+HWGDGSLC EQU   HWJLCTLS                                                 01341000
+HWLBASEL EQU   HWJLCTLS                                                 01342000
+@NM00005 EQU   HWJLCTLS                                                 01343000
+HWSYSLOC EQU   HWJLCTLS                                                 01344000
+HWPDIEDL EQU   HWJLCTLS                                                 01345000
+HWPDISCN EQU   HWJLCTLS                                                 01346000
+@NM00004 EQU   HWTBLCTL                                                 01347000
+HWCOPYAF EQU   HWTBLCTL                                                 01348000
+HWTBCOPY EQU   HWTBLCTL                                                 01349000
+@NM00003 EQU   HWCNTRL+3                                                01350000
+HWCATINT EQU   HWCNTRL+3                                                01351000
+HWNEWVL  EQU   HWCNTRL+3                                                01352000
+HWOVRDN  EQU   HWCNTRL+3                                                01353000
+HWVAME   EQU   HWCNTRL+3                                                01354000
+HWEDT    EQU   HWCNTRL+3                                                01355000
+HWUCB    EQU   HWCNTRL+2                                                01356000
+HWOVCAND EQU   HWCNTRL+2                                                01357000
+HWDSNCAT EQU   HWCNTRL+2                                                01358000
+HWRESIOT EQU   HWCNTRL+2                                                01359000
+HWGDGALL EQU   HWCNTRL+2                                                01360000
+HWVUREC  EQU   HWCNTRL+2                                                01361000
+HWDSNREC EQU   HWCNTRL+2                                                01362000
+@NM00002 EQU   HWCNTRL+1                                                01363000
+HWDSAUTH EQU   HWCNTRL+1                                                01364000
+HWNODSI  EQU   HWCNTRL+1                                                01365000
+HWEPAJCT EQU   HWCNTRL+1                                                01366000
+HWCAJSCB EQU   HWCNTRL+1                                                01367000
+HWDENQT  EQU   HWCNTRL+1                                                01368000
+HWOFFDEV EQU   HWCNTRL+1                                                01369000
+HWWVOLS  EQU   HWCNTRL                                                  01370000
+HWDNCCDD EQU   HWCNTRL                                                  01371000
+HWUNLCCT EQU   HWCNTRL                                                  01372000
+HWWAITOK EQU   HWCNTRL                                                  01373000
+HWMNTCAT EQU   HWCNTRL                                                  01374000
+HWNOULSP EQU   HWCNTRL                                                  01375000
+HWDOPDI  EQU   HWCNTRL                                                  01376000
+.@UNREFD ANOP                          END UNREFERENCED COMPONENTS      01377000
+@RF00077 EQU   @RC00055                                                 01378000
+@RC00061 EQU   @RC00055                                                 01379000
+@RF00070 EQU   @RC00061                                                 01380000
+@ENDDATA EQU   *                                                        01381000
+         END   IEFAB452                                                 01382000

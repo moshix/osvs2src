@@ -1,0 +1,1445 @@
+*                                                                       00000320
+         COPY  LCGASMSW                                                 00001600
+*                                                                       00018800
+ TITLE 'IGC0006C (IHJACP00) CHECKPOINT HOUSEKEEPING ROUTINE- 1ST LOAD'  00020400
+*********************************************************************** 00022402
+*STATUS CHANGE LEVEL 000                                                00025202
+*                                                                       00025602
+*FUNCTION/OPERATION:                                                    00026800
+*   1.) IF CHKPT IS TO BE SUPPRESSED(I.E.,IF RD=NC OR RD=RNC WAS SPEC-  00028400
+*       IFIED ON JOB OR EXEC CARD), THIS ROUTINE WILL PLACE A RETURN    00030000
+*       CODE OF X'00' IN REGISTER 15 AND RETURN CONTROL TO USER.        00031600
+*   2.) IF 'CANCEL' REQUEST WAS SPECIFIED BY CHKPT MACRO                00033200
+*       A.) A GETMAIN IS ISSUED FOR A WORK AREA IN SUBPOOL 253 OF       00034800
+*           LSQA. THE WORK AREA IS INITIALIZED, THE ADDRESS OF THE      00036400
+*           WORK AREA IS PLACED IN REGISTER 1 AND XCTL TO IGC0206C.     00038000
+*       B.) IF GETMAIN WAS UNSUCCESSFUL A RETURN CODE OF X'08' IS       00041200
+*           PLACED IN THE SVRB EXTENDED SAVE AREA AND CONTROL IS TRANS- 00042800
+*           FERED TO CHKPT EXIT ROUTINE, IGC0Q06C.                      00044400
+*   3.) FOR NORMAL PROCESSING OF CHKPT THIS ROUTINE PERFORMS THE        00046000
+*       FOLLOWING:                                                      00047600
+*        *  DETERMINES WHETHER THE CHKPT PARAMETER LIST IS VALID. IF    00049200
+*           IT IS INVALID, THIS ROUTINE PUTS A RETURN CODE OF X'08'     00050800
+*           IN THE SVRB EXTENDED SAVE AREA AND XCTLS TO IGC0Q06C.       00052400
+*                                                                       00054000
+*        *  DETERMINES WHETHER THE CHKPT DATA SET IS OPEN. IF IT IS     00055600
+*           NOT OPEN, THIS ROUTINE WILL OPEN THE DATA SET. IF OPEN WAS  00057200
+*           UNSUCCESSFUL, EITHER AN I/O OR CHKPT DD ERROR OCCURRED AND  00058800
+*           A RETURN CODE OF X'0C' IS PLACED IN THE SVRB EXTENDED SAVE  00060400
+*           AREA AND THIS ROUTINE XCTLS TO IGC0Q06C.                    00062000
+*                                                                       00062403
+*        *  TESTS IF CHKPT=EOV SPECIFIED ON CHKPT DD AND, IF ON,        00062803
+*           TURNS IT OFF VIA QMNGRIO FUNCTION.                          00063203
+*                                                                       00063600
+*        *  COMPUTES THE SIZE OF THE CHKPT WORK AREA.                   00065200
+*                                                                       00066800
+*        *  GETS CORE FOR THE WORK AREA FROM SUBPOOL 253 IF POSSIBLE.   00068400
+*           IF THERE IS NOT ENOUGH SPACE, A RETURN CODE OF X'08' IS     00070000
+*           PLACED IN THE SVRB EXTENDED SAVE AREA AND THIS ROUTINE      00071600
+*           XCTLS TO IGC0Q06C.                                          00073200
+*                                                                       00074800
+*        *  FILLS IN THE FIRST PART OF THE WORK AREA WITH               00082800
+*           INFORMATION NEEDED BY OTHER CHKPT MODULES.                  00084400
+*   4.) FOR CHECKPOINT DATA SET SECURITY THIS ROUTINE PERFORMS THE      00084802
+*       FOLLOWING OPERATIONS:                                           00085202
+*        *  IF THE DATA SET IS KNOWN TO BE SECURE, THE MODULE TESTS     00085602
+*           IF DATA SET IS ON A SHARED DEVICE.  IF SO, ERROR CODE       00085702
+*           214 IS SET.  IF ANOTHER DCB OF NON CHECKPOINT STATUS IS     00085802
+*           CONCURRENTLY OPEN TO THE CHECKPOINT DATA SET, ERROR CODE    00085902
+*           209 IS SET.  IF THE DATA SET IS NOT ENQUEUED EXCLUSIVE,     00088902
+*           ERROR CODE 210 IS SET.                                      00090902
+*        *  IF THE DATA SET IS NOT KNOWN TO BE SECURE, THE MODULE SETS  00092902
+*           ERROR CODE 016 IF IT IS NOT TAPE OR DA.  IF IT IS TAPE      00097602
+*           AND BLOCK COUNT IS NOT 0, ERROR CODE 208 IS SET.  THE       00097702
+*           MODULE THEN CLOSES AND REOPENS THE CHECKPOINT DATA SET      00097802
+*           TO ALLOW OPEN TO GET A SECURE VOLUME.  IF A SECURE          00097902
+*           VOLUME IS NOT OPENED, ERROR CODE 211 IS SET.                00098202
+*        *  IF A SECURITY INTERFACE WAS SET UP FOR AN UNAUTHORIZED      00098602
+*           USER, THIS MODULE UPDATES THE DCB ADDRESS IN THE CHECK-     00098702
+*           POINT WORK AREA.                                            00099202
+*                                                                       00100402
+*ENTRY POINTS: IGC0006C                                                 00101002
+*                                                                       00103702
+*INPUT:  ADDRESS OF PARAMETER LIST(SHOWN BELOW) IN REGISTER 1.          00104002
+*   AL2(FLAG)    FLAG EQUALS X'80' IF NO CHECKID WAS SPECIFIED BY THE   00107002
+*                USER AND THE GENERATED CHECKID ADDRESS IS NOT TO BE    00110002
+*                RETURNED TO THE USER. FLAG EQUALS X'00' IF CHECKID WAS 00113002
+*                SPECIFIED.                                             00116002
+*   AL3(DCBORCN) ADDRESS OF CHKPT DCB.                                  00119002
+*   AL1(LENGTH)  LENGTH OF USER SPECIFIED CHECKID. IF THIS BYTE EQUALS  00122002
+*                X'FF', THIS INDICATES THAT THE USER WANTS THE SYSTEM   00125002
+*                TO GENERATE A CHECKID AND RETURN IT AT THE LOCATION    00128002
+*                SPECIFIED BY IDADDR.                                   00131002
+*   AL3(IDADDR)   IF USER SUPPLIES THE CHECKID, THIS FIELD WILL POINT   00134002
+*                TO THAT CHECKID. IF THE SYSTEM IS TO SUPPLY THE        00137002
+*                CHECKID, THIS FIELD POINTS TO AN 8 BYTE AREA WHERE     00140002
+*                THE GENERATED CHECKID WILL BE RETURNED.                00143002
+*   IF 'CANCEL' WAS SPECIFIED IN THE CHKPT MACRO, REGISTER 1 WILL CON-  00146002
+*   TAIN ALL ZEROS.                                                     00149002
+*                                                                       00151702
+*OUTPUT:  A RETURN CODE AND MESSAGE CODE WILL BE PLACED IN THE SVRB     00152002
+*   EXTENDED SAVE AREA IF AN ERROR EXISTS.                              00155002
+*   1.) IF THE USER REQUESTS THAT CHKPTS BE SUPPRESSED, A RETURN CODE   00158002
+*       OF X'00' IS GIVEN.                                              00161002
+*   2.) IF THIS ROUTINE WAS UNSUCCESSFUL IN OPENING CHKPT DATA SET      00164002
+*       THEN A RETURN CODE OF X'0C' WILL BE GIVEN.                      00167002
+*   3.) IF A WORK AREA OF THE PROPER SIZE COULD NOT BE GETMAIN'D,       00170002
+*       OR IF THE PARAMETER LIST CONTAINS AN INVALID ADDRESS,           00173002
+*       OR IF SECURITY/INTEGRITY ERRORS WERE DETECTED,                  00175702
+*       THEN A RETURN CODE OF X'08' IS GIVEN.                           00176002
+*   4.) IF NORMAL CHKPT PROCESSING IS TO CONTINUE, THE ADDRESS OF THE   00179002
+*       CHKPT WORK AREA WILL BE PLACED IN REGISTER 1.                   00182002
+*   ONE OF THE FOLLOWING MESSAGE CODES IS PLACED IN THE SVRB EXTENDED   00185002
+*   SAVE AREA TO BE PRINTED IN THE CONSOLE MESSAGE BY THE CHKPT EXIT    00188002
+*   ROUTINE IF AN ERROR OCCURS:                                         00191002
+*        DEC VALUE  MNEMONIC                 MEANING                    00194002
+*            1      CKERPG1        PARAMETER LIST ERROR                 00197002
+*            2      CKERPG2        OPEN UNSUCCESSFUL                    00200002
+*            3      CKERPG3        GETMAIN UNSUCCESSFUL                 00203002
+*           11      CKERPG11       MULTITASKING (MOTHER TASK)           00205002
+*           12      CKERPG12       MULTITASKING (DAUGHTER TASK)         00205402
+*           16      CKERPG16       CHKPT DATA SET NOT ON TAPE OR DA     00205802
+*           19      CKERPG19       USER OPENED CHKPT D/S FOR INPUT      00206802
+*          202      CKERP202       LOCAL LOCK NOT OBTAINED              00209002
+*          208      CKERP208       TAPE BLOCK COUNT NOT 0               00210002
+*          209      CKERP209       CONCURRENT OPEN TO CHKPT D/S         00212402
+*          210      CKERP210       CHKPT D/S NOT EXCLUSIVE ENQ'D        00212802
+*          211      CKERP211       OPEN DID NOT FIND SECURE CHKPT D/S   00213002
+*          214      CKERP214       CHKPT DATA SET ON SHARED DEVICE      00214002
+*   IF ANY ERROR OCCURS, THIS ROUTINE XCTL'S TO IGC0Q06C WITH THE       00215002
+*   FOLLOWING INPUT:                                                    00216002
+*   REGISTER 1 - CONTAINS ALL ZEROS.                                    00219002
+*   REGISTER 5 - ADDRESS SVRB                                           00222002
+*   ONE BYTE OF FLAGS IN SVRB EXTENDED SAVE AREA TO DETERMINE WHAT      00225002
+*   ACTION IS TO BE TAKEN BY CER AND WHAT MESSAGE IS TO BE WRITTEN.     00228002
+*  ACTION IS TO BE TAKEN BY CER, RETURN CODE AND MESSAGE CODE IN        00231002
+*  BYTES 0-3, TIOT ADDRESS IN BYTES 33-35 AND DCB ADDRESS IN BYTES      00234002
+*  37-39 (IF A BAD PARAMETER LIST IS PASSED BYTES 37-39 WILL BE ZERO).  00237002
+*                                                                       00239402
+*EXTERNAL ROUTINES:  IEAOVLOO,01 - ADDRESSES OF VALIDITY CHECK ROUTINES 00240002
+*                    QMNGRIO - FOR READING CONTROL BLOCKS FROM SWA      00242402
+*                    SETLOCK - TO GET LOCAL LOCK                        00242802
+*                                                                       00242902
+*SVCS USED  GETMAIN, FREEMAIN, OPEN, XCTL, SVC3, CLOSE, ENQ, EXCP, WAIT 00243002
+*                                                                       00245402
+*EXITS-NORMAL:                                                          00246002
+*   1.) XCTL TO IGC0106C IF NORMAL PROCESSING OF CHKPT CAN CONTINUE.    00249002
+*   2.) XCTL TO IGC0206C IF 'CANCEL' WAS SPECIFIED.                     00252002
+*   3.) RETURN TO USER IF CHKPT'S ARE TO BE SUPPRESSED.                 00255002
+*                                                                       00257402
+*EXITS-ERROR:                                                           00258002
+*   1.) XCTL TO IGC0Q06C IF THIS ROUTINE WAS UNABLE TO:                 00261002
+*       A.) GETMAIN FOR THE WORK AREA                                   00264002
+*       B.) OPEN THE CHKPT DATA SET.                                    00267002
+*       C.) VALIDATE THE ADDRESSES OF THE PARAMETER LIST.               00270002
+*       D.) VERIFY THAT THE CHECKPOINT DATA SET WAS SECURE.             00272402
+*                                                                       00272802
+*TABLES/WORKAREAS CREATED:  CHKWA IS THE FIRST PART OF THE CHKPT WORK   00273002
+*   AREA. THIS ROUTINE FILLS IN THE WORK AREA WITH INFORMATION THAT IS  00276002
+*   NEEDED BY OTHER CHKPT ROUTINES.                                     00279002
+*                                                                       00281402
+*TABLES/WORKAREAS REFERENCED  CVT, TCB, TIOT, SVRB, DCB, DEB, PQE,      00282002
+*                ASCB, DSAB, UCB, SIOT, JFCB, JESCT, VDSCB, DSL1        00286002
+*                                                                       00287402
+*ATTRIBUTES:  REENTRANT, SUPERVISOR STATE, TYPE 4 SVC ROUTINE.          00288002
+*                                                                       00290402
+*RESTRICTIONS ON THE USE OF THIS MODULE:  VS/2-2 ONLY                   00291002
+*                                                                       00293002
+*NOTES:  NONE                                                           00294002
+* CHANGES FOR VS2 3.0                                                   00294637
+*A27284900-27289800                                           @ZA11608  00295237
+*A201503-201530,C250002                                       @ZA25063  00295637
+*A348943-349183,349303                                        @ZA27494  00295837
+*C264427,A393143                                              @ZA30032  00295937
+*ZZZ                                                          @ZA99999  00296037
+*ZZZ                                                          @ZA99999  00296137
+*C267829-267929,C275410-275417                                @ZA31342  00296237
+*********************************************************************** 00296637
+         EJECT                                                          00296837
+IGC0006C CSECT                                                          00297002
+         USING CVTMAP,R3           ADDRESS CVT.                  Y02083 00400002
+         USING TCB,R4              ADDRESS TCB.                         00600000
+         USING TIOTSECT,R2         ADDRESS TIOT.                        00800017
+         USING HKPSECT,R5          ADDRESS CHKPT SVRB                   01000017
+         BALR  RB,0                BASE ADDR                            01200002
+         USING *,RB                ADDRESS MODULE.                      01400017
+BASE1    B     BEGIN               BRANCH AROUND EYE CATCHER     YM7008 01410002
+         CNOP  0,8                 ALIGN TO A DOUBLE WORD BOUNDARY      01420000
+         DC    CL8'IGC0006C'       MODULE NAME                 @ZA30032 01430037
+         DC    CL8'@ZA31342'       LAST CODE SHIPPED           @ZA30032 01480037
+         DC    CL8'&SYSDATE'       LAST DATE SHIPPED           @ZA30032 01530037
+BEGIN    L     R2,TCBTIO           GET ADDR OF TIOT.                    02200002
+         L     R3,ADRCVT(R0,R0)    GET ADDR OF CVT               Y02083 02210002
+*                                                                     * 02220018
+*********************************************************************** 02230000
+*                                                                     * 02240017
+*        IF CHECKPOINTS ARE TO BE SUPPRESSED, RETURN TO USER.         * 02280017
+*                                                                     * 02320017
+*********************************************************************** 02340018
+*                                                                     * 02360017
+         TM    TCBTRN,TCBNOCHK     ARE CHKPTS TO BE SUPPRESSED          02460000
+         BO    CHKSUP              YES-GO RETURN TO USER.               02600002
+         XC    HKPGML2(LNXSA),HKPGML2 CLEAR SVRB EXTENDED SAVEAREA      02700002
+         ST    R2,HKPTIO           SAVE TIOT ADDRESS                    02800002
+*                                                                     * 03410018
+*********************************************************************** 03420018
+*                                                                     * 03440017
+*        IF CANCEL WAS REQUESTED, BRANCH TO CANCEL ROUTINE TO GETMAIN * 03480017
+*        A WORK AREA.                                                 * 03520017
+*                                                                     * 03560017
+*********************************************************************** 03570018
+*                                                                     * 03580018
+CHKSM    LTR   R1,R1               WAS CANCEL REQUESTED                 03800002
+         BZ    CHKCANC1            YES-GO TO CANCEL ROUTINE.            04000017
+*                                                                     * 04000318
+*********************************************************************** 04000618
+*                                                                     * 04001017
+*        CHECK PARAMETER LIST ADDRESSES FOR BEING WITHIN P/P CORE AND * 04002017
+*        DCB ADDRESS FOR BEING ON FULL WORD BOUNDARY.                 * 04003017
+*                                                                     * 04004017
+*********************************************************************** 04004518
+*                                                                     * 04005017
+CHKPARM  LR    R7,RB               SAVE BASE REG                 Y02076 04007002
+         SETLOCK OBTAIN,TYPE=LOCAL,MODE=UNCOND, GET LOCAL LOCK   Y02076X04012402
+               RELATED=(LOCAL,IGC0006C(CHKPARM4))                Y02076 04014002
+         LR    RB,R7               RESTORE BASE REG              Y02076 04014802
+         LTR   RD,RD               SETLOCK ERROR                 Y02076 04016002
+         LA    RA,CKERP202         ANTICIPATE SETLOCK ERROR      Y02076 04018002
+         BNZ   CHKERX              IF SETLOCK ERROR, BR          Y02076 04028002
+         LR    RC,R1               RELOCATE PARM ADDR            YM5767 04030002
+         USING PARMLST,RC          ADDR PARAMETER LIST           YM5767 04036002
+         LA    R1,K0(RC)           CLEAR HI ORDER BYTE           YM5767 04036402
+         LA    R2,K7(RC)           END ADR=BEG ADR + 7           YM5767 04038002
+         L     RF,CVT0VL01         GET ADR OF VALID.RTN01        Y02076 04040002
+         SR    RA,RA               CLEAR ERROR REG               Y02076 04040102
+         BALR  RE,RF               PERFORM VALIDITY CHECK        Y02076 04040402
+         BNZ   CHKPARM2            TO ERROR-IF INVALID ADR       Y02076 04041202
+         ICM   R1,M7,DCBADDR+K1    GET USER DCB ADDR             YM5767 04091202
+         LA    R2,K3(R1)           CHECK 1ST DCB WORD            YM5767 04101202
+         L     RF,CVT0VL01         GET EPA OF CHECK RTN          YM5767 04111202
+         BALR  RE,RF               GO CHECK DCB ADDR             YM5767 04121202
+         BNZ   CHKPARM2            TO ERROR EXIT IF INVALID      YM5767 04123202
+         CLI   FLAG,NOCHKID        CHECKID SPECIFIED-                   04130002
+         BE    CHKPARM3            NO, SKIP NEXT TEST            Y02083 04140002
+         L     R1,IDADDR           GET ADR OF CHECKID            Y02076 04144002
+         LA    R1,K0(R1)           CLEAR HI ORDER BYTE           Y02076 04146002
+         LA    R2,SYSGENID(R1)     ANTICIPATE SYSGENED ID        YM5793 04146502
+         CLI   IDADDR,X'FF'        DOES USER WANT THE SYSTEM     YM5793 04147002
+*                                  GENERATED CKID RETURNED       YM5793 04147502
+         BE    CHKPARM1            BR IF YES (LENGTH=8)          YM5793 04148002
+         SR    R2,R2               CLEAR WORK REG                YM5793 04148102
+         ICM   R2,M1,IDADDR        GET USER CKID LENGTH          YM5793 04148202
+         BZ    CHKPARM3            LET IGC0106C FIND A           YM5793 04148302
+*                                  ZERO LENGTH ERROR             YM5793 04148402
+         LA    R2,0(R1,R2)         END ADDRESS = R1 + USER       YM5793 04149102
+         BCTR  R2,0                CKID LNGTH - 1                YM5793 04149202
+CHKPARM1 EQU   *                   CALL VL00 CHECK RTN           YM5793 04149302
+         L     RF,CVT0VL00         ADR OF VALID.RTN 00           Y02076 04149402
+         BALR  RE,RF               PERFORM VALIDITY CHECK        Y02076 04149502
+         BZ    CHKPARM3            BR IF NO ERROR                Y02076 04149602
+CHKPARM2 LA    RA,CKERPG1          SET ERROR REG                 Y02076 04152902
+CHKPARM3 LR    R1,RC               RESTORE REG 1                 Y02076 04156402
+         DROP  RC                  PARM LIST ADDRESSABILITY      YM5767 04156802
+         USING PARMLST,R1          ADDR PARM LIST OFF R1         YM5767 04157202
+         LR    R7,RB               SAVE BASE REG                 Y02076 04158402
+CHKPARM4 SETLOCK RELEASE,TYPE=LOCAL,                             Y02076X04158802
+               RELATED=(LOCAL,IGC0006C(CHKPARM1))                Y02076 04159202
+         LR    RB,R7               RESTORE BASE REG              Y02076 04159302
+         LTR   RA,RA               VALCHK ERROR                  Y02076 04159802
+         BNZ   CHKERX              IF ERROR, BR ERROR EXIT       Y02076 04160202
+         LR    RD,R1               SAVE PARM REG                 Y02083 04160402
+         L     RC,DCBADDR          GET CHKPT DCB ADDRESS         Y02083 04160502
+         USING IHADCB,RC           ADDRESS CHKPT DCB             Y02083 04160602
+         DROP  R1                  PARM LIST ADDRESSABILITY      Y02083 04160702
+         EJECT                                                          04160802
+*********************************************************************** 06640018
+*                                                                     * 06660017
+*        COMPUTE SIZE OF WORK AREA NEEDED BY RESTART                  * 06690017
+*                                                                     * 06720017
+*********************************************************************** 06730018
+*                                                                     * 06750017
+         LA    R7,TIOLEN           INIT TIOT-LENGTH-ACCUMULATOR  Y02083 07000002
+         XR    R6,R6               CLEAR WORK REG                Y02083 07000502
+         L     R2,HKPTIO           GET TIOT ADDRESS              Y02083 07001002
+         LA    R9,TIOENTRY         PNT TO 1ST TIOT ENTRY         Y02083 07001502
+         USING TIOENTRY,R9         ADDRESS DD ENTRY IN TIOT             07200017
+CHKETI   NC    TIOELNGH(TIOEDDNM-TIOENTRY),TIOELNGH IS THIS THE         07500002
+*                                  END OF THE TIOT                      07600018
+         BNZ   CHKTIL              NO-GO TO GET ADDR OF NEXT DD ENTRY.  07800017
+         STH   R7,HKPTIOTL         SAVE LENGTH OF TIOT.                 08000017
+*                                                                     * 08006018
+*********************************************************************** 08012018
+*                                                                     * 08020017
+*        LENGTH OF TIOT + LENGTH OF FIXED PART OF RESTART WORK AREA + * 08040017
+*        LENGTH OF BASIC PART OF REPDCB'S WORK AREA                   * 08060017
+*                                                                     * 08080017
+*********************************************************************** 08180018
+*                                                                     * 08280018
+         AH    R7,WAK              ADD LENGTH OF FIXED WA        Y02076 08380002
+*                                                                     * 08480018
+*********************************************************************** 08580018
+*                                                                     * 08840017
+*        INCREASE WORK AREA SIZE FOR REPDCB ACCORDING TO THE NUMBER   * 08880017
+*        OF OPEN DATA SETS.                                           * 08920017
+*                                                                     * 08960017
+*********************************************************************** 08970018
+*                                                                     * 08980018
+         USING DEBBASIC,R8                                              09200000
+CHKDEBN  XR    R6,R6                                                    09400002
+         OC    TCBDEB,TCBDEB       CHECK FOR NO DEB CHAIN        Y02083 09520002
+         BZ    CHKCOMP             IF NOT, GO DO GETMAIN         Y02083 09560002
+         L     R8,TCBDEB           GET ADDR OF FIRST DEB.               09600017
+CHKLSDB  NC    DEBDEBB,DEBDEBB     IS THIS THE LAST DEB                 10000002
+         BNZ   CHKNXDB             NO-GET ADDR OF NEXT DEB.             10200017
+         TM    DCBOFLGS,DCBOFOPN   IS CHKPT D/S OPEN             Y02083 10200502
+         BO    CHKDCBOP            IF YES, BRANCH                Y02083 10201002
+         LA    R6,K1(,R6)          BUMP DEB COUNT FOR CHKPT D/S  Y02083 10201502
+         B     AROUND              BYPASS DEB CHECKING         @ZA25063 10250037
+CHKDCBOP EQU   *                                               @ZA25063 10254037
+         ICM   R8,M7,45(RC)        GET THE CHECKPOINT DEB      @ZA25063 10258037
+         ICM   R8,M7,25(R8)        GET THE PROTECTED DCB       @ZA25063 10262037
+         DEBCHK (R8),TYPE=VERIFY   VERIFY THE DEB IS IN TABLE  @ZA25063 10266037
+         LTR   RF,RF               ANY ERRORS FROM DEBCHECK    @ZA25063 10270037
+         BZ    AROUND              NO SO PRESS ON              @ZA25063 10274037
+         LA    RA,CKERPG1          SET ERROR CODE , NICE TRY   @ZA25063 10278037
+         B     CHKERX              ABEND CHECKPOINT            @ZA25063 10282037
+AROUND   EQU   *                                               @ZA25063 10286037
+         LTR   R6,R6               Q. WAS THERE ONLY ONE DEB   @ZA25063 10290037
+         BZ    CHKCOMP             YES-SKIP CODE TO INCREASE W. A. SIZE 10300017
+         BCTR  R6,0                GET NUMBER OF DEBS MINUS TWO         10350017
+         MH    R6,REPDCB1          COMPUTE W.A THAT IS                  10400017
+         AR    R7,R6               NEEDED BY REPDCB.                    10600017
+         DROP  R8                                                       10800017
+*                                                                     * 11180017
+*********************************************************************** 11280018
+*                                                                     * 11380017
+*        PUT ADDRESS OF WORK AREA ON DOUBLE-WORD BOUNDARY AND ISSUE   * 11580017
+*        CONDITIONAL GETMAIN FOR WORK AREA OF SIZE COMPUTED.          * 11780017
+*                                                                     * 11980017
+*********************************************************************** 12080018
+*                                                                     * 12180017
+CHKCOMP  STC   R7,HKPSP            SAVE LOW ORDER BYTE OF ADDR.         13798002
+         TM    HKPSP,DBLWDBND      IS ADDR ALREADY ON DBL WD BOUNDARY   13798400
+         BC    ZERO,CHKGOON        YES-GO ON, NO FURTHER WORK NEEDED    13798800
+         LA    R7,8(0,R7)          INCREASE ADDR BY EIGHT.              13799200
+         SRA   R7,TRUNC3           TRUNCATE 3 LOW                       13799600
+         SLA   R7,TRUNC3           ORDER BINARY DIGITS                  13799700
+CHKGOON  BAL   R9,CHKCOMG          GO TO ISSUE CONDITIONAL GETMAIN      14000002
+         B     *+4(RF)             IF RETURN CODE IS 0,                 14200017
+         B     CHKCONT             CONTINUE NORMAL PROCESSING           14400017
+         B     CHKERC              OTHERWISE-GO TO ERROR EXIT ROUTINE   14600002
+*                                                                     * 17624017
+*********************************************************************** 17625018
+*                                                                     * 17627017
+*        INITIALIZE WORK AREA WITH INFORMATION THAT WILL BE USED BY   * 17630017
+*        CHECKPOINT MODULES                                           * 17633017
+*                                                                     * 17636017
+*********************************************************************** 17637018
+*                                                                     * 17639017
+         USING CHKWA,R6            ADDRESS W.A.                         17650002
+CHKCONT  XC    CHKWA(ZLN),CHKWA    ZERO OUT W.A.                        17700002
+         MVC   CKSYNAD(WDLNG),DCBSYNAD SAVE DCBSYNAD FIELD IN WA        17900002
+         MVC   CKTIOTLN(LNG),HKPTIOTL MOVE INFO FROM SVRB SA TO WA      18100002
+         USING PARMLST,RD          ADDR PARAMETER LIST                  18300018
+         MVC   CKDCB(ADDRLNG),DCBORCN PUT ADDR OF CHKPT DCB INTO        18500002
+         MVC   CKDCB2(ADDRLNG),DCBORCN DECBS INWA                       18700002
+         LR    R8,R7               SAVE W.A. LENGTH.                    19300017
+         SH    R7,SSCRBUFL         GET SUR/SSCR BUFFER OFFSET    Y02076 19400002
+         ST    R7,CKBFOFST         SAVE IT                       Y02076 20300002
+CHKCOCNC ST    R4,CKTCBAD          INITIALIZE CHKWA                     21400002
+         ST    R8,CKWACL           SAVE LENGTH                          21600002
+         ST    R5,CKERAS07         SAVE SVRB PTR                 Y02083 21650002
+         LA    RF,CHKWAL           GET OFFSET TO CHKDCB W.A.            21800017
+         ST    RF,CKWAOFST         SAVE IT                              22000002
+         MVC   CKFLAG1(ONE),HKPFLAG MOVE IN FLAGS                       22200002
+         TM    TCBFLGS6,TCBRV      IS THIS TASK V=R?             YM2776 22250001
+         BNO   CKNOVEQR            NO, DO NOT SET BIT            YM2776 22300001
+         OI    CKFLAG1,CKVEQR      SET V=R FLAG IN W.A.          YM2776 22350001
+         DROP  R9                                                  I283 22700019
+CKNOVEQR L     RF,TCBPQE           GET ADDR OF DUMMY PQE           I283 22800002
+         LA    RF,L8(RF)           GET TO 1ST PQE PTR            Y02076 22850002
+         L     RF,K0(RF)           GET ADR OF PQE                Y02076 22860002
+         USING PQESECT,RF                                               22900000
+CHKPQELP L     R9,PQEREGN          GET REGION STRT ADDR          Y02076 23050002
+         ST    R9,CKPPM            STORE IN CHKPT W.A.           Y02076 23100002
+         ST    RD,CKPARMAD                                              26200017
+         TM    HKPFLAG,CKCANCEL    CANCEL REQUEST                Y02083 26210002
+         BO    CHKDSS2D            IF YES, SKIP D/S              Y02083 26220002
+*                                  SECURITY TESTING              Y02083 26230002
+         EJECT                                                          26230502
+*****************************************************************Y02083 26260002
+*                                                                Y02083 26270002
+*         TEST FOR MULTI-TASKING. IF FOUND, TERMINATE IN ERROR.  Y02083 26280002
+*                                                                Y02083 26290002
+*****************************************************************Y02083 26292002
+*                                                                Y02083 26294002
+CHKMULTT L     R2,HKPTIO           RESTORE TIOT ADDRESS          Y02083 26296002
+         LA    RA,CKERPG12         LOAD MSG CODE IF ERROR OCCURS Y02083 26298002
+         NC    TCBLTC,TCBLTC       ANY DAUGHTER TASKS            Y02083 26298402
+         BNZ   CHKERX5B            YES, GO TO ERROR ROUTINE      Y02083 26298802
+         LA    RA,CKERPG11         LOAD MSG CODE IF ERROR OCCURS Y02083 26299202
+         CLM   R4,ADDRBYTS,TCBJSTCA IS THIS A JOB STEP TCB       Y02083 26299602
+         BNE   CHKERX5B            IF NOT, GO TO ERROR ROUTINE   Y02083 26299702
+*****************************************************************Y02083 26299802
+*                                                                Y02083 26299902
+*        OPEN CHECKPOINT DATA SET IF USER DID NOT OPEN DATA SET  Y02083 26316602
+*                                                                Y02083 26326602
+*****************************************************************Y02083 26328602
+*                                                                Y02083 26330602
+CHKOPEN  TM    DCBOFLGS,DCBOFOPN   CHKPT D/S ALREADY OPEN        Y02083 26331602
+         BO    CHKOPEN2            IF YES, BRANCH                Y02083 26332102
+         L     R7,TCBJSCB          FETCH JSCB ADDRESS            Y02083 26332602
+         USING IEZJSCB,R7          ADDRESS JSCB                  Y02083 26333102
+         L     R7,JSCDSABQ         FETCH DSAB-QDB ADDRESS        Y02083 26333602
+         USING QDB,R7              ADDRESS DSAB-QDB              Y02083 26334102
+         L     R7,QDBFELMP         FETCH 1ST DSAB ADDRESS        Y02083 26334602
+         USING DSAB,R7             ADDRESS DSAB                  Y02083 26335102
+         LA    RA,CKERPG2          ANTICIPATE MISSING DDNAME     Y02083 26339302
+CHKOPEN1 LTR   R7,R7               DSAB ADDRESS OR ZERO          Y02083 26339802
+         BZ    CHKERX5A            IF NO DSAB ADDR, GO EXIT      Y02083 26340302
+         L     R9,DSABTIOT         FETCH TIOT ENTRY ADDRESS      Y02083 26340402
+         USING TIOENTRY,R9         ADDRESS TIOT ENTRY            Y02083 26340702
+         CLC   TIOEDDNM,DCBDDNAM   IS THIS THE CHKPT DD ENTRY    Y02083 26340802
+         BE    CHKOPEN3            IF YES, BRANCH                Y02083 26341302
+         L     R7,DSABFCHN         FETCH NEXT DSAB ADDRESS       Y02083 26341802
+         B     CHKOPEN1            LOOP BACK FOR THIS DSAB       Y02083 26342402
+CHKOPEN2 L     R7,DCBDEBAD         FETCH CHKPT D/S DEB ADDRESS   YM1237 26342802
+         LA    RA,DEBBASIC-DEBPREFX ESTABLISH ADDRESSABILITY TO  YM1237 26343202
+         SR    R7,RA               DEB PREFIX                    YM1237 26343602
+         USING DEBPREFX,R7         ADDRESS DEB + PREFIX          YM1237 26344002
+         LA    RA,CKERPG19         ANTICIPATE OPEN FOR INPUT ERR YM7008 26344102
+         TM    DEBOPATB,OUTPUT     D/S OPEN FOR OUTPUT           YM7008 26348602
+         BZ    CHKERX5B            IF NOT, TERMINATE IN ERROR    YM7040 26349002
+         L     R7,DEBXTNP          FETCH DEB EXTENSION ADDRESS   YM1237 26350002
+         USING DEBXTN,R7           ADDRESS DEB EXTENSION         YM1237 26350802
+         L     R7,DEBXDSAB         FETCH DSAB ADDRESS            YM1237 26351602
+         USING DSAB,R7             ADDRESS DSAB                  YM1237 26352402
+         L     R9,DSABTIOT         FETCH TIOT ENTRY ADDRESS      Y02083 26353202
+CHKOPEN3 LA    RA,CKERP213         ANTICIPATE SUBSYSTEM D/S ERR  Y02083 26354002
+         TM    TIOELINK,TIOESSDS   CHKPT D/S A SUBSYSTEM D/S     Y02083 26354802
+         BO    CHKERX5B            IF YES, TERMINATE IN ERROR    Y02083 26355602
+         STM   R2,R7,CKJCT+TEMPSAVE-QMIOP SAVE REGS              YM4683 26356402
+         ICM   R2,M14,TIOEJFCB     FETCH JFCB SWA ADDRESS        Y02083 26357202
+         DROP  R9                  TIOT ENTRY ADDRESSABILITY     Y02083 26358002
+         BAL   R5,CHKQMNGR         GO READ JFCB                  Y02083 26358802
+         USING JFCBDSNM,R7         ESTABLISH JFCB ADDRESSABILITYZ30JSFC 26359203
+         TM    JFCFLGS1,JFCBCEOV   CHKPT=EOV FOR THIS DATA SET? Z30JSFC 26359303
+         BZ    CHKOPN3A            NO - CONTINUE                Z30JSFC 26359403
+         NI    JFCFLGS1,XFF-JFCBCEOV    TURN OFF - INVAL REQUESTZ30JSFC 26359503
+         BAL   R5,CHKQMNGW         REWRITE JFCB W/O CHKPT=EOV   Z30JSFC 26360803
+         USING DSAB,R7             RESET DSAB ADDRESSABILITY    Z30JSFC 26370803
+CHKOPN3A EQU   *                   CONTINUE                     Z30JSFC 26372803
+         LR    R1,R7               JFCB ADDRESS TO REG 1         Y02083 26379003
+         LM    R2,R7,CKJCT+TEMPSAVE-QMIOP RESTORE SAVED REGS     YM4683 26380303
+         USING JFCBDSNM,R1         ADDRESS JFCB                  Y02083 26381603
+         LA    RA,CKERP212         ANTICIPATE LABEL ERROR        Y02083 26382903
+         TM    JFCBLTYP,JFCSUL     IS ONLY SL SPECIFIED          Y02083 26384203
+         BNM   CHKERX5B            IF NOT, TERMINATE IN ERROR    Y02083 26385503
+         DROP  R1                  JFCB ADDRESSABILITY           Y02083 26386803
+         TM    DCBOFLGS,DCBOFOPN   IS CHKPT DATA SET OPEN        YM1237 26388103
+         BNO   CHKOPEN4            IF NOT, GO OPEN CHKPT D/S     YM1237 26389403
+         TM    DSABFLG4,DSABCKSI   SECURITY INTERFACE EXIST      YM1237 26390703
+         BO    CHKAFOP             IF YES, BRANCH                YM1237 26392003
+         OI    CKFLAG1,USERAUTH    SET AUTHORIZED-USER FLAG      YM1237 26393303
+         B     CHKAFOP             CONTINUE                      YM1237 26394603
+CHKOPEN4 TESTAUTH FCTN=1,KEY=YES   TEST FOR AUTHORIZED USER      YM1237 26395903
+         LTR   RF,RF               TEST RETURN CODE              YM1237 26397203
+         BNZ   CHKOPEN5            IF NOT AUTHORIZED, BRANCH     YM1237 26398503
+         OI    CKFLAG1,USERAUTH    SET AUTHORIZED-USER FLAG      YM1237 26399803
+         B     CHKOPEN6            CONTINUE                      YM1237 26401103
+CHKOPEN5 OI    DSABFLG4,DSABCKSI   TELL OPEN USER NOT AUTHORIZED YM1237 26402403
+         DROP  R7                  DSAB ADDRESSABILITY           YM1237 26403703
+CHKOPEN6 ST    RC,CKERAS04         DCB ADDR TO OPEN'S PARM LIST  YM1237 26405003
+         MVI   CKERAS04,OPENOPT    MOVE OPTION BYTE TO PARM LIST YM1237 26406303
+         BAL   RE,CHKESTES         ESTABLISH ESTAE ENVIRON       YM5913 26407603
+         MODESET KEYADDR=TCBPKF,WORKREG=10 ASSUME CALLER KEY     YM5921 26408903
+         OPEN  MF=(E,CKERAS04)     OPEN CHKPT DATA SET           Y02083 26410203
+         MODESET EXTKEY=ZERO       RESUME KEY ZERO               YM5921 26411503
+         BAL   RE,CHKESTCN         CANCEL ESTAE ENVIRON          YM5913 26412803
+         LA    RA,CKERPG2          ANTICIPATE OPEN ERROR         Y02083 26414103
+         TM    DCBOFLGS,DCBOFOPN   WAS OPEN SUCCESSFUL           Y02083 26415403
+         BZ    CHKERX5A            IF NOT, GO ERROR RTN          Y02083 26416703
+         OI    CKFLAG1,CKOPEN      SET CHKPT OPEN FLAG           Y02083 26418003
+CHKAFOP  EQU   *                   END OF OPEN PROCESSING        Y02083 26419303
+         EJECT                                                          26420603
+**************************************************************** Y02083 26421903
+*                                                                Y02083 26423203
+*        CHECKPOINT DATA SET SECURITY TESTING                    Y02083 26424503
+*                                                                Y02083 26425803
+**************************************************************** Y02083 26427103
+*                                                                Y02083 26428403
+*                                                                Y02083 26429703
+*        TEST FOR DUMMY DATA SET. IF FOUND, TERMINATE THE        YM7008 26431003
+*        CHECKPOINT WITH ERROR CODE (016) - INVALID DEVICE       YM7008 26432303
+*                                                                Y02083 26433603
+CHKDSSEC L     R7,DCBDEBAD         FETCH CHKPT DS DEB ADDRESS    Y02083 26434903
+         LA    R8,DEBBASIC-DEBPREFX ESTABLISH ADDRESSABILITY TO  Y02083 26436203
+         SR    R7,R8                 DEB PREFIX (DEBBASIC-DEB)   Y02083 26437503
+         USING DEBPREFX,R7         ADDRESS DEB AND PREFIX        Y02083 26438803
+         ST    R7,CKERAS00         SAVE CHKPT DEB PREFIX ADDRESS Y02083 26440103
+         LA    RA,CKERPG16         ANTICIPATE DEVICE ERROR       YM7008 26441403
+         CLC   DEBDEVED(2),ABLEV   DUMMY DATA SET              @ZA30032 26442737
+         BE    CHKERX5B            IF DUMMY, GET OUT ON ERROR    Y02083 26443537
+         LA    R9,DEBBASND         GET END ADR OF BASIC SECT     Y02083 26445303
+         USING DEBDASD,R9          DASD SECT FOLLOWS BASIC       Y02083 26446603
+         ICM   R8,M7,DEBUCBA       GET CHKPT UCB ADDR            Y02083 26447903
+         DROP  R9                                                Y02083 26449203
+         ST    R8,CKERAS03         SAVE CHKPT UCB ADDR           Y02083 26450503
+*                                                                Y02083 26451803
+*        CHECK TO SEE IF DATA SET IS ALREADY SECURE.             Y02083 26453103
+*                                                                Y02083 26454403
+         L     R8,DEBXTNP          FETCH DEB EXTENSION ADDRESS   Y02083 26455703
+         ST    R8,CKERAS01         SAVE CHKPT DEB EXTENSION ADDR Y02083 26457003
+         USING DEBXTN,R8           ADDRESS DEB EXTENSION         Y02083 26458303
+         L     R8,DEBXDSAB         FETCH DSAB ADDRESS            Y02083 26459603
+         ST    R8,CKERAS02         SAVE CHKPT DSAB ADDR          Y02083 26460903
+         USING DSAB,R8             DSAB ADDRESSING               Y02083 26462203
+         TM    DSABFLG4,DSABCKDS+DSABCKVL KNOWN SECURE CHKPT DS  Y02083 26463503
+         BNO   CHKDSS01            IF NOT, CONTINUE TEST         YM5921 26464803
+*                                                                Y02083 26466103
+*        DETERMINE IF ALREADY-SECURE CHECKPOINT DATA SET HAS TO  Y02083 26467403
+*        BE TESTED FOR CONCURRENT OPENS. THIS IS NECCESSARY FOR  Y02083 26468703
+*        DIRECT ACCESS PHYSICAL SEQUENTIAL DATA SETS BECAUSE EOV Y02083 26470003
+*        PROCESSING MAY HAVE EXTENDED THE DATA SET TO A NEW      Y02083 26471303
+*        VOLUME WHICH MAY HAVE BEEN PREVIOUSLY OPENED TO BY      Y02083 26472603
+*        ANOTHER USER DCB.                                       Y02083 26473903
+*                                                                Y02083 26475203
+         LA    RE,CHKDSS2D         SET RETURN ADDRESS            YM2860 26476503
+         L     R7,CKERAS03         FETCH CHKPT UCB ADDRESS       Y02083 26477803
+         USING UCBOB,R7            ADDRESS UCB                   Y02083 26479103
+         TM    UCBJBNR,UCBVRDEV    VIO PSEUDO DEVICE             Y02083 26480403
+         BO    CHKDSS2C            IF YES, CAN ONLY BE 1 VOL     Y02083 26481703
+         CLI   UCBTBYT3,UCB3TAPE   TAPE DEVICE                   YM7811 26483003
+         BE    CHKDSS2C            IF YES, CAN ONLY BE 1 OPEN    YM7811 26484303
+         CLI   DSABORG1,DSABPO     D/S ORG PARTITIONED           Y02083 26485603
+         BE    CHKDSS2C            IF YES, CAN ONLY BE 1 VOL     Y02083 26486903
+         BAL   RE,CHKDSNRD         GO READ AND SAVE CHKPT DSN    YM7537 26488203
+         LA    RE,CHKDSS2B         SET RETURN ADDRESS            YM5767 26489503
+         B     CHKDSS2C            GO GET PROTECTED DCB ADDR, IF YM5767 26490803
+*                                  NECESSARY, THEN GO CHECK FOR  YM5767 26492103
+*                                  CONCURRENT OPEN'S             YM5767 26493403
+*                                                                Y02083 26494703
+*        TEST THE DEVICE TYPE ALLOCATED TO THE DATA SET.         Y02083 26496003
+*                                                                Y02083 26497303
+CHKDSS01 L     R7,CKERAS03         FETCH UCB ADDRESS             Y02083 26498603
+         CLI   UCBTBYT3,UCB3DACC   DA DEVICE                     YM7811 26499903
+         BNE   CHKNOTDA            IF NOT DA, BRANCH             YM7811 26501203
+*                                                                YM7811 26502503
+*        PRE-CONCURRENT OPEN TEST - SEE IF ANY DCB (OTHER THAN   YM7811 26503803
+*        THE CHECKPOINT DCB) IS USING THE CHECKPOINT DSAB.       YM7811 26505103
+*        THIS MUST BE PERFORMED BEFORE ANY POSSIBLE SECURITY     YM7811 26506403
+*        INTERFACE IS INVOKED BY THE COMING OPEN SINCE A NON-S/I YM7811 26507703
+*        DCB AND AN S/I DCB CAN NOT BE CORRECTLY DESCRIBED BY    YM7811 26509003
+*        ONE DSAB.                                               YM7811 26510303
+*                                                                YM7811 26511603
+         LA    R1,DEBBASIC-DEBPREFX GET NEG DEB PREFIX OFFSET    YM7811 26512903
+         ICM   R5,MF,TCBDEB        GET/TEST 1ST DEB ADDRESS      YM7811 26514203
+CHKPRECT EQU   *                   TEST LOOP ENTRY               YM7811 26515503
+         BZ    CHKDSS1A            GET OUT ON ZERO ADDRESS       YM7811 26516803
+         SR    R5,R1               GET DEB PREFIX ADDRESS        YM7811 26518103
+         USING DEBPREFX,R5         ADDRESS DEB PREFIX            YM7811 26519403
+         C     R5,CKERAS00         IS THIS THE CHKPT DEB         YM7811 26520703
+         BE    CHKGETNT            IF YES, GET NEXT DEB          YM7811 26522003
+         L     R7,DEBXTNP          GET DEB EXTENSION ADDRESS     YM7811 26523303
+         USING DEBXTN,R7           ADDRESS DEB EXTENSION         YM7811 26524603
+         LA    RA,CKERP209         ANTICIPATE CONCURRENT OPEN    YM7811 26525903
+         CLC   CKERAS02,DEBXDSAB   COMPARE FOR SAME DSAB         YM7811 26527203
+         BE    CHKERX5B            BRANCH IF THEY ARE THE SAME   YM7811 26528503
+CHKGETNT EQU   *                   GET NEXT DEB ENTRY            YM7811 26529803
+         ICM   R5,M7,DEBDEBB       GET/TEST NEXT DEB ADDRESS     YM7811 26531103
+         B     CHKPRECT            LOOP BACK                     YM7811 26532403
+         DROP  R5,R7               DEB, AND DEB EXTENSION        YM7811 26533703
+*                                                                YM7811 26535003
+*        CONTINUE DEVICE CHECK                                   YM7811 26536303
+*                                                                YM7811 26537603
+         USING UCBOB,R7            RE-ESTABLISH UCB ADDRESSING   YM7811 26538903
+CHKNOTDA EQU   *                   NON-DA ENTRY                  YM7811 26540203
+         LA    RA,CKERPG16         ANTICIPATE ERRONEOUS DEVICE   Y02083 26541503
+         CLI   UCBTBYT3,UCB3TAPE   TAPE DEVICE                   YM7811 26542803
+         BNE   CHKERX5B            IF NOT, GO TO ERROR ROUTINE   YM7811 26544103
+*                                                                Y02083 26545403
+*        TEST FOR A VALID TAPE BLOCK COUNT.                      Y02083 26546703
+*                                                                Y02083 26548003
+         LA    RA,CKERP208         ANTICIPATE BLOCK COUNT ERROR  Y02083 26549303
+         OC    DCBBLKCT,DCBBLKCT   TEST TAPE BLOCK COUNT         Y02083 26550603
+         BNZ   CHKERX5B            IF NOT ZERO, ERRONEOUS DATA   Y02083 26551903
+*                                  EXISTS ON TAPE; GO TERMINATE  Y02083 26553203
+*                                  IN ERROR                      Y02083 26554503
+         EJECT                                                          26555803
+*        IN ORDER TO CREATE TAPE AND DA LABELS WITH THE          Y02083 26557103
+*        CHECKPOINT DATA SET INDICATORS, THE FOLLOWING           Y02083 26558403
+*        CODE WILL:                                              Y02083 26559703
+*                                                                Y02083 26561003
+*        1. TURN OFF THE DSABUNAL BIT FOR THE CHECKPOINT D S     YM7324 26562303
+*        2. SET DEBDSNM TO ZERO TO PREVENT A STOW                YM7324 26563603
+*        3. CLOSE THE CHECKPOINT DATA SET                        Y02083 26564903
+*        4. SET THE JFCB STATUS TO "NEW"                         Y02083 26566203
+*        5. RESTORE THE DSABUNAL BIT                             YM7324 26567503
+*        6. OPEN THE CHECKPOINT DATA SET                         Y02083 26568803
+*        7. RESTORE THE JFCB STATUS FIELD                        Y02083 26570103
+*                                                                Y02083 26571403
+CHKDSS1A EQU  *                                                  YM7324 26572703
+         MVC   SIOTSAVE(ONE),DSABFLG2  SAVE DSAB FLAG            YM7324 26574003
+         NI    DSABFLG2,X'FF'-DSABUNAL TURN OFF UNALLOC FLAG     YM7324 26575303
+         L     R7,CKERAS00         GET DEB ADDRESS               YM7324 26576603
+         USING DEBPREFX,R7                                       YM7324 26577903
+         SR    R5,R5               ZERO REGISTER                 YM7324 26579203
+         SR    R1,R1               ZERO REGISTER                 YM7324 26580503
+         IC    R5,DEBNMEXT         GET NUMBER OF EXTENTS         YM7324 26581803
+         IC    R1,DEBEXSCL         GET EXTENT SCALING FACTOR     YM7324 26583103
+         SLL   R5,0(R1)            EXT SIZE X EXT NUMBER         YM7324 26584403
+         LA    R5,DEBBASND(R5)     EXTENTS + DEB + BASE          YM7324 26585703
+         USING DEBACSMD,R5                                       YM7324 26587003
+         TM    DCBDSORG,DCBDSGPO   DCB FOR PO DATA SET?          YM7324 26588303
+         BO    CHKDSS1B            BRANCH IF YES                 YM7324 26589603
+         LA    R5,DEBDSNM          ADD SAM LENGTH TO DEB SIZE    YM7324 26590903
+CHKDSS1B EQU   *                                                 YM7324 26592203
+         CLI   DEBAMLNG,L'DEBDSNM  IS THE ACCESS METHOD DEP      YM7324 26593503
+*                                  SECTION PRESENT?              YM7324 26594803
+         BL    CHKDSS1C            BRANCH IF NO                  YM7324 26596103
+         USING DEBDSNM,R5                                        YM7324 26597403
+         MVI   DEBDSNM,X00         ZERO OUT MEMBER NAME IN DEB   YM7324 26598703
+*                                  TO PREVENT STOW BY CLOSE      YM7324 26600003
+         DROP  R5                                                YM7324 26601303
+CHKDSS1C EQU   *                                                 YM7324 26602603
+         ST    RC,CKERAS04         SETUP PARM LIST FOR           Y02083 26603903
+         MVI   CKERAS04,CLOSEOPT   CLOSE WITH LEAVE              Y02083 26605203
+         MODESET KEYADDR=DEBPROTG,WORKREG=5 ASSUME D/S KEY       YM5744 26606503
+         DROP  R7                  DEB ADDRESSABILITY            YM5744 26607803
+         CLOSE MF=(E,CKERAS04)     CLOSE D/S                     Y02083 26609103
+         MODESET EXTKEY=ZERO       RETURN TO SUPERVISOR KEY      YM5744 26610403
+         L     R7,DSABTIOT         FETCH TIOT DD ENTRY ADDR      Y02083 26611703
+         USING TIOELNGH,R7         ADDRESS TIOT DD ENTRY         Y02083 26613003
+         ICM   R2,M14,TIOEJFCB     FETCH JFCB SVA                Y02083 26614303
+         DROP  R7                  TIOT DD ENTRY ADDRESSING      Y02083 26615603
+         BAL   R5,CHKQMNGR         GO READ JFCB                  Y02083 26616903
+         USING JFCBDSNM,R7         ADDRESS JFCB                  Y02083 26618203
+         MVC   JFCBSAVE(ONE),JFCBIND2 SAVE JFCB STATUS           Y02083 26619503
+         MVI   JFCBIND2,JFCNEW     SET STATUS=NEW                Y02083 26620803
+         DROP  R7                  JFCB ADDRESSING               Y02083 26622103
+         BAL   R5,CHKQMNGW         GO WRITE BACK JFCB            Y02083 26623403
+         MVC   DSABFLG2(ONE),SIOTSAVE RESTORE DSAB FLAG FIELD    YM7324 26624703
+         OI    DSABFLG4,DSABCKDS   SET DSAB CHKPT D/S FLAG       Y02083 26626003
+         TM    CKFLAG1,USERAUTH    AUTHORIZED USER               YM1237 26627303
+         BO    CHKDSS1F            IF YES, BRANCH                YM1237 26628603
+         OI    DSABFLG4,DSABCKSI   TELL OPEN USER NOT AUTHORIZED YM1237 26629903
+CHKDSS1F MVI   CKERAS04,OPENOPT    SET OPEN FOR OUTPUT           Y02083 26631203
+         BAL   RE,CHKESTES         ESTABLISH ESTAE ENVIRON       YM5913 26632503
+         MODESET KEYADDR=TCBPKF,WORKREG=10 ASSUME CALLER KEY     YM5921 26633803
+         OPEN  MF=(E,CKERAS04)     OPEN FOR OUTPUT               Y02083 26635103
+         MODESET EXTKEY=ZERO       RESUME KEY ZERO               YM5921 26636403
+         BAL   RE,CHKESTCN         CANCEL ESTAE ENVIRON          YM5913 26637703
+         L     R7,DSABTIOT         FETCH TIOT DD ENTRY ADDRESS   Y02083 26639003
+         USING TIOELNGH,R7         ADDRESS TIOT DD ENTRY         Y02083 26640303
+         ICM   R2,M14,TIOEJFCB     FETCH JFCB SVA                Y02083 26641603
+         DROP  R7                  TIOT DD ENTRY ADDRESSING      Y02083 26642903
+         BAL   R5,CHKQMNGR         GO READ JFCB                  Y02083 26644203
+         USING JFCBDSNM,R7         ADDRESS JFCB                  Y02083 26645503
+         MVC   JFCBIND2(ONE),JFCBSAVE RESTORE JFCB STATUS        Y02083 26646803
+         DROP  R7                  JFCB ADDRESSING               Y02083 26648103
+         BAL   R5,CHKQMNGW         GO WRITE BACK JFCB            Y02083 26649403
+*                                                                Y02083 26650703
+*        TEST TO SEE IF OPEN FOUND A SECURE DATA SET.            Y02083 26652003
+*                                                                Y02083 26653303
+         LA    RA,CKERP211         ANTICIPATE NON-SECURE D/S     Y02083 26654603
+         TM    DSABFLG4,DSABCKVL   DID OPEN FIND A SECURE D/S    Y02083 26655903
+         BZ    CHKERX5B            IF NOT, GO TO ERR EXIT        Y02083 26657203
+         BAL   RE,CHKDSS2C         GO GET PROPER DCB ADDR        YM2860 26658503
+*                                                                Y02083 26659803
+*        TEST FOR TAPE DATA SET AND IF TAPE, BYPASS REMAINING    Y02083 26661103
+*        SECURITY TESTS.                                         Y02083 26662403
+*                                                                Y02083 26663703
+         L     R7,CKERAS03         FETCH CHKPT UCB ADDR          Y02083 26665003
+         USING UCBOB,R7            ADDRESS UCB                   Y02083 26666303
+         CLI   UCBTBYT3,UCB3TAPE   TAPE DEVICE                   YM7811 26667603
+         BE    CHKDSS2D            IF YES, SKIP REMAINING TESTS  YM7811 26668903
+*                                                                       26670203
+*        READ THE CHECKPOINT DATA SET FORMAT 1 DSCB FOR          YM7324 26671503
+*        DATA SET ORGANIZATION CHECK, AND SUBSEQUENT             YM7324 26672803
+*        CONCURRENT OPEN TESTING.                                YM7324 26674103
+*                                                                       26675403
+         TM    UCBJBNR,UCBVRDEV    PSEUDO DEVICE FOR VIO         YM7324 26676703
+         BO    CHKDSS1G            IF YES, BYPASS READING DSCB   YM7324 26678003
+         BAL   RE,CHKDSNRD         GO READ AND SAVE CHKPT DSN    YM7537 26679303
+*                                                                Y02083 26680603
+*        TEST DATA SET ORGANIZATION                              Y02083 26681903
+*                                                                Y02083 26683203
+         LA    RE,XBUF             GET POINTER TO FORMAT 1 DSCB  YM7324 26684503
+         USING IECSDSF1,RE                                       YM7324 26685803
+         CLI   DS1DSORG,DCBDSGPO   IS THIS A PO DATA SET?        YM7324 26687103
+         BE    CHKDSS2A            IF YES, BR                    YM7324 26688403
+         B     CHKDSS1H            GO CHECK FOR PS               YM7324 26689703
+*                                                                       26691003
+*        FOR A VIO UCB, THE FORMAT 1 DSCB FOLLOWS THE UCB        YM7324 26692303
+*        IN CORE.                                                YM7324 26693603
+*                                                                       26694903
+CHKDSS1G EQU   *                                                 YM7324 26696203
+         L     R7,CKERAS03         GET UCB POINTER               YM7324 26697503
+         USING VDSUCB,R7                                         YM7324 26698803
+         LA    RE,VDSDSCB          GET POINTER TO VIO DSCB       YM7324 26700103
+         CLI   DS1DSORG,DCBDSGPO   IS THIS A PO DATA SET?        YM7324 26701403
+         BE    CHKDSS2A            IF YES, BR                    Y02083 26702703
+         DROP  RE                                                YM7324 26704003
+CHKDSS1H EQU   *                                                 YM7324 26705303
+         LA    RA,CKERPG07         ANTICIPATE ERRONEOUS DSORG    Y02083 26706603
+         CLI   DCBDSORG,DCBDSGPS   D/S ORG PHYSICAL SEQUENTIAL   YM5717 26707903
+         BNE   CHKDS60             IF NOT, GO RESET CHKPT FLAG   Y02083 26709203
+*                                                                Y02083 26710503
+*        ENSURE THAT THE NEW BSAM DATA SET IS EMPTY.             Y02083 26711803
+*                                                                Y02083 26713103
+         L     R7,CKERAS00         FETCH CHKPT DEB ADDRESS       Y02083 26714403
+         USING DEBPREFX,R7         ADDRESS DEB                   Y02083 26715703
+         CLC   DCBFDAD+K1(K6),DEBBASND+DEBBINUM-DEBDASD COMPARE  Y02083 26717003
+*                                  FIRST DEB EXTENT ADDRESS TO   Y02083 26718303
+*                                  THE FIRST DCB WRITE ADDRESS   Y02083 26719603
+*                                  IF NOT EQUAL, THE SUBJECT     Y02083 26720903
+*                                  BSAM D/S IS NOT EMPTY         Y02083 26722203
+         LA    RA,CKERP208         ANTICIPATE D/S ERROR          Y02083 26723503
+         BNE   CHKDS60             IF NOT EQUAL, GO RESET CP D/S Y02083 26724803
+         CLI   DCBFDAD+K7,K0       ENSURE RECORD # IS 1          YM5717 26726103
+         BNE   CHKDS60             IF NOT 1, GO RESET CP D/S     Y02083 26727403
+         B     CHKDSS2B            BYPASS PO D/S TESTING         Y02083 26728703
+*                                                                Y02083 26730003
+*        ENSURE THAT THE NEW PO DATA SET DIRECTORY IS EMPTY.     Y02083 26731303
+*                                                                Y02083 26732603
+CHKDSS2A BAL   RE,CHKDEBLD         GO BUILD SKELETON DEB/IOB/CP  Y02083 26733903
+         L     R7,CKERAS00         FETCH CHKPT DEB ADDRESS       Y02083 26735203
+         USING DEBPREFX,R7         ADDRESS DEB                   Y02083 26736503
+         MVC   XDCBFDAD+K1(K6),DEBBASND+DEBBINUM-DEBDASD MOVE IN Y02083 26737803
+*                                  BB, CC, AND HH OF DCBFDAD     Y02083 26739103
+         MVI   XDCBFDAD+K7,K1      SET RECORD # TO 1             Y02083 26740403
+         MVI   XCCW3,RDDATACM      SET CCW READ DATA COMMAND     Y02083 26741703
+         MVI   XCCW3+K7,K14        SET DATA LENGTH TO 14         Y02083 26743003
+         MVC   XDEBBINU(L12),DEBBASND+DEBBINUM-DEBDASD MOVE IN   Y02083 26744303
+*                                  UCB ADDRESS AND 1ST EXTENT    Y02083 26745603
+         MVC   XIOBFDAD(L8),XDCBFDAD SET IOB SEEK ADDRESS        Y02083 26746903
+         BAL   RE,CHKEXCP2         GO READ PDS DIRECTORY ENTRY   Y02083 26748203
+         LA    RA,CKERP208         ANTICIPATE PDS ERRORS         Y02083 26749503
+         CLC   XBUF(K10),KPDS      IS DIRECTORY EMPTY            YM5717 26750803
+         BNE   CHKDS60             IF NOT EMPTY, GO RESET CP D/S Y02083 26752103
+*                                                                Y02083 26753403
+*        TEST FOR A SHARED DA DEVICE.                            Y02083 26754703
+*                                                                Y02083 26756003
+CHKDSS2B L     R7,CKERAS03         FETCH CHKPT UCB ADDRESS       Y02083 26757303
+         USING UCBOB,R7            ADDRESS UCB                   Y02083 26758603
+         LA    RA,CKERP214         ANTICIPATE SHARED DA ERROR    Y02083 26759903
+         TM    UCBTBYT2,UCBRR      TEST DA SHARABLE BIT          Y02083 26761203
+         BO    CHKDS60             IF ON, GO RESET CP D/S        Y02083 26762503
+*                                                                Y02083 26763803
+*        TEST FOR ANOTHER DCB OF NON-CHECKPOINT STATUS BEING     Y02083 26765103
+*        CONCURRENTLY OPEN TO OUR CHECKPOINT DATA SET.           Y02083 26766403
+*                                                                Y02083 26767703
+         BAL   RE,CHKDEBLD         CONSTRUCT DEB/IOB/CP          YM7537 26769003
+         ICM   R7,MF,TCBDEB        FETCH/TEST 1ST DEB ADDR       Y02083 26770303
+         USING DEBBASIC,R7                                       YM7324 26771603
+CHKDS02B BZ    CHKDS42B            TERM TEST IF NO MORE DEB'S    Y02083 26772902
+         TM    DEBFLGS1,DEBCINDI   IS IT ISAM/VSAM CI          @ZA31342 26782937
+         BO    CHKDS22B            BYPASS DSCB READ IF YES     @ZA31342 26792937
+         LA    R9,DEBBASIC-DEBPREFX GET DEB                      Y02083 26822902
+         SR    R7,R9               PREFIX ADDRESS                Y02083 26872902
+         USING DEBPREFX,R7                                       YM7324 26874902
+         CLI   DEBAMTYP,X'01'      IS IT VSAM                    YM5913 26882902
+         BE    CHKDS22B            BYPASS DSCB READ IF YES       YM5913 26892902
+         L     R9,DEBXTNP          FETCH DEB EXTENSION ADDR      Y02083 26922902
+         USING DEBXTN,R9           ADDRESS DEB EXTENSION         Y02083 26932902
+         L     RA,DEBXDSAB         FETCH DSAB ADDR               Y02083 26942902
+         USING DSAB,RA             ADDRESS DSAB                  Y02083 26952902
+         TM    DSABFLG4,DSABCKDS   D/S ALREADY FLAGED AS CHKPT   Y02083 26962902
+         BO    CHKDS22B            IF YES, BYPASS REMAINING TSTS Y02083 26964902
+         L     RA,DSABTIOT         FETCH TIOT ENTRY ADDRESS      Y02083 26974902
+         USING TIOENTRY,RA         ADDRESS TIOT ENTRY            Y02083 26984902
+         TM    TIOELINK,TIOESSDS   SUBSYSTEM D/S                 Y02083 26994902
+         BO    CHKDS22B            IF YES, CAN'T BE CHKPT D/S    Y02083 27004902
+         SR    R8,R8               CLEAR REG FOR TEST            Y02083 27014902
+         ICM   R8,M7,TIOEFSRT      FETCH/TEST 1ST UCB ADDR       Y02083 27024902
+         BZ    CHKDS22B            IF ZERO - DUMMY -, BR         Y02083 27034902
+         USING UCBOB,R8            ADDRESS UCB                   Y02083 27044902
+         CLI   UCBTBYT3,UCB3DACC   DA DEVICE                     Y02083 27054902
+         BNE   CHKDS22B            IF NOT DA, SKIP THIS D/S      Y02083 27064902
+         TM    UCBJBNR,UCBVRDEV    PSEUDO DEVICE FOR VIO         Y02083 27084902
+         BO    CHKDS12B            IF YES, GO COMPARE UCB ADDR'S Y02083 27134902
+         L     R8,CKERAS03         GET CHKPT UCB ADDR            YM6545 27135302
+         TM    UCBJBNR,UCBVRDEV    IS CHKPT DEVICE VIO           YM6545 27135702
+         BO    CHKDS22B            IF YES, BYPASS REMAINING TEST YM6545 27136102
+         BAL   RE,CHKEXCP          GO READ FORMAT 1 DSCB         Y02083 27136902
+         CLC   XDSN(K44),XBUF      MATCHING DSN'S                Y02083 27138902
+         LA    RA,CKERP209         ANTICIPATE CONCURRENT OPEN    Y02083 27148902
+         BE    CHKDS60             IF MATCH, IT'S AN ERROR       Y02083 27188902
+         B     CHKDS22B            GO FOR NEXT D/S               Y02083 27190902
+CHKDS12B C     R8,CKERAS03         MATCHING UCB ADDRESS'S        Y02083 27192902
+         LA    RA,CKERP209         ANTICIPATE CONCURRENT OPEN    Y02083 27193002
+         BE    CHKDS60             IF MATCH, IT'S AN ERROR       Y02083 27193302
+CHKDS22B ICM   R7,M7,DEBDEBB       FETCH/TEST NEXT DEB ADDR      Y02083 27243302
+         B     CHKDS02B            LOOP BACK                     Y02083 27243702
+         DROP  R7,R9,RA            DEB, DEBX, AND DSAB           YM6564 27244102
+*                                                                Y02083 27244502
+*        ENSURE CHECKPOINT DATA SET IS ENQUED EXCLUSIVE.         Y02083 27244602
+*                                                                Y02083 27244702
+CHKDS42B EQU   *                                                        27244802
+*        NOTE: SCHEDULER DOES NOT ENQUE ON VIO DATA SETS.        YM6564 27246902
+         L     R8,CKERAS03         GET CHKPT UCB ADDR            YM6564 27248102
+         TM    UCBJBNR,UCBVRDEV    IS CHKPT DEVICE VIO           YM6564 27250102
+         BO    CHKDSS2D            IF YES, BYPASS REMAINING TEST YM6564 27250502
+         DROP  R8                  UCB                           YM6564 27250902
+         XC    CKERAS05,CKERAS05   CLEAR ENQ PARM FLAGS          Y02083 27251602
+         MVI   CKERAS05,X81        SET LAST ENTRY AND TCB FLAGS  Y02083 27254902
+         MVC   CKERAS08(L8),CHKQNAME RELOCATE ENQ QNAME          Y02083 27264902
+         LA    R7,XDSN             GET ADDR OF CHKPT DSN         Y02083 27274902
+*        LR    R8,R7               INIT DSN PNTR TO 1ST CHAR   @ZA11608 27284937
+         LA    R8,X'2B'(R7)        ADD MAX LENGTH OF DSN       @ZA11608 27285637
+BACK     EQU   *                                               @ZA11608 27286337
+         CLI   0(R8),X'40'         IS LAST CHAR A BLANK ?      @ZA11608 27287037
+         BNE   ADJUST              NO END HAS BEEN FOUND       @ZA11608 27287737
+         BCT   R8,BACK             NO BRANCH BACK TO TEST      @ZA11608 27288437
+ADJUST   EQU   *                                               @ZA11608 27289137
+         LA    R8,1(R8)            ADD ONE TO LENGTH           @ZA11608 27289837
+*HKDS50  CLI   K0(R8),BLANK        IS CHAR BLANK                 Y02083 27290537
+*        BE    CHKDS52             IF BLANK, COMPUTE DSN LENGTH  Y02083 27291237
+*        LA    R8,K1(,R8)          BUMP DSN POINTER TO NEXT CHA  Y02083 27291937
+*        B     CHKDS50             LOOP BACK                     Y02083 27292637
+CHKDS52  SR    R8,R7               GET LENGTH OF CHKPT DSN       Y02083 27293302
+         L     R9,TCBOTC           GET INIT TCB ADDR FOR         Y02083 27293702
+*                                  DIRECTED ENQ                  Y02083 27294102
+         L     R5,CKERAS07         SAVE SVRB ADDR ACROSS ENQ     Y02083 27294202
+         ENQ   (CKERAS08,XDSN,S,(R8),SYSTEM),RET=TEST,TCB=(R9),  YM7305*27294502
+               MF=(E,CKERAS05)                                   Y02083 27294602
+         ST    R5,CKERAS07         RESTORE SAVED SVRB ADDR       Y02083 27304602
+         LA    RA,CKERP210         ANTICIPATE DISP=SHR ERROR     Y02083 27344602
+         LTR   RF,RF               SUCCESS SHARED ENQ            YM7305 27344702
+         BZ    CHKDS60             IF YES, BR - IT'S AN ERROR    YM7305 27344802
+         CLI   K3(RF),RETCD08      WAS THERE A PREVIOUS ENQ      YM7305 27346802
+         BNE   CHKDS60             IF NOT, IT'S AN ERROR         YM7305 27348802
+         TM    K0(RF),SHRFLAG      IS DSN ENQ'ED FOR SHR         YM7305 27350802
+         BO    CHKDS60             IF YES, IT'S AN ERROR         YM7305 27352802
+         B     CHKDSS2D            CONTINUE WITH CHECKPOINT      YM2860 27354802
+*                                                                Y02083 27394802
+*        TEST FOR A SECURITY INTERFACE. IF ONE EXITS, ESTABLISH  Y02083 27444802
+*        THE ADDRESS OF THE PROTECTED DCB.                       Y02083 27454802
+*                                                                Y02083 27464802
+CHKDSS2C L     R8,CKERAS02         FETCH ADDRESS OF CHKPT DSAB   Y02083 27474802
+         USING DSAB,R8             ADDRESS DSAB                  Y02083 27484802
+         NI    CKFLAG1,X'FF'-USERAUTH 0 POSSIBLE AUTH-USER FLAG  YM1237 27485802
+         SR    R7,R7               CLEAR WORK REG                YM2860 27486202
+         ICM   R7,M7,DCBDEBA       FETCH NEW DEB ADDRESS         YM2860 27486602
+         LA    RF,DEBBASIC-DEBPREFX GET LENGTH OF PREFIX         YM2860 27486702
+         SR    R7,RF               BACK UP TO DEB PREFIX         YM2860 27489202
+         ST    R7,CKERAS00         STORE DEB PREFIX ADDR         YM2860 27489602
+         TM    DSABFLG4,DSABCKSI   IS USER AUTHORIZED            Y02083 27490502
+         BZR   RE                  IF YES, RETURN - NO SI        YM2860 27492402
+         USING DEBPREFX,R7         ADDRESS DEB                   Y02083 27496202
+         ICM   RC,M7,DEBDCBB       SHIFT DCB POINTER TO          Y02083 27498102
+*                                  PROTECTED DCB                 Y02083 27500002
+         STCM  RC,M7,CKDCB         UPDATE DCB PNTR IN DECB1      YM5767 27502302
+         STCM  RC,M7,CKDCB2        AND DECB2                     YM5767 27502702
+         BR    RE                  RETURN WITH PROPER DCB ADDR   YM2860 27503802
+         EJECT                                                          27505702
+*        EXCP SUBROUTINE FOR READING THE PDS DIRECTORY ENTRY OF  Y02083 27507602
+*        THE CHECKPOINT DATA SET AND FOR READING AND WRITING     Y02083 27509502
+*        THE FORMAT 1 DSCB OF CHECKPOINT AND NON-CHECKPOINT      Y02083 27511402
+*        DATA SETS DURING THE CONCURRENT OPEN TEST.              Y02083 27521402
+*                                                                Y02083 27523402
+*        INPUT:                                                  Y02083 27525402
+*                                                                Y02083 27527402
+*              R7 - ADDRESS OF DATA SET'S DEB (PREFIX)           Y02083 27527802
+*                                                                Y02083 27527902
+         USING DEBPREFX,R7         ADDRESS DEB PREFIX            Y02083 27537902
+CHKEXCP  MVC   XIOBFDAD+K1(K7),DEBDSCBA MOVE IN DSCB DISK ADDR   Y02083 27540302
+         MVI   XIOBFDAD,X00        SET M TO ZERO                 Y02083 27540702
+CHKEXCP2 LA    R9,DEBBASND         GET END ADR OF BASIC SECT     Y02083 27540802
+         USING DEBDASD,R9          DASD SECT FOLLOWS BASIC       Y02083 27540902
+         CLI   DEBAMTYP,AMTYPIS    IS THIS AN ISAM DEB?        @ZA31342 27541037
+         BNE   CHKEXCP3            NO, GET UCB POINTER         @ZA31342 27541737
+         LA    R9,ISEXTLEN(,R9)    SKIP OVER ISAM SECT           YM7076 27543102
+CHKEXCP3 EQU   *                                                 YM7076 27543502
+         MVC   XDEBUCBA(K3),DEBUCBA UCB ADDR TO WORKING DEB      Y02083 27544502
+         DROP  R9                                                Y02083 27546202
+         MVI   XECB,X00            CLEAR ECB                     Y02083 27547902
+         EXCP  XIOB                                              Y02083 27549602
+         WAIT  ECB=XECB                                          Y02083 27551302
+         CLI   XECB,X7F            TEST FOR SUCCESSFUL I/O       Y02083 27553002
+         BNE   CHKEXCPR            BR IF ERR TO SET CODE         YM5717 27554702
+         BR    RE                  RETURN TO CALLER              Y02083 27571402
+CHKEXCPR LA    RA,CKERPG2          SET I/O ERR CODE              YM5717 27571802
+         B     CHKERX5A            BR TO ERR EXIT                YM5717 27572202
+*                                                                Y02083 27573402
+*        SUBROUTINE TO BUILD A SKELETON DEB, IOB, AND CP FOR     Y02083 27575402
+*        VARIOUS I/O FUNCTIONS.                                  Y02083 27577402
+*                                                                Y02083 27577802
+CHKDEBLD XC    XDCB(XBUF-XDCB),XDCB CLEAR WORK SPACE             Y02083 27577902
+         LA    R5,XIOB             SETUP DCB                     Y02083 27578002
+         ST    R5,XDCBIOBA           IOB ADDRESS                 Y02083 27588002
+         LA    R5,XDEB             SETUP DCB                     Y02083 27590002
+         ST    R5,XDCBDEBA           DEB ADDRESS                 Y02083 27592002
+         MVI   XDEBNMEX,K1         SET DEB EXTENT COUNT=1        Y02083 27594002
+         L     R5,CVTXAPG          GET ADDR OF IOS APPENDAGES    Y02083 27594402
+         ST    R5,XDEBAPPA         STORE IN DEB                  Y02083 27594502
+         LA    R5,XDCB             SETUP DEB                     Y02083 27594602
+         ST    R5,XDEBDCBA           DCB ADDRESS AND IOB         Y02083 27594702
+         ST    R5,XIOBDCBA           DCB ADDRESS                 Y02083 27644702
+         MVI   XDEBDEBI,X0F        SET DEB ID AND STORAGE KEY    Y02083 27661402
+         MVI   XDEBEXSC,X04        SET DEB EXTENT SCALE          Y02083 27671402
+         MVI   XDEBDVMO,XC0        SET DEVICE MODIFIER           Y02083 27673402
+         LH    R5,MAXTRK           SET MAX TRACK                 Y02083 27675402
+         STH   R5,XDEBENDC           CAPACITY FOR                Y02083 27677402
+         STH   R5,XDEBENDH           HANDLING ANY                Y02083 27677802
+         STH   R5,XDEBNMTR           SIZE DA DEVICE              Y02083 27677902
+         LA    R5,XECB             SETUP IOB                     Y02083 27678002
+         ST    R5,XIOBECBA           ECB ADDRESS                 Y02083 27688002
+         MVI   XIOBFLG1,X02        SET IOB UNRELATED FLAG        Y02083 27690002
+         LA    R5,XCCW1            SETUP IOB                     Y02083 27692002
+         ST    R5,XIOBCPA            CHANNEL PROGRAM ADDRESS     Y02083 27694002
+         MVC   XCCW1(L24),KCCW123  MOVE IN CCW CONSTANTS         Y02083 27694402
+         LA    R5,XIOBFDAD+K3      SET CCW1'S                    Y02083 27694502
+         STCM  R5,M7,XCCW1+K1        SEARCH ARG ADDRESS          Y02083 27694602
+         MVI   XCCW1+K4,CC              SET COMMAND CHAINING     YM5717 27711302
+         LA    R5,XCCW1            SET CCW2'S                    Y02083 27728002
+         STCM  R5,M7,XCCW2+K1        TIC ADDRESS                 Y02083 27744702
+         LA    R5,XBUF             SET CCW3'S                    Y02083 27761402
+         STCM  R5,M7,XCCW3+K1        READ/WRITE AREA ADDRESS     Y02083 27771402
+         BR    RE                  RETURN TO CALLER              Y02083 27773402
+*                                                                YM7537 27773502
+*        SUBROUTINE TO READ THE CHECKPOINT DATA SET F1 DSCB      YM7537 27773602
+*        AND SAVE THE DATA SET NAME FOR SUBSEQUENT USE.          YM7537 27773702
+*                                                                YM7537 27774902
+CHKDSNRD ST    RE,CKERAS09         SAVE RETURN ADDRESS           YM7537 27776902
+         BAL   RE,CHKDEBLD         CONSTRUCT DEB/IOB/CP          YM7324 27777102
+         L     R7,CKERAS00         FETCH CHKPT DEB ADDRESS       YM7324 27778302
+         USING DEBPREFX,R7         ADDRESS DEB PREFIX            YM7324 27779502
+         BAL   RE,CHKEXCP          GO READ CHKPT FORMAT 1 DSCB   YM7324 27780702
+         MVC   XDSN(K44),XBUF      SAVE CHKPT DSN FOR COMPARE    YM7324 27781902
+         L     RE,CKERAS09         RESTORE RETURN ADDRESS        YM7537 27782302
+         BR    RE                  RETURN TO MAINLINE            YM7537 27782702
+         EJECT                                                          27783102
+*        RESET THE CHECKPOINT DATA SET INDICATOR IN THE FORMAT   Y02083 27784302
+*        1 DSCB IF A SECURITY ERROR IS ENCOUNTERED AFTER A NEW   Y02083 27785502
+*        CHECKPOINT DATA SET IS CREATED BY OPEN.                 Y02083 27786702
+*                                                                Y02083 27787902
+CHKDS60  LM    R7,R8,CKERAS02      GET DSAB & UCB ADDRESSES      YM7811 27792302
+         USING DSAB,R7             ADDRESS DSAB                  YM7811 27792702
+         NI    DSABFLG4,X'FF'-DSABCKVL RESET CHKPT SECURE FLAG   YM7811 27793102
+         DROP  R7                  DSAB                          UM7811 27793502
+         USING UCBOB,R8            ADDRESS UCB                   Y02083 27793902
+         TM    UCBJBNR,UCBVRDEV    VIO PSEUDO DEVICE             Y02083 27794302
+         BZ    CHKDS62             IF NOT, BR                    Y02083 27794702
+         NI    VDSDSCB-VDSCB+DS1DSIND-DS1DSNAM(R8),XFF-DS1CHKPT  Y02083 27804702
+*                                  RESET CHECKPOINT D/S          Y02083 27814702
+*                                  INDICATOR IN VIO DSCB         Y02083 27824702
+         B     CHKERX5B            GO TO ERROR EXIT              Y02083 27834702
+CHKDS62  BAL   RE,CHKDEBLD         GO CONSTRUCT DEB/IOB/CP       Y02083 27836702
+         L     R7,CKERAS00         FETCH CHKPT DEB ADDR FOR EXCP Y02083 27838702
+         BAL   RE,CHKEXCP          GO READ CHKPT DSCB            Y02083 27840702
+         NI    XBUF+DS1DSIND-DS1DSNAM,XFF-DS1CHKPT RESET CHKPT   Y02083 27842702
+*                                  INDICATOR IN DSCB             Y02083 27843102
+         MVI   XCCW3,WRTKDATA      SET CCW TO WRITE BACK DSCB    Y02083 27843502
+         BAL   RE,CHKEXCP          GO REWRITE DSCB               Y02083 27843902
+         B     CHKERX5B            GO TO ERROR EXIT              Y02083 27844302
+         EJECT                                                          27894302
+**************************************************************** Y02083 27944302
+*                                                                Y02083 27994302
+*        Q MANAGER I/O ROUTINE                                   Y02083 28044302
+*                                                                Y02083 28094302
+*        INPUT:                                                  Y02083 28144302
+*          R2=SVA (SWA CONTROL BLK ADDRESS)                      Y02083 28194302
+*          R4=TCB ADDRESS                                        Y02083 28244302
+*          R5=RETURN ADDRESS                                     Y02083 28294302
+*                                                                Y02083 28344302
+*        OUTPUT:                                                 Y02083 28394302
+*          R7=ADDRESS OF CONTROL BLK READIN AREA                 Y02083 28444302
+*                                                                Y02083 28494302
+**************************************************************** Y02083 28544302
+*                                                                Y02083 28594302
+CHKQMNGR EQU   *                   READ ENTRY POINT              Y02083 28644302
+         LA    R7,QMIOREAD         LOAD QMNGR READ CODE          Y02083 28694302
+         B     CHKQMNG             BR TO COMMON ROUTINE          Y02083 28744302
+CHKQMNGW EQU   *                   WRITE ENTRY POINT             Y02083 28794302
+         LA    R7,QMIOWRTE         LOAD QMNGR WRITE CODE         Y02083 28844302
+CHKQMNG  EQU   *                   START OF COMMON ROUTINE       Y02083 28894302
+         LA    R1,CKJCT            GET ADDR OF QMNGRIO PARM LIST Y02083 28944302
+         USING QMIOP,R1            ADDRESS QMNGRIO PARM LIST     Y02083 28994302
+         ST    R4,QMITCBAD         STORE TCB ADDR IN PL          Y02083 29044302
+         STCM  R7,M1,QMIFLAGS      SET RD/WR FLAG IN PARM LIST   Y02083 29094302
+         LA    R9,K176             LOAD RECORD LENGTH OF 176     Y02083 29144302
+         STH   R9,QMIRECL          STORE RECORD LENGTH IN PL     Y02083 29194302
+         ST    R2,QMIDSKAD         STORE CONTROL BLK SVA IN PL   Y02083 29244302
+         LA    R9,QMNGRWA          GET AND STORE QMNGR WA        Y02083 29294302
+         ST    R9,QMIWRKAD           ADDRESS IN PL               Y02083 29344302
+         LA    R7,QMNGRBUF         GET AND STORE BUFFER          Y02083 29394302
+         ST    R7,QMIRECAD           ADDRESS IN PL               Y02083 29444302
+         ST    RD,CKERAS09         SAVE REG 13                   YM3982 29494302
+         LA    RD,CKREGSAV         PASS SAVEAREA ADDR TO QMNGRIO YM3982 29504302
+         QMNGRIO                   READ/WRITE TO SWA             Y02083 29544302
+         DROP  R1                  PARM LIST ADDRESSING          Y02083 29594302
+         L     RD,CKERAS09         RESTORE REG 13                YM3982 29604302
+         BR    R5                  RETURN TO CALLER              Y02083 29644302
+         EJECT                                                          29954302
+CHKDSS2D LR    R1,R6                                             Y02083 29994302
+         L     R5,CKERAS07         RESTORE SVRB ADDR             Y02083 30004302
+         USING HKPSECT,R5          ADDRESS CHKPT SVRB            YM7324 30014302
+         MVC   HKPGLIST(LNXCTLST),CHKXLIST                              30044302
+*                                                                     * 30094302
+*********************************************************************** 30144302
+*                                                                     * 30194302
+*        IF CANCEL IS REQUESTED, XCTL TO IGC0206C; OTHERWISE, TRANSFER* 30244302
+*        CONTROL TO NEXT LOAD, IGC0106C.                              * 30294302
+*                                                                     * 30344302
+*********************************************************************** 30394302
+         TM    CKFLAG1,CKCANCEL    IS THIS A CANCEL REQUEST             30444302
+         BO    CHKCANC2            YES, BRANCH                          30494302
+CHKRET   EQU   *                                                        30544302
+         LA    RF,HKPGLIST                                              30594302
+         ST    RF,HKPNTLST                                              30644302
+         LA    RF,HKPNTLST                                              30694302
+         XCTL  SF=(E,(15))                                              30744302
+*                                                                     * 30794302
+*********************************************************************** 30844302
+*                                                                     * 30894302
+*        RETURN TO USER WHEN CHECKPOINTS ARE TO BE SUPPRESSED         * 30944302
+*                                                                     * 30994302
+*********************************************************************** 31044302
+*                                                                     * 31094302
+CHKSUP   EQU   *                                                        31144302
+         LA    RF,CKNORM           LOAD RETURN CODE.                    31194302
+         SVC   3                   ISSUE EXIT SVC.                      31244302
+         EJECT                                                          31244802
+*********************************************************************** 31344302
+*                                                                     * 31394302
+*        ERROR EXIT ROUTINES - SETS MESSAGE AND RETURN CODE IN SVRB   * 31444302
+*        EXTENDED WORK AREA, FREEMAINS INVALID CHKPT W.A. IF NECESSARY* 31494302
+*        AND XCTL'S TO EXIT ROUTINE, IGC0Q06C.                        * 31544302
+*                                                                     * 31594302
+*********************************************************************** 31644302
+*                                                                     * 31694302
+CHKERX5A MVI   CKRETCOD+K1,CKIOERR SET I/O ERR IN RET CODE       Y02076 31696302
+         B     CHKERX5             BR TO CONTINUE EXIT           Y02076 31698302
+CHKERX5B MVI   CKRETCOD+K1,CKPGMERR SET PGM ERR RET CODE         Y02076 31700302
+CHKERX5  L     R5,CKERAS07         RESTORE SVRB ADDR             Y02083 31704302
+         STH   RA,CKMSGCOD         SET ERR MSG CODE              Y02076 31714302
+         LR    R1,R6               RESTORE PTR TO W.A.           Y02076 31716302
+         B     CHKERX6             GO SET UP XCTL                Y02076 31724302
+CHKERX   EQU   *                                                        31744302
+         OI    HKPFLAG,HKPEXIT     INDICATES ACTION TO BE TAKEN IN CER  31794302
+CHKERCOD EQU   *                                                        31844302
+         MVI   HKPRETCD,CKPGMERR   PUT RETURN CODE IN PARM. AREA        31894302
+CHKERMSG EQU   *                                                        31944302
+         STH   RA,HKPMSGCD         PUT MESSAGE CODE IN PARM AREA        31994302
+         XR    R1,R1               SET UP PARM REG - NO CHKPT WA        32044302
+CHKCER   EQU   *                                                        32094302
+         OI    HKPFLAG,CKMSG1      INDICATES MSG-ENVIRONMENT ERROR      32144302
+CHKERX6  MVC   HKPGLIST(8),CHKXLIST SET XCTL PARLIST TO GO TO CER.      32194302
+         MVI   HKPWD2,Q06C                                              32244302
+         B     CHKRET              GO TO XCTL TO IGC0Q06C.              32294302
+CHKERG   EQU   *                                                        32344302
+CHKERC   EQU   *                                                        32394302
+         TM HKPFLAG,CKOPEN         DID CHKPT OPEN DS                    32444302
+         BZ    CHKERX              NO-GO TO INDICATE ACTION IN CER      32494302
+         OI    HKPFLAG,HKPCLOSE    INDICATES ACTION TO BE TAKEN IN CER  32544302
+         LR    R2,RC               LOAD PARM REG WITH ADDR DCB          32594302
+         B     CHKERCOD            GO TO STORE ERROR CODES IN CHKWA     32644302
+         EJECT                                                          32644802
+*********************************************************************** 32944302
+*                                                                     * 32994302
+*        TALLY LENGTH OF TIOT AND POINT TO NEXT DD ENTRY IN TIOT      * 33044302
+*                                                                     * 33094302
+*********************************************************************** 33144302
+*                                                                     * 33194302
+CHKTIL   EQU   *                                                        33244302
+         USING TIOENTRY,R9         ADDRESS DD ENTRY IN TIOT             33294302
+         IC    R6,TIOELNGH                                              33344302
+         AR    R7,R6               UPDATE TIOT-LENGTH ACCUMULATOR       33394302
+         AR    R9,R6               UPDATE DD ENTRY POINTER.             33444302
+         B     CHKETI              RETURN TO TIOT-LENGTH-LOOP           33494302
+         USING DEBBASIC,R8         ADDRESS DEBS.                        33544302
+*                                                                     * 33594302
+*********************************************************************** 33644302
+*                                                                     * 33694302
+*        INCREMENT NUMBER OF DEB'S AND POINT TO NEXT DEB              * 33744302
+*                                                                     * 33794302
+*********************************************************************** 33844302
+*                                                                     * 33894302
+CHKNXDB  EQU   *                                                        33944302
+         LA    R6,1(0,R6)          INCREMENT DEB COUNTER.               33994302
+         L     R8,DEBDEBAD         GET ADDR OF NEXT DEB.                34044302
+         B     CHKLSDB             GO TO CHECK FOR END OF DEB CHAIN.    34094302
+         DROP  R8                                                       34144302
+*                                                                     * 34194302
+*********************************************************************** 34244302
+*                                                                     * 34294302
+*        SET UP PARAMETER LIST AND ISSUE CONDITIONAL GETMAIN FOR      * 34344302
+*        WORK AREA                                                    * 34394302
+*                                                                     * 34444302
+*********************************************************************** 34494302
+*                                                                     * 34544302
+CHKCOMG  EQU   *                                                        34594302
+         LA    RE,HKPGLIST         SET UP GETMAIN PARM LIST             34644302
+         ST    R7,HKPGLIST                                              34694302
+         LA    R0,HKPGML                                                34744302
+         LA    RA,CKERPG3          LOAD MESSAGE CODE IF ERROR OCCURS.   34794302
+         LA    R8,HKPGMLAD                                              34844302
+         TM    TCBFLGS6,TCBRV      IS THIS TASK V=R            @ZA27494 34894337
+         BNO   GET253              NO,USE SUBPOOL 253          @ZA27494 34900337
+         GETMAIN EC,A=(R8),SP=252,MF=(E,(RE)) YES,USE SP252    @ZA27494 34906337
+         B     CONTIN                                          @ZA27494 34912337
+GET253   EQU   *                                               @ZA27494 34918337
+         GETMAIN EC,A=(R8),SP=253,MF=(E,(RE))                           34924337
+CONTIN   EQU   *                                               @ZA27494 34930337
+         L     R6,HKPGMLAD         GET ADDR OF W.A.                     34944302
+         LA    R6,0(R6)            CLEAR HIGH ORDER BYTE.               34994302
+         XC    HKPGML2(HKPGML-HKPGML2),HKPGML2                          35044302
+*                                  CLEAR AREA TO STORE ERROR CODES      35094302
+         LR    R8,R7               SAVE LENGTH OF W.A. FOR CANCEL RTN   35144302
+         BR    R9                  RETURN TO CALLER                     35194302
+         EJECT                                                          35194802
+*********************************************************************** 35294302
+*                                                                     * 35344302
+*        FOR CANCEL REQUEST, ISSUE CONDITIONAL GETMAIN FOR WORK AREA  * 35394302
+*        NEEDED AND BRANCH TO INITIALIZE WORK AREA                    * 35444302
+*                                                                     * 35494302
+*********************************************************************** 35544302
+*                                                                     * 35594302
+CHKCANC1 EQU   *                                                        35644302
+         OI    HKPFLAG,CKCANCEL    SET CANCEL INDICATOR                 35694302
+         LA    R7,LENCANCL         GET LENGTH OF W.A.                   35744302
+         BAL   R9,CHKCOMG          GO TO GETMAIN FOR W.A.               35794302
+         B     *+4(RF)             WAS GETMAIN SUCCESSFUL               35844302
+         B     CHKCCN              YES-CONTINUE PROCESSING CANCEL REQ.  35894302
+         B     CHKERC              NO-GO TO ERROR EXIT ROUTINE          35944302
+         USING CHKWA,R6            ADDRESS W.A.                         35994302
+CHKCCN   EQU   *                                                        36044302
+         XC    CHKWA(ZLN),CHKWA    ZERO OUT W.A.                        36094302
+         B     CHKCOCNC            GO TO INITIALIZE CANCEL WA           36144302
+*                                                                     * 36194302
+*********************************************************************** 36244302
+*                                                                     * 36294302
+*        ALTER XCTL PARAMETER LIST FOR CANCEL REQUEST TO TRANSFER     * 36344302
+*        CONTROL TO IGC0206C.                                         * 36394302
+*                                                                     * 36444302
+*********************************************************************** 36494302
+*                                                                     * 36544302
+CHKCANC2 EQU   *                                                        36594302
+         MVI   HKPWD2,C206C        ALTER XCTL PARM LIST SO THAT         36644302
+*                                  IGG0206C WILL GET CONTROL NEXT.      36694302
+         B     CHKRET              GO TO XCTL                           36744302
+         EJECT                                                          36794302
+**********************************************************************  36844302
+*       ESTABLISH ESTAE ENVIRONMENT                              YM5913 36894302
+**********************************************************************  36944302
+CHKESTES LA    R5,CHKESRTN         GET ESTAE ENTRY PT            YM5913 36994302
+         LR    R1,R6               GET WORK AREA PTR             YM5913 37044302
+         A     R1,CKBFOFST         POINT TO PARM BUFFER          YM5913 37094302
+         MVC   K0(CHKESTLN,R1),CHKESTAE MOVE PARM LIST TO BUFF   YM5913 37144302
+         STM   R0,RF,CKREGSAV      SAVE RETRY REGS               YM7082 37154302
+         ESTAE (R5),PARAM=(R6),MF=(E,(R1)) ISSUE ESTAE           YM5913 37194302
+         BR    RE                  RETURN TO MAINLINE            YM5913 37294302
+**********************************************************************  37344302
+*     CANCEL ESTAE ENVIRONMENT                                   YM5913 37394302
+**********************************************************************  37444302
+CHKESTCN ESTAE 0                   CANCEL ESTAE                  YM5913 37494302
+         BR    RE                  RETURN TO MAINLINE            YM5913 37544302
+**********************************************************************  37594302
+*     ESTAE ROUTINE TESTS IF AN ABEND 913 - 28 OCCURRED          YM5913 37644302
+**********************************************************************  37694302
+CHKESRTN CH    R0,RTNCOD12-CHKESRTN(RF) DID RTM GET AN RTCA      YM7082 37744302
+         BNE   CHKESTB2-CHKESRTN(RF) BR IF YES                   YM7082 37794302
+*        IF NOT, DON'T BOTHER TRYING TO AVOID AN ABEND           YM7008 37844302
+         SR    R0,R0               ZERO RETRY                    YM5913 37994302
+         SR    RF,RF               TELL RTM TO TERM              YM5913 38044302
+         BR    RE                  RETURN TO RTM                 YM5913 38144302
+CHKESTB2 STM   RE,RC,12(RD)        SAVE RTM'S REGS               YM7082 38164302
+         LR    RB,RF               ESTABLISH CODE BASE           YM7082 38174302
+         LA    RA,CHKESRTN-BASE1     AS ORIGINALLY               YM7082 38184302
+         SR    RB,RA                   ASSEMBLED                 YM7082 38186302
+         USING SDWA,R1             ADDRESS SDWA                  YM7008 38188302
+         L     R6,SDWAPARM         GET CHKPT WA ADDR             YM7008 38194302
+         CLI   SDWAERRA,SDWASVCD   WAS ABEND ISSUED              YM7008 38244302
+         BNE   CHKESTB3            BR IF NOT                     YM7008 38294302
+         L     R0,SDWAABCC         GET ABEND CODE                YM7008 38344302
+         SLL   R0,L8               SHIFT OFF HIORDER BYTE        YM7008 38354302
+         SRL   R0,L8+L12           SHIFT ABEND CODE RIGHT        YM7008 38364302
+         CH    R0,AB913            IS IT ABEND 913               YM7008 38374302
+         BNE   CHKESTB3            BR IF NOT                     YM7008 38384302
+         L     RF,SDWAGR15         GET 913 DASH NO.              YM7008 38386302
+         CH    RF,DASH28           IS IT 913-28                  YM7008 38388302
+         BNE   CHKESTB3            BR IF NOT                     YM7008 38390302
+         MVC   SDWASR00(64),CKREGSAV MOVE IN RETRY REGS          YM7082 38400302
+         SETRP RC=4,RETADDR=CHKESTB4,FRESDWA=YES,REGS=(14,12),   YM7008C38440302
+               RETREGS=YES,DUMP=NO,RECORD=NO GO RETRY            YM7008 38442302
+CHKESTB3 SETRP RC=0,REGS=(14,12)   CONTINUE WITH TERM            YM7008 38494302
+*****************************************************************YM7008 38504302
+*      ESTAE RETRY ENTRY FOR CONVERSION OF 913-28 ABEND          YM7008 38514302
+*      TO A (007) ERROR CODE FAILURE - USER SPECIFIED            YM7008 38524302
+*      OTHER THAN BSAM OR BPAM AS THE ACCESS METHOD TYPE         YM7008 38534302
+*      FOR THE CHECKPOINT DATA SET.                              YM7008 38536302
+*****************************************************************YM7008 38538302
+CHKESTB4 EQU   *                   (007) RETRY ENTRY             YM7008 38544302
+         BAL   RE,CHKESTCN         CANCEL ESTAE ENVIRONMENT      YM7008 38594302
+         LA    RA,CKERPG07         LOAD ERROR CODE (07)          YM5913 39044302
+         B     CHKERX5B            BR TO ERR EXIT                YM5913 39094302
+         EJECT                                                          39144302
+*                                                                     * 39154302
+*********************************************************************** 39164302
+*                                                                     * 39174302
+*        CONSTANTS AND GENERAL EQUATES                                * 39184302
+*                                                                     * 39186302
+*********************************************************************** 39186702
+*                                                                     * 39188302
+RTNCOD12 DC    H'12'               RTCA CODE                     YM5913 39194302
+AB913    DC    H'2323'             ABEND 913                     YM5913 39244302
+DASH28   DC    H'40'               DASH 28 CODE                  YM5913 39294302
+ABLEV    DC    CL2'AV'             DUMMY DEB MODULE            @ZA30032 39314337
+CHKESTAE ESTAE CHKESTAE,CT,PARAM=CHKESTAE,TERM=YES,              YM5913X39344302
+               RECORD=YES,MF=L     ESTAE PARM LIST               YM5913 39394302
+CHKESTLN EQU   *-CHKESTAE          PARM LIST LNGTH               YM5913 39444302
+         DS    0F                                                       57400017
+CHKXLIST DC    C'IGC0106C'         MODULE NAME FOR XCTL PARMLST         57680018
+CHKQNAME DC    C'SYSDSN  '         QNAME FOR ENQ TEST            Y02083 57690002
+WAK      DC    H'5316'             FIXED LENGTH OF WA(1220+4096) Y02076 57730002
+SSCRBUFL DC    H'4096'             SSCR BUFFER LENGTH            Y02076 57780002
+CHK8     DC    H'8'                CONSTANT USED TO GET NEXT DBLWD ADDR 58020018
+KCCW123  DC    X'31',XL7'05'       CONSTANT FOR CCW1             Y02083 58070002
+         DC    X'08',XL7'00'       CONSTANT FOR CCW2             Y02083 58120002
+         DC    X'0E',XL3'00',X'2000008C' CONSTANT FOR CCW3       Y02083 58170002
+KPDS     DC    X'000E',8X'FF',4X'00' VALUE FOR AN EMPTY PDS DIR. Y02083 58180002
+REPDCB1  DC    H'48'               AMOUNT OF EXTRA CORE NEEDED BY       58200002
+MAXTRK   DC    X'7FFF'             MAX DA TRACK CAPACITY         Y02083 58210002
+VALIDERR EQU   98                  VALIDITY CHECK ERR CODE       Y02076 58250002
+SYSGENID EQU   7                   SYSTEM GENERATED CHECKPOINT   YM5793 58250502
+*                                  ID LENGTH - 1                 YM5793 58251002
+CURASOFS EQU   12                  OFFSET TO CURRENT ASCB        Y02076 58350002
+ADRCVT   EQU   16                  ADDR OF CVT PTR               Y02083 58360002
+*                                                                     * 58450000
+*        MAINTENANCE SPACE                                            * 58500000
+*                                                                     * 58550000
+PATCH    DC    XL((*-IGC0006C)/20)'00' FIVE PERCENT MAINTENANCE SPACE   58600002
+*                                                                     * 58650000
+         EJECT                                                          58660002
+         IHASDWA                                                 YM5913 58670002
+         IHAPSA                                                  Y02076 58700002
+         EJECT                                                          58710002
+         IHAASCB                                                 Y02076 58750002
+         EJECT                                                          58760002
+         IHALDA                                                  Y02076 58800002
+         EJECT                                                          58850002
+HKPSECT  DSECT                                                          58900017
+HKPSVRB  DS    24F                 INITIAL SECTION OF SVRB              58940002
+HKPGML2  DS    0F                  SAVE AREA FOR ERR AND MSG CODES      58980002
+         DS    C                   RETURN CODE                          59020002
+HKPRETCD DS    C                                                        59060018
+HKPMSGCD DS    H                   MESSAGE CODE                         59100002
+HKPGML   DS    F                   GETMAIN PARAMETER LIST:              59140002
+HKPGMLAD DS    2F                  LNG AND ADDR OF GETMAIN'D AREA       59180002
+HKPGLIST DS    1F                  PARAMETER LIST AREA                  59220002
+HKPWD2   DS    F                                                        59260018
+HKPNTLST DS    F                                                        59300018
+HKPTIOTL DS    H                   LENGTH OF TIOT                       59340002
+HKPBUFL  DS    H                   UNUSED                               59380002
+HKPTIO   DS    0F                                                       59420018
+HKPFLAG  DS    1C                  FLAG BYTE                            59460002
+HKPCLOSE EQU   16                  INDICATES CER MUST CLOSE CHKPT D.S.  59500002
+HKPEXIT  EQU   1                                                        59540018
+HKPTIOAD DS    3C                  ADDRESS OF TIOT                      59580002
+HKPWD1   DS    0F                                                       59620018
+HKPSP    DS    1C                  USED TO CHECK BOUNDARY ALIGNMENT     59660002
+HKPDCBAD DS    3C                  ADDRESS CHKPT DCB                    59700002
+HKPSAVRN DS    F                   UNUSED                               59740002
+         EJECT                                                          59790002
+*        CHKPT PARAMETER LIST                                           60340018
+PARMLST  DSECT                                                          60380018
+DCBADDR  DS    0CL4                                                     60420018
+FLAG     DS    CL1                 FLAG BYTE                            60460002
+NOCHKID  EQU   X'80'               SYSTEM-GENERATED CHECKID NOT         60500002
+*                                  RETURNED TO USER                     60510002
+UCHKID   EQU   X'00'               USER-SPECIFIED CHECKID               60560002
+DCBORCN  DS    CL3                 ADDRESS OF CHKPT DCB                 60580002
+IDADDR   DS    0CL4                                                     60620018
+LNGID    DS    CL1                 LENGTH OF USER SPECIFIED CHKID       60660002
+RTNCKID  EQU   X'FF'               SYSTEM-GENERATED CHECKID RETURNED    60700002
+*                                  TO USER                              60710002
+         DS    CL3                 ADDR OF CHECKID                      60740002
+ADDRLNG  EQU   3                   LENGTH OF ADDRESS                    60780002
+         EJECT                                                          60830002
+         IEEVCHWA   VER=3          USE AOS2 VERSION OF MACRO            61200002
+JFCBSAVE EQU   CKJCTMB             SAVEAREA FOR JFCB STATUS      Y02083 61210002
+SIOTSAVE EQU   CKJCTMB+1           SAVEAREA FOR SIOT DISP        Y02083 61220002
+         ORG   CKJCT                                             Y02083 61250002
+XDCB     DS    F                   DATA CONTROL BLOCK            Y02083 61300002
+         DS    X                   FILLER                        Y02083 61350002
+XDCBFDAD DS    8X                  FULL DISK ADDRESS             Y02083 61400002
+         DS    15X                 FILLER                        Y02083 61450002
+XDCBIOBA DS    F                   IOB ADDRESS                   Y02083 61500002
+         DS    3F                  FILLER                        Y02083 61550002
+XDCBDEBA DS    F                   DEB ADDRESS                   Y02083 61600002
+XDEB     DS    0F                  DATA EXTENT BLOCK             Y02083 61650002
+         DS    4F                  FILLER                        Y02083 61700002
+XDEBNMEX DS    F                   NUMBER OF EXTENTS             Y02083 61750002
+         DS    F                   FILLER                        Y02083 61800002
+XDEBDEBI DS    0F                  DEB ID AND KEY                Y02083 61810002
+XDEBDCBA DS    F                   DCB ADDRESS                   Y02083 61820002
+XDEBEXSC DS    0F                  EXTENT SCALE                  Y02083 61830002
+XDEBAPPA DS    F                   APPENDAGE ADDRESS             Y02083 61832002
+XDEBDVMO DS    X                   DEVICE MODIFIER               Y02083 61834002
+XDEBUCBA DS    3X                  UCB ADDRESS                   Y02083 61836002
+XDEBBINU DS    H                   BIN NUMBER                    Y02083 61838002
+XDEBSTRC DS    H                   CYLINDER START ADDRESS        Y02083 61838402
+XDEBSTRH DS    H                   HEAD START ADDRESS            Y02083 61838802
+XDEBENDC DS    H                   CYLINDER END ADDRESS          Y02083 61839202
+XDEBENDH DS    H                   HEAD END ADDRESS              Y02083 61839602
+XDEBNMTR DS    H                   NUMBER OF TRACKS              Y02083 61839702
+XIOB     DS    0F                  IO REQUEST BLOCK              Y02083 61839802
+XIOBFLG1 DS    X                   FLAG 1 FIELD                  Y02083 61839902
+         DS    3X                  FILLER                        Y02083 61853202
+XIOBECBA DS    F                   ECB ADDRESS                   Y02083 61863202
+         DS    2F                  FILLER                        Y02083 61865202
+XIOBCPA  DS    F                   CHANNEL PROGRAM ADDRESS       Y02083 61865602
+XIOBDCBA DS    F                   DCB ADDRESS                   Y02083 61866002
+         DS    2F                  FILLER                        Y02083 61866402
+XIOBFDAD DS    2F                  FULL DISK ADDRESS             Y02083 61866502
+XECB     DS    F                   EVENT CONTROL BLOCK           Y02083 61866602
+XCCW1    DS    D                   CCW 1                         Y02083 61871002
+XCCW2    DS    D                   CCW 2                         Y02083 61873002
+XCCW3    DS    D                   CCW 3                         Y02083 61875002
+XBUF     DS    140C                READ/WRITE BUFFER             Y02083 61875402
+XDSN     DS    44C                 HOLD AREA FOR CHKPT DSN       Y02083 61876902
+XEND     EQU   *                   END OF WORK SPACE             Y02083 61880002
+CHRDEC   DS    D                                                        61897802
+CHRCON   DS    5H                                                       61908902
+CHRAD    DS    F                                                        61920017
+CHRXL    DS    CL8                 NAME OF MODULE TO TRANSFER           61960002
+*                                  CONTROL TO                           61962002
+         EJECT                                                          61970002
+         IEFQMIOP                                                Y02083 62010002
+QMNGRWA  DS    88C                 QUEUE MANAGER WORKAREA        Y02083 62060002
+QMNGRBUF DS    176C                QUEUE MANAGER BUFFER          Y02083 62110002
+TEMPSAVE DS    6F                  TEMP REG SAVEAREA             YM4683 62120002
+         EJECT                                                          62160002
+TIOTSECT DSECT                                                          62200017
+         IEFTIOT1                                                       62400017
+         EJECT                                                          62450002
+         DCBD  DSORG=(BS,PO),DEVD=(DA,TA)                               62600017
+         EJECT                                                          62650002
+CVTSECT  DSECT                                                          62800000
+         CVT                                                            62850000
+         EJECT                                                          62860002
+         IKJTCB                                                         62900000
+         EJECT                                                          62910002
+         IEZDEB                                                         62950000
+         EJECT                                                          62960002
+*        MAPPING OF PQE                                                 63000000
+         IHAPQE                                                         63050000
+         EJECT                                                          63100002
+         IEFUCBOB PREFIX=YES,LIST=YES                            Y02083 63150002
+         EJECT                                                          63160002
+         IHADSAB                                                 Y02083 63200002
+         EJECT                                                          63200502
+         IHAQDB                                                  Y02083 63201002
+         EJECT                                                          63201502
+         IEZJSCB                                                 Y02083 63202002
+         EJECT                                                          63210002
+         IEFASIOT                                                Y02083 63250002
+         EJECT                                                          63260002
+         IEFJFCBN                                                Y02083 63300002
+         EJECT                                                          63310002
+         IEFJESCT                                                Y02083 63350002
+         EJECT                                                          63360002
+         IDDVDSCB                                                       63370002
+         EJECT                                                          63380002
+         IECSDSL1 (1)                                                   63390002
+         EJECT                                                          63392002
+OPENOPT  EQU   143                 OPTION BYTE FOR OPEN'S PARM LIST     63400002
+CLOSEOPT EQU   X'B0'               CLOSE OPTION FLAGS            Y02083 63410002
+CKVEQR   EQU   8                   V=R FLAG IN W.A.              YM3092 63450001
+USERAUTH EQU   X'10'               AUTHORIZED-USER FLAG IN W.A.  YM1237 63451002
+LENCANCL EQU   CHRXL+8-CHKWA       LENGTH OF W.A. NEED                  63800002
+CHKWAL   EQU   DXCCW3+8-CHKWA      LENGTH OF CHKWA.                     65000002
+TAPEDML  EQU   48                  LENGTH OF IOB/CP FOR TAPE TO         65400002
+*                                  BE USED AT RESTART                   65450002
+DADML    EQU   88                  LENGTH OF IOB/CP FOR D.A.            65600002
+*                                  TO BE USED AT RESTART                65650002
+DADEB    EQU   344                 MAXIMUM LENGTH FOR D.A. DEB.         65800002
+TAPEDEB  EQU   92                  MAXIMUM LENGTH FOR TAPE DEB.         66000002
+TIOLEN   EQU   28                  LENGTH OF TIOT THAT IS NOT           66800002
+*                                  PART OF A DD ENTRY                   66850002
+ZLN      EQU   256                 LENGTH OF W.A. TO BE ZEROED OUT.     67400002
+DADCK    EQU   32                  DCBDEVT FIELD- INDICATES DIRECT      67600002
+*                                  ACCESS DEVICE                        67650002
+CKSUPRS  EQU   64                  TIOESTTA FIELD-INDICATES CHKPT       68000002
+*                                  SUPPRESS REQUEST                     68050002
+DD2L     EQU   44                  NO. OF BYTES TIOT IS ALLOWED         68400002
+*                                  TO INCREASE AT RESTART               68450002
+LOWBYTE  EQU   3                   ADDRESSING LOW-ORDER BYTE OF A WORD  68801002
+LNXSA    EQU   48                  LENGTH OF SVRB EXTENDED SAVE AREA    68801502
+Q06C     EQU   C'Q'                CHARACTER TO ALTER XCTL NAME         68802002
+DBLWDBND EQU   X'07'               TEST FOR DOUBLE WORD BDRY ADDR       68802502
+C206C    EQU   C'2'                CHARACTER TO ALTER XCTL NAME         68803002
+LNXCTLST EQU   8                   LENGTH OF XCTL PARM LIST             68803502
+ZERO     EQU   8                   CONDITION CODE SETTING FOR TM INSTR  68804002
+WDBNDTST EQU   X'03'               TEST FOR ADDRESS ON WORD BOUNDARY    68804502
+LNG      EQU   2                   LENGTH OF HALFWORD                   68805002
+WDLNG    EQU   4                   LENGTH OF WORD                       68805502
+ONE      EQU   1                   LENGTH OF FLAG BYTE                  68806002
+TRUNC3   EQU   3                   USED TO MAKE ADDR MULTIPLE OF 8      68806502
+CKTIOTLN EQU   CKTIOLN+2                                                68807018
+CKDCB    EQU   CKDCBAD+1                                                68807518
+CKDCB2   EQU   CKDCBAD2+1                                               68808018
+CKMSG1   EQU   32                  WTO MESSAGE = NOT TAKEN              68810002
+CKERPG1  EQU   X'01'               PARAMETER LIST ERROR                 68820002
+CKERPG2  EQU   X'02'               OPEN UNSUCCESSFUL                    68830002
+CKERPG3  EQU   X'03'               GETMAIN UNSUCCSSSFUL                 68840002
+CKERPG12 EQU   12                  ERROR CODE FOR DAUGHTER TASKS Y02083 68890002
+CKERPG11 EQU   11                  ERROR CODE FOR SUBTASKING     Y02083 68940002
+CKERPG16 EQU   16                  ERROR CODE FOR INVALID DEVICE Y02083 68990002
+CKERPG19 EQU   19                  ERROR CODE FOR OPEN FOR INPUT YM7008 68990102
+CKERP202 EQU   202                 ERROR CODE FOR SETLOCK ERROR  Y02076 68990402
+CKERP208 EQU   208                 ERROR CODE FOR BLK CNT ERR    Y02083 68992002
+CKERP214 EQU   214                 ERROR CODE FOR SHARED DA      Y02083 68994002
+CKERPG07 EQU   7                   ERROR CODE FOR INVALID DSORG  Y02083 68996002
+CKERP209 EQU   209                 ERROR CODE FOR MULTIPLE OPENS Y02083 68998002
+CKERP210 EQU   210                 ERROR CODE FOR DISP=SHR ERR   Y02083 68998402
+CKERP211 EQU   211                 ERROR CODE FOR NON-SECURE D/S Y02083 68998802
+CKERP212 EQU   212                 ERROR CODE FOR SUBSYSTEM D/S  Y02083 68998902
+CKERP213 EQU   213                 ERROR CODE FOR NON SL TAPE    Y02083 68999002
+ADDRBYTS EQU   X'07'               REG MASK FOR LO-ORDER 3 BYTES Y02083 68999202
+K0       EQU   0                   CONSTANT OF 0                 Y02083 68999602
+SIX      EQU   6                   CONSTANT OF 6                 Y02083 68999702
+K7       EQU   7                   CONSTANT OF 7                 Y02083 68999802
+TWO      EQU   2                   CONSTANT OF 2                 Y02083 68999902
+FOUR     EQU   4                   CONSTANT OF 4                 Y02083 69049902
+L15      EQU   15                  CONSTANT OF 15                Y02083 69059902
+L8       EQU   8                   CONSTANT OF 8                 Y02083 69069902
+THREE    EQU   3                   CONSTANT OF 3                 Y02083 69079902
+L24      EQU   24                  CONSTANT OF 24                Y02083 69089902
+L6       EQU   6                   CONSTANT OF 6                 Y02083 69091902
+K16      EQU   16                  CONSTANT OF 16                Y02083 69093902
+M7       EQU   7                   REG MASK FOR LOW 3 BYTES      Y02083 69095902
+M14      EQU   14                  REG MASK FOR HI 3 BYTES       Y02083 69097902
+K176     EQU   176                 LENGTH OF JFCB AND SIOT       Y02083 69098302
+M1       EQU   1                   REG MASK FOR LOW BYTE         Y02083 69098702
+KEEP     EQU   8                   SCT/SCTSDISP DISP=KEEP FLAG   Y02083 69099102
+RDDATACM EQU   X'06'               READ DATA CCW COMMAND         Y02083 69099602
+CC       EQU   X'40'               COMMAND CHAINING              YM5717 69103802
+K4       EQU   4                   CONSTANT OF 4                 YM5717 69105802
+K10      EQU   10                  CONSTANT OF 10                YM5717 69107802
+K14      EQU   14                  CONSTANT OF 14                Y02083 69108102
+L12      EQU   12                  CONSTANT OF 12                Y02083 69112302
+K1       EQU   1                   CONSTANT OF 1                 Y02083 69116502
+BLANK    EQU   C' '                BLANK CONSTANT                Y02083 69126502
+X7F      EQU   X'7F'               ECB TEST MASK                 Y02083 69136502
+XFF      EQU   X'FF'               BIT RESET MASK                Y02083 69146502
+DS1CHKPT EQU   X'01'               DSCB CHKPT D/S FLAG           Y02083 69148502
+WRTKDATA EQU   X'0D'               WRITE KEY/DATA CCW COMMAND    Y02083 69148902
+X0F      EQU   X'0F'               DEB ID AND STORAGE KEY        Y02083 69149302
+XC0      EQU   X'C0'               DEB DEVICE MODIFIER           Y02083 69149702
+X02      EQU   X'02'               IOB UNRELATED FLAG            Y02083 69149802
+K3       EQU   3                   CONSTANT OF 3                 Y02083 69166502
+K44      EQU   44                  CONSTANT OF 44                Y02083 69168502
+X00      EQU   X'00'               CONSTANT OF 0                 Y02083 69176502
+X04      EQU   X'04'               DEB EXTENT SCALE              Y02083 69186502
+K6       EQU   6                   CONSTANT OF 6                 Y02083 69196502
+MF       EQU   15                  MASK FOR CHARACTER INSERTION  Y02083 69198502
+X81      EQU   X'81'               FLAGS FOR ENQ PARM LIST       Y02083 69199302
+OUTPUT   EQU   X'04'               COMMON DEB OUTPUT FLAG        YM7008 69199702
+AMTYPIS  EQU   X'80'               ISAM FLAG IN DEBAMTYP         YM7076 69199802
+ISEXTLEN EQU   16                  LENGTH OF ISAM DEPENDANT      YM7076 69249802
+*                                  SECTION IN DEB                YM7076 69259802
+RETCD08  EQU   8                   PREVIOUS ENQ RETURN CODE      YM7305 69269802
+SHRFLAG  EQU   X'10'               ENQ'ED SHR FLAG               YM7305 69279802
+         END                                                            69299802

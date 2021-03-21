@@ -1,0 +1,837 @@
+BEFO     TITLE 'EDIT SUBCOMMAND - FORMAT - IKJEBEFO'                    00100020
+*********************************************************************** 00200020
+*STATUS-  VERSION NO. 01,OS/360 RELEASE NO. 20                        * 00300020
+*                                                                     * 00400020
+*FUNCTION/OPERATION-  IKJEBEFO IS AN EDIT SUBCOMMAND WHICH IS USED TO * 00500020
+*   PRINT A PORTION OF OR AN ENTIRE DATA SET BEING EDITED IN A USER   * 00600020
+*   DEFINED FORMAT.  THIS ROUTINE USES THE EDIT SERVICE               * 00660020
+*   ROUTINE IKJEBEDA TO ALLOCATE A SEQUENTIAL DATA SET FOR            * 00720020
+*   FINAL COPY SERVICE ROUTINE TO CONVERT EDIT UTILITY DATA SET TO    * 00800020
+*   THE SEQUENTIAL DATA SET AND CREATES AN IN-CORE MODEL OF THE FORMAT* 00900020
+*   COMMAND WHICH WILL BE PASSED TO THE SYSTEM FORMAT COMMAND THROUGH * 01000020
+*   THE COMMAND INVOKER.  THE SYSTEM FORMAT COMMAND IS USED TO PROCESS* 01100020
+*   THE SEQUENTIAL DATA SET AND THE FORMAT OF THE PRINTED OUTPUT IS   * 01200020
+*   DETERMINED BY CONTROL WORDS EMBEDDED IN THE DATA SET.             * 01300020
+*                                                                     * 01400020
+*ENTRY POINTS-  IKJEBEFO IS THE MAIN AND ONLY ENTRY POINT.            * 01500020
+*                                                                     * 01600020
+*INPUT-  REGISTER 1 CONTAINS A POINTER TO EDIT'S COMMUNICATION AREA.  * 01700020
+*        THE FORMAT SUBCOMMAND ENTERED BY THE TERMINAL USER.          * 01800020
+*                                                                     * 01900020
+*OUTPUT-  A RETURN CODE IN REGISTER 15.  POSSIBLE RETURN CODES ARE-   * 02000020
+*   0 - OPERATION WAS SUCCESSFUL OR EMPTY UTILITY DATA SET            * 02100020
+*   8 - QSAM I/O ERROR  OR STACK NEEDS FLUSHING                       * 02200020
+*  12 - I/O ERROR IN UTILITY DATA SET                                 * 02300020
+*   A PRINTED OUTPUT ON THE TERMINAL OR ON ANOTHER OUTPUT DEVICE.     * 02400020
+*                                                                     * 02500020
+*EXTERNAL REFERENCES-                                                 * 02600020
+*        IKJEBEDA       -ALLOCATES AND FREES SEQUENTIAL DATA SET      * 02700020
+*        IKJPARS        -SCANS SUBCOMMAND OPERANDS                    * 02800020
+*        IKJEBEUT       -READS RECORDS FROM UTILITY DATA SET          * 02900020
+*        IKJEBEFC       -COPIES EDIT UTILITY DATA SET INTO SEQUENTIAL * 03000020
+*                       -DATA SET                                     * 03100020
+*        IKJEBEMS       -MESSAGES TO TERMINAL USER                    * 03200020
+*        IKJEBECI       -COMMAND INVOKER WHICH INVOKES THE SYSTEM     * 03300020
+*                        FORMAT COMMAND                               * 03400020
+*        MACROS USED-                                                 * 03500020
+*        IKJEBESV       -STANDARD ENTRY LINKAGE AND ADDRESSABILITY    * 03510020
+*        IKJEBERT       -STANDARD EXIT LINKAGE                        * 03520020
+*        IKJEBESH       -PROVIDES LINKAGE TO EDIT SERVICE ROUTINES    * 03530020
+*        IKJEBEMI       -LIST OF MESSAGES FOR THIS ROUTINE            * 03540020
+*        IKJEBEML       -STANDARD MESSAGE PARAMETER LIST              * 03550020
+*        IKJEBEMG       -STANDARD MESSAGE INSERTION PARAMETER LIST    * 03560020
+*        IKJEBECA       -LAYOUT AND DESCRIPTION OF COMMUNICATION AREA * 03570020
+*        IKJPPL         -PARSE PARAMETER LIST                         * 03580020
+*        IKJCPPL        -COMMAND PROCESSOR PARAMETER LIST             * 03590020
+*        MACROS OF IKJPARS USED-                                      * 03600020
+*        IKJPARM                                                      * 03610020
+*        IKJIDENT                                                     * 03620020
+*        IKJKEYWD                                                     * 03630020
+*        IKJNAME                                                      * 03640020
+*        IKJSUBF                                                      * 03650020
+*        IKJPOSIT                                                     * 03660020
+*        IKJENDP                                                      * 03670020
+*        IKJRLSA                                                      * 03680020
+*                                                                     * 05600020
+*EXITS - NORMAL-  STANDARD EXIT TO THE CONTROLLER WITH RETURN CODE = 0* 05700020
+*   IN REGISTER 15.                                                   * 05800020
+*                                                                     * 05900020
+*EXITS,ERROR- STANDARD EXIT TO THE CONTROLLER WITH RETURN CODE =      * 06000020
+*   8 OR 12 IN REGISTER 15.                                           * 06100020
+*                                                                     * 06200020
+*TABLES AND WORK AREAS-  THE EDIT SUBCOMMAND WORK AREA AND THE BUFFER * 06300020
+*   POOL IN THE COMMUNICATION AREA ARE USED.                          * 06400020
+*                                                                     * 06500020
+*ATTRIBUTES - REFRESHABLE, ENABLED, NON-PRIVELEGED                    * 06600020
+*                                                                     * 06700020
+*NOTES-  THIS SUBCOMMAND IS CHARACTER CODE DEPENDENT AND HAS TO BE    * 06800020
+*   REASSEMBLED WHEN CHARACTER CODE CHANGES                           * 06900020
+*********************************************************************** 07000020
+IKJEBEFO CSECT                                                          07100020
+         SPACE 2                                                        07200020
+*********************************************************************** 07300020
+*    EQUATES OF SYMBOLIC REGISTERS                                      07400020
+*********************************************************************** 07500020
+PARMREG0 EQU   0                       PARAMETER POINTER                07600020
+PARMREG1 EQU   1                       PARAMETER POINTER                07700020
+TESTREG  EQU   2                       WORK REGISTER                    07800020
+BINREG   EQU   3                       WORK REGISTER                    07900020
+ADDREG   EQU   4                       WORK REGISTER                    08000020
+WORK5    EQU   5                       WORK REGISTER                    08100020
+WORK6    EQU   6                       WORK REGISTER                    08200020
+PDLREG   EQU   7                       POINTER TO PDL                   08300020
+UTREG    EQU   8                       PARAMETERS FOR IKJEBEUT POINTER  08400020
+COMMREG  EQU   9                       COMMUNICATION AREA ADDRESSING    08500020
+TEMPREG  EQU   10                      WORK REGISTER                    08600020
+BASEREG  EQU   11                      BASE REGISTER                    08700020
+DATAREG  EQU   12                      WORK REGISTER                    08800020
+SAVEREG  EQU   13                      SAVE AREA POINTER                08900020
+RETREG   EQU   14                      RETURN TO CALLER                 09000020
+RETCDREG EQU   15                      RETURN CODE                      09100020
+         SPACE 2                                                        09200020
+*********************************************************************** 09300020
+*    EQUATES OF SYMBOLIC CONSTANTS                                      09400020
+*********************************************************************** 09500020
+FT0      EQU   0                       CONSTANT OF 0                    09600020
+FT1      EQU   1                       CONSTANT OF 1                    09700020
+FT2      EQU   2                       CONSTANT OF 2                    09800020
+FT3      EQU   3                       CONSTANT OF 3                    09900020
+FT4      EQU   4                       CONSTANT OF 4                    10000020
+FT5      EQU   5                       CONSTANT OF 5                    10100020
+FT6      EQU   6                       CONSTANT OF 6                    10200020
+FT7      EQU   7                       CONSTANT OF 7                    10300020
+FT8      EQU   8                       CONSTANT OF 8                    10400020
+FT11     EQU   11                      CONSTANT OF 11                   10500020
+FT12     EQU   12                      CONSTANT OF 12                   10600020
+FT16     EQU   16                      CONSTANT OF 16                   10700020
+FT19     EQU   19                      CONSTANT OF 19                   10800020
+FT20     EQU   20                      CONSTANT OF 20                   10900020
+FT44     EQU   44                      CONSTANT OF 44                   11000020
+FT76     EQU   76                      CONSTANT OF 76                   11100020
+CHARAST  EQU   C'*'                    CHARACTER OF *                   11200020
+CBLANK   EQU   C' '                    CHARACTER OF BLANK               11300020
+XZERO    EQU   X'00'                   READ CURRENT REF. CODE           11400020
+END      EQU   X'80'                   END OF PARAMETER CODE            11500020
+FIRST    EQU   X'04'                   READ 1ST RECORD CODE             11600020
+AFTER    EQU   X'02'                   READ NEXT RECORD CODE            11700020
+ALL      EQU   255                     X'FF'                            11800020
+SW1      EQU   X'80'                                                    11900020
+SW2      EQU   X'40'                                                    12000020
+SW3      EQU   X'10'                                                    12100020
+POS      EQU   C'0'                                                     12150020
+CSLASH   EQU   C'/'                    CHAR. '/'                        12300020
+CQUOTE   EQU   C''''                   CHAR. QUOTE                      12400020
+COMMA    EQU   C','                    CHAR. ','                        12500020
+LEFT     EQU   C'('                    LEFT PARENTHESIS                 12600020
+RIGHT    EQU   C')'                    CHAR. ')'                        12700020
+QUOTESW  EQU   X'40'                   DSNAME QUOTED SWITCH             12800020
+         SPACE 2                                                        12900020
+*********************************************************************** 13000020
+*    MESSAGE REFERENCES                                                 13100020
+*********************************************************************** 13200020
+         IKJEBEMI (312,313,501,504)                                     13300020
+         SPACE 2                                                        13400020
+*********************************************************************** 13500020
+*    STANDARD ENTRY LINKAGE AND ESTABLISHMENT OF ADDRESSABILITY BOTH    13600020
+*    IN THIS ROUTINE AND IN THE COMMUNICATION AREA                      13700020
+*********************************************************************** 13800020
+         IKJEBESV (14,12),T,*          SAVE CALLER'S REGISTERS AND      13900020
+*                                      ESTABLISH ADDRESSABILITY         14000020
+         LR    COMMREG,PARMREG1        LET COMMREG POINT TO COMM. AREA  14100020
+         USING IKJEBECA,COMMREG        ADDRESSABILITY IN COMM. AREA     14200020
+         MVI   ZSW,FT0                 CLEAR *=0 SWITCH                 14200420
+         MVI   SW,FT0                  CLEAR SWITCH                     14202020
+         MVI   ASW,XZERO               CLEAR ALLOCATION SWITCH          14203020
+*********************************************************************** 14204020
+*    IKJEBESH IS CALLED THROUGH IKJEBESH MACRO TO READ FIRST RECORD OF* 14206020
+*    UTILITY DATA SET                                                 * 14208020
+*********************************************************************** 14210020
+         MVC   COWORD1(FT4),CAPTCDCB   PUT ADDRESS OF CURRENT UTILITY   14212020
+*                                      DCB IN THE 3 LOW ORDER BYTES OF  14214020
+*                                      1ST PARAM WORD                   14216020
+         MVI   COWORD1,FIRST           PUT X'04' IN HIGH ORDER BYTE OF  14218020
+*                                      1ST PARAM WORD                   14220020
+         XC    COWORD2(FT4),COWORD2    2ND PARAM WORD DOES NOT CONTAIN  14222020
+*                                      ANY POINTER                      14224020
+         LA    TESTREG,CABFRP2                                          14226020
+         ST    TESTREG,COWORD3         PUT POINTER TO BUFFER POOL WHERE 14228020
+*                                      THE RECORD IS TO BE PLACED IN 3  14230020
+*                                      LOW ORDER BYTES OF 3RD PARAM.    14232020
+*                                      WORD                             14234020
+         MVI   COWORD3,END             PUT END OF PARAMETER LIST CODE   14236020
+*                                      IN HIGH ORDER BYTE OF 3RD PARAM. 14238020
+*                                      WORD                             14240020
+         LA    UTREG,COWORD1           LET UTREG PT. TO PARMLIST        14242020
+         IKJEBESH (COMMREG),IKJEBEUT,PARAM=((COMMREG),(UTREG)),MF=(E,A) 14244020
+         LTR   RETCDREG,RETCDREG       TEST RETURN CODE FROM IKJEBEUT   14246020
+         BZ    TESTOPND                SUC. OPERATION THEN GO TO        14248020
+*                                      OPERAND TEST                     14250020
+         C     RETCDREG,FTDC4          TEST WHETHER R.C.=4              14252020
+         BE    MSG3                    R.C.=4 THEN GO TO ISSUE MSG3     14254020
+IOERR    LA    TEMPREG,FT12            SET R.C. TO 12 IN TEMPREG        14256020
+         B     ACHECK                  BR TO SEE IF ALLOC WAS DONE      14258020
+TESTOPND TM    CAPTIBFR,CAOPERND       TEST WHETHER THERE ARE OPERANDS  14262020
+*                                      IN SUBCOMMAND                    14264020
+         BNO   SETSW1                  OPERAND SWITCH NOT ON THEN TURN  14266020
+*                                      SW1 ON                           14268020
+         SPACE 2                                                        14300020
+         SPACE 2                                                        14700020
+*********************************************************************** 14800020
+*    CALL IKJPARSE TO SCAN OPERAND                                      14900020
+*********************************************************************** 15000020
+OPERAND  LA    PARMREG1,CATMPLST       LET REG. 1 PT. TO TMP SERVICE    15100020
+*                                      RTN. PARAMETER LIST              15200020
+         MVC   CATMPLST+PPLPCL-PPL(FT4),ADFTPCL  PUT POINTER TO PCL IN  15300020
+*                                                PPLPCL                 15400020
+         LA    TESTREG,CAPTPRSD                                         15500020
+         ST    TESTREG,CATMPLST+PPLANS-PPL  PUT POINTER TO ANS. PLACE   15600020
+*                                           IN PPLANS                   15700020
+         MVC   CATMPLST+PPLCBUF-PPL(FT4),CAPTIBFR  PUT ADDRESS OF       15800020
+*                                      INPUT BUFFER IN PPLCBUF          15900020
+         ST    COMMREG,CATMPLST+PPLUWA-PPL  PUT POINTER TO COMM. AREA   16000020
+*                                           IN PPLVWA                   16100020
+         LINK  EP=IKJPARS                                               16300020
+         SPACE 2                                                        16400020
+*********************************************************************** 16500020
+*    CHECK RETURN CODES FROM PARSE SERVICE ROUTINE                      16600020
+*********************************************************************** 16700020
+         LTR   RETCDREG,RETCDREG       CHECK RET. CODE FROM PARSE       16800020
+         BZ    CONT                    IF SUCCESSFUL COMPLETION THEN    16900020
+*                                      GO TO CONT                       17000020
+         C     RETCDREG,FTDC4          TEST WHETHER R.C.=4              17100020
+         BE    FLUSH                   R.C.=4 THEN GO TO FLUSH          17200020
+         C     RETCDREG,FTDC8          TEST WHETHER R.C.=8              17300020
+         BE    NORMAL                  R.C.=8 THEN GO TO NORMAL         17400020
+         C     RETCDREG,FTDC12         TEST WHETHER R.C.=12             17500020
+         BE    MSG8                    R.C.=12 THEN GO TO ISSUE MSG8    17600020
+         C     RETCDREG,FTDC16         TEST WHETHER R.C.=16             17700020
+         BE    MSG6                    R.C.=16 THEN GO TO ISSUE MSG6    17800020
+SETSW1   OI    SW,SW1                  TURN SW1 ON                      17830020
+         B     DA                      BRANCH TO CALL DA                17860020
+         SPACE 2                                                        17900020
+*********************************************************************** 18000020
+*    CHECK THE FIRST 2 OPERANDS OF FORMAT SUBCOMMAND HERE-              18100020
+*********************************************************************** 18200020
+CONT     L     PDLREG,CAPTPRSD         PUT POINTER TO PDL IN PDLREG     18300020
+         USING FTPDL,PDLREG            ESTABLISH ADDRESSABILITY IN PDL  18400020
+*                                      DSECT                            18500020
+         L     TESTREG,ASTERSK                                          18600020
+         LTR   TESTREG,TESTREG         IS LINUM1 SPEC.                  18650020
+         BZ    DA                      IF SO BRANCH TO ALLOCATE         18660020
+         CLI   FT0(TESTREG),CHARAST    TEST WHETHER FIRST OPERAND IS    18700020
+*                                      AN *                             18800020
+         BE    THINK                   * SPECIFIED THEN GO TO TEST      18860020
+*                                      WHETHER *=0                      18920020
+         SPACE 2                                                        19000020
+*********************************************************************** 19100020
+*    CALL IKJEBEDA TO ALLOCATE A QSAM DATA SET                          19200020
+*********************************************************************** 19300020
+DA       NI    SW,ALL-SW2              TURN SW2 OFF                     19400020
+         MVI   CASAFLAG,XZERO          ZERO OUT THE BYTE CASAFLAG IN    19500020
+*                                      COMM. AREA                       19600020
+         IKJEBESH (COMMREG),IKJEBEDA,PARAM=((COMMREG)),MF=(E,A)         19700020
+         SPACE 2                                                        19900020
+*********************************************************************** 20000020
+*    CHECK RETURN CODES FROM IKJEBEDA                                   20100020
+*********************************************************************** 20200020
+         LTR   RETCDREG,RETCDREG       TEST RET. CODE FROM IKJDAIR      20300020
+         BNZ   DAFLUSH                 BR RC NOT 0 TO FLUSH             20400020
+M1       NI    CAEDFLAG,ALL-CAEDFNCP   FINAL COPY IS TO BE PERFORMED ON 20700020
+*                                      SAVE DATA SET                    20800020
+         OI    ASW,SW1                 SET ALLOC SW ON                  20850020
+         LH    UTREG,CASADSNL          PUT LENGTH OF DSNAME IN 2 LOW    20900020
+*                                      ORDER BYTES OF UTREG             21000020
+         LR    TEMPREG,UTREG           LET TEMPREG CONT. LENGTH OF      21100020
+*                                      DSNAME                           21200020
+         SPACE 2                                                        21300020
+*********************************************************************** 21400020
+*    BUILD BUFFER TO IKJEBECI HERE-                                     21500020
+*********************************************************************** 21600020
+BUILD1   XC    CABFRP1+FT2(FT2),CABFRP1+FT2  PUT ZERO IN 3RD AND 4TH    21700020
+*                                            BYTES OF CABFRP1           21800020
+         MVC   CABFRP1+FT4(FT7),CHAR   PUT C'FORMAT ' IN 5TH TO 11TH    21900020
+*                                      BYTES OF CABFRP1                 22000020
+         MVI   CABFRP1+FT11,CQUOTE     PUT QUOTE IN FRONT OF DSNAME IN  22100020
+*                                      BUFFER                           22200020
+         BCTR  UTREG,PARMREG0          LENGTH OF DSNAME - 1 IN UTREG    22300020
+         EX    UTREG,MOVE1             MOVE DSNAME INTO MODEL COMMAND   22400020
+         LA    WORK5,FT12(TEMPREG)     PUT 12+LENGTH OF DSNAME IN WORK5 22500020
+         LA    ADDREG,CABFRP1+FT12                                      22600020
+         AR    ADDREG,TEMPREG          PUT ADDRESS OF CABFRP1+12+LENGTH 22700020
+*                                      OF DSNAME IN ADDREG              22800020
+         MVI   FT0(ADDREG),CQUOTE      PUT QUOTE AFTER DSNAME IN BUFFER 22900020
+         LA    ADDREG,FT1(ADDREG)      UPDATE ADDRESS IN ADDREG         23000020
+         LA    WORK5,FT1(WORK5)        UPDATE LENGTH OF BUFFER IN WORK5 23100020
+         TM    SW,SW1                  TEST WHETHER SW1 IS ON           23130020
+         BO    SW1OFF                  SW1 ON THEN GO TO SW1OFF         23160020
+S2       L     WORK6,ASTERSK                                            23230020
+         LTR   WORK6,WORK6             TEST WHETHER LINENUM1 SPEC.      23300020
+         BZ    PAGEL                   NOT SPEC. THEN GO TO PAGEL       23400020
+         MVI   FT0(ADDREG),CBLANK      PUT C' ' IN UPDATED ADDRESS      23500020
+         LA    ADDREG,FT1(ADDREG)      UPDATE ADDRESS IN ADDREG         23600020
+         LA    WORK5,FT1(WORK5)        UPDATE LENGTH OF BUFFER IN WORK5 23700020
+         LH    TEMPREG,ASTERSK+FT4     PUT LENGTH OF LINENUM1 IN REG    23800020
+         LR    BINREG,TEMPREG                                           23900020
+         BCTR  TEMPREG,PARMREG0        LENGTH OF LINENUM1 - 1           24000020
+         EX    TEMPREG,MOVE2           PUT LINENUM 1 IN BUFFER          24100020
+         AR    ADDREG,BINREG           UPDATE ADDRESS IN ADDREG         24200020
+         AR    WORK5,BINREG            UPDATE LENGTH OF BUFFER IN WORK5 24300020
+         L     WORK6,COUNT                                              24400020
+         LTR   WORK6,WORK6             TEST WHETHER LINENUM2 IS SPEC.   24500020
+         BZ    NUML                    NOT SPEC. THEN GO TO NUML        24600020
+         MVI   FT0(ADDREG),CBLANK      PUT C' ' IN UPDATED ADDRESS      24700020
+         LA    ADDREG,FT1(ADDREG)      UPDATE ADDRESS IN ADDREG         24800020
+         LA    WORK5,FT1(WORK5)        UPDATE LENGTH OF BUFFER IN WORK5 24900020
+         LH    TEMPREG,COUNT+FT4       PUT LENGTH OF LINENUM2 IN REG    25000020
+         LR    BINREG,TEMPREG                                           25100020
+         BCTR  TEMPREG,PARMREG0        LENGTH OF LINENUM 2 - 1          25200020
+         EX    TEMPREG,MOVE2           PUT LINENUM 2 IN BUFFER          25300020
+         AR    ADDREG,BINREG           UPDATE ADDRESS IN ADDREG         25400020
+         AR    WORK5,BINREG            UPDATE LENGTH OF BUFFER IN WORK5 25500020
+         B     NUML                    BRANCH UNCOND. TO NUML           25600020
+PAGEL    CLC   PAGE(FT2),FTH0          CHECK WHETHER PAGE IS SPEC.      25700020
+         BE    NUML                    PAGE NOT SPEC. THEN GO TO NUML   25800020
+         MVI   FT0(ADDREG),CBLANK      PUT C' ' IN UPDATED ADDRESS      25900020
+         LA    ADDREG,FT1(ADDREG)      UPDATE ADDRESS IN ADDREG         26000020
+         LA    WORK5,FT1(WORK5)        UPDATE LENGTH OF BUFFER IN WORK5 26100020
+         MVC   FT0(FT5,ADDREG),CPAGE   PUT PAGE( IN BUFFER              26200020
+         LA    ADDREG,FT5(ADDREG)      UPDATE ADDRESS IN ADDREG         26300020
+         LA    WORK5,FT5(WORK5)        UPDATE LENGTH OF BUFFER IN WORK5 26400020
+         L     WORK6,PNUM1             LET WORK6 PT. TO PNUM1           26500020
+         LH    TEMPREG,PNUM1+FT4       PUT LENGTH OF PNUM1 IN REG       26600020
+         LR    BINREG,TEMPREG                                           26700020
+         BCTR  TEMPREG,PARMREG0        LENGTH OF PNUM1 - 1              26800020
+         EX    TEMPREG,MOVE2           PUT PNUM1 IN BUFFER              26900020
+         AR    ADDREG,BINREG           UPDATE ADDRESS IN ADDREG         27000020
+         AR    WORK5,BINREG            UPDATE LENGTH OF BUFFER IN WORK5 27100020
+         L     WORK6,PNUM2                                              27200020
+         LTR   WORK6,WORK6             TEST WHETHER PNUM2 IS SPEC.      27300020
+         BZ    ENDPNUM1                PNUM2 NOT SPEC. THEN GO TO       27400020
+*                                      ENDPNUM1                         27500020
+         MVI   FT0(ADDREG),COMMA       PUT C',' AFTER PNUM1 IN BUFFER   27600020
+         LA    ADDREG,FT1(ADDREG)      UPDATE ADDRESS IN ADDREG         27700020
+         LA    WORK5,FT1(WORK5)        UPDATE LENGTH OF BUFFER IN WORK5 27800020
+         LH    TEMPREG,PNUM2+FT4       PUT LENGTH OF PNUM2 IN REG       27900020
+         LR    BINREG,TEMPREG                                           28000020
+         BCTR  TEMPREG,PARMREG0        LENGTH OF PNUM2 - 1              28100020
+         EX    TEMPREG,MOVE2           PUT PNUM2 IN BUFFER              28200020
+         AR    ADDREG,BINREG           UPDATE ADDRESS IN ADDREG         28300020
+         AR    WORK5,BINREG            UPDATE LENGTH OF BUFFER IN WORK5 28400020
+         MVI   FT0(ADDREG),RIGHT       PUT C')' AFTER PNUM2 IN BUFFER   28500020
+         LA    ADDREG,FT1(ADDREG)      UPDATE ADDRESS IN ADDREG         28600020
+         LA    WORK5,FT1(WORK5)        UPDATE LENGTH OF BUFFER IN WORK5 28700020
+NUML     TM    CACFLAG1,CANONUM        IS DATA SET NUMBERED             28720020
+         BO    NONUMB                  IF NOT NUMBERED THEN BRANCH TO   28740020
+*                                      PUT IN ' NONUM'                  28760020
+         CLC   NUM(FT2),FTH1           TEST WHETHER 'NUM' IS SPEC.      28830020
+         BNE   SNUML                   'NUM' NOT SPEC. THEN GO TO       28920020
+*                                      SNUML                            29010020
+         MVC   FT0(FT4,ADDREG),CNUM    PUT C' NUM' IN BUFFER            29100020
+         LA    ADDREG,FT4(ADDREG)      UPDATE ADDRESS IN ADDREG         29200020
+         LA    WORK5,FT4(WORK5)        UPDATE LENGTH OF BUFFER IN WORK5 29300020
+         B     PAUSEL                  BRANCH UNCOND. TO PAUSEL         29400020
+*                                       SNUML                           29700020
+NONUMB   MVC   FT0(FT6,ADDREG),CNONUM  PUT ' NONUM' IN BUFFER           29750020
+         LA    ADDREG,FT6(ADDREG)      UPDATE ADDRESS IN ADDREG         29900020
+         LA    WORK5,FT6(WORK5)        UPDATE LENGTH OF BUFFER IN WORK5 30000020
+         B     PAUSEL                  BRANCH UNCOND. TO PAUSEL         30100020
+SNUML    MVC   FT0(FT5,ADDREG),CSNUM   PUT C' SNUM' IN BUFFER           30200020
+         LA    ADDREG,FT5(ADDREG)      UPDATE ADDRESS IN ADDREG         30300020
+         LA    WORK5,FT5(WORK5)        UPDATE LENGTH OF BUFFER IN WORK5 30400020
+PAUSEL   CLC   PAUSE(FT2),FTH1         CHECK WHETHER 'PAUSE' IS SPEC.   30500020
+         BNE   PAUSE1L                 'PAUSE' NOT SPEC. THEN GO TO     30600020
+*                                      PAUSE1L                          30700020
+         MVC   FT0(FT6,ADDREG),CPAUSE  PUT C' PAUSE' IN BUFFER          30800020
+         LA    ADDREG,FT6(ADDREG)      UPDATE ADDRESS IN ADDREG         30900020
+         LA    WORK5,FT6(WORK5)        UPDATE LENGTH OF BUFFER IN WORK5 31000020
+         B     PRINTL                  BRANCH UNCOND. TO PRINTL         31100020
+PAUSE1L  CLC   PAUSE(FT2),FTH2         CHECK WHETHER 'PAUSE1' IS SPEC.  31200020
+         BNE   NOPAUSEL                'PAUSE1' NOT SPEC. THEN GO TO    31300020
+*                                      NOPAUSEL                         31400020
+         MVC   FT0(FT7,ADDREG),CPAUSE1  PUT C' PAUSE1' IN BUFFER        31500020
+         LA    ADDREG,FT7(ADDREG)      UPDATE ADDRESS IN ADDREG         31600020
+         LA    WORK5,FT7(WORK5)        UPDATE LENGTH OF BUFFER IN WORK5 31700020
+         B     PRINTL                  BRANCH UNCOND. TO PRINTL         31800020
+NOPAUSEL MVC   FT0(FT8,ADDREG),CNOPAUSE  PUT C' NOPAUSE' IN BUFFER      31900020
+         LA    ADDREG,FT8(ADDREG)      UPDATE ADDRESS IN ADDREG         32000020
+         LA    WORK5,FT8(WORK5)        UPDATE LENGTH OF BUFFER IN WORK5 32100020
+PRINTL   CLC   PRINT(FT2),FTH0         CHECK WHETHER 'PRINT' IS SPEC.   32200020
+         BE    LENGTH                  PRINT NOT SPEC. THEN GO TO PUT   32300020
+*                                      LENGTH OF BUFFER IN BUFFER       32400020
+         MVC   FT0(FT7,ADDREG),CPRINT  PUT C' PRINT(' IN BUFFER         32500020
+         LA    ADDREG,FT7(ADDREG)      UPDATE ADDRESS IN ADDREG         32600020
+         LA    WORK5,FT7(WORK5)        UPDATE LENGTH OF BUFFER IN WORK5 32700020
+         L     WORK6,ONAME                                              32800020
+         LTR   WORK6,WORK6             TEST WHETHER DSNAME IS SPEC.     32900020
+         BZ    MEMBERL                 DSNAME NOT SPEC. THEN GO TO      33000020
+*                                      TEST WHETHER MEMBER SPEC.        33100020
+         LH    TEMPREG,ONAME+FT4       PUT LENGTH OF PRINT DSN IN REG.  33200020
+         LR    BINREG,TEMPREG                                           33300020
+         BCTR  TEMPREG,PARMREG0        LENGTH OF PRINT DSN - 1          33400020
+         TM    ONAME+FT6,QUOTESW       TEST WHETHER PRINT DSN IS QUOTED 33500020
+         BO    MEM1                    IF QUOTED THEN TEST WHETHER      33600020
+*                                      MEMBER IS SPEC.                  33700020
+         EX    TEMPREG,MOVE2           PUT PRINT DSNAME IN BUFFER       33800020
+         AR    ADDREG,BINREG           UPDATE ADDRESS IN ADDREG         33900020
+         AR    WORK5,BINREG            UPDATE LENGTH OF BUFFER IN WORK5 34000020
+         B     MEMBERL                 BRANCH TO TEST WHETHER MEMBER    34100020
+*                                      IS SPEC.                         34200020
+MEM1     L     TESTREG,ONAME+FT8                                        34300020
+         LTR   TESTREG,TESTREG         TEST WHETHER MEMBER IS SPEC.     34400020
+         BZ    QUOTEDS                 MEMBER NOT SPEC. THEN GO TO PUT  34500020
+*                                      'DSNAME' IN BUFFER               34600020
+         MVI   FT0(ADDREG),CQUOTE      PUT QUOTE IN BUFFER              34700020
+         LA    ADDREG,FT1(ADDREG)      UPDATE ADDRESS IN ADDREG         34800020
+         LA    WORK5,FT1(WORK5)        UPDATE LENGTH OF BUFFER IN WORK5 34900020
+         EX    TEMPREG,MOVE2           PUT PRINT DSNAME IN BUFFER       35000020
+         AR    ADDREG,BINREG           UPDATE ADDRESS IN ADDREG         35100020
+         AR    WORK5,BINREG            UPDATE LENGTH OF BUFFER IN WORK5 35200020
+         MVI   FT0(ADDREG),LEFT        PUT ( IN UPDATED ADDRESS         35300020
+         LA    ADDREG,FT1(ADDREG)      UPDATE ADDRESS IN ADDREG         35400020
+         LA    WORK5,FT1(WORK5)        UPDATE LENGTH OF BUFFER IN WORK5 35500020
+         LH    TEMPREG,ONAME+FT12      PUT LENGTH OF MEMBER IN REG.     35600020
+         LR    BINREG,TEMPREG                                           35700020
+         BCTR  TEMPREG,PARMREG0        LENGTH OF MEMBER - 1             35800020
+         EX    TEMPREG,MOVE6           PUT MEMBER IN BUFFER             35900020
+         AR    ADDREG,BINREG           UPDATE ADDRESS IN ADDREG         36000020
+         AR    WORK5,BINREG            UPDATE LENGTH OF BUFFER IN WORK5 36100020
+         MVC   FT0(FT2,ADDREG),RIGHTQ  PUT )' IN BUFFER                 36200020
+         LA    ADDREG,FT2(ADDREG)      UPDATE ADDRESS IN ADDREG         36300020
+         LA    WORK5,FT2(WORK5)        UPDATE LENGTH OF BUFFER IN WORK5 36400020
+         B     PASSL                   BRANCH TO TEST WHETHER           36500020
+*                                      PASSWORD IS SPEC.                36600020
+QUOTEDS  MVI   FT0(ADDREG),CQUOTE      PUT QUOTE IN UPDATED ADDRESS     36700020
+         LA    ADDREG,FT1(ADDREG)      UPDATE ADDRESS IN ADDREG         36800020
+         LA    WORK5,FT1(WORK5)        UPDATE LENGTH OF BUFFER IN WORK5 36900020
+         EX    TEMPREG,MOVE2           PUT PRINT DSNAME IN BUFFER       37000020
+         AR    ADDREG,BINREG           UPDATE ADDRESS IN ADDREG         37100020
+         AR    WORK5,BINREG            UPDATE LENGTH OF BUFFER IN WORK5 37200020
+         MVI   FT0(ADDREG),CQUOTE      PUT QUOTE IN UPDATED ADDRESS     37300020
+         LA    ADDREG,FT1(ADDREG)      UPDATE ADDRESS IN ADDREG         37400020
+         LA    WORK5,FT1(WORK5)        UPDATE LENGTH OF BUFFER IN WORK5 37500020
+         B     PASSL                   BRANCH UNCOND. TO TEST WHETHER   37600020
+*                                      PASSWORD IS SPEC.                37700020
+MEMBERL  L     TESTREG,ONAME+FT8                                        37800020
+         LTR   TESTREG,TESTREG         TEST WHETHER MEMBER IS SPEC.     37900020
+         BZ    PASSL                   MEMBER NOT SPEC. THEN GO TO TEST 38000020
+*                                      WHETHER PASSWORD IS SPEC.        38100020
+         MVI   FT0(ADDREG),LEFT        PUT ( IN UPDATED ADDRESS         38200020
+         LA    ADDREG,FT1(ADDREG)      UPDATE ADDRESS IN ADDREG         38300020
+         LA    WORK5,FT1(WORK5)        UPDATE LENGTH OF BUFFER IN WORK5 38400020
+         LH    TEMPREG,ONAME+FT12      PUT LENGTH OF MEMBER IN REG.     38500020
+         LR    BINREG,TEMPREG                                           38600020
+         BCTR  TEMPREG,PARMREG0        LENGTH OF MEMBER - 1             38700020
+         EX    TEMPREG,MOVE6           PUT MEMBER IN BUFFER             38800020
+         AR    ADDREG,BINREG           UPDATE ADDRESS IN ADDREG         38900020
+         AR    WORK5,BINREG            UPDATE LENGTH OF BUFFER IN WORK5 39000020
+         MVI   FT0(ADDREG),RIGHT       PUT ) IN BUFFER                  39100020
+         LA    ADDREG,FT1(ADDREG)      UPDATE ADDRESS IN ADDREG         39200020
+         LA    WORK5,FT1(WORK5)        UPDATE LENGTH OF BUFFER IN WORK5 39300020
+PASSL    L     TESTREG,ONAME+FT16                                       39400020
+         LTR   TESTREG,TESTREG         CHECK WHETHER PASSWORD IS SPEC.  39500020
+         BZ    PCL                     PASSWORD NOT SPEC. THEN GO TO    39600020
+*                                      CHECK WHETHER PC IS SPEC.        39700020
+         MVI   FT0(ADDREG),CSLASH      PUT / IN BUFFER                  39800020
+         LA    ADDREG,FT1(ADDREG)      UPDATE ADDRESS IN ADDREG         39900020
+         LA    WORK5,FT1(WORK5)        UPDATE LENGTH OF BUFFER IN WORK5 40000020
+         LH    TEMPREG,ONAME+FT20      PUT LENGTH OF PASSWORD IN REG.   40100020
+         LR    BINREG,TEMPREG                                           40200020
+         BCTR  TEMPREG,PARMREG0        LENGTH OF PASSWORD - 1           40300020
+         EX    TEMPREG,MOVE6           PUT PASSWORD IN BUFFER           40400020
+         AR    ADDREG,BINREG           UPDATE ADDRESS IN ADDREG         40500020
+         AR    WORK5,BINREG            UPDATE LENGTH OF BUFFER IN WORK5 40600020
+PCL      CLC   OTYPE(FT2),FTH1         CHECK WHETHER 'PC' IS SPEC.      40700020
+         BNE   PSL                     'PC' NOT SPEC. THEN GO TO CHECK  40800020
+*                                      WHETHER PS IS SPEC.              40900020
+         MVC   FT0(FT4,ADDREG),CPC     PUT ,PC) IN BUFFER               41000020
+         LA    ADDREG,FT4(ADDREG)      UPDATE ADDRESS IN ADDREG         41100020
+         LA    WORK5,FT4(WORK5)        UPDATE LENGTH OF BUFFER IN WORK5 41200020
+         B     LENGTH                  BRANCH UNCOND. TO PUT LENGTH OF  41300020
+*                                      BUFFER IN BUFFER                 41400020
+PSL      CLC   OTYPE(FT2),FTH2         CHECK WHETHER 'PS' IS SPEC.      41500020
+         BNE   TL                      'PS' NOT SPEC. THEN GO TO TL     41600020
+         MVC   FT0(FT4,ADDREG),CPS     PUT ,PS) IN BUFFER               41700020
+         LA    ADDREG,FT4(ADDREG)      UPDATE ADDRESS IN ADDREG         41800020
+         LA    WORK5,FT4(WORK5)        UPDATE LENGTH OF BUFFER IN WORK5 41900020
+         B     LENGTH                  BRANCH UNCOND. TO PUT LENGTH OF  42000020
+*                                      BUFFER IN BUFFER                 42100020
+TL       MVC   FT0(FT3,ADDREG),CT      PUT ,T) IN BUFFER                42200020
+         LA    ADDREG,FT3(ADDREG)      UPDATE ADDRESS IN ADDREG         42300020
+         LA    WORK5,FT3(WORK5)        UPDATE LENGTH OF BUFFER IN WORK5 42400020
+LENGTH   STH   WORK5,CABFRP1           PUT LENGTH OF BUFFER IN 1ST 2    42500020
+*                                      BYTES OF CABFRP1                 42600020
+         SPACE 2                                                        42700020
+*********************************************************************** 42800020
+*    CALL IKJEBEFC TO COPY UTILITY DATA SET INTO QSAM DATA SET          42900020
+*********************************************************************** 43000020
+FC       IKJEBESH (COMMREG),IKJEBEFC,PARAM=((COMMREG)),MF=(E,A)         43100020
+         SPACE 2                                                        43300020
+*********************************************************************** 43400020
+*    CHECK RETURN CODES FROM IKJEBEFC                                   43500020
+*********************************************************************** 43600020
+         LTR   RETCDREG,RETCDREG       TEST RET. CODE FROM IKJEBEFC     43700020
+         BZ    CONT1                   R.C.=0 THEN GO TO CONT1          43800020
+         C     RETCDREG,FTDC4          TEST WHETHER R.C.=4              43900020
+         BE    MSG3                    ISSUE MSG-'NO LINES IN DATA SET' 44000020
+         C     RETCDREG,FTDC8                                           44100020
+         BE    CONT3                   R.C.=8 THEN GO TO CONT3          44200020
+         B     IOERR                   PUT R.C.=12                      44300020
+         SPACE 2                                                        44400020
+*********************************************************************** 44500020
+*    CALL IKJEBEDA TO MARK THE DSE ENTRY NOT-IN-USE.                    44600020
+*********************************************************************** 44700020
+CONT1    OI    CASAFLAG,CASADISP                                        44800020
+         IKJEBESH (COMMREG),IKJEBEDA,PARAM=((COMMREG)),MF=(E,A)         44900020
+         SPACE 2                                                        45000020
+*********************************************************************** 45100020
+*    CHECK RETURN CODE FROM IKJEBEDA                                    45200020
+*********************************************************************** 45300020
+         LTR   RETCDREG,RETCDREG       TEST RET. CODE FROM DA           45400020
+         BZ    CI                      BR RC 0 TO CI                    45500020
+DAFLUSH  LA    TEMPREG,FT8             INDICATE FLUSH RETURN CODE       45550020
+         B     ACHECK                  DO EXIT PROCESSING               45600020
+         SPACE 2                                                        45700020
+*********************************************************************** 45800020
+*    CALL IKJEBECI TO ATTACH SYSTEM FORMAT COMMAND                      45900020
+*********************************************************************** 46000020
+CI       ST    COMMREG,CIWORD1         LET 1ST PARAM WORD POINT TO      46100020
+*                                      COMM. AREA                       46200020
+         LA    TESTREG,CABFRP1         LET 2ND PARAM WORD POINT TO      46500020
+         ST    TESTREG,CIWORD2         CABFRP1                          46600020
+         LA    TESTREG,CIWORD1                                          46660020
+         IKJEBESH (COMMREG),IKJEBECI,PARAM=((TESTREG)),MF=(E,A)         46720020
+         LA    TEMPREG,FT8             SET RETURN CODE TO 8             46730020
+         CH    RETCDREG,FTH8           IS RETURN CODE 8                 46770020
+         BE    ACHECK                  BRANCH TO CHECK SWITCHES         46820020
+         B     FIN                     BRANCH UNCOND. TO FIN            47000020
+ENDPNUM1 MVI   FT0(ADDREG),RIGHT       PUT ')' IN BUFFER                47100020
+         LA    ADDREG,FT1(ADDREG)      UPDATE ADDRESS IN ADDREG         47200020
+         LA    WORK5,FT1(WORK5)        UPDATE LENGTH OF BUFFER IN WORK5 47300020
+         B     NUML                    BRANCH UNCOND. TO NUML           47400020
+SW1OFF   NI    SW,ALL-SW1              TURN SW1 OFF                     47410020
+         TM    CACFLAG1,CANONUM        IS DATA SET NUMBERED             47412020
+         BO    NONUM                   IF NOT NUMBERED THEN BRANCH TO   47414020
+*                                      PUT IN ' NONUM'                  47416020
+         MVC   FT0(FT5,ADDREG),CSNUM   PUT C' SNUM' IN BUFFER           47420020
+         LA    ADDREG,FT5(ADDREG)      UPDATE ADDRESS IN ADDREG         47430020
+         LA    WORK5,FT5(WORK5)        UPDATE LENGTH OF BUFFER IN WORK5 47440020
+         B     NOP                     BRANCH TO NOPAUSE MOVE           47441020
+NONUM    MVC   FT0(FT6,ADDREG),CNONUM  PUT ' NONUM' IN BUFFER           47442020
+         LA    ADDREG,FT6(ADDREG)      UPDATE ADDRESS OF BUFFER POINTER 47443020
+         LA    WORK5,FT6(WORK5)        UPDATE THE LENGTH OF THE BUFFER  47444020
+NOP      MVC   FT0(FT8,ADDREG),CNOPAUSE PUT ' NOPAUSE IN BUFFER         47445020
+         LA    ADDREG,FT8(ADDREG)      UPDATE ADDRESS IN ADDREG         47460020
+         LA    WORK5,FT8(WORK5)        UPDATE LENGTH OF BUFFER IN WORK5 47470020
+         B     LENGTH                  BRANCH TO PUT LENGTH OF BUFFER   47480020
+*                                      IN 1ST 2 BYTES OF CABFRP1        47490020
+         SPACE 2                                                        47500020
+*********************************************************************** 47600020
+*    MSG3- 'NO LINES IN DATA SET' IS ISSUED HERE                        47700020
+*********************************************************************** 47800020
+MSG3     MVC   B(INLIST3L),INLIST3                                      47900020
+         IKJEBEML M501,MF=(E,B)        ISSUE MESSAGE3- 'NO LINES IN     48000020
+*                                      DATA SET'                        48100020
+FIN      SR    TEMPREG,TEMPREG                                          48200020
+ACHECK   EQU   *                                                        48206020
+         TM    ASW,SW1                 IS ALLOC SW ON                   48212020
+         BNO   CONT2                   BR NO                            48218020
+*********************************************************************** 48224020
+*    CALL IKJEBEDA TO UNALLOCATE THE QSAM DATA SET.                     48230020
+*********************************************************************** 48236020
+         OI    CASAFLAG,CASADISP+CASAUNCG SET SWITCH                    48242020
+         IKJEBESH (COMMREG),IKJEBEDA,PARAM=((COMMREG)),MF=(E,A)         48248020
+         CR    RETCDREG,TEMPREG        FIND PROPER RETURN CODE VALUE    48250020
+         BNH   CONT2                   IF TEMPREG LARGER DO NOT CHANGE  48252020
+         LR    TEMPREG,RETCDREG        SET PROPER VALUE FOR RETURN CODE 48252420
+         SPACE                                                          48254020
+CONT2    TM    CAPRSPDL,CAFREEDL       TEST WHETHER PARSE PDL REQUIRES  48260020
+*                                      FREEMAIN                         48320020
+         BNZ   TFIN                    PDL NOT EXIST THEN SET RET. CODE 48410020
+*                                      TO 0 AND RET. TO CONTROLLER      48500020
+         IKJRLSA CAPRSPDL                                               48550020
+         OI    CAPRSPDL,CAFREEDL       TURN ON THE BIT TO INDICATE THAT 48600020
+*                                      PDL WAS FREED                    48650020
+TFIN     TM    ZSW,SW1                 WAS *=0                          48660020
+         BNO   FEXIT                   IF NOT EXIT                      48670020
+         XC    CACURNUM(FT4),CACURNUM  SET CACURNUM BACK TO 0           48680020
+FEXIT    LR    RETCDREG,TEMPREG        PUT R.C.=0 IN RETCDREG           48700020
+         IKJEBERT (14,12),T,RC=(15)    RELOAD ALL REGISTERS EXCEPT      48800020
+*                                      REG. 15 AND RETURN CONTROL TO    48900020
+*                                      CONTROLLER                       49000020
+NORMAL   SR    TEMPREG,TEMPREG                                          49100020
+         B     TFIN                    BRANCH UNCOND. TO TFIN           49200020
+FLUSH    LA    TEMPREG,FT8             SET 8 AS RETURN CODE             49350020
+         B     TFIN                    BRANCH TO CONTROLLER             49360020
+MSG8     EQU   *                                                        49370020
+         SPACE 2                                                        49400020
+*********************************************************************** 49500020
+*    MSG8- 'COMMAND SYSTEM ERROR+  IKJPARS ERROR CODE 12' IS ISSUED     49600020
+*    HERE                                                               49700020
+*********************************************************************** 49800020
+         MVC   B(FT12),INLIST8                                          49900020
+         IKJEBEML M313,M3131,,INS12,MF=(E,B)                            50000020
+         B     FLUSH                   BRANCH TO SET R.C. TO 8 AND      50100020
+*                                      RETURN TO CONTROLLER             50200020
+         SPACE 2                                                        50300020
+*********************************************************************** 50400020
+*    * EXISTS IN OPERAND                                                50500020
+*********************************************************************** 50600020
+THINK    SR    TESTREG,TESTREG         CLEAR TESTREG                    50620020
+         C     TESTREG,CACURNUM                                         50640020
+         BE    TEST1ST                 *=0 THEN TEST WHETHER THERE IS   50660020
+*                                      RECORD 0                         50680020
+CALC     TM    CACFLAG1,CANONUM        TEST WHETHER DATA SET IS LINE-   50700020
+*                                      NUMBERED                         50800020
+         BNO   LINENUM                 IF DATA SET IS LINE-NUMBERED     50900020
+*                                      THEN GO TO LINENUM               51000020
+         SPACE 2                                                        51100020
+CONT4    SR    TESTREG,TESTREG         CLEAR TESTREG                    54000020
+CONT5    LA    TESTREG,FT1(TESTREG)    ADD 1 TO TESTREG                 54100020
+         CLC   CABFRP2(FT4),CACURNUM   TEST WHETHER RECORD NUMBER       54200020
+*                                      =CURRENT LINE NUMBER             54300020
+         BE    FRSTNUM                 BRANCH ON EQUAL TO FRSTNUM       54400020
+         SPACE 2                                                        54500020
+*********************************************************************** 54600020
+*    CALL IKJEBEUT RTN. THROUGH SERVICE RTN. HANDLER TO READ NEXT       54700020
+*    RECORD OF UTILITY DATA SET                                         54800020
+*********************************************************************** 54900020
+ACTION   MVC   COKEYA(FT4),CABFRP2     PUT KEY OF LAST LINE REFERENCED  55000020
+*                                      IN COKEYA                        55100020
+         MVI   COWORD1,AFTER           PUT X'02' IN HIGH ORDER BYTE OF  55200020
+*                                      1ST PARAM WORD                   55300020
+         LA    BINREG,COKEYA           PUT POINTER TO KEY OF LAST LINE  55400020
+*                                      REFERENCED IN 2ND PARAM WORD     55500020
+         ST    BINREG,COWORD2                                           55600020
+         IKJEBESH (COMMREG),IKJEBEUT,PARAM=((COMMREG),(UTREG)),MF=(E,A) 55700020
+         LTR   RETCDREG,RETCDREG       CHECK RET. CODE FROM IKJEBEUT    55800020
+         BZ    CONT5                   R.C.=0 THEN GO TO CONT5          55900020
+         C     RETCDREG,FTDC4          TEST WHETHER R.C.=4              56000020
+         BE    MSG10                   R.C.=4 THEN GO TO MSG10          56100020
+         B     IOERR                   OTHERWISE BRANCH UNCOND. TO      56200020
+*                                      IOERR                            56300020
+FRSTNUM  ST    TESTREG,FNUM                                             56900020
+         L     TESTREG,COUNT                                            57000020
+         LTR   TESTREG,TESTREG         TEST WHETHER 'COUNT' IS PRESENT  57100020
+         BZ    MODEL                   'COUNT' NOT SPEC. THEN GO TO     57200020
+*                                      TURN SW2 ON                      57300020
+         LH    ADDREG,COUNT+FT4        PUT LENGTH OF COUNT IN 2 LOW     57400020
+*                                      ORDER BYTES OF ADDREG            57500020
+         BCTR  ADDREG,PARMREG0         CONTENT OF ADDREG - 1            57600020
+         EX    ADDREG,PACKED           CONVERSION INTO BINARY           57700020
+         CVB   BINREG,COPACKED         CONV. 'COUNT' INTO BINARY        57800020
+         BCTR  BINREG,PARMREG0         CONTENT OF BINREG - 1            57900020
+         A     BINREG,FNUM             1ST NUMBER + BINARY COUNT - 1    58000020
+*                                      =2ND NUMBER                      58100020
+COMB     L     TESTREG,FNUM                                             58200020
+         CVD   TESTREG,UNPACK1         CONVERT 1ST REL. REC. NUM. FROM  58300020
+*                                      BINARY TO PACKED DEC.            58400020
+         UNPK  DFNUM(FT8),UNPACK1(FT8) CONVERT 1ST REL. REC. NUM. FROM  58500020
+*                                      PACKED DEC. TO ZONED DEC.        58600020
+         OI    DFNUM+FT7,POS                                            58700020
+         LA    TEMPREG,DFNUM                                            58800020
+         ST    TEMPREG,ASTERSK         PUT ADDRESS OF DFNUM IN ASTERSK  58900020
+         MVC   ASTERSK+FT4(FT2),FTH8   PUT LENGTH OF 8 IN ASTERSK+4     59000020
+         TM    SW,SW2                                                   59100020
+         BO    DA                      SW2 ON THEN GO TO DA             59200020
+         CVD   BINREG,UNPACK2          CONVERT 2ND REL. REC. NUM. FROM  59300020
+*                                      BINARY TO PACKED DEC.            59400020
+         UNPK  DSECNUM(FT8),UNPACK2(FT8)  CONVERT 2ND REL. REC. NUM.    59500020
+*                                      FROM PACKED DEC. TO ZONED DEC.   59600020
+         OI    DSECNUM+FT7,POS                                          59700020
+         LA    TEMPREG,DSECNUM                                          59800020
+         ST    TEMPREG,COUNT           PUT ADDRESS OF DSECNUM IN COUNT  59900020
+         MVC   COUNT+FT4(FT2),FTH8     PUT LENGTH OF 8 IN COUNT +4      60000020
+         B     DA                      BRANCH UNCOND. TO DA             60100020
+CTOFF    XC    COUNT(FT4),COUNT        ZERO OUT COUNT FIELD             60150020
+MODEL    OI    SW,SW2                  TURN SWITCH 2 ON TO BUILD BUFFER 60200020
+*                                      WITH 1ST LINE NUMBER ONLY        60300020
+         B     COMB                    BRANCH TO CONVERT 1ST LINE NO.   60400020
+*                                      INTO ZONE DEC.                   60500020
+         SPACE 2                                                        60600020
+*********************************************************************** 60700020
+*    MSG6- 'NOT ENOUGH MAIN STORAGE TO EXECUTE FORMAT' IS ISSUED HERE   60800020
+*********************************************************************** 60900020
+MSG6     MVC   B(FT12),INLIST6         MSG6-'NO SPACE AVAIL.' FROM      61000020
+*                                      PARSE                            61100020
+         IKJEBEML M312,,SUBCMD,,MF=(E,B)                                61200020
+         B     FLUSH                   PUT R.C.=8 AND RET. TO           61300020
+*                                      CONTROLLER                       61400020
+CONT3    LA    TEMPREG,FT8             PUT R.C.=8                       61800020
+         B     ACHECK                  BR TO SEE IF ALLOC WAS DONE      61900020
+LINENUM  MVC   FNUM(FT4),CACURNUM      PUT CURRENT LINE VALUE IN FNUM   62100020
+TESTKEY  MVC   COKEYA(FT4),CACURNUM    SET COKEYA TO *                  62510020
+         CLC   CABFRP2(FT4),CACURNUM   TEST WHETHER KEY VALUE OF 1ST    62520020
+*                                      RECORD = *                       62530020
+         BE    NORM                    KEY VALUE OF 1ST REC.=* THEN     62540020
+*                                      GO TO CONVERT COUNT INTO BINARY  62550020
+         SPACE 2                                                        62600020
+*********************************************************************** 62700020
+*    IKJEBEUT IS CALLED THROUGH IKJEBESR TO READ RECORD WITH LINE NO.   62800020
+*    VALUE='*'                                                          62900020
+*********************************************************************** 63000020
+         MVC   COWORD1(FT4),CAPTCDCB   PUT ADDRESS OF UTILITY DCB IN 3  63200020
+*                                      LOW ORDER BYTES OF 1ST PARAM     63300020
+*                                      WORD                             63400020
+         MVI   COWORD1,XZERO           PUT READ CURRENT REF. REC. CODE  63500020
+*                                      IN HIGH ORDER BYTE OF 1ST PARAM  63600020
+*                                      WORD                             63700020
+         LA    BINREG,COKEYA           LET 2ND PARAM WORD POINT TO      63800020
+         ST    BINREG,COWORD2          COKEYA                           63900020
+         LA    BINREG,CABFRP2          LET 3RD PARAM WORD POINT TO      64000020
+         ST    BINREG,COWORD3          BUFFER POOL                      64100020
+         MVI   COWORD3,END             PUT X'80' IN HIGH ORDER BYTE     64200020
+*                                      OF 3RD PARAM WORD                64300020
+         LA    UTREG,COWORD1                                            64400020
+         IKJEBESH (COMMREG),IKJEBEUT,PARAM=((COMMREG),(UTREG)),MF=(E,A) 64500020
+         LTR   RETCDREG,RETCDREG                                        64600020
+         BZ    NORM                    R.C.=0 THEN GO TO NORM           64700020
+         C     RETCDREG,FTDC4                                           64800020
+         BE    MSG10                   R.C.=4 THEN GO TO MSG10          64900020
+         B     IOERR                   OTHERWISE BRANCH UNCOND. TO      65000020
+*                                      IOERR                            65100020
+NORM     L     TESTREG,COUNT                                            65150020
+         LTR   TESTREG,TESTREG         TEST WHETHER 'COUNT' IS PRESENT  65160020
+         BZ    MODEL                   IF NOT BRANCH TO MODEL           65170020
+         LH    ADDREG,COUNT+FT4        PUT LENGTH OF COUNT IN ADDREG    65200020
+         BCTR  ADDREG,PARMREG0         PUT COUNT - 1 IN ADDREG          65300020
+         EX    ADDREG,PACKED           CONVERSION INTO BINARY           65400020
+         CVB   BINREG,COPACKED                                          65500020
+         CH    BINREG,FTH1             IS BINREG EQUAL TO 1.            65550020
+         BNH   CTOFF                   IF ONE THEN BRANCH TO CTOFF      65560020
+         LR    WORK6,BINREG                                             65600020
+         BCTR  WORK6,PARMREG0          PUT COUNT - 1 IN WORK6           65700020
+LOOP     MVI   COWORD1,AFTER                                            65800020
+         LA    TESTREG,COKEYA                                           65900020
+         ST    TESTREG,COWORD2                                          66000020
+         IKJEBESH (COMMREG),IKJEBEUT,PARAM=((COMMREG),(UTREG)),MF=(E,A) 66100020
+         LTR   RETCDREG,RETCDREG                                        66200020
+         BZ    ACTION1                 R.C.=0 THEN GO TO ACTION1        66300020
+         C     RETCDREG,FTDC4          TEST WHETHER R.C.=4              66400020
+         BE    ACTION2                 R. C.=4 THEN GO ACTION2          66500020
+         B     IOERR                   BRANCH UNCOND. TO IOERR          66600020
+ACTION1  MVC   COKEYA(FT4),CABFRP2                                      66700020
+         BCT   WORK6,LOOP              CONTENT OF WORK6 - 1 AND         66800020
+*                                      BRANCH TO LOOP IF CONTENT OF     66900020
+*                                      WORK6 = 0                        67000020
+         L     BINREG,COKEYA           2ND LINENUM IN BINREG            67100020
+         B     COMB                    BRANCH UNCOND. TO COMB           67200020
+ACTION2  L     BINREG,CABFRP2          PUT 2ND LINE NO. IN BINREG       67300020
+         B     COMB                    BRANCH UNCOND. TO COMB           67400020
+TEST1ST  C     TESTREG,CABFRP2         TEST WHETHER RECORD 0 EXISTS     67410020
+         BE    CALC                    RECORD 0 EXISTS THEN GO TO CALC  67420020
+         OI    ZSW,SW1                 INDICATE THAT *=0                67422020
+         MVC   CACURNUM(FT4),CABFRP2   SET * TO KEY VALUE OF 1ST RECORD 67430020
+         B     CALC                    BRANCH TO TEST WHETHER DATA SET  67440020
+*                                      IS LINE-NUMBERED                 67450020
+MSG10    MVC   B(FT12),INLIST2                                          67460020
+         IKJEBEML M504,,LINENOA,,MF=(E,B)                               67470020
+         B     CONT3                   BRANCH TO INDICATE FLUSH         67480020
+         SPACE 3                                                        67500020
+*********************************************************************** 67600020
+*    CONSTANT AREA FOR IKJEBEFO                                         67700020
+*********************************************************************** 67800020
+         DS    0F                                                       67900020
+         SPACE 2                                                        68000020
+*********************************************************************** 68100020
+*    MACROS OF IKJPARSE                                                 68200020
+*********************************************************************** 68300020
+IKJEBFO0 IKJPARM DSECT=FTPDL                                            68400020
+ASTERSK  IKJIDENT 'ASTERISK OR LINE NUMBER 1',ASTERISK,MAXLNTH=8,      *68500020
+               FIRST=NUMERIC,OTHER=NUMERIC                              68600020
+COUNT    IKJIDENT 'COUNT OR LINE NUMBER 2',MAXLNTH=8,FIRST=NUMERIC,    *68700020
+               OTHER=NUMERIC                                            68800020
+PAGE     IKJKEYWD                                                       68900020
+         IKJNAME  'PAGE',SUBFLD=NUMBER                                  69000020
+NUM      IKJKEYWD DEFAULT='SNUM'                                        69100020
+         IKJNAME  'NUM'                                                 69200020
+         IKJNAME  'NONUM'                                               69300020
+         IKJNAME  'SNUM'                                                69400020
+PAUSE    IKJKEYWD DEFAULT='NOPAUSE'                                     69500020
+         IKJNAME  'PAUSE'                                               69600020
+         IKJNAME  'PAUSE1'                                              69700020
+         IKJNAME  'NOPAUSE'                                             69800020
+PRINT    IKJKEYWD                                                       69900020
+         IKJNAME  'PRINT',SUBFLD=DSNAME                                 70000020
+NUMBER   IKJSUBF                                                        70100020
+PNUM1    IKJIDENT 'PAGE NUMBER 1',MAXLNTH=8,FIRST=NUMERIC,             X70200020
+               OTHER=NUMERIC,PROMPT='PAGE NUMBER 1'                     70300020
+PNUM2    IKJIDENT 'PAGE NUMBER 2',MAXLNTH=8,FIRST=NUMERIC,OTHER=NUMERIC 70400020
+DSNAME   IKJSUBF                                                        70500020
+ONAME    IKJPOSIT DSNAME,PROMPT='PRINT DSNAME'                          70600020
+OTYPE    IKJKEYWD  DEFAULT='T'                                          70700020
+         IKJNAME 'PC'                                                   70800020
+         IKJNAME 'PS'                                                   70900020
+         IKJNAME 'T'                                                    71000020
+         IKJENDP                                                        71100020
+         SPACE 2                                                        71200020
+FTDC4    DC    F'4'                    FULLWORD OF 4                    71300020
+FTDC8    DC    F'8'                    FULLWORD OF 8                    71400020
+FTDC9    DC    F'9'                    FULLWORD OF 9                    71500020
+FTDC11   DC    F'11'                   FULLWORD OF 11                   71600020
+FTDC12   DC    F'12'                   FULLWORD OF 12                   71700020
+FTDC16   DC    F'16'                   FULLWORD OF 16                   71800020
+FTDC21   DC    F'21'                   FULLWORD OF 21                   71900020
+FTH0     DC    H'0'                    HALF WORD OF ZERO                72000020
+FTH1     DC    H'1'                    HALF WORD OF CONSTANT 1          72100020
+FTH2     DC    H'2'                    HALF WORD OF CONSTANT 2          72200020
+FTH7     DC    H'7'                    HALFWORD OF CONSTANT 7           72300020
+FTH8     DC    H'8'                    HALF WORD OF CONSTANT 8          72400020
+FTH13    DC    H'13'                   HALF WORD OF CONSTANT 13         72500020
+CHAR     DC    C'FORMAT '              CHAR. FORMAT                     72600020
+CPAGE    DC    CL5'PAGE('              CHAR. 'PAGE('                    72700020
+CNUM     DC    CL4' NUM'               CHAR. ' NUM'                     72800020
+CSNUM    DC    CL5' SNUM'              CHAR. ' SNUM'                    72900020
+CNONUM   DC    CL6' NONUM'             CHAR. ' NONUM'                   73000020
+CPAUSE   DC    CL6' PAUSE'             CHAR. ' PAUSE'                   73100020
+CPAUSE1  DC    CL7' PAUSE1'            CHAR. ' PAUSE1'                  73200020
+CNOPAUSE DC    CL8' NOPAUSE'           CHAR. ' NOPAUSE'                 73300020
+CPRINT   DC    CL7' PRINT('            CHAR. ' PRINT('                  73400020
+RIGHTQ   DC    C')'''                  RIGHT PARENTHESIS FOLLOWED BY    73500020
+*                                      QUOTE                            73600020
+CPC      DC    CL4',PC)'               CHAR. ',PC)'                     73700020
+CPS      DC    CL4',PS)'               CHAR. ',PS)'                     73800020
+CT       DC    CL3',T)'                CHAR. ',T)'                      73900020
+MOVE1    MVC   CABFRP1+FT12(FT0),CASADSN                                74000020
+MOVE2    MVC   FT0(FT0,ADDREG),FT0(WORK6)  PUT LINENUM 1 IN BUFFER      74100020
+MOVE6    MVC   FT0(FT0,ADDREG),FT0(TESTREG)  PUT MEMBER IN BUFFER       74200020
+PACKED   PACK  COPACKED(FT8),FT0(FT0,TESTREG)                           74300020
+ADFTPCL  DC    A(IKJEBFO0)             ADCON OF PCL                     74400020
+SUBCMD   IKJEBEMG ,M312IN1,'FORMAT'                                     74500020
+INS12    IKJEBEMG CODE12,M3131IN1,'PARSE'                               74600020
+CODE12   IKJEBEMG 0,M3131IN2,'12'                                       74700020
+LINENOA  IKJEBEMG ,M504IN1,'*'                                          74750020
+INLIST2  IKJEBEML M504,,LINENOA,,MF=L                                   74760020
+INLIST3  IKJEBEML M501,MF=L                                             74800020
+INLIST3L EQU  *-INLIST3                                                 74900020
+INLIST6  IKJEBEML M312,,SUBCMD,,MF=L                                    75000020
+INLIST8  IKJEBEML M313,M3131,,INS12,MF=L                                75100020
+         SPACE 2                                                        75200020
+         IKJPPL                                                         75300020
+         SPACE 2                                                        75400020
+         IKJCPPL                                                        75500020
+         SPACE 2                                                        75600020
+         IKJEBECA                                                       75700020
+         SPACE 2                                                        75800020
+         ORG   CASCWKA                 SUBCOMMAND WORK AREA             75900020
+UNPACK1  DS    D                       DOUBLE WORD FOR PACKED DEC.      76000020
+UNPACK2  DS    D                       DOUBLE WORD FOR PACKED DEC.      76100020
+DFNUM    DS    D                       ZONED DEC. FOR 1ST LINENUM       76200020
+DSECNUM  DS    D                       ZONED DEC. FOR 2ND LINENUM       76300020
+COPACKED DS    D                       DOUBLE WORD FOR PACKED DEC.      76400020
+FNUM     DS    F                       1ST LINENUM IN ZONED DEC. FORM   76500020
+CIWORD1  DS    F                       1ST PARAM WORD FOR CI            76600020
+CIWORD2  DS    F                       2ND PARAM WORD FOR CI            76700020
+COWORD1  DS    F                       1ST PARAM WORD FOR UT            76800020
+COWORD2  DS    F                       2ND PARAM WORD FOR UT            76900020
+COWORD3  DS    F                       3RD PARAM WORD FOR UT            77000020
+B        DS    10F                     10 FULL WORDS FOR ML MACRO       77200020
+A        DS    5F                      5 FULLWORDS FOR SH MACRO         77300020
+COKEYA   DS    F                       CURRENT REF. VALUE IN UT         77400020
+ZSW      DS    X                       CACURNUM=0 SWITCH                77450020
+SW       DS    X                       SWITCH                           77500020
+ASW      DS    X                       ALLOCATION SWITCH                77550020
+         SPACE 2                                                        77600020
+         ORG   CABFRPL                 BUFFER POOL IN COMM. AREA        77700020
+CABFRP1  DS    67F                     MODEL COMMAND BUFFER             77800020
+CABFRP2  DS    65F                     BUFFER BUILT IN THIS SUBCMD.     77900020
+         END                                                            78000020

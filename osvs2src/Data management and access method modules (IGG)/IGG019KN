@@ -1,0 +1,1032 @@
+ TITLE   'IGG019KN - BDAM VARIABLE SPANNED SELF FORMAT MODULE'          00100002
+IGG019KN CSECT                                                          00200020
+*MODULE NAME - IGG019KN                                               * 00210002
+*                                                                     * 00220002
+*DESCRIPTIVE NAME - BDAM WRITE ADD FOR VARIABLE SPANNED RECORDS       * 00222002
+*                                                                     * 00224002
+*COPYRIGHT - NONE                                                     * 00226002
+*                                                                     * 00228002
+*CHANGE ACTIVITY                                                      * 00228402
+*                                                                     * 00228802
+*          OS REL 20 CHANGES/DELETIONS                                  00400002
+*3574002100,005000-008400,162000,199000-202000,312000-313000     20201  00450020
+*0000                                                            M5461  00650020
+*          OS REL 21 CHANGES/DELETIONS                                  00700002
+*          VS 1-1 CHANGES/DELETIONS                                     00750002
+*          VS 2-1 CHANGES/DELETIONS                                     00800002
+*                                                                YM3709 00802002
+*          VS 1-2 CHANGES/DELETIONS                                     00810002
+*                                                               XA00014 00812002
+*          VS 2-2 CHANGES/DELETIONS                                     00820002
+*557000,616500                                                   Y02072 00830002
+*                                                                       00850020
+*          CHANGES SUBSEQUENT TO VS2-030                                00860000
+*D480000,A477000,A764800-765600                                @ZA12909 00870000
+*STATUS CHANGE LEVEL 004                                                00880002
+*                                                                       00910020
+*FUNCTION/OPERATION- THIS MODULE CONTAINS THREE ROUTINES WHOSE        * 01000020
+*   FUNCTIONS ARE,                                                    * 01100020
+*   1.CREATE THE CHANNEL PROGRAM REQUIRED TO ADD A NEW BLOCK TO A     * 01200020
+*    VRE DATA SET.                                                    * 01300020
+*    THE CHANNEL PROGRAM WILL CONSIST OF TWO PARTS, THE FIRST THREE   * 01400020
+*    CCWS WILL READ THE CAPACITY RECORD FROM A TRACK, THE SECOND      * 01500020
+*    SEQUENCE OF CCWS WILL WRITE THE NEW RECORD AND UPDATE THE        * 01600020
+*    CAPACITY RECORD.                                                 * 01700020
+*                                                                     * 01800020
+*   2.CALCULATE THE NUMBER OF BYTES THE NEW BLOCK WILL REQUIRE ON THE * 01900020
+*    TRACK AND COMPARE THAT VALUE TO THE NUMBER OF UNUSED BYTES       * 02000020
+*    REMAINING ON THE TRACK ACCORDING TO THE CAPACITY RECORD. IF THE  * 02100020
+*    BLOCK WILL FIT, THE COUNT FIELD FOR THE NEW BLOCK AND AN UPDATED * 02200020
+*    CAPACITY RECORD ARE FORMED AND THE SECOND PART OF THE CHANNEL    * 02300020
+*    PROGRAM IS SCHEDULED VIA THE EXCP MACRO. IF THE BLOCK WILL NOT   * 02400020
+*    FIT,THE CAPACITY RECORD OF THE NEXT TRACK IS ENQ'ED AND READ     * 02500020
+*    (VIA MODULE IGG019LG) AND THE COMBINED SPACE EXAMINED.  THIS     * 02600020
+*    PROCESS CONTINUES UNTIL EITHER ENOUGH SPACE IS OBTAINED, IN WHICH* 02700020
+*    CASE THE FIRST SEGMENT IS WRITTEN, OR A NON-EMPTY TRACK OR A     * 02800020
+*    VOLUME SWITCH IS ENCOUNTERED.  FOR THESE CASES, THE SEARCH LIMIT * 02900020
+*    IS CHECKED AND IF REACHED, THE REQUEST IS TERMINATED WITH A NO-  * 03000020
+*    SPACE-FOUND INDICATION.  IF THE SEARCH LIMIT WAS NOT REACHED, THE* 03100020
+*    TRACKS PREVIOUSLY ENQ'ED ARE DEQ'ED AND THE SEARCH STARTS OVER.  * 03200020
+*                                                                     * 03300020
+*   3.SEARCH THE UNSCHEDULED QUEUE OF IOBS WHEN THE CURRENT WRITE ADD * 03400020
+*    HAS COMPLETED, FOR ANOTHER WRITE ADD REQUEST. THE FIRST SUCH     * 03500020
+*    UNSCHEDULED REQUEST FOUND (IF ANY) WILL BE UNQUEUED AND          * 03600020
+*    SCHEDULED VIA EXCP.                                              * 03700020
+*                                                                     * 03800020
+*ENTRY POINTS- THERE ARE THREE ENTRY POINTS AS FOLLOWS,               * 03900020
+*   1.   'IECDSF1' IS ENTERED FROM THE FOUNDATION MODULE (IGG019KA)   * 04000020
+*     TO PERFORM FUNCTION 1.  CALLING SEQUENCE IS, L    15,DCBDFOR    * 04100020
+*                                                  BALR 14,15         * 04200020
+*   2.   'IECDSF2' IS ENTERED FROM ASYNCHRONOUS INTERRUPT (IGG019KA)  * 04300020
+*     TO PERFORM FUNCTION 2. AND ALSO FUNCTION 3. IF THE BLOCK WILL   * 04400020
+*     NOT FIT ON THE TRACK. CALLING SEQUENCE IS, L   15,DCBDFOR       * 04500020
+*                                                BC  15,8(15)         * 04600020
+*   3.   'IECDSF3' IS ENTERED FROM ASYNCHRONOUS INTERRUPT TO PERFORM  * 04700020
+*     FUNCTION 3. CALLING SEQUENCE IS,    L     15,DCBDFOR            * 04800020
+*                                         BC    15,12(15)             * 04900020
+*                                                                     * 05000020
+*INPUT-                                                               * 05100020
+*   TO FUNCTION 1.                                                    * 05200020
+*    REGISTER 4  DCB ADDRESS                                          * 05300020
+*    REGISTER 5  DECB ADDRESS                                         * 05400020
+*    REGISTER 6  ADDRESS OF THE LOCATION FOR CCW 1.                   * 05500020
+*    REGISTER 7  IOB ADDRESS                                          * 05600020
+*    REGISTER 11 BASE ADDRESS OF MODULE IGG019KA                      * 05700020
+*    REGISTER 14 RETURN ADDRESS                                       * 05800020
+*    REGISTER 15 BASE OF THIS MODULE                                  * 05900020
+*                                                                     * 06000020
+*   TO FUNCTION 2.                                                    * 06100020
+*    REGISTER 1  IOB ADDRESS                                          * 06200020
+*    REGISTER 7  RQE (IOS QUEUEING ELEMENT) ADDRESS                   * 06300002
+*    REGISTER 13 DCB ADDRESS                                          * 06400020
+*    REGISTER 15 BASE ADDRESS FOR THIS MODULE                         * 06500020
+*                                                                     * 06600020
+*   TO FUNCTION 3.                                                    * 06700020
+*    REGISTER 1  IOB ADDRESS                                          * 06800020
+*    REGISTER 13 DCB ADDRESS                                          * 06900020
+*    REGISTER 15 BASE ADDRESS FOR THIS MODULE                         * 07000020
+*                                                                     * 07100020
+*OUTPUT- FUNCTION 1 WILL CONSTRUCT THE REQUIRED CCWS AND LEAVE        * 07200020
+*   REGISTER 6 POSITIONED AT THE LAST CCW.                            * 07300020
+*   FUNCTION 2 WILL FORM THE NEW BLOCK'S COUNT FIELD AND UPDATED      * 07400020
+*   CAPACITY RECORD IF THE RECORD FITS OR WILL SET BITS IN THE IOB    * 07500020
+*   (IOBDSTAT) IF THERE IS NO SPACE FOR THE BLOCK.                    * 07600020
+*   FUNCTION 3 WILL SCHEDULE ANOTHER WRITE ADD IF ONE HAS BEEN        * 07700020
+*   QUEUED AWAITING THE CURRENT WRITE'S COMPLETION.                   * 07800020
+*                                                                     * 07900020
+*EXTERNAL ROUTINES-                                                   * 08000020
+*        'IGG019KQ' IS USED TO CONSTRUCT ADDITIONAL CCWS TO VERIFY    * 08100020
+*   THE NEW BLOCK IF THE WRITE VALIDITY CHECK OPTION WAS SPECIFIED IN * 08200020
+*   THE OPTCD PARAMETER OF THE DCB MACRO. 'IGG019KY' IS USED TO       * 08300002
+*   CONSTRUCT THE EXTENDED SEARCH CHANNEL PROGRAM IF SPECIFIED.       * 08310002
+*   SVC 53 IS ISSUED TO ENQUEUE AND DEQUEUE ON THE CURRENT TRACK.     * 08360002
+*                                                                     * 08400020
+*EXITS-NORMAL- 'EXITFDN' IS THE RETURN TO MODULE IGG019KA AFTER THE   * 08500020
+*   CHANNEL PROGRAM HAS BEEN CONSTRUCTED.                             * 08600020
+*        'EXITSUPV' IS AN SVC EXIT TO RETURN TO SUPERVISOR WHEN THE   * 08700020
+*   BLOCK FITS ON THE TRACK AND THE IOB HAS BEEN RESCHEDULED WITH IOS.* 08800020
+*EXITS-ERROR - 'EXITERR' IS A RETURN TO THE SUPERVISOR AFTER THE      * 08900020
+*   TRACKS HAVE BEEN RELEASED AND THE ERROR CONDITION POSTED.         * 09000020
+*                                                                     * 09100020
+*TABLES/WORK AREA- THE COMMUNICATION VECTOR TABLE IS REFERENCED TO    * 09200020
+*   REACH THE DIRECT ACCESS DEVICE TABLE WHICH SUPPLIES THE DEVICE    * 09300020
+*   CHARACTERISTICS NECESSARY TO CALCULATE THE BYTES REQUIRED FOR     * 09400020
+*   THIS BLOCK ON THIS DEVICE.                                        * 09500020
+*                                                                     * 09600020
+*ATTRIBUTES- THIS ROUTINE IS REENTRANT, ENABLED AND RUNS IN USER KEY  * 09700002
+*   IT RUNS IN PROBLEM PROGRAM STATE.                                   09750002
+*                                                                     * 10000020
+*NOTES- THE REGISTER USAGE IN THIS MODULE MUST REMAIN CONSISTENT      * 10100020
+*   WITH MODULES  IGG019KJ, IGG019KQ, AND IGG019KY                    * 10200002
+*                                                                       10300020
+*                                                                       10400020
+*                                                                       10500020
+*                                                                       10600020
+*              REGISTER USAGE                                           10700020
+*                                                                       10800020
+R0       EQU   0                        PARAMETER REG FOR SVC 53 Y02072 10850002
+R1       EQU   1                        PARAMETER REG FOR SVC 53 Y02072 10860002
+SCHREG   EQU   1                        PARAMETER REG                   10900020
+DEQRTN   EQU   1                        LINK TO DEQ RTN REGISTER        11000020
+SWAREG   EQU   2                        SWA ADDRESS                     11100020
+SWAPTR   EQU   2                        POINTER TO SWA                  11200020
+DEBREG   EQU   3                        DEB ADDRESS                     11300020
+W1       EQU   3                        WORK REGISTER                   11400020
+DCBREG   EQU   4                        DCB ADDRESS                     11500020
+W2       EQU   4                        WORK REGISTER                   11600020
+DECBREG  EQU   5                        DECB ADDRESS                    11700020
+W3       EQU   5                        WORK REGISTER                   11800020
+CCWIND   EQU   6                        ADDRESS OF FIRST CCW            11900020
+W4       EQU   6                        WORK REGISTER                   12000020
+IOBREG   EQU   7                        IOB ADDRESS                     12100020
+UCBREG   EQU   7                        ADDRESS OF DEVICE TABLE ENTRY   12200020
+RQEREG   EQU   7                        ADDR OF RQE FOR FUNCT 2  Y02072 12250002
+UTIL     EQU   8                        UTILITY REGISTER                12300020
+WKREG1   EQU   9                        GENERAL PURPOSE WORK REGISTER   12400020
+LGRTN    EQU   9                        LINK TO IGG019LG REGISTER       12500020
+SFBASE   EQU   10                       BASE REG FOR IGG019KQ           12600020
+FDNBASE  EQU   11                       BASE REG FOR FOUNDATION MOD     12700020
+PARAM    EQU   12                       IOB REGISTER                    12800020
+DCBREG2  EQU   13                       DCB REGISTER FOR PART TWO       12900020
+RETREG   EQU   14                       RETURN ADDRESS TO IGG019KJ      13000020
+INTRET   EQU   12                                                       13100020
+EPREG    EQU   15                                                       13200020
+SF1BASE  EQU   15                       BASE REG FOR PART ONE OF THIS   13300020
+*                                       MODULE                          13400020
+*                                                                       13500020
+*                                                                       13600020
+*********************************************************************** 13700020
+         USING IGG019KN,SF1BASE                                         13800020
+         USING IOBSTDRD,IOBREG                                   Y02072 13900002
+         USING IHADCB,DCBREG                                            14000020
+         USING DECBDEF,DECBREG                                          14100002
+*********************************************************************** 14200020
+         B     IECDSF1                  ENTRY FROM FOUNDATION MODULE    14300020
+VCONKY   DC    V(IGG019KY)              EXTENDED SEARCH ADDRESS  Y02072 14400002
+         B     IECDSF2-IGG019KN(SFBASE) ENTRY TO ADD LOGIC              14500020
+         B     ENTRYP12-IGG019KN(SFBASE)  ENTRY TO END OF ADD ROUTINE   14600020
+*                                                                       14700020
+IECDSF1  EQU   *                                                        14800020
+*                                                                       14900020
+*                                                                     * 15700020
+         LR    SWAREG,IOBREG            FETCH IOB ADDRESS               15800020
+         SH    SWAREG,H4                PREPARE TO GO TO IOB-4          15900020
+         L     SWAREG,NULL(SWAREG)      FETCH SWA ADDRESS THERE         16000020
+         LA    SWAREG,SEGAREOF(SWAREG)  GET ADDRESS OF SEGMENT AREA     16100020
+         CLI   IOBDCPND,SETSC           RCD READY USED           20201  16130020
+         BNE   NOTRRA                   BRANCH IF NO             20201  16160020
+         BAL   UTIL,SECTRTN             GO BUILD SET SECTOR      20201  16190020
+         B     FEATA                    GO AROUND NOP            20201  16220020
+NOTRRA   EQU   *                                                 20201  16250020
+         MVC   NULL(BYTE8,CCWIND),NOPCCW    CONSTRUCT A NOP CCW         16300020
+*                                                                       16330020
+FEATA    EQU   *                                                 20201  16360020
+         ST    CCWIND,EIGHTCCW(CCWIND)  SET LAST RECORD SEARCH ARGUMENT 16400020
+*                                       ADDRESS IN CCW 9                16500020
+         LA    WKREG1,IOBCC             CAPACITY RECORD ADDRESS  Y02072 16600002
+         ST    WKREG1,ONECCW(CCWIND)    PUT CAPACITY RECORD SEARCH      16700020
+*                                       ARGUMENT ADDRESS IN CCW 2       16800020
+         ST    WKREG1,SEVENCCW(CCWIND)  PUT CAPACITY RECORD OUTPUT      16900020
+*                                       ADDRESS IN CCW 8                17000020
+         LA    WKREG1,IOBDNCRF          FETCH ADDRESS OF NEW REC Y02072 17100002
+*                                       COUNT FIELD IN IOB              17200020
+         ST    WKREG1,THREECCW(CCWIND)  PUT CAPACITY RECORD INPUT ADDR. 17300020
+*                                       IN CCW 4                        17400020
+         ST    WKREG1,TENCCW(CCWIND)    PUT NEW RECORD COUNT FIELD      17500020
+*                                       ADDRESS IN CCW 11               17600020
+         LA    WKREG1,ONECCW(CCWIND)    TIC ADDRESS FOR SEARCH ID EQ    17700020
+         ST    WKREG1,TWOCCW(CCWIND)    PUT TIC ADDRESS IN CCW 3        17800020
+         MVI   ONECCW(CCWIND),SRCHIDEQ  SET SEARCH ID EQ OP CODE IN     17900020
+*                                       CCW 2                           18000020
+         MVC   BYTE12(BYTE5,CCWIND),SCHCON  MOVE FLAGS AND COUNT IN     18100020
+*                                           CCW 2 AND TIC OP CODE IN    18200020
+*                                           CCW 3                       18300020
+         LA    SCHREG,ONECCW(CCWIND)    SAVE ADDRESS OF CCW 2 FOR       18400020
+*                                       BUILDING VERIFY CCW'S           18500020
+         LA    CCWIND,THREECCW(CCWIND)  SET POINTER TO CCW 4            18600020
+         MVI   NULL(CCWIND),READDATA    MOVE READ DATA OP CODE IN CCW 4 18700020
+         MVC   BYTE4(BYTE4,CCWIND),SILCNT7  MOVE SUPPRESS INCORRECT     18800020
+*                                           LENGTH FLAGS AND COUNT=7    18900020
+*                                           IN CCW 4                    19000020
+*                                                                     * 19100020
+*                                                                       19190020
+         LA    CCWIND,ONECCW(CCWIND)    INCR CCW PTR             20201  19280020
+         CLI   IOBDCPND,SETSC           RCD READY USED           20201  19370020
+         BNE   NOTRRC                   BRANCH IF NO             20201  19460020
+         BAL   UTIL,SECTRTN             GO BUILD SET SECTOR      20201  19550020
+         B     FEATC                    GO AROUND NOP            20201  19640020
+NOTRRC   EQU   *                                                 20201  19730020
+         MVC   NULL(BYTE8,CCWIND),NOPCCW  INSERT NOP CMND        20201  19820020
+FEATC    EQU   *                                                 20201  19910020
+         LA    CCWIND,ONECCW(CCWIND)    INCR CCW PTR             20201  20000020
+*                                                                       20090020
+         LA    WKREG1,THREE(SCHREG)     PTR TO CCHHR             20201  20180020
+         ST    WKREG1,NULL(CCWIND)      PUT TIC TO SEARCH ID EQ CCW     20300020
+*                                       ADDRESS IN CCW 6                20400020
+         ST    CCWIND,ONECCW(CCWIND)    PUT TIC TO CCW 6 ADDR. IN CCW 7 20500020
+         MVI   NULL(CCWIND),SRCHIDEQ    SET SEARCH ID EQ OP CODE IN     20600020
+*                                       CCW 6                           20700020
+         MVC   BYTE4(BYTE5,CCWIND),SCHCON   MOVE FLAGS AND COUNT IN     20800020
+*                                           CCW 6 AND TIC OP CODE IN    20900020
+*                                           CCW 7                       21000020
+         MVI   TWOCCW(CCWIND),WRITDATA  MOVE WRITE DATA OP CODE IN CCW8 21100020
+         MVC   BYTE20(BYTE4,CCWIND),CCSIL7  COMMAND CHAIN AND SUPPRESS  21200020
+*                                           INCORRECT LENGTH FLAGS AND  21300020
+*                                           COUNT OF 7 IN CCW 8         21400020
+         LA    CCWIND,THREECCW(CCWIND)  SET POINTER TO CCW 9            21500020
+         MVI   NULL(CCWIND),SRCHIDEQ    SET SEARCH ID EQ OP CODE IN     21600020
+*                                       CCW 9                           21700020
+         ST    CCWIND,ONECCW(CCWIND)    PUT TIC TO CCW 9 ADDR IN CCW 10 21800020
+         MVC   BYTE4(BYTE5,CCWIND),SCHCON   MOVE FLAGS AND COUNT IN     21900020
+*                                           CCW 9 AND TIC OP CODE IN    22000020
+*                                           CCW 10                      22100020
+         MVI   TWOCCW(CCWIND),WRITCKD   MOVE IN WRITE COUNT KEY DATA    22200020
+*                                       OP CODE IN CCW 11               22300020
+         MVI   BYTE23(CCWIND),EIGHT     SET COUNT OF 8 IN CCW 11        22400020
+         LA    CCWIND,TWOCCW(CCWIND)    SET POINTER TO CCW 11           22500020
+         CLI   DCBKEYLE,ZERO            CHECK IF KEY LENGTH IS ZERO     22600020
+         BE    NOKEY                    BRANCH IF YES                   22700020
+         MVC   BYTE9(BYTE3,CCWIND),DECKYADR+BYTE1   ELSE, MOVE KEY ADDR 22800020
+*                                                   IN CCW 12           22900020
+         MVI   BYTE4(CCWIND),DACHGAP    SET DATA CHAIN BETWEEN GAPS OF  23000020
+*                                       RECORD FLAGS IN CCW 11          23100020
+         MVC   BYTE15(BYTE1,CCWIND),DCBKEYLE   PUT KEY LENGTH AS COUNT  23200020
+*                                              IN CCW 12                23300020
+         LA    CCWIND,ONECCW(CCWIND)    SET POINTER TO CCW 12           23400020
+*                                                                       23500020
+NOKEY    EQU   *                                                        23600020
+*                                                                       23700020
+         CLC   DECLNGTH(BYTE2),ZEROS    IS DATA LENGTH ZERO             23800020
+         BCR   CC8,RETREG               IF YES, CHANNEL PROGRAM ENDS    23900020
+*                                       AND RETURN CONTROL TO IGG019KJ  24000020
+         MVI   BYTE4(CCWIND),DACHGAP    SET DATA CHAIN BETWEEN GAPS OF  24100020
+*                                       A RECORD FLAGS IN CURRENT CCW   24200020
+         ST    SWAREG,ONECCW(CCWIND)    PUT SEGMENT ADDRESS IN NEXT CCW 24300020
+         MVC   BYTE14(BYTE2,CCWIND),DECLNGTH   MOVE IN DATA LENGTH AS   24400020
+*                                              COUNT                    24500020
+         LA    CCWIND,ONECCW(CCWIND)    SET POINTER TO LAST CCW         24600020
+         TM    IOBDTYPE,IOBVERFY        CHECK IF WRITE CHECK OPT Y02072 24700002
+*                                       HAS BEEN SPECIFIED              24800020
+         BCR   CC8,RETREG               IF NOT, RETURN CONTROL TO THE   24900020
+*                                       FOUNDATION MODULE IGG019KJ      25000020
+         L     SFBASE,VERMODOF(NULL,FDNBASE)  ELSE, GET ADDRESS OF THE  25100020
+*                                       VERIFY MODULE IGG019KQ          25200002
+         BR    SFBASE                   GO TO IGG019KQ TO CONSTRUCT     25300020
+*                                       VERIFY CCW'S                    25400020
+*                                                                     * 25500020
+*                                                                     * 25600020
+*              BDAM OPTIONS AND TYPE                                  * 25700020
+*                                                                     * 25800020
+*                                                                     * 25900020
+NOPCCW   DC    X'0300000060000001'      NOP CCW                         26000020
+SCHCON   DC    X'4000000508'            COMMAND CHAIN FLAGS WITH COUNT  26100020
+*                                       OF 5  AND TIC OP CODE           26200020
+SILCNT7  DC    X'20000007'              SUPPRESS INCORRECT LENGTH FLAGS 26300020
+*                                       AND COUNT OF 7                  26400020
+CCSIL7   DC    X'60000007'              COMMAND CHAIN AND SUPPRESS IN-  26500020
+*                                       CORRECT LENGTH FLAGS AND COUNT  26600020
+*                                       OF 7                            26700020
+*                                                                       26800020
+SRCHIDEQ EQU   X'31'                    SEARCH ID EQ OP CODE            26900020
+READDATA EQU   X'06'                    READ DATA OP CODE               27000020
+WRITDATA EQU   X'05'                    WRITE DATA OP CODE              27100020
+WRITCKD  EQU   X'1D'                    WRITE COUNT KEY DATA OP CODE    27200020
+DACHGAP  EQU   X'C0'                    DATA CHAIN BETWEEN GAPS OF A    27300020
+*                                       RECORD FLAGS                    27400020
+*                                                                       27600020
+*                                                                       27700020
+*              CONSTANTS                                                27800020
+*                                                                       27900020
+*                                                                       28000020
+ZEROS    DC    X'0000'                  GENERAL PURPOSE CONSTANT        28050020
+ZERO     EQU   X'0'                     GENERAL PURPOSE CONSTANT        28100020
+EIGHT    EQU   X'8'                     GENERAL PURPOSE CONSTANT        28200020
+NULL     EQU   0                        NO DISPLACEMENT                 28300020
+ONECCW   EQU   8                        LENGTH OF ONE CCW               28400020
+TWOCCW   EQU   16                       LENGTH OF TWO CCW'S             28500020
+THREECCW EQU   24                       LENGTH OF THREE CCW'S           28600020
+FOURCCW  EQU   32                       LENGTH OF FOUR CCW'S            28700020
+SEVENCCW EQU   56                       LENGTH OF SEVEN CCW'S           28800020
+EIGHTCCW EQU   64                       LENGTH OF EIGHT CCW'S           28900020
+TENCCW   EQU   80                       LENGTH OF TEN CCW'S             29000020
+*                                                                       29100020
+*                                                                       29200020
+BYTE1    EQU   1                        ONE BYTE                        29300020
+BYTE2    EQU   2                        TWO BYTES                       29400020
+BYTE3    EQU   3                        THREE BYTES                     29500020
+BYTE4    EQU   4                        FOUR BYTES                      29600020
+BYTE5    EQU   5                        FIVE BYTES                      29700020
+BYTE6    EQU   6                        SIX BYTES                       29800020
+BYTE7    EQU   7                        SEVEN BYTES                     29900020
+BYTE8    EQU   8                        EIGHT BYTES                     30000020
+BYTE9    EQU   9                        NINE BYTES                      30100020
+BYTE10   EQU   10                       TEN BYTES                       30200020
+BYTE12   EQU   12                       TWELVE BYTES                    30300020
+BYTE14   EQU   14                       FOURTEEN BYTES                  30400020
+BYTE15   EQU   15                       FIFTEEN BYTES                   30500020
+BYTE20   EQU   20                       TWENTY BYTES                    30600020
+BYTE23   EQU   23                       TWENTY-THREE BYTES              30700020
+CC8      EQU   8                        CONDITION CODE SETTING OF 8     30710020
+VERMODOF EQU   12                       OFFSET TO ADDRESS OF IGG019KQ   30800020
+*                                       IN THE FOUNDATION MODULE        30900020
+SEGAREOF EQU   10                       OFFSET TO ADDRESS OF SEGMENT    31000020
+*                                       AREA IN SWA                     31100020
+*                                                                       31120020
+* SET SECTOR BUILD ROUTINE                                              31140020
+*                                                                       31160020
+         DS    0H                       ROUND TO HW              20201  31180020
+SECTRTN  EQU   *                                                 20201  31200020
+         L     WKREG1,IOBDCPND          GET SECTOR ADDR          20201  31220020
+         ST    WKREG1,NULL(CCWIND)      PUT IN CCW WITH OP CODE  20201  31240020
+*                                       I                        20201  31260020
+         OI    BYTE4(CCWIND),CC         CMND CHAIN CCW           20201  31280020
+         MVI   BYTE7(CCWIND),BYTE1      SET BYTE CNT TO ONE      20201  31300020
+         BR    UTIL                     RETURN                   20201  31320020
+*                                                                       31340020
+SETSC    EQU   X'23'                    SET SECTOR CCW CMND      20201  31360020
+CHPOFF   EQU   80                       OFFSET IN IOB TO CHP     20201  31380020
+         EJECT                                                          31400020
+*********************************************************************** 31500020
+*                                                                       31600020
+*                                                                       31700020
+*********************************************************************** 31800020
+*                                                                       31900020
+*                                                                       32000020
+*   THIS PORTION OF THE SELF-FORMAT MODULE PERFORMS THE SEARCH FOR      32100020
+*   SUFFICIENT SPACE TO ADD THE RECORD TO THE DATA SET.                 32200020
+*                                                                       32300020
+         DROP  IOBREG,DCBREG,DECBREG    CHANGE REGISTER USAGE TO THOSE  32400020
+         DROP  SF1BASE                  USED BY THE ASYNCHRONOUS        32500020
+         USING IGG019KN,SFBASE          INTERRUPT ROUTINE               32600020
+         USING IOBSTDRD,PARAM                                    Y02072 32700002
+         USING IHADCB,DCBREG2                                           32800020
+         USING DECBDEF,UTIL                                             32900020
+         USING SWA,SWAPTR                                               33000020
+*                                                                       33100020
+IECDSF2  L     UTIL,IOBECBPT            SET DECB POINTER                33200020
+         TM    IOBSTAT1,IOBABNRM        WAS THIS AN ABN COMPLET  Y02072 33300002
+         BZ    COMPLOK                  BR IF NOT                       33400020
+         L     W1,IOBSTART                                              33800020
+         USING WRITEADD,W1                                              33900020
+         CLI   WARD,READDATA            DID ABNORMAL END OCCUR DURING   34000020
+*                                       THE READ OF A CAPACITY RECORD   34100020
+         BNE   MVINFRST                 BR IF NO                        34200020
+         IC    W1,TRKCNT                *                               34240020
+         LA    W1,ONE(W1)                *  ADD 1 TO TRACK COUNT        34280020
+         STC   W1,TRKCNT                *                               34320020
+         CLI   TRKCNT,ONE               IF THE TRACK COUNT IS ONE, WE   34360020
+         BNE   ACB4                     MUST PLACE THE FIRST TRACK      34400020
+         MVC   SAVEMBB(EIGHT),IOBSEEK   ADDRESS IN THE SWA FOR DEQ RTN  34500020
+         B     ACB4                     GO DEQ TRACKS USED, POST THE    34600020
+*                                       REQUEST, AND EXIT.              34700020
+*                                                                       34800020
+COMPLOK  EQU   *                                                        34900020
+         CLC   IOBDBYTR,LASTFOUR        IS SPACE TOTAL SO FAR = 0       35000020
+         BNE   NOTFIRST                 BR IF NO                        35100020
+*                                                                       35106020
+*   OBTAIN POINTER TO THE DEVICE TABLE ENTRY                            35112020
+*                                                                       35118020
+         USING RQE,RQEREG               ESTABLISH RQE BASE       Y02072 35126002
+         L     UCBREG,RQEUCB            LOAD 4 BYTE UCB ADDR     Y02072 35128002
+         DROP  RQEREG                                            Y02072 35128402
+         LA    W3,DONEDVT                                               35130020
+GETDVENT EQU   *                                                        35136020
+         L     W1,CVTPTR                LOAD ADDRESS OF THE CVT         35142020
+         L     W1,CVTZDTAB-CVTDEF(W1)   GET ADDRESS OF THE DEVICE TABLE 35148020
+         IC    W2,TYPCD(UCBREG)         LOAD DEVICE CODE FROM UCB       35154020
+         N     W2,LASTFOUR              CLEAR ALL BUT LOW ORDER 4 BITS  35160020
+         IC    W2,NULL(W2,W1)           FIND ENTRY OFFSET               35166020
+         LA    UCBREG,NULL(W2,W1)       SET POINTER TO DESIRED ENTRY    35172020
+         BR    W3                       RETURN TO CALLING ROUTINE       35178020
+DONEDVT  EQU   *                                                        35184020
+*                                                                       35190020
+OTHRFRST EQU   *                                                        35200020
+         MVC   SAVEMBB,IOBSEEK          SAVE MBB FROM IOBSEEK           35300020
+         MVC   IOBCC(SEVEN),IOBDNCRF    MOVE IN THE CAPACITY RECORD     35400002
+*                                       (THIS ALSO INITIALIZES          35500020
+*                                       IOBDBYTR WITH THE TRACK BAL.)   35600002
+         MVC   SVCCHHR,IOBDNCRF         ALSO SAVE IT IN THE SWA         35700002
+         MVI   TRKCNT,ONE               SET TRACK COUNT TO ONE          35800020
+         SR    W2,W2                                                    35900020
+         SR    W4,W4                                                    36000020
+*                                                                       37100020
+         TM    IOBSTAT1,IOBPASS2        IS THIS THE FIRST TIME   Y02072 37200002
+*                                       IN THIS ROUT FOR THIS REQUEST   37300002
+         BO    NOCALC                   NO,BYPASS CALCULATION           37400020
+*                                                                       37500020
+*   THE DISK SPACE REQUIRED FOR THE RECORD WILL NOW BE CALCULATED.      37600020
+*                                                                       37700020
+         IC    W2,DCBKEYLE              GET KEY LENGTH FROM DCB         37800020
+         LTR   W2,W2                    IS KEY LENGTH ZERO              37900020
+         BP    KEYED                    BR IF NOT ZERO                  38000020
+         IC    W4,OVERK(UCBREG)         GET VALUE TO BE SUBTRACTED FROM 38100020
+*                                       OVERHEAD FOR NON-KEYED RECORDS  38200020
+KEYED    EQU   *                                                        38300020
+         AH    W2,DECLNGTH              ADD DATA LENGTH TO KEY LENGTH   38400020
+         SR    W3,W3                                                    38500020
+         IC    W3,OVERL(UCBREG)         GET OVERHEAD FOR LAST RECORD    38600020
+         TM    BYTEDEV(UCBREG),TBOVHD    IS THIS A 2305 DEVICE   20201  38620020
+         BNO   MZ0001                   NO, THEN OVERHD O.K.     20201  38640020
+         LH    W3,OVERI(UCBREG)         ELSE GET TWO BYTE OVHD   20201  38660020
+MZ0001   EQU   *                                                 20201  38680020
+         SR    W3,W4                    SUBTRACT NON-KEYED OVERHEAD     38700020
+         AR    W2,W3                    ADD LAST RECORD OVERHEAD TO     38800020
+*                                       RECORD LENGTH                   38900020
+         STH   W2,IOBDBYTN+TWO          STORE BYTES REQUIRED FOR LAST   39000020
+*                                       RECORD                          39100020
+         SR    W2,W3                    RESTORE W2 TO KEY+DATA LENGTH   39200020
+         IC    W3,OVERI(UCBREG)         GET OVERHEAD FOR NOT LAST RCD.  39300020
+         TM    BYTEDEV(UCBREG),TBOVHD    IS THIS A 2305 DEVICE   20201  39320020
+         BNO   MZ0002                   IF NOT, OVHD IS O.K.     20201  39340020
+         LH    W3,OVERI(UCBREG)         ELSE GET TWO BYTE OVHD   20201  39360020
+MZ0002   EQU   *                                                 20201  39380020
+         MH    W2,TOLER(UCBREG)         MULTIPLY KEY+DATA LENGTH BY     39400020
+*                                       THE TOLERANCE FACTOR            39500020
+         SRA   W2,NINE                  DIVIDE RESULT BY 512            39600020
+         SR    W3,W4                    SUBTRACT NO-KEY OVERHEAD        39700020
+         AR    W2,W3                    ADD OVERHEAD TO RECORD LENGTH   39800020
+         STH   W2,IOBDBYTN              STORE RESULT IN IOB             39900020
+         OI    IOBSTAT1,IOBPASS2        SET FIRST TIME THROUGH   Y02072 40000002
+*                                                                       40100020
+NOCALC   EQU   *                                                        40200020
+         LH    W4,IOBDBYTR              GET THE TRACK BALANCE           40300020
+         LTR   W4,W4                    SEE IF NEGATIVE TRK BALANCE     40310020
+         BM    TRKFULL                  BR IF NEGATIVE                  40320020
+         CH    W4,IOBDBYTN+TWO          WILL RECORD FIT AS LAST RECORD  40400020
+*                                       ON THE TRACK                    40500020
+         BL    NOFIT                    BR IF NO                        40600020
+         MVI   SEGFLGS,NULL             SET SEGMENT FLAGS TO 0 TO       40700020
+*                                       INDICATE A ONE SEGMENT RECORD   40800020
+         MVC   SAVELL,DECLNGTH          SET SEGMENT SIZE TO RECORD SIZE 40900020
+         SH    W4,IOBDBYTN              SUBTRACT NOT-LAST-RECORD SIZE   41000020
+*                                       FROM TRACK BALANCE AND          41100020
+         STH   W4,IOBDBYTR              STORE NEW TRACK BALANCE IN THE  41200020
+*                                       CAPACITY RECORD TO BE WRITTEN   41300020
+FINSETUP EQU   *                                                        41400020
+         MVC   IOBDNCRF+SIX(TWO),SAVELL MOVE SEGMENT SIZE TO NEW Y02072 41500002
+*                                       CAPACITY RECORD                 41600020
+         L     W1,IOBSTART              GET CHANNEL PROGRAM START ADDR. 41700020
+         USING WRITEADD,W1              SET UP CHANNEL PROGRAM DSECT    41800020
+         CLI   DCBKEYLE,NULL            ARE KEYS BEING WRITTEN          41900020
+         BE    NOKEYCP                  BR IF NO                        42000020
+         MVC   WAKWD+CNTOFF(TWO),SAVELL MOVE DATA LENGTH TO WRITE CCW   42200020
+AFTERLL  EQU   *                                                        42300020
+         MVC   WANOP1(FIVE),SVCCHHR     PUT CCHHR OF CURRENT LAST BLOCK 42400020
+*                                       IN CCW1                         42500020
+         MVC   IOBDNCRF(FOUR),SVCCHHR   PUT CCHH OF NEW RECORD   Y02072 42600002
+*                                       IN THE NEW COUNT FIELD          42700002
+         MVC   IOBDNCRF+FIVE(ONE),DCBKEYLE PUT KEY LENGTH IN THE COUNT  42800002
+*                                       FIELD                           42900020
+         MVC   IOBSEEK(THREE),SAVEMBB   MOVE MBB TO IOBSEEK             43000020
+         MVC   WASIE1,SAVEMBB           PUT THE MBBCCHH OF THE CAPACITY 43100020
+*                                       RECORD IN CCW2                  43200020
+         MVI   WASIE1+SEVEN,NULL        SET R OF THE CAPACITY RECORD    43300020
+*                                       ADDRESS TO ZERO                 43400020
+         IC    W3,SVCCHHR+FOUR          *                               43500020
+         LA    W3,ONE(W3)               * PUT ID OF NEW RECORD IN THE   43600002
+         STC   W3,IOBDNCRF+FOUR         *  NEW COUNT FIELD       Y02072 43700002
+         MVC   IOBCC(FIVE),IOBDNCRF     PUT CCHHR OF NEW LST BLK Y02072 43800002
+*                                       IN NEW CAPACITY RECORD          43900002
+         MVC   SWABDW(TWO),SAVELL       PUT DATA LENGTH IN THE BLOCK    44000020
+*                                       RESCRIPTOR WORD                 44100020
+         MVI   SEGUNUSD,NULL            ZERO BYTE AFTER FLAGS           44200020
+         LA    W1,WANOP2                SET NEW CHANNEL PROGRAM START   44300020
+         ST    W1,IOBSTART              POINTER                         44400020
+         OI    IOBSTAT1,IOBADDVU        INDICATE THAT REC FIT    Y02072 44500002
+         XC    SWABDW+TWO(TWO),SWABDW+TWO ZERO THE LAST TWO BYTES OF    44600020
+*                                       THE BLOCK DESCRIPTOR WORD       44700020
+         MVC   SWARAPT+ONE(THREE),DECAREA+ONE  MOVE THE RECORD AREA     44800020
+*                                       POINTER TO THE SWA              44900020
+         LH    W1,SWABDW                *                               45000020
+         SH    W1,H4                     * SET SEGMENT DESCRIPTOR TO    45100020
+         STH   W1,SEGLL                 *  FOUR LESS THAN THE BDW       45200020
+         SH    W1,H4                    SUBTRACT 4 AND THIS IS THE      45300020
+*                                       NUMBER OF BYTES TO MOVE TO THE  45400020
+*                                       SEGMENT AREA.                   45500020
+         LA    W2,SEGDATA               *                               45600020
+         L     W3,SWARAPT                * SET UP TO AND FROM ADDRESSES 45700020
+         LA    W3,EIGHT(W3)             *  FOR THE MOVE                 45800020
+MOVE     SH    W1,H256                  IF SIZE IS GREATER OR EQUAL TO  45900020
+         BH    MOVE256                  256, GO MOVE 256 BYTES          46000020
+         AH    W1,H255                  ELSE,                           46100020
+         EX    W1,AMOVE                 MOVE REMAINING NBR OF BYTES     46200002
+*                                                                       46300020
+*   MOVE COMPLETED                                                      46400020
+*                                                                       46500020
+         MVC   SWABFINC,SWABDW          PUT DATA LENGTH IN THE BUFFER   46600020
+*                                       INCREMENT FIELD                 46700020
+*                                                                       46750002
+*  ISSUE EXCP TO EITHER WRITE OUT A SEGMENT OR READ IN A NEW REC ZERO   46760002
+*                                                                       46770002
+EXCP     EQU   *                                                        46800020
+         LR    DEQRTN,PARAM             SET UP IOB POINTER              46810020
+         L     W2,IOBECBPT              SAVE ECB ADDRESS         Y02072 46860002
+         LA    W1,IOBCSW+3              RIGHT HALF OF CSW IS     YM3709 46910002
+         ST    W1,IOBECBPT              DUMMY ECB FOR THIS EXCP  YM3709 46960002
+         ST    W2,IOBDQPTR              SAVE ECB POINTER IN IOB  Y02072 46970002
+*                                       THE ECB WILL BE RESTORED Y02072 46980002
+*                                       TO THE IOBECBPT BY THE   Y02072 46990002
+*                                       CEA OR EOE APPENDAGE     Y02072 46992002
+         EXCP  (1)                                                      47000020
+*                                                                       47050002
+*                                                                       47100002
+*                                                                       47150002
+TSTIFDON LR    W1,PARAM                 GET IOB ADDRESS                 47200020
+         DROP  PARAM                    DROP MAIN IOB REG BASE   Y02072 47250002
+         SH    W1,H8                    POINT TO IOB PREFIX             47300020
+         USING IOBBDAM,W1               SET UP IOB PREF BASE     Y02072 47350002
+         TM    IOBDEQIN,IOBDEQ          DID THIS IOB GET CONTROL Y02072 47400002
+*                                       FROM ONE WHICH WAS BEING DEQ'ED 47500002
+         BZ    EXIT                     EXIT IF NOT                     47600020
+         NI    IOBDEQIN,X'FF'-IOBDEQ    TURN OFF DEQ IN PROC   @ZA12909 47700000
+         L     PARAM,IOBDQADA           ELSE, ESTABLISH THE IOB  Y02072 47800000
+*                                       BEING DEQ'ED AS THE CURRENT     47900000
+         DROP  W1                       DROP NEXT IOB BASE       Y02072 48050002
+         USING IOBSTDRD,PARAM           REEST CURRENT IOB BASE   Y02072 48100002
+         B     CONTDEQ                  RESUME PROCESSING IN THE DEQ    48600020
+*                                       ROUTINE                         48700020
+NOFIT    EQU   *                                                        48800020
+         SR    W3,W3                                                    48900020
+         LH    W3,IOBDBYTN+TWO          GET SIZE REQUIRED AS LAST RCD.  49000020
+         SR    W3,W4                    SUBTRACT TRACK BALANCE          49100020
+         LA    W3,EIGHT(W3)             ALLOW FOR DESCRIPTORS           49200020
+*   W3 NOW CONTAINS THE NUMBER OF BYTES WHICH CANNOT FIT ON THE TRACK   49300020
+*                                                                       49400020
+         LH    W4,DECLNGTH              GET ACTUAL DATA LENGTH          49500020
+         SR    W4,W3                    THE RESULT IN W4 IS THE NUMBER  49600020
+*                                       OF DATA BYTES WHICH COULD BE    49700020
+*                                       WRITTEN                         49800020
+         BP    WRTSOME                  BRANCH IF RESULT IS GREATER     49900020
+*                                       THAN ZERO, THERE'S MORE TO WRT  50000002
+*                                                                       50100020
+*   IF THIS POINT IS REACHED, THE TRACK DOES NOT CONTAIN ENOUGH ROOM    50200020
+*   TO WRITE A RECORD WHOSE DATA PORTION IS NONE BYTES, SO THE TRACK    50300020
+*   WILL BE RELEASED AND THE SEARCH STARTED AGAIN ON THE NEXT TRACK.    50400020
+*                                                                       50500020
+TRKFULL  EQU   *                                                        50510020
+         BAL   DEQRTN,ACA1              GO DEQ THIS TRACK               50600020
+         XC    IOBDBYTR,IOBDBYTR        ZERO THE BYTE TOTAL             50700020
+         MVI   TRKCNT,NULL              SET TRACK COUNT TO ZERO         50800020
+         TM    IOBDTYPE,IOBEXTSC        IS EXTENDED SEARCH REQ   Y02072 50900002
+         BO    AAE5                     BR IF YES                       51000020
+SETNOSPA MVI   IOBSTAT2,NOSPA           SET NO SPACE EXCEPTION   Y02072 51100002
+         B     AAF2                     TERMINATE THE REQUEST           51200020
+WRTSOME  EQU   *                                                        51300020
+         LA    W4,EIGHT(W4)             ADD 8 FOR DESCRIPTORS           51400020
+         STH   W4,IOBDBYTR              STORE THE DATA LENGTH IN THE    51500020
+         STH   W4,SAVELL+ONE            BYTE TOTAL AND FIRST SEG SIZE   51600020
+         MVC   SAVELL,SAVELL+ONE                                        51700020
+AAE5     EQU   *                                                        51800020
+         L     SF1BASE,VCONKY           GO TO EXTENDED SRCH MOD  Y02072 51900002
+         BALR  RETREG,SF1BASE           GET NEXT TRACK ADDRESS          52000020
+         B     OKRTN                    IF THE RETURN IS TO THIS INSTR, 52100020
+*                                       IF WAS A NORMAL RETURN.         52200020
+         OI    IOBSTAT2,NOSPA           ELSE, A RETURN TO THIS   Y02072 52300002
+*                                       INDICATOR SEARCH LIMIT REACHED. 52400020
+*                                       SO SET NO SPACE INDICATOR FOR   52500020
+*                                       LATER TESTING                   52600020
+OKRTN    EQU   *                                                        52700020
+         LR    W1,PARAM                 *                               52720020
+         SH    W1,H4                     * RESTORE SWA POINTER          52740020
+         L     SWAPTR,NULL(W1)          *                               52760020
+         CLI   TRKCNT,NULL              IF TRACK COUNT IS ZERO, DON'T   52800020
+         BE    TRKOK                    WORRY WHERE THE NEW TRACK IS    52900020
+         L     W1,DCBDEBAD              GET DEB ADDRESS                 53000020
+         LA    W1,DEBBASE(W1)           POINT TO DEVICE SECTION         53100020
+         CLI   IOBM,NULL                IS THIS TRACK IN THE 1ST Y02072 53200002
+*                                       EXTENT                          53300020
+         BNE   VOLTST                   BR IF NOT                       53400020
+         CLC   IOBCC(FOUR),SIX(W1)      IF THE NEW TRACK IS 1ST  Y02072 53500002
+         BE    REINIT                   TRACK IN THE FIRST EXTENT, WE   53600020
+*                                       HAVE JUST WRAPPED AROUND AND    53700020
+*                                       MUST START THE SEARCH AGAIN     53800020
+VOLTST   EQU   *                                                        53900020
+         SR    W2,W2                                                    54000020
+         SR    W3,W3                                                    54100020
+         IC    W2,IOBM                  GET EXT NBR OF NEW TRK   Y02072 54200002
+         SLL   W2,FOUR                  MULTIPLY BY 16 (EXTENT SIZE)    54300002
+         AR    W2,W1                    ADD ON POINTER TO FIRST EXTENT  54400020
+         IC    W3,SAVEMBB               GET EXTENT NBR OF FIRST TRACK   54500020
+         SLL   W3,FOUR                  MULTIPLY BY 16                  54600020
+         AR    W3,W1                    ADD ON DEB BASE SIZE            54700020
+         CLC   ONE(THREE,W2),ONE(W3)    COMPARE THE UCB ADDRESSES       54800020
+         BNE   REINIT                   IF NOT THE SAME, THE NEW TRACK  54900020
+*                                       IS ON A DIFFERENT VOLUME AND    55000020
+*                                       THE SEARCH MUST START OVER ON   55100020
+*                                       THE NEW VOLUME                  55200020
+TRKOK    EQU   *                                                        55300020
+         NI    IOBSTAT1,X'FF'-IOBENQUE  TURN OFF INDICATION THAT Y02072 55400002
+*                                       TRACK WAS ENQUEUED              55450002
+*                                                                       55460002
+*   ISSUE AN SVC 53 SO THAT IGC0005C CAN ADD THIS TRACK TO THE READX    55470002
+*   LIST AND THE SYSTEM QUEUE OR PUT THIS IOB ON THE UNPOSTED QUEUE     55472002
+*   WAITING FOR CONTROL OF THIS TRACK IF ANOTHER REQUEST HAS CONTROL    55474002
+*   OF IT.  IGC0005C EXPECTS THE IOB TO BE IN REG 1, COMPLEMENTED TO    55476002
+*   DISTINGUISH THIS FROM A RELEX REQUEST.                              55478002
+*                                                                       55494002
+         LCR   R1,PARAM                 PUT IOB COMPLEMENT IN R1 Y02072 55498902
+*                                                                       55499202
+         SVC   53                       GO TO IGC0005C           Y02072 55499602
+*                                                                       55499702
+         B     TSTIFDON                 GO TEST IF DONE                 55800020
+REINIT   EQU   *                                                        55900020
+         TM    IOBSTAT2,NOSPA           IS NOT SPACE INDICATED   Y02072 56000002
+         BO    AAF2                     BR IF YES                       56100020
+         MVC   IOBDNCRF,IOBSEEK         SAVE IOBSEEK             Y02072 56200002
+         BAL   DEQRTN,ACA1              GO DEQ ALL TRACKS BUT LAST      56300020
+         MVC   IOBSEEK,IOBDNCRF         RESTORE                  Y02072 56400002
+         XC    IOBDBYTR,IOBDBYTR        ZERO OUT BYTE TOTAL             56500020
+         B     TRKOK                    GO ENQ CURRENT TRACK            56600020
+NOTFIRST EQU   *                                                        56700020
+         CLI   IOBDNCRF+FOUR,NULL       SEE IF TRK IS EMPTY (IF  Y02072 56800002
+*                                       IT IS, THE LAST BLOCK POINTER   56900020
+*                                       IN THE CAPACITY RECORD IS ZERO) 57000020
+         BNE   NOTEMPTY                 BR IF NOT EMPTY                 57100020
+         IC    W1,TRKCNT                *                               57200020
+         LA    W1,ONE(W1)                * ADD ONE TO TRACK COUNT       57300020
+         STC   W1,TRKCNT                *                               57400020
+         MVC   IOBDNCRF(TWO),IOBDNCRF+FIVE MOVE TRK BAL TO HALF  Y02072 57500002
+*                                       WORD BOUNDARY                   57600002
+         LH    W1,IOBDNCRF              GET TRACK BALANCE        Y02072 57700002
+         SH    W1,H8                    SUBTRACT 8 FOR DESCRIPTORS      57800020
+         AH    W1,IOBDBYTR              ADD TO BYTE TOTAL               57900020
+         STH   W1,IOBDBYTR                                              58000020
+         USING RQE,RQEREG               ESTABLISH RQE BASE       Y02072 58054002
+         L     UCBREG,RQEUCB            LOAD 4 BYTE UCB ADDR     Y02072 58056002
+         DROP  RQEREG                                            Y02072 58058002
+         BAL   W3,GETDVENT              GET DEVICE TABLE ENTRY          58060020
+         CLC   IOBDBYTR,DECLNGTH        DO WE HAVE ENOUGH SPACE YET     58130020
+         BL    AAE5                     BR IF NO                        58200020
+         MVI   SEGFLGS,ONE              SET SEGMENT FLAGS TO 01 TO      58300020
+*                                       INDICATE FIRST SEGMENT OF A     58400020
+*                                       MULTI-SEGMENT RECORD            58500020
+         XC    IOBDBYTR,IOBDBYTR        SET TRACK BALANCE FOR FIRST     58600020
+*                                       SEGMENT TO ZERO                 58700020
+         B     FINSETUP                 GO FINISH SEGMENT SET UP        58800020
+*                                                                       58900020
+NOTEMPTY EQU   *                                                        59000020
+         TM    IOBSTAT2,NOSPA          NO SPACE INDICATION       Y02072 59100002
+         BZ    RETRY                    BR IF NO                        59200020
+         IC    W1,TRKCNT                *                               59300020
+         LA    W1,ONE(W1)                * ADD ONE TO TRACK COUNT       59400020
+         STC   W1,TRKCNT                *                               59500020
+AAF2     EQU   *                                                        59600020
+         OI    IOBSTAT1,IOBABNRM        SET ABNORMAL COMPLETION  Y02072 59700002
+         B     ACB4                     GO DEQ TRACKS USED              59800020
+*                                                                       59900020
+RETRY    EQU   *                                                        60000020
+         MVC   SAVELL(THREE),IOBSEEK    SAVE MBB FROM IOBSEEK           60100020
+         BAL   DEQRTN,ACA1              GO FREE ALL TRACKS BUT LAST     60200020
+         MVC   IOBSEEK(THREE),SAVELL    RESTORE MBB IN IOBSEEK          60300020
+         B     OTHRFRST                 GO START SEARCH ALL OVER        60400020
+ACA1     EQU   *                                                        60500020
+*                                                                       60600020
+*   THE FOLLOWING ROUTINE WILL DEQ THE NUMBER OF TRACKS INDICATED IN    60700020
+*   TRKCNT STARTING WITH THE TRACK WHOSE ADDRESS IS IN SAVEMBB          60800020
+*                                                                       60900020
+         CLI   TRKCNT,NULL              IF TRACK COUNT IS ZERO, RETURN  61000020
+         BCR   EIGHT,DEQRTN             BECAUSE NO TRACKS TO DEQ        61100020
+         ST    DEQRTN,SVDEQRTN          SAVE RETURN ADDRESS             61150020
+         MVC   IOBSEEK,SAVEMBB          MOVE IN FIRST TRACK ADDRESS     61200020
+         NI    IOBSTAT1,X'FF'-IOBADDVU  TURN OFF RECORD FIT BIT  Y02072 61300002
+         OI    IOBSTAT1,IOBENQUE        TURN ON RECORD ENQD BIT  Y02072 61400002
+*                                                                       61550002
+*   ISSUE AN SVC 53 SO THAT IGC0005C CAN REMOVE TRACK FROM THE READX    61560002
+*   LIST AND THE SYSTEM QUEUE, OR GIVE THE TRK TO THE NEXT IOB ON       61562002
+*   THE UNPOSTED QUEUE. (THE ADDRESS OF THE NEXT IOB WILL BE RETURNED   61564002
+*   TO THIS MODULE IN REGISTER 0). IGC0005C EXPECTS THE IOB TO BE IN    61566002
+*   REGISTER 1, COMPLEMENTED TO DISTINGUISH THIS FROM A RELEX REQUEST.  61566402
+*                                                                       61592002
+GOTOLG   EQU   *                        GO DEQ TRACK             Y02072 61592402
+         LCR   R1,PARAM                 PUT IOB COMPLEMENT IN R1 Y02072 61594002
+*                                                                       61598802
+         SVC   53                       GO TO IGC0005C           Y02072 61599202
+*                                                                       61599602
+*                                                                       61649602
+         LTR   W4,R0                    LOAD NEXT IOB PTR IN REG Y02072 61660002
+*                                       DOES ANOTHER IOB WANT THE TRACK 61700002
+         BZ    CONTDEQ                  BR IF NO                        61800020
+         LR    W1,W4                    GET NEW IOB ADDRESS             62000020
+         SH    W1,H8                    GET TO THE IOBPREFIX            62100020
+         DROP  PARAM                    DROP CUR IOB BASE        Y02072 62110002
+         USING IOBBDAM,W1               EST BASE FOR IOB PREF    Y02072 62120002
+         IC    DEQRTN,IOBDEQIN          SAVE TOP BYTE            XM6357 62150002
+         ST    PARAM,IOBDQADA           STORE OLD(CURRENT) IOB   Y02072 62200002
+*                                       IN NEW(NEXT,WAITING) IOB Y02072 62210002
+         STC   DEQRTN,IOBDEQIN          RESTORE TOP BYTE         XM6357 62250002
+         OI    IOBDEQIN,IOBDEQ          INDICATE DEQ INTERRUPTED Y02072 62300002
+         LR    PARAM,W4                 ESTABLISH NEW IOB AS CURRENT    62400020
+         DROP  W1                       DROP NEXT IOB BASE       Y02072 62450002
+         USING IOBSTDRD,PARAM           REEST CURRENT IOB BASE   Y02072 62460002
+         B     EXCP                     GO READ THE CAPACITY RECORD     62500020
+CONTDEQ  EQU   *                                                        62600020
+*                                                                       62606020
+*   RESTORE REGISTERS BEFORE EXIT FROM DEQ ROUTINE                      62612020
+*                                                                       62618020
+         LR    SWAPTR,PARAM             *                               62624020
+         SH    SWAPTR,H8                RESTORE PREFIX POINTER   Y02072 62630002
+         DROP  PARAM                    DROP IOB BASE            Y02072 62632002
+         DROP  SWAPTR                   DROP SWA BASE            Y02072 62632402
+         USING IOBBDAM,SWAPTR           EST IOB PREFIX PTR       Y02072 62634002
+         L     SWAPTR,IOBSWAP           GET SEGMENT WRKAREA ADDR Y02072 62636002
+         DROP  SWAPTR                   DROP IOB PREF PTR        Y02072 62638002
+         USING SWA,SWAPTR               REEST SWA BASE PTR       Y02072 62638402
+         USING IOBSTDRD,PARAM           REEST IOB BASE           Y02072 62640002
+         L     UTIL,IOBECBPT            RESTORE DECB POINTER            62642020
+         L     UCBREG,DCBDEBAD          *                               62648020
+         SR    W2,W2                     *                              62654020
+         IC    W2,IOBM                   * GET UCB ADDRESS              62660002
+         SLL   W2,FOUR                   *                              62666020
+         L     UCBREG,DEBBASE(W2,UCBREG) *                              62672020
+         BAL   W3,GETDVENT              GET POINTER TO DEVICE TABLE     62678020
+         L     DEQRTN,SVDEQRTN          RESTORE RETURN ADDR FROM DEQ    62684020
+*                                                                       62690020
+         IC    W1,TRKCNT                *                               62700020
+         BCTR  W1,NULL                   * SUBTRACT ONE FROM TRACK CNT  62800020
+         STC   W1,TRKCNT                *                               62900020
+         CLI   TRKCNT,NULL              IF TRACK COUNT IS ZERO.         63000020
+         BCR   EIGHT,DEQRTN             RETURN TO CALLING SEQUENCE      63100020
+         L     SF1BASE,FOUR(SFBASE)     GO TO EXTENDED SEARCH MODULE TO 63200020
+         BALR  RETREG,SF1BASE           GET NEXT TRACK ADDRESS          63300020
+         B     GOTOLG                   FOR EITHER RETURN, GO TO THE    63400020
+*                                       EXCLUSIVE CONTROL MODULE TO DEQ 63500002
+*                                       THE NEXT TRACK                  63600020
+ENTRYP12 EQU   *                        3RD ENTRY POINT - FROM ASI      63700002
+MVINFRST EQU   *                                                        63780020
+         MVC   SAVEMBB(EIGHT),IOBCHNPR+EIGHT  MOVE IN MBB AND R0 Y02072 63860002
+*                                       OF FIRST TRACK                  63940002
+         MVC   SVCCHHR(FOUR),IOBCHNPR   MOVE IN CCHH OF 1ST TRK  Y02072 64020002
+ACB4     EQU   *                                                        64100020
+         BAL   DEQRTN,ACA1              GO DEQ ALL TRACKS USED          64200020
+         MVC   IOBSEEK,SAVEMBB          RESTORE IOBSEEK TO FIRST TRACK  64300020
+*                                       ADDRESS IN CASE FEEDBACK IS     64400020
+*                                       REQUESTED                       64500020
+         IC    W1,IOBCHNPR+FOUR                                  Y02072 64510002
+         LA    W1,ONE(W1)                                               64520020
+         STC   W1,IOBR                                           Y02072 64530002
+         LR    W1,PARAM                                                 64600020
+         SH    W1,H8                    POINT W1 TO IOB PREFIX          64700020
+         OI    IOBSTAT1,IOBADDVU        INDICATE RECORD FITS     Y02072 64710002
+         DROP  PARAM                    DROP IOB BASE REG        Y02072 64760002
+*                                                                       64762002
+PREVIOB  EQU   *                        TEST IF THIS IOB         Y02072 64764002
+*                                       INTERRUPTED PREVIOUS IOB Y02072 64766002
+*                                       IN PROCESS OF RELEAS-    Y02072 64768002
+*                                       ING TRACKS               Y02072 64768402
+         USING IOBBDAM,W1               EST BASE FOR IOB PREFIX  Y02072 64770002
+         TM    IOBDEQIN,IOBDEQ          DID IOB GET CONTROL FROM Y02072 64800002
+*                                       ONE WHICH WAS BEING DEQ'ED.     64900020
+         BZ    POSTNDQ                  POST IF NOT                     65000020
+         L     W4,IOBDQADA              SAVE THE IOB'S ADDRESS   Y02072 65200002
+*                                                                       65260002
+* NOTE: REGISTER 6 NOW CONTAINS THE ADDRESS OF THE PREVIOUS IOB WHICH   65270002
+*   WAS IN THE PROCESS OF RELEASING ALL TRACKS FOR WHICH IT NEEDED      65272002
+*   EXCLUSIVE CONTROL TO HONOR ITS REQUEST.  IT WAS INTERRUPTED BY      65274002
+*   AN IOB WAITING FOR ONE OF THE TRACKS IT WAS ATTEMPTING TO RELEASE.  65276002
+*   THIS REGISTER MUST BE SAVED FOR ALL SUBSEQUENT PROCESSING IN        65278002
+*   IGG019KJ, THE ASI+4 ENTRY AND PATH. THE ASI WILL POST THE CURRENT   65278402
+*   IOB AND RETURN TO THIS MODULE (AT THE LABEL SET UP BELOW) TO CON-   65278802
+*   TINUE RELEASING TRACKS FOR THE PREVIOUS OR ORIGINAL IOB.            65279202
+*                                                                       65298002
+         NI    IOBDEQIN,X'FF'-IOBDEQ    TURN OFF DEQ LOOP BIT    Y02072 65300002
+         DROP  W1                       DROP IOB PREFIX BASE     Y02072 65350002
+         USING IOBSTDRD,PARAM           REEST CUR IOB BASE       Y02072 65360002
+         LA    W1,AFTPOSTQ                                              65400020
+         ST    W1,IOBDQPTR              SET RETURN ADDRESS FROM POST    65500020
+GOTOPOST L     FDNBASE,DCBREAD                                          65600020
+         L     FDNBASE,ASIOFF(FDNBASE)  SET UP DESIRED ENTRY TO ASI     65700020
+         LR    EPREG,FDNBASE            PUT ADDR IN 2 REGS              65730020
+         LR    DEQRTN,PARAM             PUT IOB ADDR IN ASI REGISTER    65760020
+         B     FOUR(FDNBASE)            AND BRANCH TO IT                65800020
+*                                                                       65900020
+AFTPOSTQ EQU   *                                                        66000020
+         LR    PARAM,W4                 ESTABLISH IOB WHICH WAS BEING   66100020
+*                                       DEQ'ED                          66200020
+         B     CONTDEQ                  GET INTO DEQ LOOP AGAIN         66400020
+POSTNDQ  EQU   *                                                        66600020
+         LA    W1,EXIT                                                  66700020
+         ST    W1,IOBDQPTR              SET RETURN ADDRESS FROM POST    66800020
+         B     GOTOPOST                 GO POST                         66900020
+NOKEYCP  EQU   *                                                        67000020
+         USING WRITEADD,W1              REESTAB CHAN PGM BASE    Y02072 67050002
+         MVC   WANKWD+CNTOFF(TWO),SAVELL MOVE DATA LENGTH TO WRITE CCW  67100020
+         DROP  W1                       DROP CHAN PGM BASE       Y02072 67150002
+         B     AFTERLL                  GO FINISH THE SET UP            67200020
+*                                                                       67300020
+MOVE256  MVC   NULL(FFF,W2),NULL(W3)    MOVE 256 BYTES                  67400020
+         LA    W2,FFF(W2)               *                               67500020
+         LA    W3,FFF(W3)                * UPDATE MOVE AREA POINTERS    67600020
+         B     MOVE                     *  AND GO SEE IF MORE TO MOVE   67700020
+*                                                                       67800020
+AMOVE    MVC   NULL(NULL,W2),NULL(W3)   - EXECUTED - MOVE LESS THAN 256 67900020
+*                                                                       68000020
+EXIT     EQU   *                                                        68100020
+         SVC   EXITSVC                  EXIT                            68200020
+*                                                                       68300020
+*                                                                       68400020
+*********************************************************************** 68450002
+*                CONSTANTS AND EQUATES                                  68460002
+*********************************************************************** 68500020
+         DS    0F                                                       68550002
+H8       DC    H'8'                     IOB PREFIX SIZE                 68600020
+H4       DC    H'4'                     DESCRIPTOR LENGTHS              68700020
+H256     DC    H'256'                   *                               68800020
+H255     DC    H'255'                    * CONSTANTS USED BY MOVE RTN   68900020
+FFF      EQU   256                      *                               69000020
+DEBBASE  EQU   32                       SIZE OF DEB BASE PORTION        69100020
+RCDNOFIT EQU   X'FD'                    MASK TO TURN OFF RCDFIT BIT     69200020
+DEQIP    EQU   X'80'                    DEQ IN PROCESS INDICATOR        69300020
+DEQIPOFF EQU   X'7F'                    MASK TO TURN DEQIP OFF          69400020
+NOINTRPT DC    X'00'                    DISALLOW ALL INTERRUPTS         69500020
+INTRPTOK DC    X'FF'                    ALLOW ALL INTERRUPTS            69600020
+NOREAD   EQU   X'F7'                                                    69700020
+TBOVHD   EQU   X'08'                    2305 MASK                20201  70030020
+BYTEDEV  EQU   9                                                 20201  70060020
+EXITSVC  EQU   3                        EXIT SVC NO.                    70100020
+DEVSZ    EQU   0                        DEVICE SIZE CCHH                70200020
+TRKLNGTH EQU   4                        TRACK LENGTH                    70300020
+OVERI    EQU   6                        OVERHEAD NOT LAST RECORD        70400020
+OVERL    EQU   7                        OVERHEAD LAST RECORD            70500020
+OVERK    EQU   8                        OVERHEAD KEYED RECORD           70600020
+FLAG     EQU   9                        FLAG                            70700020
+TOLER    EQU   10                       TOLERANCE                       70800020
+*        CCW FLAGS AND COUNT                                            70900020
+         DS    0F                                                       71000020
+LASTFOUR DC    X'0000000F'              CLEARS ALL BUT LOW ORDER 4 BITS 71100020
+ASIOFF   EQU   16                       ASI ADDR SLOT IN FOUNDATION     71200020
+FDBOFF   EQU   4                        FEEDBACK BRANCH IN ASI          71300020
+POOLOFF  EQU   12                       IOB POOL BRANCH IN ASI          71400020
+CFORFLG  EQU   X'08'                    CAUSED FORMAT FLAG              71600020
+CLRFFLAG EQU   X'FE'                                                    71700020
+*        CHANNEL PROGRAM OP-CODES                                       71800020
+SCHID    EQU   X'31'                    SEARCH ID EQUAL                 71900020
+TIC      EQU   X'08'                    TRANSFER IN CHANNEL             72000020
+READD    EQU   X'06'                    READ DATA                       72100020
+WRTD     EQU   X'05'                    WRITE DATA                      72200020
+WRTCKD   EQU   X'1D'                    WRITE COUNT KEY DATA            72300020
+*        CCW FLAGS                                                      72400020
+DCSKFLG  EQU   X'F0'                    CD CC SILI SKIP FLAG BITS       72500020
+DCCC     EQU   X'C0'                    DATA + COMMAND CHAIN            72600020
+SKIP     EQU   X'10'                    SKIP DATA TRANSFER              72700020
+CC       EQU   X'40'                    COMMAND CHAIN                   72800020
+SILI     EQU   X'20'                    SUPPRESS INCORRECT LENGTH       72900020
+CCSI     EQU   X'60'                    COMMAND CHAIN  SUPPRESS LENGTH  73000020
+CNTOFF   EQU   6                        OFFSET TO THE COUNT FIELD IN A  73100020
+*                                       CCW                             73200020
+ONE      EQU   X'1'                                                     73300020
+TWO      EQU   2                                                        73400020
+THREE    EQU   3                                                        73500020
+FOUR     EQU   4                                                        73600020
+FIVE     EQU   X'5'                                                     73700020
+SIX      EQU   6                                                        73800020
+SEVEN    EQU   X'7'                                                     73900020
+NINE     EQU   9                                                        74000020
+TYPCD    EQU   19                       DA TYPE CODE OFFSET IN UCB      74100020
+ABNORM   EQU   X'80'                    ABNORMAL COMPLETION INDICATOR   74200020
+FOR1     EQU   X'02'                    TEST FOR FORMAT 1               74300020
+*              EXCEPTION CODES                                          74400020
+NOREC    EQU   X'80'                                                    74500020
+LGNCK    EQU   X'40'                                                    74600020
+NOSPA    EQU   X'20'                                                    74700020
+INVAL    EQU   X'10'                                                    74800020
+UNCOR    EQU   X'08'                                                    74900020
+ENDOD    EQU   X'04'                                                    75000020
+UNREL    EQU   X'02'                                                    75100020
+*              OPTIONS AND TYPE                                         75200020
+OFLOW    EQU   X'40'                                                    75300020
+EXSCH    EQU   X'20'                                                    75400020
+FEEDB    EQU   X'10'                                                    75500020
+ACTAD    EQU   X'08'                                                    75600020
+DYNBF    EQU   X'04'                                                    75700020
+READX    EQU   X'02'                                                    75800020
+RELRD    EQU   X'01'                                                    75900020
+KEYOP    EQU   X'80'                                                    76000020
+LGNOP    EQU   X'40'                                                    76100020
+READ     EQU   X'08'                                                    76200020
+KEY      EQU   X'04'                                                    76300020
+ADD      EQU   X'02'                                                    76400020
+MODID    DC    C'IGGR19KN'              MODULE NAME            @ZA12909 76480000
+DATE     DC    CL8'&SYSDATE'            DATE COMPILED          @ZA12909 76560000
+FIX      DC    C'OZ12909'               LATEST APAR NR         @ZA12909 76640000
+PATCH    DC    XL((*-IGG019KN)/20)'0'   5% PATCH AREA            Y02072 76750002
+         EJECT                                                          76760002
+*********************************************************************** 76800020
+*                      DSECTS                                           76900002
+*********************************************************************** 76950002
+         DCBD  DSORG=DA                                                 77500020
+         EJECT                                                          77600020
+CVTDEF   DSECT                                                          77700020
+         CVT                                                            77800020
+         EJECT                                                          77900020
+         IECDRQE                                                 Y02072 77950002
+         EJECT                                                          77960002
+*      DATA EVENT CONTROL BLOCK (DECB) DEFINITION                       78000020
+         DS    0F                                                       78100020
+DECBDEF  DSECT                                                          78200020
+DECSDECB DS    CL4            STANDARD EVENT CONTROL BLOCK (ECB)        78300020
+DECTYPE  DS    CL2            TYPE FIELD                                78400020
+DECLNGTH DS    CL2            DATA LENGTH                               78500020
+DECDCBAD DS    CL4            ADDRESS OF DCB                            78600020
+DECAREA  DS    CL4            ADDRESS OF DATA AREA                      78700020
+DECIOBPT DS    CL4            ADDRESS OF THE IOB                        78800020
+DECKYADR DS    CL4            ADDRESS OF KEY                            78900020
+DECRECPT DS    CL4            ADDRESS OF RECORD REFERENCE               79000020
+DECNA    DS    CL4            ADDRESS OF NEXT ADDRESS FEEDBACK AREA     79100020
+         EJECT                                                          79200020
+         IEZIOB                                                  Y02072 79250002
+         EJECT                                                          83800020
+*   THE FOLLOWING DSECT SHOWS THE FORMAT OF THE SEGMENT WORK AREA       83900020
+*                                                                       84000020
+SWA      DSECT                          SEGMENT WORK AREA DSECT         84100020
+SWANXTPT DS    F                        POINTER TO NEXT SWA             84200020
+SWARAPT  DS    F                        POINTER TO THE RECORD AREA      84300020
+SWABFINC DS    CL2                      BUFFER INCREMENT FIELD          84400020
+SWABDW   DS    CL4                      BLOCK DESCRIPTOR WORD           84500020
+SAVEID   EQU   SWABDW+5                 SAVE AREA FOR ID OF LAST SEGMNT 84600020
+SWASDW   DS    0CL4                     SEGMENT DESCRIPTOR WORD         84700020
+SEGLL    DS    H                        SEGMENT LENGTH (LL)             84800020
+SEGFLGS  DS    C                        SEGMENTATION FLAGS              84900020
+SVDEQRTN EQU   SWA+16                   SAVE DEQ RTN RETURN ADDR        84950020
+SEGUNUSD DS    C                        CURRENTLY UNUSED                85000020
+SEGDATA  DS    C                        DATA PORTION OF RECORD          85100020
+*                                                                       85200020
+*                                                                       85300020
+*   WHEN THE SEGMENT WORK AREA IS USED FOR A TEMPORARY WORK SPACE, IT   85400020
+*   HAS THE FOLLOWING USAGE -                                           85500020
+         ORG   SWA                      START AT SWA                    85600020
+SWAWNXTB DS    F                        POINTER TO NEXT SWA (UNCHANGED) 85700020
+TRKCNT   DS    C                        TRACK COUNT (NBR OF TRACKS      85800020
+*                                            USED FOR THE RECORD)       85900020
+SAVEMBB  DS    CL3                      SAVE MBB FROM IOBSEEK           86000020
+SVCCHHR  DS    CL5                      CCHHR OF LAST RECORD ON THE     86100020
+*                                            FIRST TRACK EXAMINED       86200020
+SAVELL   DS    CL2                      LENGTH OF THE FIRST SEGMENT TO  86300020
+*                                            BE FORMED, OR A 3 BYTE     86400020
+         DS    C                             SAVE AREA FOR MBB WHEN A   86500020
+*                                            SEARCH IS TO BE RESTARTED  86600020
+         EJECT                                                          86700020
+*********************************************************************** 86800020
+*                                                                     * 86900020
+*                                                                     * 87000020
+*                       CHANNEL PROGRAM DSECTS                        * 87100020
+*                                                                     * 87200020
+*                                                                     * 87300020
+*********************************************************************** 87400020
+         SPACE 10                                                       87500020
+*                                                                       87600020
+*   ORIGINAL CHANNEL PROGRAM TO WRITE (ADD) A NEW VRE RECORD            87700020
+*                                                                       87800020
+WRITEADD DSECT                                                          87900020
+WANOP1   DS    D                  CCW1  NOP                             88000020
+WASIE1   DS    D                  CCW2  SEARCH ID EQUAL (R0)            88100020
+WATIC1   DS    D                  CCW3  TIC TO CCW2                     88200020
+WARD     DS    D                  CCW4  READ DATA (R0)                  88300020
+WANOP2   DS    D                  CCW5  NOP                             88400020
+WASIE2   DS    D                  CCW6  SEARCH ID EQUAL (R0)            88500020
+WATIC2   DS    D                  CCW7  TIC TO CCW6                     88600020
+WAWDR0   DS    D                  CCW8  UPDATE CAPACITY RECORD          88700020
+WASIE3   DS    D                  CCW9  SEARCH ID EQUAL                 88800020
+WATIC3   DS    D                  CCW10 TIC TO CCW9                     88900020
+WAWCKD1  DS    D                  CCW11 WRITE COUNT                     89000020
+* THE NEXT CCW'S MAY BE PRESENT ONLY IF KEYS ARE TO BE WRITTEN.         89100020
+WAKWK    DS    D                  CCW12 WRITE KEY                       89200020
+WAKWD    DS    D                  CCW13 WRITE DATA                      89300020
+WAKNOP1  DS    D               ** CCW14 NOP                             89400020
+WAKNOP2  DS    D               ** CCW15 NOP                             89500020
+WAKSIE   DS    D               ** CCW16 SEARCH ID EQUAL                 89600020
+WAKTIC   DS    D               ** CCW17 TIC TO CCW16                    89700020
+WAKRKD   DS    D               ** CCW18 READ-KEY-DATA TO DO WRITE CHECK 89800020
+WAKRR0   DS    D               ** CCW19 WRITE CHECK R0                  89900020
+* IF KEYS ARE NOT TO BE WRITTEN, THE FOLLOWING CCW'S ARE USED           90000020
+WANK     EQU   WAKWK-WRITEADD                                           90100020
+         ORG   WRITEADD+WANK      ORG BACK TO CCW12                     90200020
+WANKWD   DS    D                  CCW12 WRITE DATA                      90300020
+WANKNOP1 DS    D               ** CCW13 NOP                             90400020
+WANKNOP2 DS    D               ** CCW14 NOP                             90500020
+WANKSIE  DS    D               ** CCW15 SEARCH ID EQUAL                 90600020
+WANKTIC  DS    D               ** CCW16 TIC TO CCW15                    90700020
+WANKRKD  DS    D               ** CCW17 READ-KEY-DATA TO DO WRITE CHECK 90800020
+WANKRR0  DS    D               ** CCW18 WRITE CHECK R0                  90900020
+*                                                                       91000020
+*                              ** THESE CCW'S ARE INCLUDED ONLY IF      91100020
+*                                 WRITE CHECK IS REQUESTED.             91200020
+         SPACE 3                                                        91300020
+*                                                                       91400020
+*   CHANNEL PROGRAM FOR WRITE ADD AFTER WRITING THE FIRST SEGMENT       91500020
+*                                                                       91600020
+WRITADD1 DSECT                                                          91700020
+WA1NOP1  DS    D                  CCW1  NOP                             91800020
+WA1SIE   DS    D                  CCW2  SEARCH ID EQUAL (R0)            91900020
+WA1TIC   DS    D                  CCW3  TIC TO CCW2                     92000020
+WA1WC    DS    D                  CCW4  WRITE COUNT                     92070020
+WA1WD    DS    D                  CCW5  WRITE DATA                      92140020
+WA1SIE2  DS    D                  CCW6  SEARCH ID EQUAL (R0)            92210020
+WA1TIC2  DS    D                  CCW7  TIC TO CCW6                     92280020
+WA1WCR   DS    D                  CCW8  UPDATE CAPACITY RECORD          92350020
+WA1NOP2  DS    D               ** CCW9  NOP                             92420020
+WA1RR0   DS    D               ** CCW10 READ R0 FOR WRITE CHECK         92490020
+WA1RD    DS    D               ** CCW11 READ DATA FOR WRITE CHECK       92560020
+*                                                                       92700020
+*                              ** THESE CCW'S ARE INCLUDED WHEN WRITE   92800020
+*                                 CHECK IS REQUESTED.                   92900020
+         END                                                            93000020

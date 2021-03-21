@@ -1,0 +1,619 @@
+         TITLE 'IEECVFTM -- STATUS DISPLAY INTERFACE 2'                 00100000
+IEECVFTM CSECT                                                          00200000
+*D 286100                                                     ME YM3335 00300000
+         SPACE 2                                                        00600000
+* THIS ROUTINE WAS CREATED FOR STATUS DISPLAY SUPPORT, LINE ITEM 21002, 00700000
+*    OS RELEASE 21                                                      00800000
+         SPACE 2                                                        00900000
+*                                                                       01000000
+* STATUS -- CHANGE LEVEL 0                                              01100000
+*                                                                       01130000
+* APARS FIXED --- ZA14992                                               01160000
+*                                                                       01200000
+* FUNCTION -- CONTROL MODULE FOR OUTPUT OF OUT OF LINE DISPLAYS         01300000
+*    1) FINDS OUT OF LINE MULTIPLE LINE WRITE TO OPERATORS ON           01400000
+*    CONSOLE OUTPUT QUEUE                                               01500000
+*    2) INITIALIZES SCREEN AREA CONTROL BLOCKS (SACB'S)                 01600000
+*    3) ROUTES CONTROL TO THE APPROPRIATE INTERFACE MODULE              01700000
+*    TO SET UP FOR OUTPUT OF THE DISPLAY                                01800000
+*                                                                       01900000
+* ENTRY POINT -- IEECVFTM                                               02000000
+*                                                                       02100000
+* INPUT                                                                 02200000
+*    1) REGISTER 1 - POINTER TO CXSA                                    02300000
+*                                                                       02400000
+* OUTPUT                                                                02500000
+*    1) REGISTER 1 - POINTER TO CXSA                                    02600000
+*    2) REGISTER 7 - POINTER TO SACB (ONLY ON EXIT TO                   02700000
+*    INTERFACE 4 OR 6)                                                  02800000
+*                                                                       02900000
+* EXTERNAL REFERENCES -- TIME                                           03000000
+*                                                                       03100000
+* EXITS,NORMAL                                                          03200000
+*    1) IEECVFTO - INTERFACE 4 TO OUTPUT 3 LINES OF A DISPLAY           03300000
+*    WHICH OVERLAYS MESSAGES                                            03400000
+*    2) IEECVFTQ - INTERFACE 6 TO OUTPUT AS MUCH OF THE DISPLAY         03500000
+*    AS POSSIBLE WHEN THE DISPLAY WILL NOT OVERLAY MESSAGES             03600000
+*    3) IEECVET1 - PROCESSOR 1 WHEN THERE ARE NO MORE OUT OF            03700000
+*    LINE MESSAGES TO BE OUTPUT                                         03800000
+*    4) IEECVFTP - INTERFACE 5 WHEN BLANKING OF MESSAGES BELOW          03900000
+*    A DISPLAY IS REQUIRED                                              04000000
+*                                                                       04100000
+* EXITS,ERROR -- NONE                                                   04200000
+*                                                                       04300000
+* TABLES/WORK AREAS                                                     04400000
+*    1) UNIT CONTROL MODULE (UCM)                                       04500000
+*    2) TRANSIENT PORTION OF THE DISPLAY CONTROL MODULE (DCM)           04600000
+*    3) RESIDENT PORTION OF THE DISPLAY CONTROL MODULE                  04700000
+*    (INCLUDING SCREEN AREA CONTROL BLOCKS - SACB'S)                    04800000
+*                                                                       04900000
+* ATTRIBUTES -- REFRESHABLE, PRIVILEGED, TYPE 4 SVC                     05000000
+*    DISABLED WHEN DECREMENTING USE COUNTS OF MINOR WQE'S               05100000
+*                                                                       05200000
+* CHARACTER CODE DEPENDENCY -- THE OPERATION OF THIS MODULE DOES        05300000
+*    NOT DEPEND ON A PARTICULAR INTERNAL REPRESENTATION OF THE          05400000
+*    EXTERNAL CHARACTER SET                                             05500000
+*                                                                       05600000
+         EJECT                                                          05700000
+* REGISTER USAGE                                                        05800000
+X1PARM   EQU   1                                                        05900000
+XERTRN   EQU   14                                                       06000000
+XFBRANCH EQU   15                                                       06100000
+R0       EQU   0                   REG 0                                06200000
+R1       EQU   1                   PARAMETER REGISTER                   06300000
+WORKR    EQU   2                   WORK REG                             06400000
+WORK1    EQU   3                   WORK REG                             06500000
+EVEN     EQU   4                   WORK REG                             06600000
+ODD      EQU   5                   WORK REG                             06700000
+RDCMBASE EQU   6                   RESIDENT PORTION OF DCM BASE         06800000
+SACBBASE EQU   7                   SCREEN AREA CONTROL BLOCK BASE       06900000
+TDCMBASE EQU   8                   TRANSIENT PORTION OF DCM BASE        07000000
+OUTQREG  EQU   9                   POINTER TO CONSOLE OUTPUT           X07100000
+                                        QUEUE ENTRY                     07200000
+UCMEBASE EQU   10                  UCM ENTRY BASE                       07300000
+WQEBASE  EQU   11                  WQE BASE                             07400000
+MYBASE   EQU   12                  BASE REGISTER FOR THIS MODULE        07500000
+CXSABASE EQU   13                  CXSA BASE                            07600000
+RETURNR  EQU   14                  RETURN REGISTER                      07700000
+LINKR    EQU   14                  FIRST LEVEL LINK REG                 07800000
+LINK1    EQU   15                  SECOND LEVEL LINK REGISTER           07900000
+R15      EQU   15                                                       08000000
+         EJECT                                                          08100000
+* ESTABLISH ADDRESSABILITY                                              08200000
+         SPACE 2                                                        08400000
+         BALR  MYBASE,0                                                 08500000
+         USING *,MYBASE            BASE THIS MODULE                     08600000
+         B     BEGIN                                                    08700000
+         DC    CL8'IEECVFTM'         MODULE NAME                        08800000
+         DC    CL8'&SYSDATE',CL56' '    DATE AND PATCH AREA             08900000
+BEGIN    EQU   *                                                        09000000
+         LR    CXSABASE,R1         GET CXSA ADDRESS                     09100000
+         USING CXSA,CXSABASE       BASE CXSA                            09200000
+         L     UCMEBASE,CSAUCM     GET ADDRESS OF UCM ENTRY             09300000
+         USING UCMLIST,UCMEBASE    BASE UCM ENTRY                       09400000
+         L     RDCMBASE,UCMXB      GET ADDRESS OF RESIDENT DCM          09500000
+         USING DCMTSRT,RDCMBASE      BASE RESIDENT DCM                  09600000
+         L     TDCMBASE,E0(RDCMBASE) GET ADDRESS OF TRANSIENT DCM       09700000
+         USING DCMSTRT,TDCMBASE      BASE TRANSIENT DCM                 09800000
+         USING DCMACB,SACBBASE     BASE SACB                            09900000
+         USING WMJM,WQEBASE        BASE WQE'S                           10000000
+         MVC   DCMTRACE(DCMTRLEN),DCMTRAC2 SHIFT OLD TRACE ENTRIES      10100000
+         MVI   DCMTREN1,ID1        PUT CSECT ID INTO                    10200000
+         MVI   DCMTREN2,ID2        NEW TRACE ENTRY                      10300000
+         L     XFBRANCH,CSAXB      ADDRESS GETLOCK SUBROUTINE           10400000
+         LR    X1PARM,CXSABASE     PASS CXSA ADDRESS IN REG 1           10500000
+         BALR  XERTRN,XFBRANCH     OBTAIN LOCKS                         10600000
+         SPACE 3                                                        10700000
+* INITIALIZATION                                                        10800000
+         SPACE 2                                                        10900000
+         EJECT                                                          11000000
+*     THE CONSOLE OUTPUT QUEUE IS SEARCHED FOR ANY WQE'S WHICH          11100000
+* MAY BE WRITTEN OUT OF LINE.  IN ORDER TO BE PUT OUT OF LINE A         11200000
+* WQE MUST:                                                             11300000
+*     1) BE AN MLWTO                                                    11400000
+*     2) HAVE BOTH DESCRIPTOR CODES 8 AND 9                             11500000
+*     3) CONTAIN A VALID OUT OF LINE DISPLAY AREA ID                    11600000
+*     4) NOT BE FOR HARDCPY                                             11700000
+*     5) BE EXPECTED (DISPLAY COMING FLAG SET IN SACB)                  11800000
+* ANY WQE'S WHICH ARE TO BE PUT IN AN AREA WITH A FRAME FULL            11900000
+* CONDITION ARE IGNORED.                                                12000000
+         SPACE 2                                                        12100000
+CONSOUTQ EQU   *                                                        12200000
+         L     OUTQREG,UCMOUTQ     GET CONSOLE OUTPUT Q POINTER         12400000
+         USING CQE,OUTQREG         CQE ADDRESSABILITY         MB Y02958 12500000
+         LTR   OUTQREG,OUTQREG     Q. ANY ON QUEUE                      12600000
+         BZ    ENDOFQ              NO, BRANCH TO HANDLE END OF Q        12700000
+TESTLAST EQU   *                                                        12800000
+         TM    CQEFLAG,CQEENTR     ENTRY EXIST HERE                     12900000
+         BO    ENTRYFND            YES, BRANCH TO LOOK AT ENTRY         13000000
+         TM    CQEFLAG,CQEEOB      END OF CQE BLOCK                     13100000
+         BO    EOB                 YES, BRANCH TO GET NEXT BLOCK        13200000
+NXTENTRY EQU   *                                                        13300000
+         TM    CQEFLAG,CQEEOQ      END OF CQES                MB Y02958 13500000
+         BO    ENDOFQ              YES, BRANCH TO HANDLE Q END          13600000
+         LA    OUTQREG,E4(OUTQREG) LOOK AT NEXT ENTRY                   13700000
+         B     TESTLAST            CHECK FOR LAST ENTRY                 13800000
+         SPACE                                                          13900000
+EOB      EQU   *                                                        14000000
+         L     OUTQREG,CQEWQE      GET POINTER TO NEXT BLOCK            14100000
+         B     TESTLAST            TEST NEXT CONSOLE Q ENTRY            14200000
+         SPACE 2                                                        14300000
+ENDOFQ   EQU   *                                                        14400000
+         NI    UCMSDS5,XFF-UCMSDS5C  TURN OFF OUT OF LINE              X14600000
+                                        OUTPUT PENDING FLAG             14700000
+         TM    DCMCOM2,DCMCBLNK    Q. BLANKING TO BE CHECKED            14900000
+         BO    INT7EXIT            YES, EXIT TO INTERFACE 7             15000000
+         B     PROC1EXT            NO, EXIT TO PROCESSOR 1              15100000
+         EJECT                                                          15200000
+ENTRYFND EQU   *                                                        15300000
+         LA    OUTQREG,E0(OUTQREG) CLEAR HIGH ORDER BYTE                15400000
+         TM    CQEFLAG,CQEMAJOR    ENTRY FOR MLWTO            MB Y02958 15600000
+         BNO   NXTENTRY            NO. IGNORE                           15700000
+         L     WQEBASE,CQEWQE      GET POINTER TO MAJOR WQE   MB Y02958 15900000
+         LA    WQEBASE,E0(WQEBASE) CLEAR HIGH ORDER BYTE                16000000
+         TM    WMJMDSP,WMJMDSPG    PROCESSING TEMP SUSPENDED   @ZA14992 16030000
+         BO    ENDOFQ              YES, DON'T PROCESS THIS MSG @ZA14992 16060000
+         TM    WMJMCS1,WMJMCS1A    Q. ROUTING OR DESCRIPTOR            X16100000
+                                        CODES PRESENT                   16200000
+         BNO   NXTENTRY            NO. IGNORE                           16300000
+         TM    WMJMDEC,WMJMDECH    Q. DESCRIPTOR CODE 8 - OUT          X16400000
+                                        OF LINE CANDIDATE     MB Y02958 16500000
+         BNO   NXTENTRY            NO. IGNORE                           16600000
+         TM    WMJMDEC2,WMJMDECI   Q. DESCRIPTOR CODE 9 - INFO         X16700000
+                                        REQUESTED BY DISPLAY OR        X16800000
+                                        TRACK                 MB Y02958 16900000
+         BNO   NXTENTRY            NO. IGNORE                           17000000
+         CLI   WMJMAREA,Z          Q. AREA ID Z FOR MSG STREAM          17200000
+         BE    NXTENTRY            YES. IGNORE                          17300000
+         SPACE                                                          17400000
+*    CHECK TO SEE IF WQE IS WAITING BEHIND A FRAME FULL CONDITION       17500000
+*      (THIS ALGORITHM MANIPULATES THE CONSOLE ID TO FIND THE           17600000
+*      CORRESPONDING BIT POSITION IN THE DOUBLE WORD FRAME FULL         17700000
+*      FIELD)                                                           17800000
+         SR    WORK1,WORK1         CLEAR REG                            18000000
+         IC    WORK1,UCMID         GET CONSOLE ID                       18100000
+         BCTR  WORK1,E0            REDUCE FOR ALGORITHM                 18200000
+         SR    WORKR,WORKR         CLEAR REG                            18300000
+         LA    ODD,E8              GET DIVISOR                          18400000
+         DR    WORKR,ODD           DIVIDE ID                            18500000
+*                                  WORKR IS BIT IN BYTE                 18600000
+*                                  WORK1 IS BYTE IN FIELD               18700000
+         LA    EVEN,E1             GET BIT                              18800000
+         SRDL  EVEN,E25(WORKR)     CREATE MASK                          18900000
+         LA    EVEN,WMJMCONS(WORK1) POINT TO FRAME FULL BITS  MB Y02958 19000000
+         EX    ODD,CHKFF           CHECK IF FRAME FULL BIT IS ON        19100000
+         BO    NXTENTRY            IF ON, GET NEXT WQE                  19200000
+GETSACB  EQU   *                                                        19300000
+         OI    WMJMBUF,WMJMBUFC   FLAG AS READY FOR HARDCOPY MB Y02958  19500000
+         SR    R1,R1               CLEAR REG                            19600000
+         IC    R1,WMJMAREA         GET SPECIFIED AREA ID                19700000
+         BAL   LINKR,FINDSACB      FIND SACB FOR AREA                   19800000
+         LTR   SACBBASE,SACBBASE   Q. SACB FOUND                        19900000
+         BZ    NOAREA              NO. BRANCH TO PUT INLINE             20000000
+AREAFND  EQU   *                                                        20100000
+         TM    DCMAFLG1,DCMADISP   Q. DISPLAY ALREADY IN AREA           20300000
+         BNO   NEWDISP             NO. BRANCH TO PUT DISPLAY IN         20400000
+         TM    DCMAFLG2,DCMARCON   Q. REWRITE CONTROL LINE              20600000
+         BO    INT4EXIT            YES, XCTL TO INTERFACE 4             20700000
+         TM    DCMAFLG1,DCMABL     Q. BLANK REST OF AREA                20900000
+         BO    TSTMTHD             YES, BRANCH TO TEST FOR             X21000000
+                                        METHOD OF OUTPUT                21100000
+         TM    DCMAFLG1,DCMADEND   IS END OF OLD DISPLAY ON            X21300000
+                                        SCREEN                          21400000
+         BO    OVLYDISP            YES. OVERLAY OLD DISPLAY             21500000
+         C     OUTQREG,DCMAMJWQ    Q. DISPLAY IN AREA SAME AS          X21600000
+                                        ONE ON Q                        21700000
+         BNE   OVLYDISP            NO. BRANCH TO OVERLAY THE OLD       X21800000
+                                        DISPLAY                         21900000
+         SPACE 2                                                        22000000
+* FIND NEXT MINOR TO BE WRITTEN, IF ANY                                 22100000
+         DROP  WQEBASE                                                  22300000
+         USING WMNM,WQEBASE         BASE WQE                            22400000
+         BAL   LINKR,FINDNEXT      GET POINTER TO NEXT MINOR            22500000
+         LA    WQEBASE,E0(WQEBASE) CLEAR HIGH ORDER BYTE                22600000
+         LTR   WQEBASE,WQEBASE     ANY MINORS TO BE WRITTEN             22800000
+         BZ    NXTENTRY            NO, GET NEXT CONSOLE Q ENTRY         22900000
+         ST    WQEBASE,DCMAMIN     SAVE MINOR POINTER         MF  M1694 23000000
+         CLI   WMNMLT1,E0          LINE TYPE FLAGS ZERO       MB Y02958 23100000
+         BE    NXTENTRY            YES, MINOR IS NOT FULLY    MF       X23200000
+                                        BUILT YET - GET NEXT  MF       X23300000
+                                        CONSOLE Q ENTRY       MF        23400000
+         B     TSTMTHD             BRANCH TO TEST FOR OUTPUT           X23500000
+                                        METHOD                          23600000
+         DROP  WQEBASE                                                  23700000
+         USING WMJM,WQEBASE         BASE WQE                            23800000
+         SPACE 3                                                        23900000
+NOAREA   EQU   *                                                        24000000
+* THIS CONDITION SHOULD NEVER HAPPEN.  IF IT DOES, SOMEONE IS           24100000
+* PROBABLY TRYING TO PUT SOMETHING BESIDES A STATUS DISPLAY             24200000
+* OUT OF LINE. THIS CODE PURGES SUCH A REQUEST FROM THE CONSOLE Q.      24300000
+         LR    EVEN,WQEBASE        POINT TO MAJOR FOR SUBRTN  MH Y02134 24500000
+         DROP  WQEBASE             DROP ADDRESABILITY         MH Y02134 24600000
+         USING WQE,EVEN            BASE MAJOR                 MH Y02134 24700000
+         L     WQEBASE,WMJMMIN     POINT TO FIRST MINOR       MH Y02134 24800000
+         BAL   WORK1,FREEWQE       FREE UP THIS DISPLAY       MH Y02134 24900000
+         DROP  EVEN                DROP ADDRESABILITY         MH Y02134 25000000
+         USING WQE,WQEBASE         ESTABLISH ADDRESABILITY    MH Y02134 25100000
+         B     NXTENTRY            GET NEXT Q ENTRY           MH Y02134 25200000
+         EJECT                                                          25300000
+*********************************************************************** 25400000
+*                                                                     * 25500000
+* FIND NEXT MINOR TO BE WRITTEN                                       * 25600000
+*    FROM THE POINTER SAVED IN THE SACB, DETERMINE THE ADDRESS        * 25700000
+* OF THE NEXT MINOR TO BE WRITTEN, IF THERE IS ONE                    * 25800000
+*    INPUT - OUTQREG - POINTER TO CONSOLE QUEUE ENTRY                 * 25900000
+*            SACBBASE - SACB POINTER                                  * 26000000
+*    OUTPUT - WQEBASE - POINTER TO NEXT MINOR TO BE WRITTEN, OR       * 26100000
+*                   ZERO IF NO MORE ON QUEUE                          * 26200000
+*    REGISTER USAGE - WQEBASE - OUTPUT                                * 26300000
+*              LINKR - LINK REGISTER                                  * 26400000
+*                                                                     * 26500000
+*********************************************************************** 26600000
+         SPACE 2                                                        26700000
+FINDNEXT EQU   *                                                        26800000
+         TM    CQEFLAG,CQEATTOP    SHOULD MINOR SEARCH BEGIN           X27200000
+                                   AT TOP OF CHAIN            MB Y02958 27300000
+         BO    MINPTR0             YES, BRANCH TO GET FIRST MINOR       27400000
+         L     WQEBASE,DCMAMIN     GET MINOR POINTER SAVED              27600000
+         TM    DCMAFLG2,DCMALMIN   Q. LAST MINOR OUTPUT SAVED           27900000
+         BO    GETNEXT             YES, BRANCH TO GET NEXT MINOR        28000000
+         LTR   WQEBASE,WQEBASE     Q. ZERO POINTER SAVED                28200000
+         BZ    MINPTR0             YES, BRANCH TO HANDLE                28300000
+         BR    LINKR               RETURN WITH POINTER SAVED           X28500000
+                                        TO NEXT MINOR                   28600000
+         SPACE                                                          28700000
+MINPTR0  EQU   *                                                        28800000
+         L     WQEBASE,CQEWQE      GET POINTER TO MAJOR                 28900000
+         TM    WMJMMLW,WMJMMLWH    Q. NULL MINOR ON QUEUE               29100000
+         BNO   GETFIRST            NO, GET POINTER TO FIRST            X29200000
+                                        MINOR                           29300000
+         SR    WQEBASE,WQEBASE     INDICATE NO MINOR WAITING           X29400000
+                                        TO BE OUTPUT                    29500000
+         BR    LINKR               RETURN                               29600000
+         SPACE                                                          29700000
+GETFIRST EQU   *                                                        29800000
+         L     WQEBASE,CQEWQE      GET POINTER TO MAJOR                 30000000
+         L     WQEBASE,WMJMMIN     GET POINTER TO FIRST MINOR           30100000
+         NI    CQEFLAG,XFF-CQEATTOP TURN OFF START AT TOP     MB Y02958 30200000
+         NI    DCMAFLG2,XFF-DCMALMIN  TURN OFF LAST MINOR FLAG          30300000
+         XC    DCMAMIN(E4),DCMAMIN    CLEAR MINWQE SACB PTR    @ZA14992 30350000
+         BR    LINKR               RETURN                               30400000
+         SPACE                                                          30500000
+GETNEXT  EQU   *                                                        30600000
+* CHECK TO SEE IF LAST MINOR OUTPUT IS STILL ON QUEUE                   30700000
+         L     WQEBASE,CQEWQE      GET POINTER TO MAJOR       MB Y02958 31000000
+         L     WQEBASE,WMJMMIN     GET POINTER TO FIRST MINOR           31100000
+LOOKNEXT EQU   *                                                        31200000
+         LA    WQEBASE,E0(WQEBASE) CLEAR HIGH ORDER BYTE                31300000
+         LTR   WQEBASE,WQEBASE     END OF MINOR QUEUE                   31400000
+         BNZ   CHKEQ               NO, BRANCH TO SEE IF EQUAL TO       X31500000
+                                        LAST OUTPUT                     31600000
+         B     GETFIRST            GET POINTER TO FIRST                X31700000
+                                        MINOR ON QUEUE SINCE            31800000
+*                                       LAST MINOR OUTPUT IS NO        X31900000
+                                        LONGER ON QUEUE                 32000000
+CHKEQ    EQU   *                                                        32100000
+         C     WQEBASE,DCMAMIN     MINOR POINTER EQUAL TO              X32200000
+                                        POINTER TO LAST MINOR          X32300000
+                                        OUTPUT                          32400000
+         BE    LASTONQ             YES. LAST OUTPUT IS ON QUEUE         32500000
+         DROP  WQEBASE                                                  32600000
+         USING WMNM,WQEBASE         BASE WQE                            32700000
+         L     WQEBASE,WMNMNX1-E1  NO. LOOK AT                          32800000
+         B     LOOKNEXT                 NEXT MINOR ON QUEUE             32900000
+* LAST MINOR OUTPUT IS STILL ON QUEUE - CONTINUE FROM THERE             33000000
+LASTONQ  EQU   *                                                        33100000
+         L     WQEBASE,WMNMNX1-E1  GET CHAIN FIELD OF LAST             X33300000
+                                        MINOR OUTPUT                    33400000
+         LA    WQEBASE,E0(WQEBASE) CLEAR HIGH ORDER BYTE                33500000
+         LTR   WQEBASE,WQEBASE     Q. ANY MORE MINORS                   33600000
+         BCR   NOMORE,LINKR        NO, RETURN                           33700000
+         NI    DCMAFLG2,XFF-DCMALMIN  TURN OFF LAST MINOR FLAG          33800000
+         BR    LINKR               RETURN                               33900000
+         EJECT                                                          34000000
+*********************************************************************** 34100000
+*                                                                     * 34200000
+*    A NEW DISPLAY IS TO BE WRITTEN TO THE SCREEN.  THE SACB          * 34300000
+* MUST BE INITIALIZED.  IF AN OLD DISPLAY IS BEING OVERLAYED ITS      * 34400000
+* WQE'S MUST BE FREED                                                 * 34500000
+*                                                                     * 34600000
+*********************************************************************** 34700000
+         SPACE 2                                                        34800000
+OVLYDISP EQU   *                   OVERLAY OLD DISPLAY                  34900000
+         TM    DCMAFLG2,DCMAMJFR   Q. IS MAJOR FREED                    35200000
+         BO    REINSACB            YES, GO REINITIALIZE SACB            35300000
+         ST    OUTQREG,DCMDSAV+4   SAVE CURRENT OUTPUT Q POINTER        35400000
+         L     OUTQREG,DCMAMJWQ    GET QUEUE POINTER FOR OLD           X35500000
+                                        DISPLAY                         35600000
+         TM    DCMAFLG1,DCMADEND   IS END OF DISPLAY ON SCREEN          35900000
+         BO    FREEMAJ1            YES, FREE MAJOR ONLY -              X36000000
+                                        MINORS ALREADY FREED            36100000
+         BAL   LINKR,FINDNEXT      GET POINTER TO NEXT MINOR TO        X36200000
+                                        BE OUTPUT FOR OLD              X36300000
+                                        DISPLAY                         36400000
+         L     EVEN,CQEWQE         POINT TO MAJOR             MH Y02134 36500000
+         LA    EVEN,E0(EVEN)       CLEAR HIGH BYTE            MH Y02134 36600000
+         BAL   WORK1,FREEWQE       FREE OLD DISPLAY           MH Y02134 36700000
+         SPACE                                                          36800000
+*     RESTORE POINTERS FOR NEW DISPLAY                                  36900000
+HRDNEWDS L     OUTQREG,DCMDSAV+E4  GET POINTER TO CONSOLE     MH Y02134X37000000
+                                        OUTPUT QUEUE ENTRY FOR         X37100000
+                                        NEW  DISPLAY                    37200000
+         L     WQEBASE,CQEWQE      GET POINTER TO MAJOR WQE   MB Y02958 37300000
+         SPACE 2                                                        37400000
+REINSACB EQU   *                                                        37500000
+*    REINITIALIZE SACB                                                  37600000
+         XC    DCMAROW(DCMADFLG-DCMAROW),DCMAROW  ZERO DIDOCS          X37800000
+                                        PORTION OF SACB       MB Y02958 37900000
+         B     REINSSCT            BRANCH TO REINITIALIZE SSCT          38000000
+FREEMAJ1 EQU   *                                                        38100000
+         L     EVEN,CQEWQE         POINT TO MAJOR             MH Y02134 38300000
+         SR    WQEBASE,WQEBASE     ZERO MINOR POINTER         MH Y02134 38400000
+         BAL   WORK1,FREEWQE       GO TO FREE SUBROUTINE      MH Y02134 38500000
+         B     HRDNEWDS            BRANCH                     MH Y02134 38600000
+         SPACE                                                          38700000
+         EJECT                                                          38800000
+NEWDISP  EQU   *                   PUT DISPLAY IN AREA WHICH            38900000
+*                                       DOES NOT ALREADY CONTAIN        39000000
+*                                       A DISPLAY                       39100000
+         SPACE                                                          39200000
+*    IF NEW DISPLAY IS ABOVE TOP DISPLAY ALREADY ON SCREEN,             39300000
+*      CHANGE TOP DISPLAY INDICATOR                                     39400000
+         CLC   DCMAID(E1),DCMTOPDS Q. NEW DISPLAY ABOVE OLD TOP         39700000
+         BNH   REINSSCT            NO, GO REINITIALIZE SSCT             39800000
+         OI    DCMCOM2,DCMCBLNK    INDICATE CHECK BLANKING SO          X40000000
+                                        THAT NO MESSAGES WILL          X40100000
+                                        APPEAR BELOW DISPLAY            40200000
+         MVC   DCMTOPDS(E1),DCMAID YES, STORE ID OF AREA NEW           X40400000
+                                        DISPLAY IS IN                   40500000
+         SR    WORKR,WORKR         CLEAR REG                            40600000
+         IC    WORKR,DCMATOP       GET LINE NO. OF TOP OF DISPLAY       40700000
+         BCTR  WORKR,E0            SUBTRACT ONE                         40800000
+         MH    WORKR,DCMCORLN      MULTIPLY BY LINE LENGTH              40900000
+         A     WORKR,DCMASCRN      ADD ADDRESS OF BEGINNING OF         X41000000
+                                        MSG AREA SCREEN IMAGE           41100000
+         ST    WORKR,DCMWTBUF      STORE ADDRESS OF SCREEN IMAGE       X41200000
+                                        BUFFER OF FIRST STATUS         X41300000
+                                        DISPLAY LINE                    41400000
+         SPACE 3                                                        41500000
+REINSSCT EQU   *                                                        41600000
+*    REINITIALIZE SSCT                                                  41700000
+         SR    WORKR,WORKR         CLEAR REG                            41900000
+         IC    WORKR,DCMATOP       GET LINE NO. OF TOP ROW              42000000
+         BCTR  WORKR,E0            SUBTRACT ONE                         42100000
+         A     WORKR,DCMADSEC      ADD ADDRESS OF BEGINNING OF         X42200000
+                                        SSCT TO GET POINTER TO         X42300000
+                                        FIRST SSCT ENTRY OF AREA        42400000
+         LH    WORK1,DCMALN        GET LENGTH OF AREA                   42500000
+         BCTR  WORK1,E0            SUBTRACT ONE FOR EXECUTE             42600000
+         EX    WORK1,ZEROSSCT      ZERO OUT AREA'S SSCT                 42700000
+         SPACE 3                                                        42800000
+INITSACB EQU   *                   INITIALIZE SACB                      42900000
+         OI    DCMAFLG1,DCMADISP   INDICATE DISPLAY IN AREA             43100000
+         MVC   DCMAROW(E1),DCMATOP PUT TOP LINE NO. IN DCMAROW          43200000
+         ST    OUTQREG,DCMAMJWQ    SAVE ADDRESS OF CONSOLE Q           X43300000
+                                        ENTRY FOR MAJOR WQE             43400000
+         MVI   DCMAFR,F0           INDICATE FRAME ONE                   43500000
+         MVI   DCMAFR+E1,F1             IN SACB                         43600000
+         OI    DCMAFLG1,DCMAFRPR   INDICATE FRAME IN PROGRESS           43700000
+         L     XFBRANCH,CSAXC      ADDRESS FREELOCK ROUTINE             43800000
+         LR    X1PARM,CXSABASE     PASS XSA ADDRESS IN REG 1            43900000
+         BALR  XERTRN,XFBRANCH     RELEASE LOCKS                        44000000
+         SR    R0,R0               CLEAR REG 0                          44100000
+         TIME  BIN                 GET TIME OF DAY                      44200000
+         ST    R0,DCMATIME         SAVE TIME STAMP                      44300000
+         L     XFBRANCH,CSAXB      ADDRESS GETLOCK ROUTINE              44400000
+         LR    X1PARM,CXSABASE     PASS XSA ADDRESS IN REG 1            44500000
+         BALR  XERTRN,XFBRANCH     OBTAIN LOCKS                         44600000
+         DROP  WQEBASE                                                  44700000
+         USING WMJM,WQEBASE         BASE WQE                            44800000
+         TM    WMJMDEC2,WMJMDECJ   IS THIS A DYNAMIC DISPLAY  MB Y02958 45000000
+         BO   DDINIT               YES, BRANCH TO INITIALIZE FOR       X45100000
+                                        DYNAMIC DISPLAY       MB Y02958 45200000
+BACK     EQU   *                                                        45300000
+         OI    DCMAFLG2,DCMAWCON   INDICATE WRITE CONTROL LINE          45500000
+         TM    WMJMMLW,WMJMMLWH    Q. MINOR CREATED WITHOUT TEXT        45600000
+         BO    JSTCNTRL            BRANCH TO OUTPUT JUST CONTROL       X45700000
+                                        LINE                            45800000
+         L     WORKR,WMJMMIN       GET POINTER TO FIRST MINOR           45900000
+         ST    WORKR,DCMAMIN       PUT POINTER IN SACB                  46000000
+         NI    CQEFLAG,XFF-CQEATTOP TURN OFF TOP OF CHAIN BIT MB Y02958 46100000
+         NI    DCMAFLG2,XFF-DCMALMIN   TF MLAST VALID FLAG     @ZA14992 46150000
+         B     TSTMTHD             BRANCH TO TEST FOR METHOD OF        X46200000
+                                        OUTPUT                          46300000
+JSTCNTRL EQU   *                                                        46400000
+         XC    DCMAMIN(E4),DCMAMIN ZERO OUT MINOR POINTER IN           X46500000
+                                        SACB                            46600000
+         NI    DCMAFLG2,XFF-DCMALMIN    TF MLAST VALID         @ZA14992 46650000
+         B     TSTMTHD             BRANCH TO TEST FOR METHOD OF        X46700000
+                                        OUTPUT                          46800000
+         SPACE 3                                                        46900000
+DDINIT   EQU   *                   INITIALIZE SACB AND SSCT FOR        X47000000
+                                        EACH COPY OF A DYNAMIC         X47100000
+                                        DISPLAY                         47200000
+*    IF THE DYNAMIC DISPLAY IS IN THE BOTTOM-MOST AREA, THE             47400000
+*      SECONDARY SCREEN CONTROL TABLE IS SET TO INDICATE THAT           47500000
+*      THE MESSAGE AREA LINES ARE TO BE RESERVED FOR THE DYNAMIC        47600000
+*      DISPLAY.  THIS WILL EVENTUALLY FREE THIS SECTION OF THE          47700000
+*      DCM SO THAT THE DYNAMIC DISPLAY CAN BE WRITTEN FROM THE          47800000
+*      SCREEN IMAGE BUFFER.                                             47900000
+         CLI   DCMAID,A            Q. IN BOTTOM-MOST AREA               48000000
+         BNE   BACK                NO, DO NOT RESERVE AREA              48100000
+         SR    WORKR,WORKR         CLEAR REG                            48200000
+         IC    WORKR,DCMATOP       GET TOP ROW OF AREA                  48300000
+         BCTR  WORKR,E0            SUBTRACT ONE                         48400000
+         A     WORKR,DCMADSEC      WORKR NOW POINTS TO FIRST           X48500000
+                                        SSCT BYTE FOR AREA              48600000
+         LH    WORK1,DCMALN        GET LENGTH OF AREA                   48700000
+SETSECDD EQU   *                                                        48800000
+         OI    E0(WORKR),DCMSECDD  INDICATE LINE RESERVED FOR          X48900000
+                                        DYNAMIC DISPLAY                 49000000
+         LA    WORKR,E1(WORKR)     POINT TO NEXT SSCT BYTE              49100000
+         BCT   WORK1,SETSECDD      SET FOR ALL LINES OF AREA            49200000
+         B     BACK                BRANCH BACK                          49300000
+         EJECT                                                          49400000
+* A STATUS DISPLAY MAY BE OUTPUT IN ANY OF THREE WAYS:                  49500000
+*    1.        IF THERE ARE MESSAGES IN THE LINES TO WHICH THE          49600000
+*        STATUS DISPLAY IS TO BE WRITTEN, THE STATUS DISPLAY IS         49700000
+*        WRITTEN OUT FROM A 3-LINE WRITE AREA (CONSISTING OF THE        49800000
+*        INSTRUCTION LINE AND TWO ENTRY AREA LINES) THREE LINES         49900000
+*        AT A TIME.                                                     50000000
+*    2.        IF THERE ARE NO MESSAGES IN THE LINES TO WHICH           50100000
+*        THE STATUS DISPLAY IS TO BE WRITTEN, THE STATUS DISPLAY        50200000
+*        IS WRITTEN OUT A FRAME AT A TIME (OR ANY PORTION               50300000
+*        THEREOF WHICH IS ON THE QUEUE) FROM THE MESSAGE AREA           50400000
+*        PORTION OF THE SCREEN IMAGE BUFFER IN THE DCM.                 50500000
+*    3.        COMBINATION OF (1) AND (2) - OUTPUT OF A DISPLAY         50600000
+*        MAY BE STARTED IN THE FIRST WAY, 3 LINES AT A TIME, AND        50700000
+*        THEN, IF THE MESSAGES END, THE REMAINDER OF THE DISPLAY        50800000
+*        MAY BE WRITTEN ALL AT ONCE.                                    50900000
+         SPACE 2                                                        51000000
+TSTMTHD  EQU   *                                                        51100000
+* FIND OUT FROM THE SCT IF THERE IS A MESSAGE IN THE NEXT LINE          51200000
+*    TO BE WRITTEN                                                      51300000
+         SR    WORKR,WORKR         CLEAR REG                            51600000
+         IC    WORKR,DCMAROW       GET NO. OF NEXT LINE TO BE          X51700000
+                                        WRITTEN                         51800000
+         BCTR  WORKR,E0            SUBTRACT ONE                         51900000
+         MH    WORKR,DCMSCTCN      MULTIPLY BY LENGTH OF ONE           X52000000
+                                        SCT ENTRY                       52100000
+         A     WORKR,DCMAMTAB      ADD ADDRESS OF SCT                   52200000
+*    WORKR NOW POINTS TO SCT ENTRY FOR NEXT LINE TO BE WRITTEN          52300000
+         TM    E0(WORKR),DCMMSGIN  Q. MESSAGE IN LINE                   52400000
+         BNO   INT6EXIT            NO, EXIT TO INTERFACE 6 TO          X52500000
+                                        OUTPUT REST OF DISPLAY         X52600000
+                                        FRAME                           52700000
+*                                  YES, EXIT TO INTERFACE 4 TO         X52800000
+                                        OUTPUT DISPLAY 3 LINES         X52900000
+                                        AT A TIME                       53000000
+         OI    DCMCOM3,DCMOLUNV    INDICATE MSGS OVERLAYED BY          X53100000
+                                        DISPLAY                         53200000
+INT4EXIT EQU   *                                                        53300000
+         L     XFBRANCH,DCMNINT4   LOAD INTERFACE 4 ADDRESS             53500000
+         B     XCTL                EXIT TO IEECVFTO                     53600000
+INT6EXIT EQU   *                                                        53700000
+*  THIS LINE OF CODE IS DELETED FOR OS A51415 AND THE AS2 YM3335        53900000
+         L     XFBRANCH,DCMNINT6   LOAD INTERFACE 6 ADDRESS             54000000
+         B     XCTL                EXIT TO IEECVFTQ                     54100000
+         EJECT                                                          54200000
+*********************************************************************** 54300000
+*                                                                     * 54400000
+* FIND AND BASE SACB SUBROUTINE                                       * 54500000
+*    GIVEN A PARTICULAR CRT CONSOLE AND A ONE CHARACTER AREA ID       * 54600000
+* THIS SUBROUTINE FINDS AND BASES THE SCREEN AREA CONTROL BLOCK       * 54700000
+* (SACB) WHICH MATCHES THAT ID.  IF NONE IS FOUND, A ZERO IS          * 54800000
+* RETURNED AS THE BASE.                                               * 54900000
+*    INPUT - R1 - ONE CHARACTER AREA ID IN LOW ORDER BYTE             * 55000000
+*                   (HIGH ORDER BYTES MUST BE ZERO)                   * 55100000
+*            UCMEBASE - ADDRESS OF UCM ENTRY OF A CRT CONSOLE         * 55200000
+*    OUTPUT - SACBBASE - ADDRESS OF SACB WITH MATCHING ID             * 55300000
+*                   (ZERO IF NO MATCH)                                * 55400000
+*    REGISTER USAGE - DESTROYS CONTENTS OF FOLLOWING REGS:            * 55500000
+*                   R0, SACBBASE, RDCMBASE                            * 55600000
+*                   LINKR IS RETURN REGISTER                          * 55700000
+*                                                                     * 55800000
+*********************************************************************** 55900000
+         SPACE 2                                                        56000000
+FINDSACB EQU   *                                                        56100000
+         SR    R0,R0               CLEAR REG                            56200000
+         L     RDCMBASE,UCMXB      GET RESIDENT DCM ADDRESS             56300000
+         L     SACBBASE,DCMADSDS   GET FIRST SACB ADDRESS               56400000
+CONTINUE EQU   *                                                        56500000
+         LTR   SACBBASE,SACBBASE   ANY MORE SACB'S                      56600000
+         BCR   NOMORE,LINKR        NO, RETURN FROM SUBROUTINE           56700000
+         TM    DCMASACB,DCMAUSE    DOES SACB DEFINE AN AREA             56800000
+         BNO   ENDOSACB            NO, BRANCH TO RETURN                 56900000
+         IC    R0,DCMAID           GET ID FROM SACB                     57000000
+         CR    R0,R1               COMPARE WITH PASSED ID               57100000
+         BCR   MATCH,LINKR         EQUAL, RETURN FROM SUBROUTINE        57200000
+         L     SACBBASE,DCMACBNX   NOT EQUAL, GET NEXT SACB             57300000
+         B     CONTINUE            CONTINUE SEARCH                      57400000
+ENDOSACB EQU   *                                                        57500000
+         SR    SACBBASE,SACBBASE   INDICATE NO SACB MATCH FOUND         57600000
+         BR    LINKR               RETURN FROM SUBROUTINE               57700000
+         EJECT                                                          57800000
+FREEWQE  EQU   *                                              MH Y02134 57900000
+*INPUT TO SUBROUTINE:                                         MH Y02134 58000000
+*        UCM ENTRY POINTER IN UCMEBASE                        MH Y02134 58100000
+*        CURRENT QUEUE ENTRY POINTER IN OUTQREG               MH Y02134 58200000
+*        MAJOR WQE ADDRESS IN EVEN                            MH Y02134 58300000
+*        MINOR WQE ADDRESS IN WQEBASE                         MH Y02134 58400000
+         DROP WQEBASE                                         MH Y02134 58500000
+         USING WMNM,WQEBASE        BASE MINOR                 MH Y02134 58600000
+HRDLOOP  LA    WQEBASE,E0(WQEBASE) CLEAR HI BYTE MINOR PTR    MH Y02134 58700000
+         LTR   WQEBASE,WQEBASE     IS IT ZERO                 MH Y02134 58800000
+         BZ    HRDLAST              YES, FREE MAJOR           MH Y02134 58900000
+         SR    ODD,ODD             CLEAR WORK REGISTER        MH Y02134 59000000
+         IC    ODD,WMNMUC1         GET MINOR USE COUNT        MH Y02134 59100000
+         BCTR  ODD,E0              REDUCE BY ONE              MH Y02134 59200000
+         STC   ODD,WMNMUC1         STORE REDUCED COUNT        MH Y02134 59300000
+NEXT     L     WQEBASE,WMNMNX1-E1  POINT TO NEXT MINOR        MH Y02134 59400000
+         B     HRDLOOP             CHECK IT OUT               MH Y02134 59500000
+         DROP  WQEBASE                                        MH Y02134 59600000
+         USING WQE,EVEN            BASE MAJOR                 MH Y02134 59700000
+HRDLAST  OI    WMJMMLW,WMJMMLWG    SERVICE THIS CHAIN         MH Y02134 59800000
+         OI    CQEFLAG,CQEAVAIL    PURGE QUEUE ENTRY          MH Y02134 59900000
+         NI    CQEFLAG,X'FF'-CQEENTR    NO LONGER ACTIVE      MH Y02134 60000000
+         OI    UCMSTS,UCMTB        DEQUE WORK NEEDED          MH Y02134 60100000
+         BR    WORK1               RETURN TO CALLER           MH Y02134 60200000
+         DROP  EVEN                                           MH Y02134 60300000
+         USING WQE,WQEBASE                                    MH Y02134 60400000
+         SPACE 2                                                        60500000
+NOMORE   EQU   8                   BRANCH ON ZERO                       60600000
+MATCH    EQU   8                   BRANCH ON EQUAL                      60700000
+         EJECT                                                          60800000
+*                             EXITS                                     60900000
+         SPACE 2                                                        61000000
+PROC1EXT EQU   *                                                        61100000
+         L     XFBRANCH,DCMNPROC   LOAD PROC 1 ADDRESS                  61300000
+         B     XCTL                EXIT TO IEECVET1                     61400000
+         SPACE                                                          61500000
+INT7EXIT EQU   *                                                        61600000
+         L     XFBRANCH,DCMNINT7   LOAD INTERFACE 7 ADDRESS             61800000
+*                                  FOR EXIT TO IEECVFTT                 61900000
+         SPACE 2                                                        62000000
+XCTL     EQU   *                                                        62100000
+         L     X1PARM,DCMCXSVE     RESTORE CXSA ADDRESS                 62200000
+         BR    XFBRANCH            EXIT ADDRESS ALREADY SET             62300000
+*                                                                       62400000
+*            EXECUTED INSTRUCTIONS                                      62500000
+*                                                                       62600000
+CHKFF    TM    E0(EVEN),E0         CHECK IF FRAME FULL BIT IS ON        62700000
+ZEROSSCT XC    E0(E0,WORKR),E0(WORKR)  ZERO OUT AREA'S SSCT             62800000
+         EJECT                                                          62900000
+*********************************************************************** 63000000
+*                                                                     * 63100000
+*                             EQUATES                                 * 63200000
+*                                                                     * 63300000
+*********************************************************************** 63400000
+         SPACE 2                                                        63500000
+ID1      EQU   C'F'                1ST CHARACTER OF CSECT ID            63600000
+ID2      EQU   C'M'                2ND CHARACTER OF CSECT ID            63700000
+E0       EQU   0                   NUMBER                               63800000
+E1       EQU   1                   NUMBER                               63900000
+E2       EQU   2                   NUMBER                               64000000
+E3       EQU   3                   NUMBER                               64100000
+E4       EQU   4                   NUMBER                               64200000
+E8       EQU   8                   NUMBER                               64300000
+E25      EQU   25                  NUMBER                               64400000
+         SPACE                                                          64500000
+Z        EQU   C'Z'                MSG STREAM AREA ID                   64600000
+A        EQU   C'A'                ID OF BOTTOMMOST AREA                64700000
+F0       EQU   C'0'                EBCDIC 0                             64800000
+F1       EQU   C'1'                EBCDIC 1                             64900000
+XFF      EQU   X'FF'               TO TURN OFF BITS                     65000000
+         SPACE                                                          65100000
+         EJECT                                                          65200000
+         IHACTM  CXSA                                                   65300000
+         EJECT                                                          65400000
+         IHACTM CQE                                           MB Y02958 65500000
+         EJECT                                                          65600000
+         IEECUCM FORMAT=NEW                                             65700000
+         EJECT                                                          65800000
+         IHAWQE  DSECT=YES                                              65900000
+         EJECT                                                          66000000
+         IEERDCM                                                        66100000
+         EJECT                                                          66200000
+         IEETDCM                                                        66300000
+         EJECT                                                          66400000
+         END                                                            66600000

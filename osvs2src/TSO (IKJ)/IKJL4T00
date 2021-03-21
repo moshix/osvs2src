@@ -1,0 +1,701 @@
+IKJL4T00 TITLE 'SIC SRB ROUTINE'                                        00060002
+*********************************************************************** 00070002
+*                                                                       00100002
+* MODULE NAME = IKJL4T00                                                00150002
+*                                                                       00200002
+* DESCRIPTIVE NAME = SYSTEM INITIATED CANCEL SRB ROUTINE                00250002
+*                                                                       00300002
+* COPYRIGHT = NONE                                                      00350002
+*                                                                       00400002
+* STATUS = OS/VS2 - TSO/SNA (SU13)                             @ZA08182 00450000
+*                                                                       00500002
+*                                                                       00550002
+* FUNCTION = TO PROVIDE SYNCHRONIZATION OF EVENTS BETWEEN TIOC,         00600002
+*            LOGON SCHEDULER AND ITS SUBTASKS, SO THAT ORDERLY          00650002
+*            CANCELLATION OF A TSO USER CAN OCCUR. BESIDES              00700002
+*            BEING INVOKED DURING CANCEL OF A TS USER, THIS             00710002
+*            ROUTINE IS ALSO INVOKED IN A LINE DROP SITUATION  @ZA07126 00720000
+*            OR TO ASSIST CANCELLATION OF A BACKGROUND JOB.    @ZA07126 00730000
+*                                                                       00750000
+* OPERATION = .ESTABLISH RECOVERY ENVIRONMENT                           00760000
+*             .OBTAIN THE LOCAL AND CMS LOCKS.                          00800000
+*             .VERIFY THAT CSCB FOR CANCELLED TS USER OR BACKGROUND     00810000
+*              JOB STILL EXISTS.                                        00820000
+*             .IF RCT PURGE IN PROGRESS, STATUS RESET ALL      @ZA07126 00850000
+*              SUBTASKS DISPATCHABLE.                          @ZA07126 00860000
+*             .OBTAIN LOGON SCHEDULER TASK TCB ADDRESS                  00900000
+*             .IF THE TS USER IS NOT A VTAM USER OR IF BIT     @Z40DQSS 00910000
+*             'LWASCICSP' IS ON (SHORT PATH WANTED) THEN       @Z40DQSS 00920000
+*               1) BRANCH ENTER STATUS TO SET NONDISPATCHABLE  @Z40DQSS 00950000
+*                  SCHEDULER AND ALL ITS SUBTASKS VIA          @Z40DQSS 00960000
+*                  SECONDARY MASK WITH IWAIT AND OWAIT BITS    @Z40DQSS 01000000
+*                  BOTH ON, BECAUSE THERE MAY EXIST NO LINE    @Z40DQSS 01010000
+*                  FOR TPUTS.                                  @Z40DQSS 01020000
+*               2) BRANCH ENTER QTIP WITH ENTRY CODE 24 TO     @Z40DQSS 01050000
+*                  REMOVE FROM OWAIT ANY TASK WHICH HAS SEND   @Z40DQSS 01060000
+*                  A TPUT TO THEGTS USER BEING CANCELLED AND   @Z40DQSS 01100000
+*                  ALSO TO SET TSBCANC BIT FOR THIS USER.      @Z40DQSS 01102000
+*             .BRANCH ENTER POST TO POST CANCEL ECB FOR THIS            01130000
+*             USER.                                                     01150000
+*             .IF THE TS USER IS NOT A VTAM USER OR IF BIT     @Z40DQSS 01160000
+*             'LWASCICSP' IS ON (SHORT PATH WANTED) THEN       @Z40DQSS 01200000
+*               1) ISSUE STATUS (BRANCH ENTRY) TO RESET        @Z40DQSS 01210000
+*                  NONDISPATCHABLE LOGON SCHEDULER TO MAKE THE @Z40DQSS 01220000
+*                  LOGON SCHEDULER DISPATCHABLE.               @Z40DQSS 01250000
+*               2) OBTAIN ADDRESS OF LOGON PROMPTER FROM LWA   @Z40DQSS 01260000
+*                  AND VERIFY THAT IT IS THE DAUGHTER TCB TO   @Z40DQSS 01300000
+*                  LOGON SCHEDULER, THUS VERIFYING THAT IT IS  @Z40DQSS 01310000
+*                  THE LOGON PROMPTER.                         @Z40DQSS 01320000
+*               3) IF SO, ISSUE STATUS (BRANCH ENTRY) TO RESET @Z40DQSS 01350000
+*                  NONDISPATCHABLE LOGON PROMPTER.             @Z40DQSS 01380000
+*             .FREEMAIN SRB.                                            01450002
+*             .RELEASE LOCAL AND CMS LOCKS.                             01500002
+*             .RETURN TO SUPERVISOR ON BR14.                            01550002
+*********************************************************************** 01552002
+         EJECT                                                          01560002
+*********************************************************************** 01570002
+*                                                                       01600002
+* NOTES = SEE BELOW                                                     01650002
+*                                                                       01700002
+*    DEPENDENCIES = SETLOCK                                             01750002
+*                   QTIP ENTRY CODE 24                                  01800002
+*                   STATUS BRANCH ENTRY                                 01850002
+*                   FREEMAIN                                            01900002
+*                   SETFRR                                              01950002
+*                   SRM TO GIVE FRR ROUTINE CONTROL                     01952002
+*                   PURGEDEQ TO GIVE RMTR ROUTINE CONTROL               01954002
+*                   POST                                                01960002
+*                   LOGON FOR LWA INITIALIZATION                        01970002
+*                   SCHEDULE FOR SRB DISPATCHING                        01980002
+*                   EBCDIC CHARACTER CODE DEPENDENCE CORRECTABLE        02000002
+*                   BY REASSEMBLY.                                      02050002
+*    RESTRICTIONS = ALL RESTRICTIONS APPLYING TO SRB ROUTINES.          02150002
+*                                                                       02200002
+*    REGISTER CONVENTIONS = SEE INPUT DATA                              02250002
+*                                                                       02300002
+*    PATCH LABEL = PTCHL4T0 A DC STATEMENT.                             02350002
+*                                                                       02400002
+* MODULE TYPE = SRB CSECT                                               02450002
+*                                                                       02500002
+* MODDULE SIZE = 2B0 HEX                                                02550000
+*                                                                       02600002
+* ATTRIBUTES = REENTRANT, PAGED LPA, ZERO PSW KEY, SUPERVISOR           02650002
+*              MODE.                                                    02700002
+**********************************************************************  02710002
+         EJECT                                                          02712002
+**********************************************************************  02730002
+*                                                                       02750002
+* ENTRY POINT = IKJL4T00 FROM SUPERVISOR SRB SCHEDULING ROUTINE.        02800002
+*                                                                       02850002
+* PURPOSE = SEE FUNCTION.                                               02900002
+*                                                                       02950002
+* LINKAGE = STANDARD LINKAGE CONVENTIONS.                               03000002
+*                                                                       03050002
+* INPUT DATA = R0 CONTAINS ADDRESS OF SRB                               03100002
+*              R1 CONTAINS CONTENTS OF SRBPARM FIELD.                   03150002
+*              R14 CONTAINS RETURN ADDRESS TO SRB EXIT ROUTINE.         03200002
+*              R15 CONTAINS ENTRY POINT OF ASYNCHRONOUS ROUTINE.        03250002
+*              SRBPARM FIELD POINTS TO TWO WORD PARM LIST -             03252002
+*                 WORD ONE = ADDRESS OF CSCB TO CANCEL.                 03260002
+*                 WORD TWO = POST CODE, RIGHT JUSTIFIED.                03270002
+*                                                                       03300002
+* REGISTERS SAVED = R14                                                 03350002
+*                                                                       03400002
+* REGISTER CONTENTS DURING PROCESSING = SETFRR USES R4,R11,R12.         03450002
+*                                       SETLOCK USES R11,R12,R13        03460002
+*                                         AND R14.                      03470002
+*                                       STATUS USES R0,R1,R13,R14       03480002
+*                                         AND R15.                      03490002
+*                                       QTIP USES R0,R5,R14,R15,        03492002
+*                                         AND SAVES R2-R14.             03494002
+*                                       POST USES R10,R11,R14,          03500002
+*                                         AND R15 AND SAVES R0-R9       03510002
+*                                         PLUS R14.                     03520002
+*                                       FREEMAIN USES R0,R1,R3,R4,      03530002
+*                                         R7,R14,R15.                   03540002
+*                                                                       03542002
+*                                                                       03544002
+* REGISTERS RESTORED = R14                                              03550002
+*                                                                       03600002
+**********************************************************************  03602002
+* ENTRY POINT = IKJL4T01 FROM PURGEDEQ                                  03610002
+*                                                                       03620002
+* PURPOSE = FREEMAIN SRB AS PART OF RMTR ROUTINE FUNCTION               03630002
+*           WHICH GETS CONTROL IF SCHEDULE FAILS. AN RMTR               03640002
+*           ROUTINE IS AN ERROR EXIT ROUTINE REQUIRED OF                03640402
+*           EVERY SRB ROUTINE.                                          03640802
+*                                                                       03642002
+* LINKAGE = FROM PURGEDEQ                                               03644002
+*                                                                       03646002
+* INPUT = R1  - ADDRESS OF SRB OF DEQ'D SRB                             03648002
+*         R2  - CONTENTS OF SRBPARM OF DEQ'D SRB                        03648402
+*         R14 = RETURN ADDRESS TO PURGEDEQ                              03648802
+*         R15 = ENTRY POINT ADDRESS OF IKJL4T01                         03649202
+*                                                                       03649602
+**********************************************************************  03651602
+         EJECT                                                          03655002
+**********************************************************************  03655402
+* ENTRY POINT = IKJL4T02 FROM SRM                                       03656402
+*                                                                       03659802
+* PURPOSE = FREEMAIN SRB AS PART OF FRR ROUTINE WHICH                   03663202
+*           GETS CONTROL FROM THE SRM (SYSTEM RECOVERY                  03666602
+*           MANAGER) IF THE SCHEDULED SRB ROUTINE FAILS.                03676602
+*                                                                       03678602
+* LINKAGE = FROM SRM                                                    03680602
+*                                                                       03682602
+* INPUT = R1 - CONTAINS A POINTER TO THE SDWA. FIRST WORD OF            03683002
+*         SDWA POINTS TO FRR PARMLIST.                                  03685802
+*                                                                       03688802
+**********************************************************************  03691602
+* EXIT - NORMAL = RETEXIT, RETURN TO SRB EXIT ROUTINE.                  03694402
+*                                                                       03700002
+* CONDITIONS = NORMAL COMPLETION OF FUNCTION                            03750002
+*                                                                       03800002
+* OUTPUT DATA = NONE                                                    03850002
+*                                                                       03900002
+* RETURN CODE = NONE                                                    03950002
+*                                                                       04000002
+**********************************************************************  04010002
+* EXIT - ERROR = RMTREXIT                                               04050002
+*                                                                       04100002
+* CONDITIONS = COMPLETION OF RMTR PROCESSING FREEING                    04110002
+*              SRB                                                      04120002
+* OUTPUT DATA = NONE                                                    04130002
+*                                                                       04140002
+* RETURN CODE = NONE                                                    04142002
+*                                                                       04144002
+**********************************************************************  04144402
+* EXIT - ERROR = FRREXIT                                                04146002
+*                                                                       04146402
+* CONDITIONS = COMPLETION OF FRR PROCESSING FREEING                     04146802
+*              SRB                                                      04147202
+*                                                                       04147602
+* OUTPUT DATA = NONE                                                    04147702
+*                                                                       04147802
+* RETURN CODE = NONE                                                    04147902
+*                                                                       04148002
+**********************************************************************  04148402
+         EJECT                                                          04148802
+**********************************************************************  04160002
+* EXTERNAL REFERENCES = SEE BELOW                                       04170002
+*                                                                       04200002
+*    ROUTINES = STATUS BRANCH ENTRY                                     04250002
+*               QTIP BRANCH ENTRY                                       04260002
+*               POST BRANCH ENTRY                                       04270002
+*                                                                       04300002
+*    DATA AREAS = FRRPARM: INTERNAL LIST TO FRR ROUTINE: WRITE          04350002
+*                                                                       04400002
+*    CONTROL BLOCKS = IHASRB    SRB              READ                   04450002
+*                     IKJTCB    TCB              READ                   04500002
+*                     IHASDWA   SDWA             READ                   04510002
+*                     IKJEFLWA  LWA              READ                   04550002
+*                     CVT       CVT              READ                   04552002
+*                     IHASCVT   SECONDARY CVT    READ                   04554002
+*                     IHAFRRS   FRR STACK        READ                   04560002
+*                     IHAPSA    PSA              READ                   04570002
+*                     IKJTIOCP  TIOCRPT          READ                   04574002
+*                     TTCXD     TCX              READ                   04576002
+*                     IHAASCB   ASCB             READ                   04578002
+*                     IEECHAIN  CSCB             READ                   04578102
+*                     IHAASXB   ASXB             READ                   04578402
+*                     IKJTSB    TSB              READ          @Z40DQSS 04579200
+*                                                                       04580002
+*    TABLES = NONE                                                      04600002
+*                                                                       04650002
+*    MACROS = MODID                                                     04700002
+*             SETLOCK                                                   04750002
+*             FREEMAIN BRANCH ENTRY                                     04800002
+*             SETFRR                                                    04850002
+*                                                                       04950002
+* MESSAGES = NONE                                                       05000002
+*                                                                       05050002
+* CHANGE-ACTIVITY = Y02651 GENERAL MP SYNCHRONIZATION SUPPORT           05060002
+*                 = YM01528 TCB VALIDITY CHECKING, ENTRY,               05070002
+*                   NO POST BYPASS IF NO LWA                            05080002
+*                 = YM01821 STATUS NEEDS SECONDARY NONDISPATCHIBILITY   05090002
+*                   MASK OF ONE WORD, NOT JUST ONE BYTE. TEST IF        05092002
+*                   TCAM INITIALIZED BEFORE ENTERING QTIP.              05092402
+*                 = ZA02119, ZA07126, ZA06994,ZA08182          @ZA08182 05093200
+*                 = Z40DQSS TSO/SNA SUPPORT                    @Z40DQSS 05093400
+*                                                                       05094002
+* SYSGEN = IKJL4T00 IS INCLUDED IN LOAD IKJEFLF BY SYSGEN               05100002
+*          MACRO SGIKJ441. DISLIB IS AOST4. TARGLIB IS LPALIB.          05150002
+*                                                                       05200002
+*********************************************************************** 05250002
+         TITLE 'SERVICE REQUEST BLOCK'                                  05262002
+         IHASRB                                                         05270002
+         TITLE 'TASK CONTROL BLOCK'                                     05272002
+         IKJTCB                                                         05280002
+         TITLE 'LOGON WORK AREA'                                        05282002
+         IKJEFLWA                                                       05290002
+         TITLE 'FUNCTIONAL RECOVERY ROUTINE STACK'                      05290402
+         IHAFRRS                                                        05292002
+         TITLE 'PREFIX SAVE AREA'                                       05292402
+         IHAPSA                                                         05294002
+         TITLE 'STAE DIAGNOSTIC WORK AREA'                              05294102
+         IHASDWA                                                        05294402
+         TITLE 'CVT'                                                    05294502
+         CVT   DSECT=YES                                                05294802
+         TITLE 'SECONDARY CVT'                                          05294902
+         IHASCVT                                                        05295202
+         TITLE 'TCAM CVT EXTENSION'                                     05296002
+         TTCXD                                                          05298002
+         TITLE 'TIOC REFERENCE POINTER TABLE'                           05300302
+         IKJTIOCP LIST=YES                                              05305602
+         TITLE 'ADDRESS SPACK CONTROL BLOCK'                            05307602
+         IHAASCB                                                        05307902
+         TITLE 'COMMAND SCHEDULING CONTROL BLOCK'                       05309902
+CSCB     DSECT                                                          05310002
+         IEECHAIN                                                       05310202
+         TITLE 'ADDRESS SPACE EXTENSION BLOCK'                          05312202
+         IHAASXB                                                        05312502
+         EJECT                                                          05312600
+         IKJTSB LIST=YES                                       @Z40DQSS 05312700
+         TITLE 'MODULE DEFINED SRB PARM AREA'                           05312902
+*********************************************************************** 05313302
+*                                                                       05313702
+* PARMSECT IS THE PARM AREA USED BY THE SCHEDULE ROUTINE. THE CORE      05314102
+* IS GOTTEN IN THE ROUTINE WHICH SCHEDULES IKJL4T00 AT THE SAME         05314202
+* TIME THAT CORE FOR THE SRB BLOCK IS OBTAINED.  THE MODULE WHICH       05314302
+* PERFORMS THE SCHEDULE AND THE GETMAIN (SUBPOOL 239) IS IKJEFLF.       05314402
+* IKJEFLF ALSO INITIALIZES THE PARMAREA.                                05316802
+*                                                                       05318802
+*********************************************************************** 05319202
+PARMSECT DSECT                    SRB PARM AREA DSECT                   05319402
+PARMCSCB DS    F                  POINTER TO CSCB FOR THIS MEMORY       05321802
+PARMPOST DS    F                  CONTAINS POST CODE                    05324202
+PARMR14  DS    F                  USED TO SAVE R14                      05326602
+         DS    F                  RESERVED                              05329002
+PARMEND  EQU   *                                                        05331402
+PARMSIZE EQU   PARMEND-PARMSECT   SIZE OF PARMAREA                      05333802
+         TITLE 'MODULE DEFINED FRR PARM AREA'                           05336202
+**********************************************************************  05338102
+*                                                                       05338502
+* FRRPARM IS AN AREA RETURNED TO IKJL4T00 AFTER EXECUTION OF THE        05339602
+* SETFRR MACRO. IT IS 24 BYTES IN LENGTH. IT IS INITIALIZED IN          05341602
+* IKJL4T00 IMMEDIATELY AFTER THE SETFRR MACRO. IN THE CASE OF           05342002
+* FAILURE OF IKJL4T00, A POINTER TO FRRPARM IS PASSED TO THE            05342302
+* FRR ROUTINE (IKJL4T02) IN THE FIRST WORD OF THE SDWA. THIS            05342702
+* POINTER IS SET UP BY SETFRR.                                          05342802
+*                                                                       05342902
+**********************************************************************  05343002
+FRRPARM  DSECT                    FRR ROUTINE PARMLIST                  05343102
+FRRSRB   DS    F                  POINTER TO SRB BLOCK                  05343402
+FRRASCB  DS    F                  MEMORY ID. FOR FREEMAIN               05344302
+         DS    4F                 RESERVED                              05345802
+FRREND   EQU   *                                                        05348202
+FRRSIZE  EQU   FRREND-FRRPARM     SIZE OF FRR PARMAREA                  05350602
+         TITLE 'SRB ROUTINE PROCESSING FOR SIC'                         05353002
+IKJL4T00 CSECT                                                          05355402
+         ENTRY IKJL4T01                                                 05355802
+* A 000000-999999                                                Y02651 05357402
+* A - 070999-071199,082920,082924                              @ZA02119 05357603
+* A PROCESSING CHANGED AT- NEAR LABEL TESTTSO                  @ZA07126 05357800
+* IKJL4T01(C) ADDED LOCAL LOCKS                                @ZA06994 05358200
+* D C TESTLWA APPROX 070899                                    @ZA08182 05358600
+* C   CONTSTAT APPROX 082922                                   @ZA08182 05359000
+**********************************************************************  05359400
+*                        REGISTER EQUATES                               05360202
+**********************************************************************  05362602
+         SPACE                                                          05365002
+R0       EQU   0                  INPUT PTR TO SRB: SPVSR SERVICES      05367402
+R1       EQU   1                  INPUT PTR SRBPARM: SPVSR SERVICES     05369802
+R2       EQU   2                  SRB BASE REG                          05372202
+R3       EQU   3                  SRBPARM BASE REG,SPVSR SERVICES       05374602
+R4       EQU   4                  FRRPARM BASE REG,SPVSR SERVICES       05377002
+R5       EQU   5                  ASID FOR QTIP, PROMPTER TCB PTR       05379402
+R6       EQU   6                  ASCB BASE                             05381802
+R7       EQU   7                  CSCB BASE,LWA BASE,SPVSR              05384202
+R8       EQU   8                  SECONDARY CVT BASE REG                05386602
+R9       EQU   9                  PROGRAM ADDRESSIBILITY                05389002
+R10      EQU   10                 POST CODE FOR BRANCH ENTRY            05391402
+R11      EQU   11                 SUPERVISOR SERVICES                   05393802
+R12      EQU   12                 SUPERVISOR SERVICES                   05396202
+R13      EQU   13                 SUPERVISOR SERVICES                   05398602
+R14      EQU   14                 SUPERVISOR SERVICES                   05401002
+R15      EQU   15                 SUPERVISOR SERVICES                   05403402
+         SPACE                                                          05405802
+**********************************************************************  05408202
+*              DISPLACEMENTS AND EQUATES.                               05410602
+**********************************************************************  05413002
+         SPACE                                                          05415402
+D0       EQU   0                  USED FOR LA INSTRUCTION               05417802
+D4       EQU   4                  ASCB PTR LENGTH FOR MVC               05418202
+D8       EQU   8                  USED BY SHIFT INSTRUCTION     YM01821 05418602
+CODE10   EQU   10                 ENTRY CODE 10 FOR STATUS              05419802
+CODE11   EQU   11                 ENTRY CODE 11 FOR STATUS              05419902
+CODE24   EQU   24                 ENTRY CODE 24 FOR QTIP                05420002
+NONDISP  EQU   TCBIWAIT+TCBOWAIT  NONDISPATCHIBILITY MASK FOR STATUS    05420102
+         EJECT                                                          05420202
+**********************************************************************  05423502
+* THIS PAGE OF CODE ESTABLISHES ADDRESSIBILITY FOR THE PROGRAM,         05430102
+* THE SRB CONTROL BLOCK, AND THE SRB PARM AREA CREATED BY IKJEFLF.      05433402
+* IT SAVES R14 IN THE PARMAREA, AND SETS UP AN FRR ENVIRONMENT FOR      05436702
+* THE SRB ROUTINE.                                                      05440002
+**********************************************************************  05446602
+         BALR  R9,D0              PROGRAM ADDRESSIBILITY                05449902
+         USING *,R9               PROGRAM BASED ON R9                   05499902
+ENTRYSRB EQU   *                                                        05501902
+         MODID BRANCH=YES                                               05509902
+         LR    R2,R0              INPUT PTR TO SRB BLOCK SAVED          05549902
+         USING SRBSECT,R2         SRB ADDRESSIBILITY ESTABLISHED        05599902
+         LR    R3,R1              INPUT PTR TO SRB PARM BLOCK           05649902
+         USING PARMSECT,R3        SRB PARM ADDRESSIBILITY               05699902
+         ST    R14,PARMR14        SAVE RETURN ADDRESS IN PARM           05749902
+         LA    R11,IKJL4T02       ENTRY POINT FRR ROUTINE               05799902
+         SETFRR A,FRRAD=(11),PARMAD=(4),WRKREGS=(4,12)                  05849902
+         EJECT                                                          05859902
+*********************************************************************** 05869902
+* THIS SECTION OF CODE INITIALIZES THE FRR PARMAREA                     05879902
+* RETURNED BY SETFRR WITH THE SRB AND ASCB POINTERS WHICH THE           05889902
+* FRR ROUTINE WILL NEED.                                                05891902
+*********************************************************************** 05893902
+         USING FRRPARM,R4         FRR PARM ADDRESSIBILITY               05899902
+         ST    R2,FRRSRB          SAVE SRB PTR IN FRR PARM              05949902
+*                                 SAVE ASCB PTR IN FRR PARM             05954302
+         MVC   FRRASCB(D4),SRBASCB                                      05955902
+         DROP  R4                                                       05957902
+         EJECT                                                          05959902
+*********************************************************************** 05969902
+*                                                                       05979902
+*          THIS SECTION OF CODE OBTAINS THE LOCAL AND CMS LOCKS         05989902
+*                                                                       05991902
+*********************************************************************** 05993902
+GETLOCK  EQU   *                                                        05999902
+         SETLOCK OBTAIN,TYPE=LOCAL,MODE=UNCOND,                        *06049902
+               RELATED=(CANTSO,IKJL4T00(CLRLOCK))                       06099902
+         SETLOCK OBTAIN,TYPE=CMS,MODE=UNCOND,                          *06109902
+               RELATED=(QTIP,IKJL4T00(CLRLOCK))                         06119902
+         EJECT                                                          06149902
+**********************************************************************  06199902
+*                                                                       06249902
+* THE FOLLOWING CODE PERFORMS VALIDITY CHECKING. FIRST IT MUST          06259902
+* BE VERIFIED THAT THE ASCBCSCB POINTER IN THE INPUT ASCB IS VALID,     06269902
+*                                                              @ZA07126 06279900
+* IF RCT PURGE IS IN PROGRESS (ASXBPIP=1), SET ASXBTFD TO ONE  @ZA07126 06281900
+* TO INDICATE TO RCT THAT ITS SUBTASKS HAVE BEEN FORCED        @ZA07126 06283900
+* DISPATCHABLE.                                                @ZA07126 06289900
+*                                                                       06299902
+**********************************************************************  06349902
+         L     R6,SRBASCB         GET INPUT ASCB PTR FROM SRB           06399902
+         USING ASCB,R6            ESTABLISH ASCB ADDRESSIBILITY         06449902
+         L     R7,ASCBCSCB        GET CSCB PTR FROM THAT ASCB           06499902
+         LTR   R7,R7              VERIFY THAT CSCB STILL EXISTS.        06549902
+*                                 CSCB TERMINATION COULD HAVE           06559902
+*                                 OCCURRED BETWEEN SCHEDULE AND         06569902
+*                                 DISPATCH OF SRB.                      06579902
+         BZ    RESTREGS           RETURN IF ZERO                        06599902
+         L     R7,ASCBASXB        GET ASXB PTR FROM ASCB                06649902
+         USING ASXB,R7            ESTABLISH ASXB ADDRESSIBILITY         06699902
+CSLOOP   L     R4,ASXBCASW        LOAD WORD CONTAINING BYTE    @ZA07126 06700500
+         TM    ASXBCASW,ASXBPIP   IS RCT PURGE IN PROCESS      @ZA07126 06701100
+         BZ    TESTTSO            NO THEN CHECK FOR TSO        @ZA07126 06701700
+         LA    R5,ASXBTFD         LOAD MASK IN LOW ORDER BYTE  @ZA07126 06702300
+         SLL   R5,24              SHIFT MASK TO HIGH ORDER     @ZA07126 06702900
+         OR    R5,R4              OR WORD CONTAINING BYTE      @ZA07126 06703500
+         CS    R4,R5,ASXBCASW     COMPARE AND SWAP ASXBTFD ON  @ZA07126 06704100
+         BNE   CSLOOP             GO BACK TO LOAD THE SC WORD  @ZA07126 06704700
+         EJECT                                                 @ZA07126 06705300
+***************************************************************@ZA07126 06705900
+*                                                                       06706500
+*      THIS SECTION OF CODE WILL SET ALL OF RCT'S SUBTASKS     @ZA07126 06707100
+*      DISPATCHABLE VIA BRANCH ENTRY TO STATUS WITH REGS SET   @ZA07126 06707700
+*      AS FOLLOWS:                                                      06708300
+*                 - REGISTER 0                                 @ZA07126 06708900
+*                     BYTE 2-3   ENTRY CODE 0A INDICATING A    @ZA07126 06709500
+*                                SECONDARY NON-DISPATCHABILITY @ZA07126 06710100
+*                                FLAG IS TO BE RESET IN ALL OF @ZA07126 06710700
+*                                RCT'S SUBTASKS'S.             @ZA07126 06711300
+*                 - REGISTER 1                                 @ZA07126 06711900
+*                     BIT    0   1 - RESET IS BEING REQUESTED. @ZA07126 06712500
+*                     BYTES  1-3 ADDRESS OF RCT'S TCB.         @ZA07126 06713100
+*                 - REGISTER 13                                @ZA07126 06713700
+*                     X'00001000' INDICATES THE TCBNDTS BIT OF @ZA07126 06714300
+*                                 THE TCBNDSP2 FLAG IS TO BE   @ZA07126 06714900
+*                                 RESET.                       @ZA07126 06715500
+*                 - ISSUE A CALL TO THE STATUS ROUTINE USING   @ZA07126 06716100
+*                   ITS BRANCH ENTRY TO RESTART SUBTASKS.      @ZA07126 06716700
+*                                                              @ZA07126 06717300
+*      THIS IS DONE TO ASSURE THAT THE INITIATOR TASK IS       @ZA07126 06717900
+*      DISPATCHABLE IN THE EVENT THAT RCT QUIESCE FOR SWAPOUT  @ZA07126 06718500
+*      OF THE CURRENT ADDRESS SPACE IS HUNG BECAUSE OF AN I/O  @ZA07126 06719100
+*      DEVICE FAILURE.                                         @ZA07126 06719700
+*                                                              @ZA07126 06720300
+***************************************************************@ZA07126 06720900
+         LA    R0,CODE10      RESET DISPATCHABLE ALL SUBTASKS  @ZA07126 06721500
+         L     R1,ASXBFTCB    GET RCT'S TCB ALL SUBTASKS ARE   @ZA07126 06722100
+         O     R1,HIORDER     GOING TO BE RESET DISPATCHABLE   @ZA07126 06722700
+         LH    R13,TCBNDTSB   TURN OFF TCBNDTS IN TCBNDSP2     @ZA07126 06723300
+         L     R5,CVTPTR           GET CVT                     @ZA07126 06723900
+         USING CVT,R5              USE IT                      @ZA07126 06724500
+         L     R5,CVTABEND         GET SECONDARY CVT           @ZA07126 06725100
+         USING SCVTSECT,R5         USE IT                      @ZA07126 06725700
+         L     R15,SCVTSTAT   GET BRANCH ENTRY TO STATUS       @ZA07126 06726300
+         BALR  R14,R15                                         @ZA07126 06726900
+TESTTSO  L     R8,ASCBCSCB        GET CSCB                     @ZA07126 06727500
+         USING CHAIN,R8           ADDRESS THE CSCB             @ZA07126 06728100
+         CLI   CHTRKID,CHTSID     CHECK FOR A TSO MEMORY       @ZA07126 06728700
+         BNE   RESTREGS           NO EXIT                      @ZA07126 06729300
+         DROP  R8                                              @ZA07126 06729900
+         EJECT                                                          06730500
+*********************************************************************** 06731100
+* THEN THE TSB IS CHECKED FOR EXISTENCE. (I.E. NON-ZERO ADDR   @Z40DQSS 06731700
+* IN THE ASCB). IF IT DOES NOT EXIST THEN SKIP THE TEST FOR    @Z40DQSS 06732300
+* VTAM TSB. IF THE TSB EXISTS THEN TEST TO SEE IF IT IS A VTAM @Z40DQSS 06732900
+* TSB. IF THE TSB EXISTS THEN TEST TO SEE IF IT IS A VTAM TSB. @Z40DQSS 06733500
+* IF IT IS, THEN SKIP THE QTIP ROUTINE AND ISSUE THE CANCEL    @Z40DQSS 06734100
+* POST. IF IT IS NOT A VTAM TSB THEN THE LWA (LOGON WORK AREA) @Z40DQSS 06734700
+* IS CHECKED FOR A NON-ZERO TCB ADDRESS FOR THE LOGON          @Z40DQSS 06735300
+* SCHEDULER. IF THE POINTERS ARE NON-ZERO, A BRANCH ENTRY TO   @Z40DQSS 06735900
+* TO STATUS IS SET UP TO SET NON-DISPATCHABLE THE LOGON        @Z40DQSS 06736500
+* SCHEDULER AND ALL OF ITS SUBTASKS. IF THE POINTERS ARE ZERO  @Z40DQSS 06737100
+* CONTROL GOES TO THE POST AND QTIP ROUTINES AND WILL BYPASS   @Z40DQSS 06737700
+* THE STATUS RESET ROUTINE.                                    @Z40DQSS 06738300
+*                                                                       06738900
+*********************************************************************** 06739500
+         L     R7,ASCBTSB       GET TSB PTR FROM ASCB          @Z40DQSS 06740100
+         LR    R8,R7            SAVE TSB ADDR FOR USE AFTER    @Z40DQSS 06740700
+*                               THE POST ROUTINE               @Z40DQSS 06741300
+         LTR   R7,R7            VERITY THAT TSB EXISTS         @Z40DQSS 06741900
+         BZ    TESTLWA          IF NO TSB, SKIP VTAM TEST      @Z40DQSS 06742500
+         USING TSB,R7           ESTABLISH TSB ADDRESSIBILITY   @Z40DQSS 06743100
+         TM    TSBFLG5,TSBVTAM  THIS A VTAM TSB?               @Z40DQSS 06743700
+         BO    POSTRTN          YES, ISSUE CANCEL POST         @Z40DQSS 06744300
+TESTLWA  EQU   *                                                        06744900
+         L     R7,ASCBASXB        GET ADDR OF ASXB             @Z40DQSS 06745500
+         USING ASXB,R7            GET ADDRESABILITY TO ASXB    @Z40DQSS 06746100
+         L     R7,ASXBLWA         GET LWA PTR FROM ASXB                 06749902
+         LTR   R7,R7              VERIFY LWA CREATED IN MEMORY          06799902
+         BZ    QTIPRTN            IF NO LWA, GO TO QTIP         YM01528 06849902
+         USING LWA,R7             ESTABLISH LWA ADDRESSIBILITY          06899902
+         EJECT                                                          06949900
+**********************************************************************  07059902
+*                                                                       07069902
+* THE FOLLOWING CODE SETS UP THE PARAMETERS IN REGISTERS                07071902
+* FOR A BRANCH ENTRY TO THE STATUS FUNCTION.                            07073902
+*                                                                       07079902
+**********************************************************************  07089902
+         TM    LWAFLGS4,LWASICSP  BYPASS STATUS START,STOP?    @ZA08182 07099900
+         BO    QTIPRTN            YES, ISSUE QTIP 24           @ZA08182 07105900
+         L     R1,LWASTCB         GET PTR TO LOGON SCHEDULER TCB        07139902
+         LA    R1,D0(R1)          CLEAR HI-ORDER BYTE FOR STATUS        07141902
+         LTR   R1,R1              VERIFY ITS EXISTENCE.                 07143902
+         BZ    QTIPRTN            IF NO TCB, GO TO QTIP         YM01528 07145902
+         LA    R13,NONDISP        SECONDARY MASK IN LO-ORDER BYTE       07199902
+         SLL   R13,D8             POSITION MASK FOR STATUS TO   YM01821 07249902
+*                                 OR IN TCBSCNDY WORD OF        YM01821 07259902
+*                                 NONDISPATCHIBILITY BITS       YM01821 07269902
+         LA    R0,CODE10          ENTRY CODE FOR STATUS PROCESSING      07299902
+         L     R6,CVTPTR          GET PTR TO CVT                        07349902
+         USING CVT,R6             ESTABLISH CVT ADDRESSIBILITY          07399902
+         L     R6,CVTABEND        GET PTR TO SECONDARY CVT              07449902
+         USING SCVTSECT,R6        SECONDARY CVT ADDRESSIBILITY          07499902
+         L     R15,SCVTSTAT       GET ENTRY POINT OF STATUS             07549902
+         BALR  R14,R15            BRANCH ENTER STATUS                   07599902
+         EJECT                                                          07649902
+**********************************************************************  07651902
+*                                                                       07653902
+* THE FOLLOWING CODE SETS UP THE INTERFACE FOR QTIP CANCEL              07654302
+* PROCESSING. QTIP WILL SET THE TSBCANC BIT IN THE TSB AND WILL         07654702
+* REMOVE FROM OWAIT CONDITIONS ANY TASK WHICH HAS DONE A TPUT TO        07655102
+* THE USER BEING CANCELLED.                                             07655502
+*                                                                       07655902
+**********************************************************************  07657902
+QTIPRTN  EQU   *                                                YM01528 07667902
+         LA    R0,CODE24          CANCEL ENTRY CODE                     07669902
+         SR    R5,R5              CLEAR REG 5 FOR QTIP                  07679902
+         LH    R5,SRBPASID        GIVE ASID OF USER CANCELLED           07689902
+         L     R4,CVTPTR          CVT POINTER                           07691902
+         USING CVT,R4             ESTABLISH CVT ADDRESSIBILITY          07693902
+         L     R4,CVTAQAVT        PTR TO TCAM CVT EXTENSION             07695902
+         LTR   R4,R4              IS TCAM UP?                   YM01821 07696302
+         BZ    POSTRTN            NO, BYPASS QTIP ENTRY         YM01821 07696702
+         USING IEDQTCX,R4         ADDRESSIBILITY TO TCAM BLOCK          07697902
+         L     R4,TCXRPT          PTR: TIOC REFERENCE PTR TABLE         07698302
+         LTR   R4,R4              IS RPT INITIALIZED?           YM01821 07698402
+         BZ    POSTRTN            NO, BYPASS QTIP ENTRY         YM01821 07698502
+         USING TIOCRPT,R4         ADDRESSIBILITY TO TIOC BLOCK          07698702
+         L     R15,TIOCQTIP       GET ENTRY POINT TO QTIP               07699102
+         BALR  R14,R15            BRANCH ENTER QTIP                     07699502
+         EJECT                                                          07699602
+**********************************************************************  07749602
+*                                                                       07769602
+* THE FOLLOWING CODE SETS UP THE PARAMETERS FOR A BRANCH ENTRY TO       07771602
+* POST. THE POST CODE ORIGINATES FROM SVC 34 CANCEL (IEE3703D)          07773602
+* OR TIOC AND IS PASSED TO IKJEFLF WHO PASSES IT TO THIS ROUTINE.       07775602
+* THE ASCB ALSO PASSED TO IKJEFLF FROM CANCEL AND TIOC. THE CSCB        07777602
+* IS OBTAINED FROM THE ASCB: THE CANCEL ECB IS IN THE CSCB.             07778002
+*                                                                       07779602
+**********************************************************************  07789602
+POSTRTN  EQU   *                                                YM01821 07791602
+         L     R10,PARMPOST       POST CODE FROM IKJEFLF                07799602
+         L     R4,PARMCSCB        CSCB PTR FROM IKJEFLF                 07849602
+         USING CHAIN,R4           ESTABLISH CSCB ADDRESSIBILITY         07899602
+         LA    R11,CHCECB         ADDRESS CANCEL ECB FOR POST           07949602
+         L     R5,CVTPTR          GET CVT POINTER                       07999602
+         USING CVT,R5             ESTABLISH CVT ADDRESSIBILITY          08049602
+         L     R15,CVT0PT01       GET ENTRY POINT OF POST               08099602
+         BALR  R14,R15            BRANCH ENTER POST                     08149602
+         EJECT                                                          08199602
+**********************************************************************  08209602
+*                                                                       08219602
+* THE FOLLOWING CODE ISSUES A BRANCH ENTRY FOR STATUS RESET FOR         08221602
+* THE LOGON SCHEDULER. THIS WILL REMOVE THE NONDISPATCHIBILITY          08223602
+* BIT SETTINGS IN THE LOGON SCHEDULER'S TCB.                            08225602
+* IF THE LOGON SCHEDULER TCB OR THE LWA EXIST OR THE USER IS A @Z40DQSS 08227600
+* VTAM TSO USER, THEN CONTROL GOES TO EXIT ROUTINE, AND        @Z40DQSS 08228000
+* BYPASSES THE NEXT STATUS ROUTINES.                           @Z40DQSS 08230000
+*                                                                       08232000
+**********************************************************************  08239600
+         LTR   R8,R8              IS THERE A TSB?              @Z40DQSS 08242600
+         BZ    CONTSTAT           NO, SKIP TEST FOR VTAM USER  @Z40DQSS 08245600
+         USING TSB,R8             SET ADDRESSIBILITY TO TSB    @Z40DQSS 08248600
+         TM    TSBFLG5,TSBVTAM    A VTAM TSB?                  @Z40DQSS 08251600
+         BO    RESTREGS           YES, RETURN                  @Z40DQSS 08254600
+         DROP  R8                                              @Z40DQSS 08257600
+CONTSTAT EQU   *                                               @Z40DQSS 08260600
+         LTR   R7,R7              IS THERE AN LWA?              YM01528 08263600
+         BZ    RESTREGS           NO, GO TO RETURN              YM01528 08266600
+         TM    LWAFLGS4,LWASICSP  BYPASS STATUS START          @ZA08182 08269600
+         BO    RESTREGS           YES, RETURN                  @ZA08182 08272600
+         L     R1,LWASTCB         IS THERE A LOGON SCHED TCB?   YM01528 08293602
+         LA    R1,D0(R1)          CLEAR HI ORDER                YM01528 08295602
+         LTR   R1,R1              DOES LWASTCB CONTAIN ZERO?    YM01528 08296002
+         BZ    RESTREGS           NO, GO TO RETURN              YM01528 08297602
+         LA    R0,CODE11          ENTRY CODE FOR STATUS RESET           08299602
+         O     R1,HIORDER         SET HI-ORDER BIT FOR RESET            08399602
+         LA    R13,NONDISP        LOAD NONDISPATCHIBILITY MASK          08449602
+         SLL   R13,D8             POSITION MASK FOR STATUS      YM01821 08459602
+         L     R15,SCVTSTAT       GET STATUS BRANCH ENTRY POINT         08499602
+         BALR  R14,R15            BRANCH AND LINK TO STATUS             08549602
+         EJECT                                                          08559602
+**********************************************************************  08561602
+*                                                                       08563602
+* THE FOLLOWING ROUTINE VALIDITY CHECKS TO SEE IF THE LOGON             08564002
+* PROMPTER TCB IS PRESENT. IF IT IS, THE STATUS RESET WHICH             08564402
+* WAS ISSUED FOR THE LOGON SCHEDULER IS ALSO ISSUED FOR THE             08564802
+* LOGON PROMPTER. THAT IS THE PROMPTER WILL BE REMOVED FROM             08565202
+* IWAIT AND OWAIT.                                                      08565302
+*                                                                       08565602
+**********************************************************************  08567602
+         L     R8,LWASTCB         GET LOGON SCHEDULER TCB       YM01528 08617602
+         USING TCB,R8             SCHEDULER TCB ADDRESSIBILITY  YM01528 08627602
+         L     R10,LWAPTID        GET LOGON PROMPTER TCB        YM01528 08637602
+         LA    R10,D0(R10)        CLEAR HIGH ORDER BYTE         YM01528 08638002
+         LTR   R10,R10            TEST IF PROMPTER PRESENT      YM01528 08638402
+         BZ    RESTREGS           IF NOT, GO TO CLEAN-UP RTN    YM01528 08638802
+         L     R5,TCBLTC          GET LAST DAUGHTER OF SCHEDULERYM01528 08639202
+         LTR   R5,R5              WAS THERE A DAUGHTER?         YM01528 08639302
+         BZ    RESTREGS           IF NOT, GO TO CLEAN-UP RTN    YM01528 08639402
+         LA    R5,D0(R5)          CLEAR HIGH ORDER BYTE         YM01528 08642702
+         CR    R5,R10             VERIFY DAUGHTER OF SCHEDULER  YM01528 08644702
+*                                 IS LOGON PROMPTER, AND/OR     YM01528 08645102
+*                                 IS NOT YET DETACHED           YM01528 08645502
+         BNE   RESTREGS           IF NOT, GO TO CLEANUP RTN             08646202
+         LA    R0,CODE11          STATUS ENTRY CODE                     08649502
+         LR    R1,R5              PROMPTER TCB ADDRESS          YM01528 08659502
+         O     R1,HIORDER         SET HI-ORDER BIT FOR RESET            08679502
+         LA    R13,NONDISP        NONDISPATCHIBILITY MASK               08689502
+         SLL   R13,D8             POSITION MASK FOR STATUS      YM01821 08689902
+         L     R15,SCVTSTAT       GET STATUS BRANCH ENTRY POINT         08691502
+         BALR  R14,R15            BALR TO STATUS                        08693502
+         EJECT                                                          08693902
+**********************************************************************  08695502
+*                                                                       08696202
+* THE FOLLOWING ROUTINE FREEMAINS THE SRB AND THE PARMAREA TO THE       08696602
+* SRB ROUTINE, AND RELEASES THE LOCAL AND THE CMS LOCKS.                08696702
+*                                                                       08700402
+**********************************************************************  08701602
+RESTREGS EQU   *                                                        08702802
+         SR    R4,R4              CLEAR REG4 FOR FREEMAIN               08704002
+         L     R7,SRBASCB         ASCB PTR IN R7 FOR FREEMAIN           08705202
+         L     R8,PARMR14         GET RETURN POINT FROM PARMAREA        08706402
+         LA    R1,SRB             GET ADDR SRB PLUS PARMAREA            08707602
+*                                 GET LENGTH SRB PLUS PARMAREA          08708802
+         LA    R0,SRBSIZE+PARMSIZE                                      08710002
+         DROP  R2                                                       08711202
+         FREEMAIN RC,LV=(0),A=(1),SP=239,BRANCH=YES                     08712402
+CLRLOCK  EQU   *                                                        08713602
+         SETLOCK RELEASE,TYPE=CMS,RELATED=(QTIP,IKJL4T00(GETLOCK))      08716002
+         SETLOCK RELEASE,TYPE=LOCAL,RELATED=(CANTSO,IKJL4T00(GETLOCK))  08726002
+         EJECT                                                          08726102
+**********************************************************************  08726402
+*                                                                       08726802
+* THE FOLLOWING ROUTINE DELETES THE FRR ENVIRONMENT ESTABLISHED         08727202
+* AT ENTRY TO THIS SRB ROUTINE AND RETURNS TO THE CALLER.               08727602
+*                                                                       08727702
+**********************************************************************  08727802
+         SETFRR D,WRKREGS=(4,12)                                        08728002
+         LR    R14,R8             RESTORE RETURN ADDRESS                08732802
+RETEXIT  EQU   *                                                        08742802
+         BR    R14                RETURN TO SRB DISPATCHER              08749402
+         EJECT                                                          08749802
+*********************************************************************** 08750202
+*                                                                       08750302
+* THE FOLLOWING ROUTINE IS THE RMTR ROUTINE. THIS IS REQUIRED OF        08750602
+* EVERY SRB ROUTINE. IT IS GIVEN CONTROL BY PURGEDEQ DURING MEMORY      08751002
+* TERMINATION. IT IS PROVIDED IN CASE THE MEMORY TERMINATES BEFORE      08751102
+* THE SRB IS DISPATCHED. PURPOSE IS TO FREEMAIN THE SRB AND RETURN      08751202
+* TO PURGEDEQ. INPUT IS  A POINTER TO THE DEQ'D SRB IN R1 CONTENTS      08751302
+* OF SRBPARM IN R2, RETURN ADDRESS TO PURGEDEQ IN R14.                  08752602
+*                                                                       08753002
+*********************************************************************** 08754602
+IKJL4T01 EQU   *                  RMTR ROUTINE                          08755602
+         BALR  R9,D0              SET BASE REG TO CURRENT ADDRESS       08756602
+ENRMTR   EQU   *                                                        08758602
+         LA    R6,ENRMTR-ENTRYSRB SUBTRACT OFFSET INTO PROGRAM          08758702
+         SR    R9,R6              RESET BASEREG TO BEGINNING            08758902
+         LTR   R1,R1              IS SRB POINTER PASSED?                08759802
+         BZ    RMTREXIT           IF ZERO RETURN                        08760802
+         USING SRBSECT,R1         SET SRB ADDRESSIBILITY                08761802
+*                                 GET LENGTH SRB PLUS PARMAREA          08762802
+         LA    R0,SRBSIZE+PARMSIZE                                      08763802
+         USING PSA,R0              PSA ADDRESSABILITY          @ZA06994 08764800
+         L     R7,PSAAOLD          ASCB TO REG                 @ZA06994 08765000
+         DROP  R0                                              @ZA06994 08765200
+         SR    R4,R4              CLEAR REG4 FOR FREEMAIN               08765400
+         LR    R2,R14             SAVE RETURN ADDRESS                   08765800
+LOCKON   EQU   *                                                        08766000
+         SETLOCK OBTAIN,TYPE=LOCAL,MODE=UNCOND,                        *08766200
+               RELATED=(CANTSO,IKJL4T00(LOCKOFF))              @ZA06994 08766800
+         FREEMAIN RC,LV=(0),A=(1),SP=239,BRANCH=YES                     08767000
+LOCKOFF  EQU   *                                                        08767200
+         SETLOCK RELEASE,TYPE=LOCAL,                                   *08767800
+               RELATED=(CANTSO,IKJL4T00(LOCKON))               @ZA06994 08768100
+         LR    R14,R2             RESTORE RETURN ADDRESS                08768802
+RMTREXIT EQU   *                                                        08769802
+         BR    R14                RETURN TO PURGEDEQ                    08770802
+         EJECT                                                          08771802
+*********************************************************************** 08772802
+* THE FUNCTION OF THE FOLLOWING FRR ROUTINE IS TO FREEMAIN              08773802
+* THE SRB AND RETURN TO SRM. INPUT IS A POINTER TO THE                  08774802
+* SDWA IN REGISTER 1. ALSO FREED IS THE SRB PARMAREA.                   08775802
+* THESE TWO AREAS ARE CONTIGUOUS. THE GETMAIN FOR THEM IS               08776802
+* DONE IN IKJEFLF.                                                      08777802
+*********************************************************************** 08778802
+IKJL4T02 EQU   *                                                        08779802
+         BALR  R9,D0              SET BASEREG TO CURRENT ADDRESS        08780702
+ENFRR    EQU   *                                                        08781102
+         LA    R6,ENFRR-ENTRYSRB  GET OFFSET TO BEGINNING               08781702
+         SR    R9,R6              RESET BASEREG TO BEGINNING            08782002
+         LTR   R1,R1              IS SDWA SUPPLIED?                     08782602
+         BZ    FRREXIT            IF NOT, RETURN                        08782902
+         LR    R2,R14             SAVE RETURN ADDRESS                   08783802
+         USING SDWA,R1            SET ADDRESSIBILITY TO SDWA            08784802
+         L     R5,SDWAPARM        GET PTR TO PARMAREA                   08785802
+         USING FRRPARM,R5         SET ADDRESSIBILITY TO PARMAREA        08786802
+         L     R1,FRRSRB          GET PTR TO SRB BLOCK                  08787802
+*                                 SIZE TO FREEMAIN                      08788802
+         LA    R0,SRBSIZE+PARMSIZE                                      08789802
+         L     R7,FRRASCB         ASCB PTR IN R7 FOR FREEMAIN           08790802
+         SR    R4,R4              CLEAR REG4 FOR FREEMAIN               08791802
+         FREEMAIN RC,LV=(0),A=(1),SP=239,BRANCH=YES                     08792802
+         LR    R14,R2             RESTORE RETURN ADDRESS                08793802
+FRREXIT  EQU   *                                                        08794802
+         BR    R14                RETURN TO SYSTEM RECOVERY MGR         08795802
+         EJECT                                                          08796802
+         DS    0D                                                       08806802
+HIORDER  DC    X'80000000'        USED TO TURN ON HI-ORDER BIT          08828502
+TCBNDTSB DC    AL2(4096)      INDICATE TCBNDTS IN TCBNDSP2     @ZA07126 08849300
+PTCHL4T0 DC    CL50' * * * IKJL4T00 * * *'                              08899300
+         END                                                            08949300

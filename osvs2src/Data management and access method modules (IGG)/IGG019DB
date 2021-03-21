@@ -1,0 +1,534 @@
+   TITLE 'IGG019DB - BDAM CREATE WRITE, VARIABLE/UNDEFINED FORMAT'      00006402
+IGG019DB CSECT                                                          00006802
+*MODULE NAME = IGG019DB                                               * 00008002
+*                                                                     * 00008402
+*DESCRIPTIVE NAME = BDAM CREATE WRITE, VARIABLE & UNDEFINED FORMAT    * 00008902
+*                                                                     * 00009002
+*COPYRIGHT = NONE                                                     * 00011002
+*                                                                     * 00011402
+*CHANGE ACTIVITY                                                      * 00011802
+*                                                                     * 00012002
+*        RELEASE 20 CHANGES/DELETIONS                                   00036002
+*0833000120-000180,000420-000600                                 20201  00039020
+*        RELEASE 21 CHANGES/DELETIONS                                   00049002
+*0410                                                            A46868 00051002
+*        VS1-1 CHANGES/DELETIONS                                        00053002
+*        VS2-1 CHANGES/DELETIONS                                        00055002
+*        VS1-2 CHANGES/DELETIONS                                        00057002
+*        VS2-2 CHANGES/DELETIONS                                        00057402
+*062820-062960,065600-066000                                     Y02072 00057802
+*                                                                       00058202
+*STATUS CHANGE LEVEL 005                                                00059002
+*                                                                       00069002
+*FUNCTIONS- THIS ROUTINE OBTAINS AN IOB, INITIALIZES THE CHANNEL        00100020
+*    PROGRAM, AND ISSUES THE 'EXCP' FOR A WRITE TYPE SF OR SZ TO A      00120020
+*    FORMAT 'V' OR 'U' DATA SET.                                        00140020
+*    IF THIS WRITE IS FOR A RECORD WHICH WILL NOT FIT ON THIS TRACK,    00160020
+*    A RETURN CODE OF 4 WILL BE RETURNED AND THE USER SHOULD NEXT ISSUE 00180020
+*    A WRITE TYPE 'SZ'. THIS WILL CAUSE THE CAPACITY RECORD TO BE       00200020
+*    WRITTEN ON THE CURRENT TRACK.                                      00220020
+*    IF A TYPE 'SZ' IS ISSUED AND THERE HAVE BEEN NO RECORDS WRITTEN    00240020
+*    ON THIS TRACK, THE CAPACITY RECORD WILL BE WRITTEN AND AN ERASE    00260020
+*    CCW INCLUDED TO CLEAR THE REMAINDER OF THE TRACK.                  00280020
+*                                                                       00300020
+*ENTRY POINTS- 'WRTENTRY' IS THE NORMAL ENTRY POINT FROM THE WRITE      00320020
+*    MACRO EXPANSION. CALLING SEQUENCE IS     L     15,DCBWRITE         00340020
+*                                             BALR  14,15               00360020
+*                                                                       00380020
+*    'EOVENTRY' IS THE ENTRY FROM THE BSAM END-OF-VOLUME EXECUTOR TO    00400020
+*    RESTART A WRITE WHICH WAS ISSUED AFTER THE CURRENT SPACE           00420020
+*    ALLOCATION WAS FILLED. THE RECORD WILL NOW BE WRITTEN INTO THE     00440020
+*    SPACE OBTAINED AS SECONDARY ALLOCATION. CALLING SEQUENCE IS        00460020
+*                                              L    15,DCBWRITE         00480020
+*                                              BAL  14,4(15)            00500020
+*INPUT- TO 'WRTENTRY'- DECB ADDRESS IN REGISTER 1                       00520020
+*       TO 'EOVENTRY'- IOB ADDRESS IN REGISTER 3                        00540020
+*                      DCB ADDRESS IN REGISTER 2                        00560020
+*                      DEB ADDRESS IN REGISTER 5                        00580020
+*                                                                       00600020
+*OUTPUT- AN IOB FROM THE POOL OF IOBS WILL BE ASSIGNED TO THIS DECB     00620020
+*    AND ITS ADDRESS PLACED IN THE DECB, EXCP WILL BE ISSUED TO         00640020
+*    SCHEDULE THIS WRITE.                                               00660020
+*                                                                       00680020
+*EXTERNAL ROUTINES-                                                     00700020
+*                                                                       00720020
+*EXITS- 'RETURN' IS AN EXIT BACK TO THE USER, REGISTER 15 WILL CONTAIN  00740020
+*    A RETURN CODE AS FOLLOWS,                                          00760020
+*        0 = RECORD WAS WRITTEN, THERE IS MORE SPACE ON THE TRACK       00780020
+*        4 = RECORD NOT WRITTEN, THE TRACK IS FILLED, TYPE SZ SHOULD BE 00800020
+*            ISSUED AND THEN THE TYPE SF MAY BE REISSUED.               00820020
+*        8 = RECORD WAS WRITTEN, DATA SET IS FILLED                     00840020
+*        12= RECORD NOT WRITTEN, NO IOB IS AVAILABLE UNTIL 'CHECK' HAS  00860020
+*            BEEN ISSUED.                                               00880020
+*    'EOVEXIT' IS A RETURN TO THE END-OF-VOLUME EXECUTOR.               00900020
+*                                                                       00920020
+*    'ABEXIT' IS AN EXIT WHEN THE RECORD WILL NOT FIT ON AN EMPTY       00940002
+*      TRACK. A DMABCOND MACRO IS ISSUED TO TRANSFER CONTROL TO         00960002
+*      THE PROBLEM DETERMINATION MODULES WHICH WILL ISSUE A WTP         00970002
+*      MESSAGE AND GTRACE PERTINENT CONTROL BLOCKS BEFORE ISSUING       00972002
+*      THE ABEND. A RETURN CODE ACCOMPANYING THE ABEND WILL             00974002
+*      IDENTIFY THE EXACT CAUSE OF THE ERROR.                           00976002
+*                                                                       00980020
+*TABLES  1. DIRECT ACCESS DEVICE TABLE IS USED TO CALCULATE THE BYTES   01000020
+*           OF OVERHEAD FOR THIS RECORD AND TO DETERMINE THE NEXT       01020020
+*           VALID TRACK ADDRESS AND TRACK LENGTH.                       01040020
+*                                                                       01060020
+*ATTRIBUTES- THIS ROUTINE IS REENTRANT AND EXECUTED ENABLED.            01080020
+*                                                                       01100020
+*NOTES- THE REGISTER USAGE IN THIS MODULE AND THE BSAM END-OF-VOLUME    01120020
+*    EXECUTOR MUST REMAIN CONSISTENT.                                   01140020
+*                                                                       01160020
+*                                                                       01180020
+*  REGISTER USAGE                                                       01200020
+*                                                                       01220020
+         USING IGG019DB,EPREG                                           01240020
+         USING IHADCB,DCBREG                                            01260020
+         USING IOBDEF,IOBREG                                            01280020
+         USING DEB,DEBREG                                               01300020
+         USING DECBDEF,DECBREG                                          01320020
+*                                                                       01340020
+WKREG    EQU   0         WORK REGISTER                                  01360020
+PARAM1   EQU   1         PARAMETER REGISTER                             01380020
+DECBREG  EQU   1         DECB ADDRESS                                   01400020
+DCBREG   EQU   2         DCB ADDRESS                                    01420020
+IOBREG   EQU   3         IOB ADDRESS                                    01440020
+EOVRETRN EQU   4         EOV RETURN ADDRESS                             01460020
+DEBREG   EQU   5         DEB ADDRESS                                    01480020
+WKREG1   EQU   6         WORK REGISTERS                                 01500020
+WKREG2   EQU   7                                                        01520020
+WKREG3   EQU   8                                                        01540020
+WKREG4   EQU   9                                                        01560020
+CCHH     EQU   9                                                        01580020
+WKREG5   EQU   10                                                       01600020
+WKREG6   EQU   11                                                       01620020
+BASE     EQU   12        BASE OF THIS MODULE                            01640020
+SAVE     EQU   13        USER'S SAVE AREA                               01660020
+RETREG   EQU   14        RETURN ADDRESS WHEN ENTERED                    01680020
+EPREG    EQU   15        ENTRY POINT                                    01700020
+*                                                                       01720020
+*                                                                       01740020
+*                                                                       01760020
+*                                                                       01780020
+*  ENTRY POINTS TO THIS ROUTINE                                         01800020
+*                                                                       01820020
+WRTENTRY B     BEGIN                   GO TO BEGINNING OF WRITE CODE    01840020
+*                                                                       01860020
+         DROP  EPREG                                                    01880020
+         USING IGG019DB,BASE                                            01900020
+*                                                                       01920020
+EOVENTRY L     DECBREG,IOBECBPT        LOAD DECB BASE ADDRESS           01940020
+         L     BASE,DCBWRITE           SET BASE REGISTER                01960020
+         LR    EOVRETRN,RETREG         MOVE RETURN TO EOV ADDRESS       01980020
+         B     TSTSZ                   GO DETERMINE TYPE OF WRITE       02000020
+*                                                                       02020020
+*                                                                       02040020
+BEGIN    SAVE  (14,12)                 SAVE THE USER'S REGISTER         02060020
+         L     DCBREG,DECDCBAD         LOAD DCB BASE ADDRESS FROM DECB  02080020
+         L     DEBREG,DCBDEBAD         LOAD DEB BASE ADDRESS FROM DCB   02100020
+         LR    BASE,EPREG              MOVE ENTRY POINT TO BASE REG.    02120020
+         L     IOBREG,DCBIOBA          LOAD CURRENT IOB ADDRESS         02140020
+         TS    IOBLINK+4               IS CURRENT IOB AVAILABLE         02160020
+         BC    8,OKIOB                 BR YES (PREV RCD DIDN'T FIT TRK) 02180020
+*                                                                       02200020
+         L     IOBREG,IOBLINK          LOAD ADDRESS OF NEXT IOB         02220020
+         TS    IOBLINK+4               IF NEXT IOB IS AVAILABLE         02240020
+         BC    8,OKIOB                  GO INITIALIZE IT                02260020
+*                                      ELSE RETURN WITH ERROR CODE 12   02280020
+         LA    15,12                                                    02300020
+         B     RETURN                                                   02320020
+*                                                                       02340020
+*                                                                       02360020
+USEBLKS  LH    WKREG4,DCBBLKSI         USE MAXIMUM LENGTH AS DATA LNG   02380020
+         B     ADDKEY                   GO ADD KEY LENGTH               02400020
+*                                                                       02420020
+USELL    LA    WKREG4,0(WKREG1,WKREG3) FIND THE FIRST TWO BYTES OF THE  02440020
+         MVC   IOBCSW(2),0(WKREG4)      USER'S RECORD, ALIGN THEM,      02460020
+         LH    WKREG4,IOBCSW            USE AS DATA LENGTH.             02480020
+         B     ADDKEY                  GO ADD KEY LENGTH                02500020
+*                                                                       02520020
+*                                                                       02540020
+OKIOB    ST    IOBREG,DCBIOBA          STORE CURRENT IOB ADDRESS IN DCB 02560020
+         LA    WKREG,8(0,IOBREG)       STORE ADDRESS OF IOS IOB IN      02580020
+         ST    WKREG,DECIOBPT            THE DECB                       02600020
+         ST    DECBREG,IOBECBPT        STORE DECB ADDRESS IN IOB        02620020
+         TM    DCBCIND1,VOLFUL          IS THE VOLUME FULL YET   A46868 02625021
+         BO    POSTEOV                  YES, SET EOV BIT AND     A46868 02630021
+*                                       RETURN                   A46868 02635021
+TSTSZ    TM    DECTYPE+1,WZERO         IS THIS A WRITE R0 REQUEST       02640020
+         BC    1,WZERORTN               YES, GO TO WZERO ROUTINE        02660020
+         LA    WKREG,IOBCCW1           BE SURE IOBSTART IS              02680020
+         ST    WKREG,IOBSTART           RESET TO CCW1                   02700020
+*                                                                       02720020
+         SR    WKREG1,WKREG1           INSERT KEY LENGTH FROM THE DCB   02740020
+         IC    WKREG1,DCBKEYLE          (MAY BE ZERO)                   02760020
+         L     WKREG3,DECAREA          LOAD ADDRESS OF OUTPUT AREA      02780020
+TSTV     TM    DCBRECFM,UNKWN          IF FORMAT IS VARIABLE            02800020
+         BC    8,USELL                  GO USE LL FROM RECORD           02820020
+         TM    DECTYPE,SOPT     IF THE OPTION TO USE DCBBLOCK SIZE 6991 02840020
+         BC    1,USEBLKS                WAS SPECIFIED, GO USE IT        02860020
+         LH    WKREG4,DECLNGTH         USE DECB LENGTH AS DATA LENGTH   02880020
+*                                                                       02900020
+ADDKEY   LA    WKREG2,0(WKREG1,WKREG4) ADD KEY LENGTH + DATA LENGTH     02920020
+         STH   WKREG4,IOBDNRCF+6       STORE DATA LNG IN NEW COUNT FLD  02940020
+         CLI   IOBCCW1,SETSECT          IS THIS RPS              20201  02941020
+         BNE   NOTCARN                  IF NOT, TREAT C.P. AS    20201  02942020
+*                                       USUAL                    20201  02943020
+         LTR   WKREG2,WKREG2            TEST IF ANY BYTES ARE    20201  02944020
+*                                       WRITTEN                  20201  02945020
+         BNZ   REALRIT                  YES GO ON                20201  02946020
+         NI    IOBCCW4+D4,CCHNOFF       TURN OFF CHAIN BIT       20201  02947020
+         B     NEXT01                   BRANCH                   20201  02948020
+REALRIT  EQU   *                                                 20201  02949020
+         OI    IOBCCW4+D4,CCHN                                   20201  02950020
+NEXT01   EQU   *                                                 20201  02951020
+         MVC   IOBCCW5+D1(THREE),DECAREA+D1  MOVE AREA TO WRT    20201  02952020
+*                                                                       02953020
+         STH   WKREG2,IOBCCW5+D6        ST KL+DL IN WRT CCW CNT  20201  02954020
+         B     CALCLGN                  BRANCH AROUND NON RPS    20201  02955020
+*                                       RTN                      20201  02956020
+NOTCARN  EQU   *                                                 20201  02957020
+         LTR   WKREG2,WKREG2           TEST IF ANY BYTES ARE WRITTEN    02960020
+         BC    7,REALRITE              YES GO ON                        02980020
+         NI    IOBCCW3+4,X'BF'          TURN OFF COMMAND CHAIN BIT      03000020
+         B     *+8                                                      03020020
+REALRITE EQU   *                                                        03040020
+         OI    IOBCCW3+4,CCHN          TURN ON COMMAND CHAIN BIT        03060020
+         MVC   IOBCCW4+1(3),DECAREA+1  MOVE AREA TO WRITE CCW ADDRESS   03080020
+         STH   WKREG2,IOBCCW4+6        STORE KL+DL IN WRITE CCW COUNT   03100020
+*                                                                       03120020
+*                                                                       03140020
+*  CALCULATE RECORD LENGTH PLUS OVERHEAD                                03160020
+*                                                                       03180020
+CALCLGN  L     WKREG3,DCBDVTBL         LOAD ADDR. OF DADT ENTRY         03200020
+         SR    WKREG,WKREG             IF NO KEYS ARE BEING WRITTEN,    03220020
+         CLI   DCBKEYLE,0               WKREG WILL CONTAIN THE OVERHEAD 03240020
+         BC    7,*+8                     TO BE SUBTRACTED               03260020
+         IC    WKREG,OVERK(0,WKREG3)     FOR UNKEYED RECORDS            03280020
+         SR    WKREG5,WKREG5                                            03300020
+         IC    WKREG5,OVERL(0,WKREG3)  DEVELOP BYTES NEEDED FOR A       03320020
+         TM    BYTEDEV(WKREG3),TBOVHD   TWO BYTE OVERHEAD USED   20201  03324020
+         BNO   MZ0010                   BRANCH NO                20201  03328020
+         LH    WKREG5,OVERI(WKREG3)     GET TWO BYTE OVERHEAD    20201  03332020
+MZ0010   EQU   *                                                 20201  03336020
+         AR    WKREG5,WKREG2               LAST RECORD BY               03340020
+         SR    WKREG5,WKREG                KL+DL+OVERHEAD.              03360020
+*                                                                       03380020
+         SR    WKREG6,WKREG6              DEVELOP BYTES NEEDED FOR AN   03400020
+         IC    WKREG6,OVERI(0,WKREG3)      INTERMEDIATE RECORD BY       03420020
+         TM    BYTEDEV(WKREG3),TBOVHD   TWO BYTE OVERHEAD USED   20201  03424020
+         BNO   MZ0020                   BRANCH NO                20201  03428020
+         LH    WKREG6,OVERI(WKREG3)     GET TWO BYTE OVERHEAD    20201  03432020
+MZ0020   EQU   *                                                 20201  03436020
+         MH    WKREG2,TOLER(0,WKREG3)       (KL+DL)TOLER+OVERHEAD       03440020
+         SRL   WKREG2,9                                                 03460020
+         AR    WKREG6,WKREG2                                            03480020
+         SR    WKREG6,WKREG                                             03500020
+*                              WKREG5 = SIZE OF A LAST RECORD ON TRACK  03520020
+*                              WKREG6 = SIZE OF AN INTERMEDIATE RECORD  03540020
+*                                                                       03560020
+*                                                                       03580020
+         TM    DCBCIND2,WZEROBIT       WAS PREVIOUS WRITE A WRITE R0    03600020
+         BC    1,WZEROFF                YES, GO INCREMENT TO NEXT TRACK 03620020
+*                                                                       03640020
+         CH    WKREG5,DCBTRBAL         DOES RECORD FIT AS LAST ON TRACK 03660020
+         BC    2,FULLTRK                NO, USE RETURN CODE OF 4        03680020
+*                                                                       03700020
+*   UPDATE DCB FIELDS                                                   03720020
+*                                                                       03740020
+FITS     LH    WKREG3,DCBTRBAL         DECREMENT TRACK BALANCE BY       03760020
+         SR    WKREG3,WKREG6            THE SIZE OF AN                  03780020
+         STH   WKREG3,DCBTRBAL          INTERMEDIATE RECORD             03800020
+         MVC   IOBSEEK(8),DCBFDAD      MOVE PRIOR RECORD AS SEARCH ARG  03820020
+         IC    WKREG3,DCBFDAD+7        INCREMENT THE R BYTE             03840020
+         LA    WKREG3,1(0,WKREG3)       OF MBBCCHHR                     03860020
+         STC   WKREG3,DCBFDAD+7         BY ONE                          03880020
+         MVC   IOBDNRCF(5),DCBFDAD+3   MOVE CURRENT CCHHR TO NEW COUNT  03900020
+*                                                                       03920020
+         BAL   WKREG1,EXCP             GO SCHEDULE THIS WRITE AND       03940020
+*                                       TEST FOR ENTRY FROM EOV         03960020
+*                                                                       03980020
+NORMAL   SR    15,15                                                    04000020
+*                                                                       04020020
+RETURN   RETURN (14,12),T,RC=(15)      RETURN TO THE USER               04040020
+*                                                                       04060020
+*                                                                       04080020
+*                                                                       04100020
+SETEOV   OI    DCBCIND1,VOLFUL         MARK DCB SO FUTURE REQ.S BYPASS  04120020
+         BCTR  WKREG3,0                 RESTORE DCBFDAD           12987 04126020
+         STC   WKREG3,DCBFDAD                                     12987 04132020
+POSTEOV  OI    IOBLINK,EOVBIT          MARK IOB AS NOT SCHEDULED BY IOS 04140020
+         B     NORMAL                  RETURN TO THE USER               04160020
+*                                                                       04180020
+*  WRITE ZERO ROUTINE                                                   04200020
+*                                                                       04220020
+WZERORTN LA    WKREG1,IOBCCW5          RESET START ADDR. TO SEARCH R0   04240020
+         CLI   IOBCCW1,SETSECT          IS RPS FEATURED          20201  04241020
+         BNE   NONCARN                  IF NOT, SKIP RPS RTN     20201  04242020
+         LA    WKREG1,IOBCCW7           RESET START ADDR TO SET  20201  04243020
+*                                       SECT                     20201  04244020
+         TM    DCBOPTCD,WRTCHK            CCW7 FOR NO WRTCHK     20201  04245020
+*                                       WHITH REC                20201  04246020
+         BZ    SETCHAIN                   REDY. ELSE START ADDR  20201  04247020
+*                                       IS                       20201  04248020
+         LA    WKREG1,IOBCCW11            CCW11 FOR WRT CHK WITH 20201  04249020
+*                                       REC                      20201  04250020
+SETCHAIN OI    D28(WKREG1),CCHN          REDY. ALSO SET COMMAND  20201  04251020
+         OI    D60(WKREG1),CCHN          CHAINS FOR VERIFY AND   20201  04252020
+*                                         ERASE AND BR AROUND           04253020
+         B     SKPUSUAL                   USUAL WRT0 RTN         20201  04254020
+NONCARN  EQU   *                                                 20201  04255020
+         TM    DCBOPTCD,WRTCHK          CCW. IF WRITE CHECK IS NOT      04260020
+         BC    8,SETCCHN                SPECIFIED ADDRESS IS CCW5       04280020
+         LA    WKREG1,IOBCCW8           ELSE START ADDRESS IS CCW8      04300020
+SETCCHN  OI    20(WKREG1),CCHN          TURN ON VERIFY COMMAND CHAIN    04320020
+         OI    44(WKREG1),CCHN           AND ERASE COMMAND CHAIN        04340020
+SKPUSUAL EQU   *                                                 20201  04350020
+         ST    WKREG1,IOBSTART          STORE STARTING ADDRESS IN IOB   04360020
+         TM    DCBCIND2,WZEROBIT       SHOULD THIS WRITE ERASE TRACK    04380020
+         BC    1,UPTRACK                YES, GO INCREMENT TRACK NUMBER  04400020
+         CLI   DCBFDAD+7,0             FIRST WRITE MAY BE TO WRITE R0   04420020
+         BC    8,TURNONR0               IF SO, ERASE TRACK ONE          04440020
+         CLI   IOBCCW1,SETSECT          IS RPS FEATURED          20201  04442020
+         BNE   NOTRECR                  BRANCH IF NOT            20201  04444020
+         NI    D60(WKREG1),SILSKP       TURN OFF ERASE CC        20201  04446020
+         TM    DCBOPTCD,WRTCHK          IS WRT CHK SPECIFIED     20201  04448020
+         BO    TURNONR0                 YES, GO SET UP WRITE     20201  04450020
+         NI    D28(WKREG1),SILSKP       TURN OFF VERIFY C.C.     20201  04452020
+         B     TURNONR0                 BRANCH AROUND NON RPS    20201  04454020
+*                                       RTN                      20201  04456020
+NOTRECR  EQU   *                                                 20201  04458020
+         NI    44(WKREG1),X'30'         TURN OFF ERASE COMMAND CHAIN    04460020
+         TM    DCBOPTCD,WRTCHK          IS WRITE CHECK SPECIFIED        04480020
+         BC    1,TURNONR0                YES, GO SET UP TO WRITE.  NO,  04500020
+         NI    20(WKREG1),X'30'         TURN OFF VERIFY COMMAND CHAIN   04520020
+*                                                                       04540020
+TURNONR0 MVC   IOBR0CNT(4),DCBFDAD+3   MOVE CCHH0 TO R0 COUNT           04560020
+         MVC   IOBR0DAT(5),DCBFDAD+3   MOVE CCHHR AS HIGHEST ID ON TRK  04580020
+         MVC   IOBR0DAT+5(2),DCBTRBAL  MOVE TRBAL AS BYTES REMAINING    04600020
+         MVC   IOBSEEK,DCBFDAD         MOVE CURRENT ADDR AS SEEK ADDR   04620020
+         OI    DCBCIND2,WZEROBIT       SET- LAST I/O WAS A WRITE R0 BIT 04640020
+*                                                                       04660020
+         BAL   WKREG1,EXCP             GO SCHEDULE THIS WRITE AND       04680020
+*                                       TEST FOR ENTRY FROM EOV         04700020
+*                                                                       04720020
+         SR    WKREG2,WKREG2           FIND LAST EXTENT IN THE DEB      04740020
+         IC    WKREG2,DEBNMEXT          BY NUMBER OF EXTENTS            04760020
+         BCTR  WKREG2,0                  MINUS ONE                      04780020
+         SLL   WKREG2,4                 TIMES 16                        04800020
+         AR    WKREG2,DEBREG            PLUS DEB BASE ADDRESS           04820020
+         CLC   DCBFDAD+3(4),DEBENDCC-DEB(WKREG2)  IS THIS LAST TRACK    04840020
+         BC    7,NORMAL                 NO, USE RETURN CODE OF 0        04860020
+*                                                                       04880020
+EOV      LA    15,8          SET RETURN CODE-LAST TRACK WRITTEN         04900020
+         B     RETURN         GO BACK TO THE USER                       04920020
+*                                                                       04940020
+*                                                                       04960020
+FULLTRK  MVI   IOBLINK+4,0             MARK THIS IOB AVAILABLE AGAIN    04980020
+         LA    15,4                    SET RETURN CODE-TRACK IS FULL    05000020
+         B     RETURN                  GO BACK TO THE USER              05020020
+*                                                                       05040020
+*                                                                       05060020
+*   INCREMENT TRACK ADDRESS BY 1 AND CHECK VALIDITY                     05080020
+*                                                                       05100020
+WZEROFF  XI    DCBCIND2,WZEROBIT       TURN OFF WRITE R0 FLAG           05120020
+UPTRACK  L     WKREG1,DCBDVTBL         LOAD ADDRESS OF DADT ENTRY       05140020
+         MVC   IOBCSW(4),MAXCC(WKREG1) MOVE NO. OF CYL.S, TRACKS TO IOB 05160020
+         MVC   IOBCSW+4(4),DCBFDAD+3   MOVE CURRENT CCHH FOR ALIGNMENT  05180020
+         MVC   DCBTRBAL,TRKL(WKREG1)   RESET TRACK BALANCE TO FULL AMT  05200020
+         SR    WKREG2,WKREG2                                            05220020
+         IC    WKREG2,DCBFDAD          DEVELOP POINTER TO CURRENT       05240020
+         SLL   WKREG2,4                 EXTENT IN THE DEB               05260020
+         AR    WKREG2,DEBREG                                            05280020
+         LA    IOBREG,0(0,IOBREG)      BE SURE HI-ORDER BYTE IS ZERO    05300020
+         LA    WKREG3,3(0,IOBREG)       SET CCHH VALUE TO HH      12748 05320020
+         L     CCHH,IOBCSW+4           LOAD CURRENT CCHH TO AN ACCUM.   05340020
+         TM    BYTEDEV(WKREG1),BYTE     ARE BYTES NON-CONTIGUOUS  12748 05346020
+         BZ    DOWNONE                  BRANCH IF CONTIGUOUS      12748 05352020
+ADDONE   AH    CCHH,ONE                ADD ONE TO THE LO-ORDER BYTE     05360020
+         TM    BYTEDEV(WKREG1),BYTE    ARE BYTES NON-CONTIGUOUS         05380020
+         BC    1,USEBYTE                YES, TREAT EACH SEPARATELY      05400020
+         STH   CCHH,IOBCSW+4-IOBDEF(0,WKREG3)     STORE NEW CC OR HH    05420020
+         CLC   IOBCSW+4-IOBDEF(2,WKREG3),IOBCSW-IOBDEF(WKREG3)          05440020
+*                                                 CHECK FOR VALID VALUE 05460020
+         BC    4,TSTEXT                ADDRESS VALID, CHECK EXTENT      05480020
+         SRL   CCHH,16                 SHIFT TO CC VALUE                05500020
+         XC    IOBCSW-IOBDEF+4(2,WKREG3),IOBCSW-IOBDEF+4(WKREG3)  12748 05520020
+*        ZERO THE BYTES PROCESSED                                 12748 05540020
+*                                                OF CCHH                05560020
+         BCTR  WKREG3,0                DECREMENT THE CCHH INDEX         05580020
+DOWNONE  BCTR  WKREG3,0                                                 05600020
+         CR    WKREG3,IOBREG           HAVE ALL BYTES BEEN PROCESSED    05620020
+         BC    10,ADDONE                NO, LOOP TO ADD ONE TO NEXT BYT 05640020
+*                                                                       05660020
+NEXTEXT  IC    WKREG3,DCBFDAD          INCREMENT M AND SEE IF THIS WAS  05680020
+         LA    WKREG3,1(0,WKREG3)       THE LAST EXTENT.                05700020
+         STC   WKREG3,DCBFDAD                                           05720020
+         CLC   DCBFDAD(1),DEBNMEXT                                      05740020
+         BC    8,SETEOV                 YES, GO SET EOV BIT             05760020
+*                                                                       05780020
+         LA    WKREG2,16(0,WKREG2)     INCREMENT TO NEXT EXTENT         05800020
+         MVC   DCBFDAD+1(6),DEBBINUM-DEB(WKREG2) MOVE BBCCHH TO DCB     05820020
+RESETBAL MVI   DCBFDAD+7,0             MOVE A ZERO TO R BYTE            05840020
+         TM    DECTYPE+1,WZERO         THIS A WRITE ZERO REQUEST        05860020
+         BC    1,TURNONR0               YES GO TO SET UP FOR WRITE R0   05880020
+         CH    WKREG5,DCBTRBAL         WILL THE NEW TRACK HOLD ONE RCD. 05900020
+         BC    12,FITS                  YES, GO UPDATE DCB              05920020
+ABEXIT   DMABCOND  205,SVC=YES,DCB=(DCBREG) BR PROB DET TO ABEND Y02072 05960002
+*                                                                       05980020
+USEBYTE  STC   CCHH,IOBCSW+4-IOBDEF(0,WKREG3) STORE AND           12748 06000020
+         SRL   CCHH,8                   SHIFT TO THE NEXT ONE           06020020
+         CLC   IOBCSW+4-IOBDEF(1,WKREG3),IOBCSW-IOBDEF(WKREG3)    12748 06040020
+*                                               THIS BYTE VALID         06060020
+         BC    4,TSTEXT                YES, GO CHECK EXTENT LIMIT       06080020
+         MVI   IOBCSW+4-IOBDEF(WKREG3),0  ZERO INVALID BYTE       12748 06100020
+         BC    15,DOWNONE               GO LOOK AT THE NEXT ONE         06120020
+*                                                                       06140020
+TSTEXT   CLC   IOBCSW+4(4),DEBENDCC-DEB(WKREG2) ADDRESS WITHIN EXTENT   06160020
+         BC    2,NEXTEXT               NO, SEE IF THERE'S ANOTHER EXT   06180020
+         MVC   DCBFDAD+3(4),IOBCSW+4   YES, MOVE NEW CCHH TO DCB        06200020
+         BC    15,RESETBAL              AND GO RESET TRACK BALANCE      06220020
+*                                                                       06240020
+*                                                                       06260020
+EXCP     EQU   *                                                        06280020
+         LA    PARAM1,8(0,IOBREG)      SET IOS IOB PARAMETER            06300020
+         EXCP  (1)                                                      06320020
+*                                                                       06340020
+*                                                                       06360020
+EOVTST   TM    IOBLINK,EOVBIT          IF ENTERED BY A WRITE MACRO      06380020
+         BCR   8,WKREG1                 RETURN TO THE BAL+4             06400020
+*                                                                       06420020
+         NI    IOBLINK,NOTEOV                                           06440020
+EOVEXIT  EQU   *                                                        06460020
+         BR    EOVRETRN                 ELSE RETURN TO EOV              06480020
+         EJECT                                                          06500020
+*                                                                       06520020
+ONE      DC    H'1'      CONSTANT ONE                                   06540020
+CCHN     EQU   X'40'     COMMAND CHAIN FLAG                             06620020
+SILI     EQU   X'20'     SUPPRESS INCORRECT LENGTH FLAG                 06640020
+WRTCHK   EQU   X'80'     WRITE CHECK OPTION                             06660020
+UNKWN    EQU   X'80'     UNKNOWN FORMAT                                 06680020
+NOTEOV   EQU   X'7F'     ALL BITS EXCEPT EOV FLAG                       06700020
+SOPT     EQU   X'80'          LENGTH CODED AS 'S'                  6991 06720020
+WZERO    EQU   X'04'     TYPE WRITE R0                                  06740020
+WZEROBIT EQU   X'40'     LAST I/O WAS WRITE R0                          06760020
+EOVBIT   EQU   X'80'     THIS WRITE NOT SCHEDULED BECAUSE OF EOV        06780020
+VOLFUL   EQU   X'20'     VOLUME FULL BIT                                06800020
+*                                                                       06801020
+* RPS DEVELOPED CONSTANTS AND EQUATES                                   06802020
+*                                                                       06803020
+SETSECT  EQU   X'23'     SET SECTOR TEST BYTE                    20201  06804020
+SILSKP   EQU   X'30'                    TURNS OFF DC AND CC      20201  06805020
+CCHNOFF  EQU   X'BF'                    TURNS OFF C. C.          20201  06806020
+*                                                                       06807020
+TBOVHD   EQU   X'08'                    TWO BYTE OVERHEAD INDIC  20201  06808020
+*                                                                       06809020
+D0       EQU   0                        ZERO DISPLACEMENT        20201  06810020
+D1       EQU   1                        ONE BYTE DISPLACEMENT    20201  06811020
+THREE    EQU   3                        THREE BYTES              20201  06812020
+D4       EQU   4                        4 BYTE DISPLACEMENT      20201  06813020
+D6       EQU   6                        6 BYTE DISPLACEMENT      20201  06814020
+D8       EQU   8                        8 BYTE DISPLACEMENT      20201  06815020
+D28      EQU   28                       28BYTE DISPLACEMENT      20201  06816020
+D60      EQU   60                       60BYTE DISPLACEMENT      20201  06817020
+*                                                                       06820020
+*      DIRECT ACCESS DEVICE TABLE DEFINITION                            06840020
+BYTE     EQU   2         BYTES OF  CCHH ARE NON-CONTIGUOUS              06860020
+OVERK    EQU   8         OFFSET TO KEY OVERHEAD                         06880020
+OVERI    EQU   6                   INTERMEDIATE RECORD OVERHEAD         06900020
+OVERL    EQU   7                   LAST RECORD OVERHEAD                 06920020
+TOLER    EQU   10                  TOLERANCE FACTOR                     06940020
+TRKL     EQU   4                   BYTES ON TRACK                       06960020
+MAXCC    EQU   0                   NO. OF CYLINDERS, TRACKS             06980020
+BYTEDEV  EQU   9                   FLAG, BYTES ARE NON-CONTIGUOUS       07000020
+         DC    C'IGGR'                  THIS IS A ROTATIONAL     20201  07005020
+*                                         POSITION SENSING              07010020
+*                                         MODULE                        07015020
+PATCH    DC    XL50'0'                  PATCH AREA               Y02072 07017002
+         EJECT                                                          07067002
+**********************************************************************  07120020
+*    CONTROL BLOCK DEFINITIONS FOLLOW                                   07160020
+**********************************************************************  07170002
+         DCBD  DSORG=(PS),DEVD=(DA)                                     07180020
+*                                                                       07200020
+**********************************************************************  07220020
+*                                                                       07240020
+DECBDEF  DSECT     DATA EVENT CONTROL BLOCK                             07260020
+DECSDECB DS    F         STANDARD ECB                                   07280020
+DECTYPE  DS    CL2       TYPE AND OPTIONS                               07300020
+DECLNGTH DS    CL2       DATA LENGTH                                    07320020
+DECDCBAD DS    F         DCB ADDRESS                                    07340020
+DECAREA  DS    F         AREA ADDRESS                                   07360020
+DECIOBPT DS    F         IOB ADDRESS                                    07380020
+DECKYADR DS    F                                                        07400020
+DECOFSET DS    CL2                                                      07420020
+DECRESPN DS    CL1                                                      07440020
+         SPACE 2                                                        07460020
+*                                                                       07480020
+**********************************************************************  07500020
+*                                                                       07520020
+         SPACE 2                                                        07540020
+IOBDEF   DSECT      I/O BLOCK DEFINITION                                07560020
+IOBLINK  DS    F         IOB LINK ADDRESS                               07580020
+IOBIOBA  DS    F         IOB ADDRESS FOR EOV                            07600020
+IOBFLAG1 DS    CL1       ERROR FLAG 1                                   07620020
+IOBFLAG2 DS    CL1       ERROR FLAG 2                                   07640020
+IOBSENSE DS    CL2       I/O SENSE BITS                                 07660020
+IOBECBPT DS    F         ECB ADDRESS                                    07680020
+IOBCSW   DS    D         CSW STORED BY IOS                              07700020
+IOBSIOCC DS    0BL1      SIO CONDITION CODE                             07720020
+IOBSTART DS    F         CHANNEL PROGRAM STARTING CCW                   07740020
+IOBDCBPT DS    F         DCB ADDRESS                                    07760020
+IOBRESTR DS    F         CHANNEL PROGRAM RESTART ADDRESS                07780020
+IOBINCAM DS    CL2       BLOCK INCREMENT AMOUNT                         07800020
+IOBERRCT DS    CL2       ERROR COUNTS                                   07820020
+IOBSEEK  DS    D         SEEK ADDRESS                                   07840020
+IOBDNRCF DS    D         NEW RECORD COUNT FIELD                         07860020
+IOBR0CNT DS    D         COUNT FIELD OF R0                              07880020
+IOBR0DAT DS    D         DATA FIELD OF R0                               07900020
+IOBCCW1  DS    D         FIRST CCW OF CHANNEL PROGRAM                   07920020
+IOBCCW2  DS    D                                                        07940020
+IOBCCW3  DS    D                                                        07960020
+IOBCCW4  DS    D                                                        07980020
+IOBCCW5  DS    D                                                        08000020
+IOBCCW6  DS    D                                                        08020020
+IOBCCW7  DS    D                                                        08040020
+IOBCCW8  DS    D                                                        08060020
+IOBCCW9  DS    D                                                        08080020
+IOBCCW10 DS    D                                                        08100020
+IOBCCW11 DS    D                                                        08120020
+IOBCCW12 DS    D                                                        08140020
+IOBCCW13 DS    D                                                        08160020
+IOBCCW14 DS    D         LAST CCW OF LONGEST CHANNEL PROGRAM            08180020
+*                                                                       08200020
+**********************************************************************  08220020
+*                                                                       08240020
+*                                                                       08260020
+DEB      DSECT                                                          08280020
+         DS    0F                                                       08300020
+DEBNMSUB DS    0CL1                                                     08320020
+DEBTCBAD DS    CL4                                                      08340020
+DEBAMLNG DS    0CL1                                                     08360020
+DEBDEBAD DS    CL4                                                      08380020
+DEBOGLGS DS    0CL1                                                     08400020
+DEBIRBAD DS    CL4                                                      08420020
+DEBOPATB DS    0CL1                                                     08440020
+DEBSYSPG DS    CL4                                                      08460020
+DEBNMEXT DS    0CL1                                                     08480020
+DEBUSRPG DS    CL4                                                      08500020
+DEBPRIOR DS    0CL1                                                     08520020
+DEBECBAD DS    CL4                                                      08540020
+DEBPROTG DS    0CL1                                                     08560020
+DEBDEBID DS    0CL1                                                     08580020
+DEBDCBAD DS    CL4                                                      08600020
+DEBEXSCL DS    0CL1                                                     08620020
+DEBAPPAD DS    CL4                                                      08640020
+DEBDVMOD DS    0CL1                                                     08660020
+DEBUCBAD DS    CL4                                                      08680020
+DEBBINUM DS    CL2                                                      08700020
+DEBSTRCC DS    CL2                                                      08720020
+DEBSTRHH DS    CL2                                                      08740020
+DEBENDCC DS    CL2                                                      08760020
+DEBENDHH DS    CL2                                                      08780020
+DEBNMTRK DS    CL2                                                      08800020
+DEBSUBID EQU   0         SUBROUTINE ID'S                                08820020
+         END                                                            08840020

@@ -1,0 +1,541 @@
+ TITLE 'IGG019KL -- DYNAMIC BUFFERING MODULE && START-I/O APPENDAGE'    00200021
+IGG019KL CSECT                                                          00600021
+*MODULE NAME - IGG019KL                                               * 00650002
+*                                                                     * 00700002
+*DESCRIPTIVE NAME - DYN BUF MODULE & SIO APPENDAGE -VS RECORD FORMAT  * 00750002
+*                   AND REAL ADDRESS SPACE                            * 00800002
+*                                                                     * 00850002
+*COPYRIGHT - NONE                                                     * 00860002
+*                                                                     * 00870002
+*CHANGE ACTIVITY                                                      * 00880002
+*                                                                       00890002
+*        OS 21 CHANGES/DELETIONS                                        00892002
+*3574                                                            M1780  00892402
+*        VS 1-1 CHANGES/DELETIONS                                       00894002
+*D468000                                                        XA00093 00894402
+*        VS 2-1 CHANGES/DELETIONS                                       00898002
+*        VS 1-2 CHANGES/DELETIONS                                       00923202
+*        VS 2-2 CHANGES/DELETIONS                                       00935802
+*212000,220000-222000,230500-231500,294000,302000,348000,618667-621000, 00948402
+*642400-645000,645200-646799,647499-649000,684400-687500,697000-701800, 00998402
+*830000-850000,860500-866500                                     Y02072 01048402
+*                                                                     * 01098402
+*STATUS CHANGE LEVEL 004                                              * 01100002
+*                                                                     * 01150002
+*********************************************************************** 01160002
+*THIS MODULE WAS TOTALLY REPLACED IN R-21 AS A RESULT OF A30797.  IT    01200001
+*INCORPORATES IGG019KS WHICH NO LONGER EXISTS AS OF R-21.  TWO SEPARATE 01250001
+*FUNCTIONS EXIST IN THE MODULE: SIO APPENDAGE FUNCTION AND FREEDBUF     01300001
+*FUNCTION.  TWO SEPARATE FUNCTIONAL DESCRIPTIONS EXIST, ONE UNDER       01350001
+*SIORTNE AND THE OTHER UNDER FBUFRTNE.  ALL EQUATES ARE IN 1ST ROUTINE. 01400001
+*********************************************************************** 01410002
+*                                                                       01450001
+         USING *,RAPDBASE                                               04000021
+SIOEP    B     SIORTNE            START I/O APPENDAGE E.P.              04200021
+         ORG   IGG019KL+8                                               04400021
+FRBUFEP  B     FBUFRTNE           FREE DYNAMIC BUFFER SVC E.P.          04600021
+*                                                                       04800021
+*                                                                       04900002
+*********************************************************************** 04950002
+*  THE FOLLOWING TWO ENTRY POINTS ARE USED FOR PROCESSING OF THE      * 04960002
+*  FREEDBUF ESTAE ROUTINE, IGCT005G.  THE FIRST ENTRY POINT (+12) IS  * 04970002
+*  USED WHEN, IN THE ESTAE CLEANUP ROUTINE, IT IS DETERMINED THAT THE * 04980002
+*  AUDIT TRAIL BIT INDICATING THAT THE NEXT IOB HAD BEEN TAKEN FROM   * 04990002
+*  THE IOB QUEUE BUT THE CHANNEL PGM HAD NOT BEEN INITIALIZED YET     * 04992002
+*  (WKAIOBQ BIT IS ON). IN THIS CASE ENTRY IS MADE TO INITIALIZE      * 04994002
+*  THE CHANNEL PROGRAM AND ISSUE THE EXCP FOR THIS REQUEST.           * 04996002
+*         THE SECOND ENTRY POINT (+16) IS USED WHEN THE NEXT IOB HAS  * 04998002
+*  BEEN REMOVED FROM THE QUEUE, ITS CHANNEL PGM INITIALIZED, BUT THE  * 04998402
+*  ABEND OCCURRED BEFORE THE EXCP WAS ISSUED (WKABUFAS BIT ON).IN THIS* 04998802
+*  CASE ENTRY IS MADE TO ISSUE THE EXCP FOR THIS REQUEST.             * 04999202
+*          INPUT FOR BOTH ENTRIES IS THE SAME:                        * 04999602
+*                   REGISTER 2 = NEXT IOB ADDRESS                     * 04999702
+*                   REGISTER 3 = BEGINNING ADDRESS OF THIS MODULE     * 04999802
+*                   REGISTER 4 = DCB ADDRESS                          * 04999902
+*                   REGISTER 5 = SVRB ADDRESS                         * 05049902
+*                   REGISTER 6 = BUFFER ADDRESS                       * 05051902
+*                   REGISTER 8 = TCB ADDRESS                          * 05059902
+*                   REGISTER 15= BEGINNING ADDRESS OF THIS MODULE     * 05069902
+*                   WKAREG14 IN SVRB WORKAREA IN INITIALIZED TO       * 05079902
+*                                RETURN ADDRESS IN ESTAE              * 05089902
+*  A THIRD ENTRY INTO THIS MODULE IS TAKEN BY ESTAE, IGCT005G, IF NO  * 05091902
+*  AUDIT TRAIL BITS ARE SET AT ALL.  IN THIS CASE ENTRY IS THE SAME   * 05093902
+*  AS FOR FREEDBUF (+8).  INPUT IS LIKEWISE THE SAME.                 * 05095902
+*********************************************************************** 05097902
+ESTENT1  B     ESTENTA                  INIT CH PGM, ISSUE EXCP  Y02072 05098302
+*                                                                       05098702
+ESTENT2  B     ESTENTB                  ISSUE EXCP               Y02072 05099102
+*********************************************************************** 05099502
+*                                                                     * 05099602
+* FUNCTION:                                                           * 05099902
+*    THE START-I/O APPENDAGE ATTEMPTS TO ASSIGN A BUFFER TO A         * 05200021
+*    READ REQUEST IF THE REQUEST SPECIFIES DYNAMIC BUFFERING AND      * 05400021
+*    NO BUFFER WAS ASSIGNED BEFORE EXCP.  IF A BUFFER IS              * 05600021
+*    AVAILABLE FOR ASSIGNMENT, IT IS REMOVED FROM THE BUFFER          * 05800021
+*    POOL AND THE BUFFER CHAIN IS UPDATED.  THE BUFFER ADDRESS        * 06000021
+*    IS PLACED IN THE REQUEST'S DECB AND IN THE READ CCWS OF THE      * 06200021
+*    REQUEST'S CHANNEL PROGRAM.  THE ADDRESS OF THE SEGMENT WORK      * 06400021
+*    AREA (PART OF THE BUFFER) IS PLACED IN THE IOB.  THE ROUTINE     * 06600021
+*    THEN RETURNS TO IOS TO INITIATE THE I/O.                         * 06800021
+*    IF NO BUFFER IS AVAILABLE THE REQUEST IS PLACED ON A QUEUE       * 07000021
+*    OF REQUESTS WAITING FOR BUFFERS.  THE ROUTINE TAKES THE IOS      * 07200021
+*    RETURN WHICH INDICATES THAT THE I/O REQUEST SHOULD NOT BE        * 07400021
+*    INITIATED.                                                       * 07600021
+*                                                                     * 07800021
+* ENTRY POINT:                                                        * 08000021
+*         SIOEP -- ENTERED ASYNCHRONOUSLY FROM IOS AT START-I/O       * 08200021
+*         TIME.  THE ADDRESS OF IGG019KL IS PLACED IN THE             * 08400021
+*         APPENDAGE VECTOR TABLE (AVT) DURING OPEN PROCESSING.        * 08600021
+*         CALLING SEQUENCE -- L     15,4(AVTPTR)                      * 08800021
+*                             BALR  14,15                             * 09000021
+*                                                                     * 09200021
+* INPUT                                                               * 09400021
+*    **** REGISTER CONTENTS ****                                      * 09600021
+*    REGISTER  1 -- REQUEST QUEUE ELEMENT (RQE) ADDRESS               * 09650002
+*    REGISTER  2 -- INPUT/OUTPUT BLOCK (IOB) ADDRESS                  * 09800021
+*    REGISTER  3 -- DATA EXTENT BLOCK (DEB) ADDRESS                   * 10000021
+*    REGISTER  4 -- DATA CONTROL BLOCK (DCB) ADDRESS                  * 10200021
+*    REGISTER  7 -- UNIT CONTROL BLOCK (UCB) ADDRESS                  * 10400021
+*    REGISTER 13 -- IOS REGISTER SAVEAREA                             * 10450002
+*    REGISTER 14 -- RETURN ADDRESS                                    * 10600021
+*    REGISTER 15 -- ADDRESS OF IGG019KL                               * 10800021
+*                                                                     * 11000021
+* OUTPUT                                                              * 11200021
+*    **** REGISTER CONTENTS ****                                      * 11400021
+*    ALL REGISTER CONTENTS ARE RESTORED BEFORE RETURN TO IOS.         * 11600002
+*                                                                     * 12600021
+*    **** DATA AREAS SET BY THIS ROUTINE ****                         * 12800021
+*    IOBSWAP            IF A BUFFER IS ASSIGNED, SEGMENT WORK         * 13000021
+*                       AREA ADDRESS                                  * 13200021
+*    IOBDSTAT BIT IOBBUFF    SET IF A BUFFER IS ASSIGNED              * 13400021
+*    IOBDQPTR FIELD OF IOB POINTED TO BY BCBFRQB,  OR                 * 13600021
+*    BCBFRQT            UPDATED TO POINT TO THIS IOB IF REQUEST       * 13800021
+*                       MUST WAIT FOR A BUFFER                        * 14000021
+*    BCBFRQB            UPDATED TO POINT TO THIS IOB IF REQUEST       * 14200021
+*                       MUST WAIT FOR A BUFFER                        * 14400021
+*    BCBNABFR           UPDATED IF A BUFFER IS ASSIGNED.              * 14600021
+*    DECAREA            DATA ADDR IN THE ASSIGNED BUFFER              * 14800021
+*    DECKYADR           KEY ADDR IN THE ASSIGNED BUFFER FOR A READ    * 15000021
+*                       BY BLOCK ID, & KEY ADDR SPECIFIED 'S'.        * 15200021
+*    NEXT-TO-LAST CCW ADDR   KEY ADDR WHEN KEY IS IN DYNAMIC BUFFER   * 15400021
+*                            (SEE DECKYADR).                          * 15600021
+*    LAST CCW ADDR      DATA ADDR                                     * 15800021
+*                                                                     * 16000021
+* EXITS                                                               * 16200021
+*         0(R14)        RETURN TO IOS & START I/O                     * 16400021
+*         4(R14)        RETURN TO IOS & DISREGARD I/O REQUEST         * 16600021
+*                                                                     * 16800021
+* ATTRIBUTES -- REENTRANT,PRIVILEGED,KEY=0,ENABLED,WITH THE LOCAL     * 17000002
+*    LOCK HELD. MODESET IS ISSUED TO DO ALL PROCESSING IN USER KEY.   * 17010002
+*                                                                     * 17200021
+* NOTES --                                                            * 17400002
+*                                                                     * 18000021
+         IEZBITS                                                        18200021
+*                  REGISTER EQUATES                                     18400021
+R0       EQU   0        INPUT REGISTER 0    SVC                         18600021
+RWORK0   EQU   0        WORK REGISTER (FBUFRTNE)                 Y02072 18650002
+R1       EQU   1        INPUT REGISTER 1                                18800021
+RRQE     EQU   1        RQE ADDRESS PASSED BY IOS                Y02072 18850002
+RLINK    EQU   1        INTERNAL LINKAGE REGISTER                Y02072 18900002
+RIOB     EQU   2        ADDRESS OF IOB                                  19000021
+RBASE3   EQU   3        BASE REGISTER       SVC                         19200021
+RDCB     EQU   4        ADDRESS OF DCB                                  19400021
+RSVRB    EQU   5        IOS BASE(SIO) OR SVRBPTR(SVC 57          Y02072 19450002
+RBUFFR   EQU   6        BUFFER ADDRESS                                  19800002
+RSWA     EQU   6        PTR TO SEGMENT WORK AREA (ASSGNBUF)             20000021
+RWORK6   EQU   6        WORK REGISTER                                   20200021
+RDECB    EQU   7        DECB ADDRESS (FBUFRTNE)                         20400002
+RCCW     EQU   7        PTR TO CCW TO MODIFY (ASSGNBUF)                 20600021
+RBUFCB   EQU   7        BASE REG FOR BUFFER CNTRL BLK(FBUFRTNE)  Y02072 20850002
+RWORK8   EQU   8        WORK REGISTER  (SIORTNE)                 Y02072 20900002
+RTCB     EQU   8        BASE REG FOR TCB (FBUFRTNE)              Y02072 20950002
+RWORK9   EQU   9        WORK REGISTER                                   21000021
+RWORK10  EQU   10       WORK REGISTER                                   21400021
+RWORK11  EQU   11       WORK REGISTER                                   21600021
+RWORK12  EQU   12       WORK REGISTER                                   21800021
+RSAVE    EQU   13       IOS SAVEAREA REGISTER                    Y02072 21850002
+RRETURN  EQU   14       RETURN ADDRESS                                  22400021
+R15      EQU   15                       SAVE/RESTORE REG         Y02072 22650002
+RAPDBASE EQU   15       BASE REGISTER FOR APPENDAGE ROUTINES            22800021
+         SPACE 5                                                        23000021
+KEYDATOP EQU   X'0E'         CCW OP-CODE  READ KEY & DATE               23800021
+RDDATAOP EQU   X'06'         CCW OP-CODE  READ DATA                     24000021
+*                                                                       24050002
+*                    TEST TO DETERMINE IF REQUEST IS VALID              24100002
+*                                                                       24150002
+SIORTNE  EQU   *                                                        24200021
+         USING IOBSTDRD,RIOB                                            24600021
+         USING IHADCB,RDCB                                              24800021
+         TM    IOBDTYP2,IOBRQUST  IS THIS A READ REQUEST?               25000021
+         BCR   8,RRETURN          IF NOT, RETURN TO IOS                 25200021
+         TM    IOBDTYPE,IOBDYNBF  DOES REQUEST SPECIFY DYNAMIC          25400021
+*                                 BUFFERING?                            25600021
+         BCR   8,RRETURN          IF NO, RETURN TO IOS                  25800021
+         TM    IOBSTAT1,IOBBUFF   HAS A BUFFER BEEN ASSIGNED TO         26000021
+*                                 THIS REQUEST?                         26200021
+         BCR   1,RRETURN          IF SO, RETURN TO IOS                  26400021
+*                                                                       26600021
+*                       IF A BUFFER IS AVAILABLE, ASSIGN IT TO          26800021
+*                       THIS REQUEST AND UPDATE THE BUFFER POOL.        27000021
+*                                                                       27200021
+         USING RQE,RRQE                 ESTABLISH RQE BASE       Y02072 27250002
+         STM   R0,R15,0(RSAVE)          SV REGS IN IOS SAVEAREA  Y02072 27300002
+*                                                                       27350002
+         MODESET  KEYADDR=RQEPRT,WORKREG=10  CHANGE TO USER KEY  Y02072 27360002
+*                                                                       27370002
+         L     RWORK10,DCBBUFCB   GET BUFFER CONTROL BLOCK ADDR         27400021
+         USING BCBDEFR,RWORK10    ESTABLISH BASE FOR BCB         Y02072 27600002
+         L     RWORK11,BCBNABFR   GET ADDRESS OF NEXT AVAILABLE         27800021
+*                                 BUFFER                                28000021
+         LTR   RWORK11,RWORK11    IS ONE AVAILABLE?                     28200021
+         BZ    PTONBUFQ           IF NOT BRANCH TO QUEUE REQUEST        28400021
+         USING SWA,RWORK11        ESTABLISH BASE FOR SEG WKAREA  Y02072 28600002
+         L     RWORK8,SWANXTPT    GET ADDR OF 2ND BUFFER (OR 0). Y02072 28800002
+         DROP  RWORK11                                                  29000021
+         ST    RWORK8,BCBNABFR    MAKE IT NEXT AVAILABLE         Y02072 29200002
+         DROP  RRQE               DROP RQE BASE REG              Y02072 29250002
+         BAL   RLINK,ASSGNBUF     ASSIGN BUFFER TO REQUEST              29600021
+*                                                                       30000021
+SIORET   EQU   *                        RETURN TO IOS            Y02072 30050002
+*                                                                       30100002
+         MODESET  KEYADDR=IOSKEY,WORKREG=1   CHANGE TO IOS KEY   Y02072 30150002
+*                                                                       30200002
+         LM    R0,R15,0(RSAVE)    LOAD IOS REGISTERS             Y02072 30250002
+         BR    RRETURN            RETURN TO IOS TO INITIATE             30400021
+*                                 I/O REQUEST                           30600021
+         SPACE 5                                                        30800021
+PTONBUFQ EQU   *                                                        31000021
+*                                                                       31200021
+*                       NO BUFFER WAS AVAILABLE. PUT THIS IOB ON        31400021
+*                       THE QUEUE WAITING FOR BUFFERS.                  31600021
+*                                                                       31800021
+         L     RWORK8,BCBFRQT     ADDR OF 1ST IOB ON QUEUE.      Y02072 32000002
+         LTR   RWORK8,RWORK8      IS THE QUEUE EMPTY?            Y02072 32200002
+         BNZ   ONEONQ             BRANCH IF NOT                         32400021
+         ST    RIOB,BCBFRQT       IF SO, STORE IOB ADDR AS FIRST        32600021
+         B     BOTTOMST                                                 32800021
+ONEONQ   L     RWORK8,BCBFRQB     GET ADDR OF LAST IOB ON QUEUE  Y02072 33000002
+         ST    RIOB,IOBDQPTR-IOBSTDRD(RWORK8)   POINT CHAIN TO   Y02072 33200002
+*                                                THIS IOB               33400021
+BOTTOMST ST    RIOB,BCBFRQB       THIS IOB IS LAST ON QUEUE             33600021
+         DROP  RWORK10            DROP BCB BASE                  Y02072 33610002
+*                                                                       33650002
+         MODESET  KEYADDR=IOSKEY,WORKREG=10  CHANGE TO IOS KEY   Y02072 33700002
+*                                                                       33750002
+         LM    R0,R15,0(RSAVE)    LOAD IOS REGISTERS             Y02072 33800002
+         B     4(RRETURN)         IOS RETURN - DON'T DO I/O             34000021
+         DROP  RIOB                                                     34200021
+         DROP  RDCB                                                     34400021
+*                                                                       34600021
+         EJECT                                                          35000021
+*                                                                       35200021
+*                  THIS SUBROUTINE IS USED BY THE START-I/O             35400021
+*                  APPENDAGE AND THE FREE DYNAMIC BUFFER SVC            35600021
+*                  ROUTINE. IT ASSUMES ENTRY IN USER KEY.               35800002
+*                  IT ASSIGNS A BUFFER TO AN I/O REQUEST BY             36000021
+*                  PLACING THE BUFFER ADDRESS INTO THE DECB             36200021
+*                  AND THE CHANNEL PROGRAM.  IT ALSO PLACES THE         36400021
+*                  SEGMENT WORK AREA ADDRESS IN THE IOB.                36600021
+*                                                                       36800021
+*              REGISTER INPUT:  RIOB    - ADDR OF IOB TO WHICH          37000021
+*                                         BUFFER WILL BE ASSIGNED       37200002
+*                               RDCB    - DCB ADDRESS                   37400021
+*                               RWORK11 - BUFFER ADDRESS                37600021
+*                               RLINK   - RETURN ADDRESS                37800021
+*              REGISTER OUTPUT: RSWA    - WORK REGISTER                 38000021
+*                               RCCW    - WORK REGISTER                 38400021
+*                               RWORK9  - WORK REGISTER                 38600002
+*                               RWORK10 - WORK REGISTER                 38800021
+*                               RWORK11 - WORK REGISTER                 39000021
+         USING SWA,RWORK11        ESTABLISH BASE FOR SWA         Y02072 39200002
+         USING IHADCB,RDCB                                              39400021
+         USING IOBSTDRD,RIOB                                            39600021
+ASSGNBUF L     RWORK9,IOBECBPT    GET DECB ADDRESS                      39800021
+         USING DECB,RWORK9                                              40000021
+         LR    RWORK10,RIOB       PLACE IOB ADDRESS IN WORK REG         40400021
+         LA    RSWA,IOBSTDRD-IOBSWAP   DISP TO IOBSWAP FIELD            40600021
+         SR    RWORK10,RSWA       POINT TO IOB PREFIX                   40800021
+         USING IOBSWAP,RWORK10                                          41000021
+         ST    RWORK11,IOBSWAP    PLACE SWA ADDR IN IOB                 41200021
+*                                 DATA & KEY (IF REQUESTED) WILL        41400021
+*                                 BE READ INTO THE SEGMENT AREA         41600021
+*                                 OF THE DYNAMIC BUFFER.  THE           41800021
+*                                 USER WILL BE PASSED THE ADDRESS       42000021
+*                                 OF LOCATIONS IN THE RECORD            42200021
+*                                 AREA.                                 42400021
+*                                                                       42600021
+         LA    RSWA,SWASEGMT      GET ADDRESS OF SEGMENT AREA    Y02072 42800002
+         L     RWORK11,SWARAPT    GET ADDRESS OF RECORD AREA     Y02072 43000002
+         L     RCCW,IOBDCPND      POINT BEYOND LAST CCW                 43200021
+         SH    RCCW,H16           POINT TO NEXT-TO-LAST CCW             43400021
+*                                 FOR A READ BY BLOCK ID, KEY           43600021
+*                                 CODED 'S', THE KEY IS READ            43800021
+*                                 INTO THE DYNAMIC BUFFER.              44000021
+         TM    IOBDTYP2,IOBTYPE   IS THIS READ BY BLOCK ID?             44200021
+         BO    FILLSCCW           BRANCH IF NO                          44400021
+         CLI   DCBKEYLE,0         IS THERE A KEY                 Y02072 44450002
+         BE    FILLSCCW           BRANCH IF NO                   Y02072 44500002
+         TM    IOBDTYP2,IOBSKEY   WAS KEY ADDRESS CODED 'S'?            44600021
+         BZ    FILLSCCW           BRANCH IF NO                          44800021
+         ST    RWORK11,DECKYADR   PLACE KEY ADDRESS IN DECB             45000021
+         ST    RWORK11,0(RCCW)    PLACE ADDR OF KEY IN RECORD   XA00093 45200021
+*                                 AREA INTO NEXT-TO-LAST CCW.           45400021
+         MVI   0(RCCW),KEYDATOP   RESTORE OP-CODE                       45600021
+*                                 INCREMENT RECORD AREA & SEGMENT       45800021
+*                                 AREA POINTERS BEYOND KEY.             46000021
+         SR    RWORK10,RWORK10                                          46200021
+         IC    RWORK10,DCBKEYLE   GET LENGTH OF KEY                     46400021
+         AR    RWORK11,RWORK10    BUMP RECORD AREA POINTER              46600021
+*                                                                       47000021
+FILLSCCW ST    RWORK11,DECAREA    PLACE DATA ADDRESS IN DECB            47200021
+         ST    RSWA,8(RCCW)       PLACE DATA ADDRESS IN LAST CCW        47400021
+         MVI   8(RCCW),RDDATAOP   RESTORE OP-CODE.                      47600021
+         OI    IOBDSTAT,IOBBUFF   SET BUFFER-ASSIGNED SWITCH            47800021
+         BR    RLINK              RETURN TO CALLER                      48000021
+         DROP  RWORK11                                                  48200021
+         DROP  RWORK9                                                   48400021
+         DROP  RIOB                                                     48600021
+         DROP  RDCB                                                     48800021
+         EJECT                                                          49000021
+FBUFRTNE EQU   *                                                        49200021
+*                                                                     * 49400021
+* FUNCTION:                                                           * 49600021
+*    THE FREE DYNAMIC BUFFER ROUTINE RELEASES A DYNAMIC BUFFER.       * 49800021
+*    IF ANY IOBS ARE ON THE UNSCHEDULED QUEUE (WAITING FOR A          * 50000021
+*    BUFFER) THE ROUTINE ASSIGNS THE BUFFER TO THE FIRST IOB ON       * 50200021
+*    THE QUEUE, AND ISSUES AN EXCP FOR THAT IOB.  IF NO IOBS ARE      * 50400021
+*    ON THE UNSCHEDULED QUEUE THE ROUTINE PLACES THE BUFFER ON        * 50600021
+*    THE CHAIN OF AVAILABLE BUFFERS.                                  * 50800021
+*                                                                     * 51000021
+* ENTRY POINT:                                                        * 51200021
+*         FRBUFEP -- ENTERED FROM MODULE IGC0005G WHEN SVC 57 IS      * 51400021
+*         ISSUED FOR A DCB WHICH SPECIFIED DIRECT ORGANIZATION.       * 51600021
+*         CALLING SEQUENCE -- L    15,DCBDEBAD                        * 51800021
+*                             L    15,DEBAPPAD                        * 52000021
+*                             L    15,4(15)                           * 52200021
+*                             BAL  14,8(15)                           * 52400021
+*                                                                     * 52600021
+* INPUT                                                               * 52800021
+*    **** REGISTER CONTENTS ****                                      * 53000021
+*    REGISTER  0 -- DECB ADDRESS                                      * 53200021
+*    REGISTER  1 -- DCB ADDRESS                                       * 53400021
+*    REGISTER  5 -- ADDRESS OF SVRB                                   * 53450002
+*    REGISTER  8 -- ADDRESS OF TCB PASSED BY FREEDBUF          Y02072 * 53500002
+*    REGISTER 14 -- RETURN ADDRESS                                    * 53800021
+*    REGISTER 15 -- ADDRESS OF IGG019KL                               * 54000002
+*                                                                     * 54200021
+* OUTPUT                                                              * 54400021
+*    **** REGISTER CONTENTS ****                                      * 54600021
+*    ALL REGISTERS EXCEPT REGISTER 14 CAN BE USED WITHOUT SAVING      * 54800021
+*    OR RESTORING CONTENTS.                                           * 55000021
+*                                                                     * 55400021
+*    **** DATA FIELDS SET BY THIS ROUTINE ****                        * 55600021
+*    BCBFRQT       IF AN IOB IS WAITING FOR A BUFFER, PTR TO 1ST      * 55800021
+*                  IOB ON QUEUE IS UPDATED.                           * 56000021
+*    IOBDQPTR      FIELD IN DEQUEUED IOB IS CLEARED                   * 56200021
+*    IF THE FREED BUFFER IS ASSIGNED TO A WAITING REQUEST, THE        * 56400021
+*    BUFFER ADDRESS IS PLACED IN THE CHANNEL PROGRAM AND DECB         * 56600021
+*    FIELDS, AND IN THE IOB AS THE SEGMENT WORK AREA ADDRESS (SEE     * 56800021
+*    SIORTNE DESCRIPTION FOR DETAILS).                                * 57000021
+*    BCBNABFR      IF THE BUFFER IS NOT ASSIGNED TO A REQUEST,        * 57200021
+*                  ITS ADDRESS IS PLACED IN BCBNABFR                  * 57400021
+*    SWANXTPT      FIELD OF THE RELEASED BUFFER IS SET TO THE         * 57600002
+*                  ADDR OF THE 2ND AVAILABLE BUFFER.                  * 57800021
+*    SWABFINC      SET TO ZERO                                        * 58000002
+*    SVRB          SEE BELOW                                          * 58050002
+*                                                                     * 58200021
+* EXTERNAL REFERENCES                                                 * 58400021
+*        EXCP CALL TO IOS                                             * 58600021
+*        MODESET TO CHANGE BETWEEN SUPERVISOR AND USER KEYS             58650002
+*        SETLOCK TO RELEASE AND OBTAIN THE LOCAL LOCK                   58700002
+*                                                                       58800021
+* EXITS, NORMAL                                                       * 59000021
+*    BRANCH RETURN TO IGC0005G ON REGISTER 14.                        * 59200002
+*                                                                     * 59600021
+* TABLES / WORK AREAS                                                 * 59800021
+*        IOB, DCB, DECB, BUFFER CONTROL BLOCK, SVRB                   * 60000002
+*                                                                     * 60200021
+* ATTRIBUTES -- REENTRANT, READONLY, PRIVILEGED. ENTRY IS SUPERVISOR  * 60400002
+*    KEY WITHOUT THE LOCAL LOCK HELD. RETURN TO IGC0005G IS IN        * 60450002
+*    SUPERVISOR KEY. MOST PROCESSING IS IN USER KEY.                  * 60452002
+*                                                                     * 60500002
+* NOTES -- THE ROUTINE MUST HAVE THE LOCAL LOCK TO UPDATE THE SERIALLY* 60550002
+* REUSUABLE IOB AND BUFFER QUEUES. SETLOCK WILL BE ISSUED AT THIS TIME* 60560002
+*                                                                     * 60600021
+*****                                                             ***** 60650002
+         EJECT                                                          61400021
+         LR    RBASE3,RAPDBASE    ESTABLISH BASE REGISTER               61600021
+         USING IGG019KL,RBASE3                                          61800021
+         DROP  RAPDBASE                                                 61802001
+         LR    RDCB,R1            TRANSFER DCB ADDRESS                  61804001
+         USING IHADCB,RDCB                                              61806001
+         LR    RDECB,R0           TRANSFER DECB ADDRESS                 61808001
+         USING DECB,RDECB                                               61808401
+         USING RBSECT,RSVRB             ESTABLISH BASE FOR SVRB  Y02072 61808502
+*                                                                       61808902
+         ST    RRETURN,WKAREG14         SAVE RETURN ADDR IN SVRB Y02072 61810402
+         USING TCB,RTCB                 ESTABLISH BASE FOR TCB   Y02072 61814202
+*                                       PASSED BY FREEDBUF IN R8 Y02072 61814602
+*                                                                       61815002
+         MODESET  KEYADDR=WKASVKEY,WORKREG=6 CHANGE TO USER KEY  Y02072X61815402
+                                        TO ACCESS USER CNTRL BLK Y02072 61815802
+*                                                                       61816102
+*                       LOCATE THE BEGINNING ADDRESS OF THE             61818002
+*                       BUFFER BEING FREED.                             61819902
+*                                                                       61821802
+         L     RBUFFR,DECAREA     ASSUME RECORD AREA ADDR = DATA        61823702
+*                                 ADDR                                  61825602
+         TM    DECTYPE2,DECKEYS   WAS KEY IN BUFFER (CODED 'S')?        61827502
+         BZ    FBU0500            BRANCH NO                             61829402
+         L     RBUFFR,DECKYADR    RECORD AREA ADDR = KEY ADDR           61831302
+         DROP  RDECB                                             Y02072 61831702
+FBU0500  EQU   *                                                        61833201
+         LA    RWORK12,BUFRECAR-BUFBFPTR                                61835201
+         SR    RBUFFR,RWORK12     POINT TO ADDR OF BEGINNING OF         61837202
+*                                       BUFFER                          61839202
+         L     RBUFFR,0(RBUFFR)         GET BUFFER ADDRESS              61839602
+         USING SWA,RBUFFR               ESTABLISH BASE FOR SWACB Y02072 61839702
+         XC    SWABFINC,SWABFINC        CLEAR RECORD AREA OFFSET Y02072 61846602
+         L     RBUFCB,DCBBUFCB          BUFFER CONTROL BLCK ADDR Y02072 61849902
+         USING BCBDEFR,RBUFCB           ESTABLISH BASE FOR BCB   Y02072 61853202
+*                                                                       61903202
+*   PREPARE FOR QUEUE UPDATES. THIS REQUIRES THAT THE LOCAL LOCK BE     61953202
+*   OBTAINED WHILE MANIPULATING THE QUEUE. IT IS RELEASED WHEN THE      62003202
+*   QUEUE HAS BEEN UPDATED AND THE NEXT WAITING IOB HAS BEEN REMOVED,   62053202
+*   OR THE BUFFER HAS BEEN PUT BACK ON THE AVAILABLE BUFFER QUEUE.      62103202
+*   MODESET IS ISSUED BECAUSE SETLOCK REQUIRES SUPERVISOR KEY.          62105202
+*   SETLOCK USES REGISTERS 11-14 WITHOUT RESTORING THEM. CERTAIN        62107202
+*   FIELDS WILL BE SAVED AT THIS POINT SHOULD THE ESTAE NEED THEM.      62109202
+*                                                                       62113202
+         L     RIOB,BCBFRQT             LOAD IOB IN USER KEY     Y02072 62115202
+         L     RWORK0,BCBNABFR          LOAD BUF FLD IN USER KEY Y02072 62117202
+*                                                                       62119202
+         MODESET  EXTKEY=ZERO           CHANGE TO SUPER KEY      Y02072 62123202
+*                                       TO GET THE LOCAL LOCK    Y02072 62125202
+*                                                                       62127202
+GETLOCK  SETLOCK  OBTAIN,TYPE=LOCAL,RELATED=('BUFFERQ,IGG019KL(FREELOCKX62128002
+               ,FREELCK1)'),MODE=UNCOND  GET THE LOCAL LOCK      Y02072 62128102
+*                                                                       62128802
+         ST    RBUFFR,WKABUFRG          SAVE BUF PTR FOR ESTAE   Y02072 62129202
+         ST    RIOB,WKASAVE             SAVE BCB CONTENTS FOR    Y02072 62131202
+*                                       ESTAE COMPARE TO DETECT  Y02072 62131602
+*                                       IF CONTENTS CHANGE       Y02072 62132002
+         ST    RWORK0,WKASAVE2          SAVE BCB CONTENTS        Y02072 62132402
+*                                       FOR ESTAE IN CASE THE    Y02072 62132802
+*                                       PATH TAKEN CHANGES THIS  Y02072 62132902
+         ST    RIOB,WKAIOBRG            SAVE IOB REG FOR ESTAE   Y02072 62133102
+*                                                                       62147202
+         MODESET  KEYADDR=WKASVKEY,WORKREG=11 GO TO USER KEY     Y02072 62149202
+*                                                                       62149602
+         LTR   RIOB,RIOB                ARE THERE ANY IOBS?             62200002
+         BZ    MAKEAVAL                 IF NOT, GO MAKE THIS BUFFER     62250002
+*                                       AVAILABLE                       62300002
+*                                                                       62350001
+*                  UPDATE QUEUE BY REMOVING FIRST IOB                   62400002
+*                                                                       62450001
+         USING IOBSTDRD,RIOB                                            62500001
+CHAIN    L     RWORK9,IOBDQPTR          GET ADDRESS OF NEXT IOB AND     62550002
+         ST    RWORK9,BCBFRQT           MAKE IT THE NEXT IOB ON QUEUE   62600002
+         XC    IOBDQPTR,IOBDQPTR        CLEAR QUEUING FIELD             62650002
+*                                                                       62652002
+         MODESET  EXTKEY=ZERO           CHANGE TO SUPER KEY      Y02072X62660002
+                                        TO SET BIT IN SVRB       Y02072X62670002
+                                        AND RELEASE LOCAL LOCK   Y02072 62670402
+         MVI   WKATRAIL,WKAIOBQ         SET BIT IN SVRB EXT SAVE Y02072 62670802
+*                                       INDICATING IOB DEQUEUED  Y02072 62671202
+*                                                                       62672002
+FREELOCK SETLOCK  RELEASE,TYPE=LOCAL,RELATED=('BUFFERQ,IGG019KL(GETLOCKX62674002
+               )')                      FREE THE LOCAL LOCK      Y02072 62674402
+*                                                                       62676002
+ESTENTA  EQU   *                        ESTAE ENTRY IF WKAIOBQ=1 Y02072 62686002
+*                                                                       62690802
+         MODESET  KEYADDR=WKASVKEY,WORKREG=11  GO TO USER KEY    Y02072 62692002
+*                                                                       62694002
+         LR    RWORK11,RBUFFR     PUT BUFFER ADDR IN R11                64502002
+         LR    RAPDBASE,RBASE3    RESTORE BASE REG FOR SUBRTN    XM6073 64502421
+         BAL   RLINK,ASSGNBUF     ASSIGN THE BUFFER TO THE              64504001
+*                                       DEQUEUED IOB                    64504402
+*                                                                       64505702
+         MODESET  EXTKEY=ZERO           CHANGE TO SUPER KEY      Y02072 64505802
+*                                       TO SET BIT IN SVRB       Y02072 64505902
+         MVI   WKATRAIL,WKABUFAS        SET BIT IN SVRB EXTENDED Y02072 64506902
+*                                       SAVEAREA INDICATING BUF  Y02072 64508902
+*                                       ASSIGNED TO NEXT IOB     Y02072 64509002
+ESTENTB  EQU   *                        ESTAE ENTRY IF WKABUFAS  Y02072 64509202
+*                                       BIT ON                   Y02072 64509602
+         MODESET  KEYADDR=WKASVKEY,WORKREG=11   GO TO USER KEY   Y02072 64509802
+*                                                                       64510002
+         L     RWORK11,IOBECBPT         LOAD ADDR TO USER'S DECB Y02072 64511802
+         ST    RWORK11,IOBDQPTR         SAVE DECB ADDR IN IOB    Y02072 64514902
+         LA    RWORK11,IOBCSW+3         SET UP CSW ADDRESS TO    Y02072 64515302
+         ST    RWORK11,IOBECBPT         USE AS DUMMY ECB FOR IOS Y02072 64515702
+*                                       CEA OR EOE WILL RESTORE  Y02072 64516102
+*                                       USER'S DECB ADDR IN IOB  Y02072 64516202
+*                                                                       64518402
+         EXCP  (RIOB)                   SCHEDULE I/O FOR NEXT IOB ON Q  64519802
+*                                                                       64521802
+         MODESET  EXTKEY=ZERO           RETURN TO SUPER KEY      Y02072 64522202
+*                                                                       64522402
+         MVI   WKATRAIL,WKAEXCP         SET BIT INDICATING EXCP  Y02072 64523202
+*                                                                       64523602
+         B     NORMEXIT                 RETURN TO IGC0005G       Y02072 64524002
+         SPACE 5                                                        64524202
+*                                                                       65050001
+*   NO IOBS ARE WAITING FOR BUFFERS. RETURN BUFFER TO THE AVAILABLE     65060002
+*   QUEUE.THIS ROUTINE IS ENTERED IN USER KEY WITH THE LOCAL LOCK HELD. 65070002
+*   IT RETURNS TO IGC0005G IN SUPERVISOR KEY.                           65120002
+*                                                                       65200001
+MAKEAVAL EQU   *                                                        65250001
+         L     RWORK9,BCBNABFR          GET ADDR OF AVAILABLE BUFFER    65300002
+         USING SWA,RBUFFR               ESTABLISH BASE FOR SWACB Y02072 65350002
+         ST    RWORK9,SWANXTPT          POINT THIS SWA TO IT     Y02072 65400002
+         ST    RBUFFR,BCBNABFR          MAKE THIS ONE NEXT AVAILABLE    65450002
+         DROP  RBUFFR                   (LIFO QUEUE)                    65500002
+*                                                                       65502002
+         MODESET  EXTKEY=ZERO           CHANGE TO SUPER KEY      Y02072 65510002
+*                                       TO SET BIT IN SVRB       Y02072 65520002
+         MVI   WKATRAIL,WKABUFQ         SET BIT INDICATING BUF   Y02072 65520402
+*                                       FREED AND PUT ON QUEUE   Y02072 65520802
+*                                                                       65522002
+FREELCK1 SETLOCK  RELEASE,TYPE=LOCAL,RELATED=('BUFFERQ,IGG019KL(GETLOCKX65536002
+               )')                      FREE THE LOCAL LOCK      Y02072 65538002
+************                                                            65542002
+*                                                                       65544002
+NORMEXIT EQU   *                        RETURN TO FREEDBUF       Y02072 65554002
+         L     RRETURN,WKAREG14         RESTORE R14 TO RET ADDR  Y02072 65594002
+         BR    RRETURN                  RETURN TO IGC0005G.             68800002
+*****                                                             ***** 68810002
+*                        CONSTANTS                                    * 68850002
+*****                                                             ***** 68860002
+H16      DC    H'16'                                                    68900001
+IOSKEY   DC    X'00'                    IOS KEY                  Y02072 68950002
+ZERO     DC    X'00'                    SVRB KEY                 Y02072 69000002
+PATCH    DC    XL50'0'                  PATCH AREA               Y02072 69050002
+         EJECT                                                          81400021
+*********************************************************************** 81410002
+*                              DSECTS                                 * 81420002
+*********************************************************************** 81422002
+         IHAPSA                                                  Y02072 81430002
+         EJECT                                                          81440002
+         IECDRQE                                                 Y02072 81450002
+         EJECT                                                          81460002
+         IKJTCB                                                  Y02072 81470002
+         EJECT                                                          81500002
+         IEZIOB                                                         81600021
+         EJECT                                                          81800002
+         DCBD  DSORG=DA                                                 82000001
+         EJECT                                                          82200002
+         IHADECB                                                        82400021
+         EJECT                                                          83850002
+         IGGBCB  TYPE=DAM                                               83900002
+BUFFERB  DSECT          FORMAT OF BUFFER BEYOND SEGMENT AREA            85200021
+BUFBFPTR DS    A        ADDRESS OF BEGINNING OF BUFFER                  85400021
+BUFRECAR EQU   *        RECORD AREA; BUFBFPTR IS ALIGNED SO THAT        85600021
+*                       BUFRECAR FALLS AS SPECIFIED BY DCBBFALN.        85800021
+*                                                                       86000021
+         SPACE 5                                                        86010002
+         IGGSWA                                                  Y02072 86050002
+         EJECT                                                          86550001
+         IKJRB                                                   Y02072 86600002
+         IGGFRWKA                                                Y02072 86610002
+         END                                                            88400021

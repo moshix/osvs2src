@@ -1,0 +1,475 @@
+*                                                                       00000820
+         COPY  LCGASMSW                                                 00001601
+*                                                                       00004020
+         TITLE 'IGC0206C (IHJACP02) CHKPT HOUSEKEEPING RTN - 3RD LOAD'  00005018
+*********************************************************************** 00007002
+*                                                                       00009002
+*TITLE:  CHKPT HOUSEKEEPING - 3RD LOAD                                  00010017
+*                                                                       00017002
+*STATUS CHANGE LEVEL 000                                                00022002
+*                                                                       00024002
+*FUNCTION/OPERATION:  THIS ROUTINE WILL DO THE FOLLOWING:               00030017
+*        1.) GET SPACE FOR QMNGRIO PARAMETER LIST AND WORK AREA.  SET   00040002
+*            UP PARAMETER LIST FOR READING CONTROL BLOCKS FROM THE      00042002
+*            SCHEDULER WORK AREA (SWA).                                 00044002
+*        2.) READ IN THE JCT VIA QMNGRIO.                               00080002
+*        3.) GIVE CONTROL TO THE CHKPT EXIT ROUTINE IF 'CANCEL' WAS     00090017
+*            REQUESTED.                                                 00100017
+*        4.) CONSTRUCT CHECKPOINT HEADER RECORD (CHR).                  00110017
+*        5.) UPDATE THE JCTNRCKP AND JCTCKIDL FIELDS IN THE JCT.        00120017
+*        6.) GENERATE A CHECKID IF USER DID NOT SUPPLY A CHECKID.       00130017
+*        7.) CALL THE VSAM CHECKPOINT ROUTINE IF ANY VSAM DATA @Z30SSDT 00130403
+*            SETS ARE OPEN.                                    @Z30SSDT 00130803
+*                                                                       00132002
+*ENTRY POINTS:  IGC0206C                                                00140002
+*                                                                       00142002
+*INPUT:  ADDRESS OF CHKPT WORK AREA IN REGISTER 1.                      00150017
+*                                                                       00152002
+*OUTPUT:  IF AN ERROR WAS FOUND WHEN READING THE JCT VIA QMNGRIO,       00160002
+*        A RETURN CODE OF X'0C' IS PLACED IN CHKWA TO INDICATE A        00170017
+*        CHKPT I/O ERROR AND A MESSAGE CODE OF X'19' IS PLACED @Z30SSDT 00180003
+*        IN CHKWA.  CONTROL IS PASSED TO THE ERROR EXIT        @Z30SSDT 00190003
+*        ROUTINE FOR A CANCELLED CHECKPOINT, AN I/O ERROR,     @Z30SSDT 00190403
+*        OR A VSAM CHECKPOINT ERROR.                           @Z30SSDT 00190803
+*                                                                       00192002
+*EXTERNAL ROUTINES:  SWA MANAGER ROUTINE                                00200002
+*                    VSAM CHECKPOINT ROUTINE                            00200403
+*                                                                       00202002
+*SVCS USED:  XCTL, GETMAIN, FREEMAIN                                    00210002
+*                                                                       00212002
+*EXITS-NORMAL:  XCTL TO CHKDCB, IGC0506C, UNLESS CANCEL WAS REQUESTED   00220017
+*        THEN XCTL TO CHKPT EXIT ROUTINE IGC0Q06C                       00230017
+*                                                                       00232002
+*EXITS-ERROR:  IF AN ERROR WAS FOUND WHEN READING THE JCT, CONTROL IS   00240002
+*        PASSED TO IGC0Q06C                                             00250017
+*                                                                       00252002
+*TABLES/WORKAREAS CREATED:  NONE                                        00260017
+*                                                                       00262002
+*TABLES/WORKAREAS REFERENCED:  TCB,CHKWA,CVT,DCB,JCT,TIOT,QMIOP,        00270002
+*      JESCT,PARMSECT,JSCB,CHR                                          00280002
+*                                                                       00282002
+*ATTRIBUTES:  REENTRANT, SUPERVISOR STATE, TYPE 4 SVC ROUTINE           00290017
+*                                                                       00292002
+*RESTRICTIONS ON USE OF ROUTINE:  USE ONLY ON OS/VS2/2                  00300002
+*                                                                       00310002
+*NOTES:  NONE                                                           00350017
+*                                                                       00400002
+*********************************************************************** 00450002
+         EJECT                                                          00500002
+IGC0206C CSECT                                                          00550017
+         BALR  RB,0                BASE ADDR                            00850018
+         USING *,RB                ADDRESS MODULE.                      01200017
+         B     BEGIN               BRANCH AROUND EYE CATCHER            01250000
+         CNOP  0,8                 ALIGN TO A DOUBLE WORD BOUNDARY      01300000
+         DC    C'IGC0206C'         CSECT NAME                           01350000
+BEGIN    EQU   *                                                        01400000
+         USING TCB,R4              ADDRESS TCB.                         01600000
+         USING CHKWA,RC            ADDRESS WORK AREA.                   02000017
+         LR    RC,R1               SAVE W.A. ADDRESS.                   02800017
+         LA    RD,CKREGSAV         INITIALIZE SAVE AREA REG.            03200017
+         L     R4,CKTCBAD          GET ADDR OF TCB.                     03600017
+**********************************************************************  10850001
+* GET PARM LIST AND WORK AREA SPACE FOR QMNGRIO (24+256 BYTES)   Y02076 10852002
+*                      AND                                       Y02076 10852402
+* GET THE SVA OF THE JCT FROM THE JSCB                           M0367  10854002
+*                                                                     * 10856001
+**********************************************************************  10858001
+CHRMVT2  EQU   *                                                        10858401
+         ICM   R0,ADDRBYTS,QMNGWALN     WA + PARM LST LNGH IN R0 Y02076 10858502
+         ICM   R0,HIORDER,SP253         INSERT SUBPOOL NO. IN R0 Y02076 10858702
+         GETMAIN R,LV=(R0)              GET QMNGRIO WRK AREA     Y02076 10858802
+         ST    R1,QMGRPRMA              SAVE P.L. ADR - FREEMAIN Y02076 10860802
+         LR    R9,R1                    SAVE PARM LIST ADDR      Y02076 10867202
+         L     R1,TCBJSCB         ADDRESS OF P/P JSCB            M0367  10875702
+         USING IEZJSCB,R1                                        M0367  10884202
+         L     R0,JSCBJCT         SVA OF JCT                     M0367  10892702
+         SLL   R0,HIORDER         CLEAR LOW ORDER BYTE           M0367  10901202
+         TM    JSCBOPTS,JSCBAUTH        Q-USER AUTH FOR MODESET  Y02076 10903202
+         BZ    CHRNAUTH                 BR IF NOT AUTH           Y02076 10905202
+         OI    CKFLAG1,USERAUTH         SET 'USER AUTH' BIT      Y02076 10907202
+CHRNAUTH EQU   *                        SET UP QMNGRIO PARM LIST Y02076 10909202
+         USING QMIOP,R1                 BASE REG FOR PARM LIST   Y02076 10909702
+         LR    R1,R9                    RESTORE ADR OF PARM LIST Y02076 10959702
+         XC    QMITCBAD(LPL),QMITCBAD   CLEAR QMNGRIO PARM LST   Y02076 10969702
+         ST    R0,QMIDSKAD              ST JCT SVA ADDR IN PARM  Y02076 11009702
+         LA    R0,LPL                   GET OFFSET TO WORK AREA  Y02076 11059702
+         AR    R0,R1                    CALC WORK AREA ADDRESS   Y02076 11069702
+         ST    R0,QMIWRKAD              ST WA ADDR IN P.L.       Y02076 11071702
+         ST    R4,QMITCBAD              STORE TCB ADDR IN P.LIST Y02076 11079702
+         LA    R0,LNJCT                 GET LENGTH OF JCT        Y02076 11089702
+         STH   R0,QMIRECL               STORE JCT LENGTH IN P.L  Y02076 11099702
+         LA    R0,INJMJCT               GET ADDR FOR JCT READ IN Y02076 11159702
+         ST    R0,QMIRECAD              STORE IN PARM LIST       Y02076 11209702
+         MVI   QMIFLAGS,QMIOREAD        SET READ FUNC IN PRM LST Y02076 11259702
+         QMNGRIO                        READ IN JCT              Y02076 11309702
+         LTR   RF,RF                    SUCCESSFUL READ          Y02076 11359702
+         BNZ   CHRQERRW                 NO-BRANCH TO ERR ROUTINE Y02076 11409702
+*********************************************************************** 21250002
+*                                                                     * 21300002
+*        FOR CANCEL REQUEST, BRANCH TO XCTL TO EXIT ROUTINE           * 21350002
+*                                                                     * 21400002
+*********************************************************************** 21450002
+         TM    CKFLAG1,CKCANCEL         WAS CANCEL REQUESTED            21500002
+         BO    CHRQCOM                  YES-GO TO EXIT ROUTINE          21550002
+         L     R8,CKPARMAD              GET ADDR OF PARM LIST           21600002
+         LR    RA,RC                    GET ADDR OF W.A.                21650002
+         A     RA,CKBFOFST         GET ADDR OF BUFFER.                  26000017
+         L     R5,CKDCBAD          GET ADDR OF CHKPT DCB.               26400017
+         USING IHADCB,R5           ADDRESS CHKPT DCB.                   26800017
+         USING CHRSECT,RA                                               27200017
+**********************************************************************  27260017
+*                                                                     * 27320017
+*        INCREMENT JCTNRCKP FIELD IN JCT BY ONE                       * 27380017
+*                                                                     * 27440017
+**********************************************************************  27500017
+         LH    RF,JCTNRCKP         GET NO. CHKPT'S TAKEN.               27600017
+         LA    RF,ADDONE(RF)       UPDATE NO. CHKPT'S TAKEN             28000018
+         STH    RF,JCTNRCKP        STORE UPDATED COUNT IN JCT           28400017
+**********************************************************************  28460017
+*                                                                     * 28520017
+*        BRANCH TO GENERATE CHECKID IF USER DID NOT SUPPLY CHECKID    * 28580017
+*                                                                     * 28640017
+**********************************************************************  28700017
+         TM    CKFLAG2,CKUSPCHD    DID USER SUPPLY CHECKID              28800017
+         BZ    CHRGNID             NO-GO TO GENERATE ID.                29200017
+         XR    R1,R1                                                    29600017
+         USING PARMSECT,R8         MAPPING OF CHKPT PARMLST             29700018
+         IC    R1,LNCHKID          GET LENGTH OF CHECKID                29800018
+         L     RF,IDADDR           GET ADDR OF CHECKID                  29900018
+**********************************************************************  30440017
+*                                                                     * 30480017
+*        UPDATE JCTCKIDL FIELD IN JCT                                 * 30520017
+*        CONSTRUCT CHECKPOINT HEADER RECORD                           * 30560018
+*                  CHRCOUNT - NUMBER CHECKPOINTS TAKEN                * 30600017
+*                  CHRCKIDL - LENGTH OF CHECKID                       * 30640017
+*                                                                     * 30680017
+**********************************************************************  30720017
+CHRSKP4  EQU   *                                                        30800017
+         STH   R1,CHRCKIDL         MOVE CHECKID LENGTH TO BUFFER.       31200017
+         MVC   CHRCOUNT(CHRCKIDL-CHRCOUNT),JCTNRCKP                     31400018
+*                                  PUT NO. OF CHKPT IN CHR.             31600018
+         STC   R1,JCTCKIDL         MOVE CHECKID LENGTH TO JCT.          32000017
+**********************************************************************  32060017
+*                                                                     * 32120017
+*        SET VIRTUAL = REAL FLAG, AND                                 * 32170002
+*        INITIALIZE CHRCHKID FIELD IN JCT WITH CHECKID                * 32180017
+*                                                                     * 32240017
+**********************************************************************  32300017
+CHRAG1   EQU   *                                                        32400017
+         TM    TCBFLGS6,TCBRV      TEST FOR VIRTUAL = REAL       Y02076 32450002
+         BZ    CHRAG1A             BRANCH IF NO                  Y02076 32500002
+         OI    CKFLAG1,CKVEQR      SET V=R FOR MOVE TO CHR       Y02076 32550002
+CHRAG1A  EQU   *                   PREPARE TO MOVE CHECKID       Y02076 32600002
+         MVI   CHRCHKID,BLANK      INITIALIZE CHECKID FIELD WITH BLANKS 32800018
+         MVC   CHRCKID2(LNG15),CHRCHKID                                 33200018
+         BCTR  R1,0                DECREMENT COUNT FOR MOVES.           33600017
+         EX    R1,CHRMVC1          MOVE CHECKID TO BUFFER.              34000017
+**********************************************************************  34070017
+*                                                                     * 34140017
+*        RETURN SYSTEM-GENERATED CHECKID TO USER IF REQUESTED.        * 34210017
+*                                                                     * 34280017
+**********************************************************************  34350017
+         L     RF,CKPARMAD         GET ADDR OF PARM LIST                34440017
+         USING PARMSECT,RF         UPDATE NO. CHKPT'S TAKEN             34460018
+         CLI   PARMFLG,NOID        REQUEST FOR RETURN OF GEN. CHECKID   34480018
+         BE    CHRMVR              NO-SKIP CODE TO RETURN CHECKID       34520017
+         CLI   LNCHKID,RETCKID     REQUEST FOR RETURN OF GEN. CHECKID   34560018
+         BNE   CHRMVR              NO-SKIP CODE TO RETURN CHECKID.      34600017
+         L     RF,IDADDR           GET ADDR OF CHECKID-RETURN-AREA      34620018
+         DROP  RF                                                       34640018
+         MVC   0(LNGENID,RF),CHRCHKID                                   34680018
+*                                  MOVE CHECKID TO USER SPECIFIED       34690018
+*                                  RETURN AREA                          34700018
+**********************************************************************  34726017
+*                                                                     * 34732017
+*        BUILD REMAINDER OF CHR                                       * 34738017
+*                                                                     * 34744017
+**********************************************************************  34750017
+CHRMVR   EQU   *                                                        34760017
+         L     RF,16(0,0)          LOAD CVT POINTER            @Z30JSSR 34770003
+         USING CVTMAP,RF           MOVE SYSTEM ID              @Z30JSSR 34780003
+         MVC   CHRSYSID(CHRIDENT-CHRSYSID),CVTDCB              @Z30JSSR 34790003
+         DROP  RF                                              @Z30JSSR 34792003
+         LH    RF,DCBTIOT          GET OFFSET TO CHKPT ENTRY IN TIOT.   34800017
+         L     RE,TCBTIO           GET ADDR OF TIOT.                    35200017
+         AR    RE,RF               GET ADDR OF CHKPT ENTRY IN TIOT.     35600017
+         USING TIOELNGH,RE         ADDRESS CHKPT DD ENTRY IN TIOT.      36000017
+*                                  FILL IN CHR WITH INFORMATION THAT    36200018
+*                                  WILL BE NEEDED AT RESTART TIME       36400018
+         MVC   CHRDDNM(CHRPPM-CHRDDNM),TIOEDDNM                         36600018
+         MVC   CHRPPM(CHRBLKSI-CHRPPM),CKPPM                            36800018
+         MVC   CHRPPML(CHRSYSID-CHRPPML),CKPPML                @Z30JSSR 37000003
+         MVC   CHRIDENT(CHRPADH-CHRIDENT),CHRID                @Z30JSSR 37050003
+         MVC   CHRBLKSI(CHRTIOTL-CHRBLKSI),DCBBLKSI                     37200018
+         MVC   CHRTIOTL(CHRFLAGS-CHRTIOTL),CKTIOTLN                     37400018
+         MVC   CHRFLAGS(CHRWACL-CHRFLAGS),CKFLAG1                       37600018
+         ST    RC,CHRCKWAD                                              38100018
+         MVC   CHRFLAG2(CHRWACL-CHRFLAGS),CKFLAG2                       38300018
+         MVC   CHRWACL(CHRFLAG2-CHRWACL),CKWACL1                        38500018
+         MVC   CHRSVRB(CHRPPML-CHRSVRB),TCBRBP    ADDR OF CHKPT SVRB    38700018
+         NI    CKFLAG1,AUTHOFF          TURN OFF AUTH BIT AFTER  Y02076 38750002
+*                                         MOVE TO CHR BUFFER     Y02076 38800002
+         TM    CKFLAG1,CKTAPE           CHKPT D/S ON TAPE       YA00142 38850002
+         BZ    CHRMVR2                  SKIP IF NOT             YA00142 38900002
+         L     R3,DCBDEBAD              GET DEB ADR             YA00142 38950002
+         MVC   CHRSVRB(LNG1),DEBVLSQ(R3) SAV VOL SEQ IN CHR     YA00142 39000002
+CHRMVR2  EQU   *                        COMPLETE CHR            YA00142 39100002
+**********************************************************************  39260017
+*                                                                     * 39320017
+*        PAD REMAINDER OF BUFFER WITH ONES.                           * 39380017
+*                                                                     * 39440017
+**********************************************************************  39500017
+         LR    R9,RC               CALCULATE NUMBER                     39600017
+         A     R9,CKWACL           OF BYTES IN BUFFER                   40000017
+         LA    RF,CHRPADH          THAT NEED TO BE PADDED WITH ONES.    40400017
+         SR    R9,RF                                                    40800017
+CHRAG2   EQU   *                                                        41200017
+         MVI   CHRPADH,CHRPAD      MOVE A BYTE OF ONES TO BUFFER        41500018
+         BCTR  R9,0                DECREMENT COUNT.                     41800017
+CHRBPAD  EQU   *                                                        42000017
+         CH    R9,=H'256'          ARE THERE MORE THAN 256 BYTES LEFT   42400017
+         BH    CHRPADNG            YES-GO TO PAD 256 BYTES.             42800017
+         BCTR  R9,0                DECREMENT                            43200017
+         EX    R9,CERMVC3          PAD REST OF BUFFER WITH ONES.        43600017
+**********************************************************************  43900017
+*                                                                     * 44200017
+*        SET PARAMETER REGISTER AND XCTL TO IGC0506C.                 * 44500017
+*      IF THERE ARE ANY VSAM DATA SETS OPEN, LOAD THE VSAM     @Z30SSDT 44550003
+*      CHECKPOINT MODULE, IDA0C06C, AND BALR.                  @Z30SSDT 44600003
+*                                                                     * 44800017
+**********************************************************************  45100017
+CHREXL   EQU   *                                                        45900017
+         USING DEBBASIC,R7              DEB ADDRESSABILITY       Y02076 45950002
+         L     R7,TCBDEB                GET POINTER TO FIRST DEB Y02076 46000002
+CHRDEBCK L     R6,DEBDCBAD              GET PT TO THIS DCB/AMB   Y02076 46050002
+         TM    EXCPTEST(R6),EXCPID      IS THIS AN EXCP DCB      Y02076 46060002
+         BO    CHRNXTDB                 YES, GO GET PT NEXT DEB  Y02076 46070002
+         TM    DSORGFLD(R6),ACBAMBID    IS THIS A DCB DATA SET   Y02076 46080002
+         BZ    CHRNXTDB                 YES, GO GET PT NEXT DEB  Y02076 46090002
+         CLI   OFFSET0(R6),AMBDSID      IS THIS AMB VSAM DATA ST Y02076 46092002
+         BE    CHRVSAM                  YES, GO GET PT VSAM CHKPTY02076 46096002
+         TM    ACBFLAG(R6),VSAMACB      IS THIS A VSAM ACB       Y02076 46098402
+         BO    CHRVSAM                  YES, GO GET PT VSAMCKPT  Y02076 46098802
+CHRNXTDB L     R7,DEBDEBAD              NO, GET PT TO NEXT DEB   Y02076 46099202
+         LA    R7,0(R7)                 ZERO OUT HI ORDER BYTE   Y02076 46099602
+         LTR   R7,R7                    ANY MORE DEBS ON CHAIN   Y02076 46099702
+         BZ    CHRNEXT                  NO, XCTL TO IGC0506C     Y02076 46099802
+         B     CHRDEBCK                 YES, GR TO CHK NEXT DEB  Y02076 46099902
+         DROP  R7                                              @Z30SSDT 46149903
+CHRVSAM  MVC   CHRXL(LXCTLNAM),CHRXAM0  GET PT TO VSAM CKPT      Y02076 46200002
+         LOAD  EPLOC=CHRXL              LOAD VSAM CHECKPOINT   @Z30SSDT 46250003
+         LR    RF,R0                    GET ENTRY POINT ADDRESS@Z30SSDT 46260003
+         LA    R1,CHKWA                 LOAD PARAMETER REG 1   @Z30SSDT 46270003
+         BALR  RE,RF                    CALL VSAM CHECKPOINT   @Z30SSDT 46280003
+         DELETE EPLOC=CHRXL             DELETE VSAM CHECKPOINT @Z30SSDT 46282003
+         LH    RF,CKRETCOD              GET THE RETURN CODE    @Z30SSDT 46284003
+         LTR   RF,RF                    TEST FOR ANY ERRORS    @Z30SSDT 46290003
+         BZ    CHRNEXT                  NONE, GO TO NEXT LOAD  @Z30SSDT 46292003
+         MVC   CHRXL(LXCTLNAM),CHRXLST  ERROR, GO TO IGC0Q06C  @Z30SSDT 46294003
+         B     CHRXIT                   GO TO XCTL ROUTINE     @Z30SSDT 46296003
+CHRNEXT  MVC   CHRXL(LXCTLNAM),CHRXLIST GO TO NEXT LOAD        @Z30SSDT 46300003
+CHRXIT   EQU   *                                                        46400017
+         ICM   R0,ADDRBYTS,QMNGWALN     QMNGR PL/WA LNGTH        Y02076 46450002
+         ICM   R0,HIORDER,SP253         SUBPOOL 253              Y02076 46500002
+         L     R1,QMGRPRMA              GET ADR OF PL/WA         Y02076 46550002
+         FREEMAIN  R,LV=(R0),A=(R1)     FREE QMNGR PL/WA         Y02076 46600002
+         LR    R1,RC               PLACE ADDR OF W.A. IN PARM REG.      46800017
+         LA    RF,CHRXL            SET PARAMETERS FOR XCTL.             47200017
+         ST    RF,CHRAD                                                 47600018
+         LA    RF,CHRAD                                                 48000018
+         XCTL  SF=(E,(15))         TRANSFER CONTROL TO CHKDCB.          48400017
+CHRMVC1  MVC   CHRCHKID(1),0(RF)   EXECUTED MOVE OF CHECKID TO BUFFER.  48800017
+**********************************************************************  48880017
+*                                                                     * 48960017
+*        ERROR ROUTINE WHEN I/O ERROR OCCURS READING JCT - SET CODE   * 49040017
+*        AND XCTL TO EXIT ROUTINE, IGC0Q06C                           * 49120017
+*                                                                     * 49200017
+**********************************************************************  49280017
+CHRQERRW EQU   *                                                        49400017
+         MVI   CKRETCD2,CKIOERR    PUT RETURN CODE IN WA                49450018
+         MVI   CKMSGCD2,CKERIO7    PUT MESSAGE CODE IN WA               49500018
+         OI    CKFLAG2,CKMSG1      INDICATES WTO MESSAGE=NOT TAKEN      49550017
+CHRQCOM  EQU   *                                                        52800017
+         MVC   CHRXL(LXCTLNAM),CHRXLST MOVE IGCOQ06C TO XCTL PARMLST    53200018
+         B     CHRXIT              GO TO TRANSFER CONTROL TO CER        53600017
+**********************************************************************  53660017
+*                                                                     * 53720017
+*        GENERATE SYSTEM CHECKID AND STORE IN CHKWA                   * 53780017
+*                                                                     * 53840017
+**********************************************************************  53900017
+CHRGNID  EQU   *                                                        54000017
+         CVD   RF,CHRDEC           CONVERT BINARY COUNT TO PACKED DEC.  54400017
+         UNPK  CHRCON(LNCNVID),CHRCHAR4(LNG5)   CONVERT TO UNPACKED DEC 54800018
+         MVZ   CHRCON10(1),CHRCONC9                                     55200018
+         MVI   CHRCONC2,CHARC      INSERT C INTO 1ST BYTE OF CHECKID    55500018
+         LA    RF,CHRCONC2                                              55800018
+         MVC   CKCHEKID(LNGENID),CHRCONC2                               56000018
+*                                  MOVE GENERATED CHECKID TO CHKWA      56200018
+         LA    R1,LNGENID          SUPPLY LENGTH OF GENERATED CHECKID   56500018
+         B     CHRSKP4             GO TO UPDATE FIELDS IN JCT           56700018
+**********************************************************************  64060017
+*                                                                     * 64120017
+*        ROUTINE TO PAD BUFFER WITH 256 BYTES OF ONES.                * 64180017
+*                                                                     * 64240017
+**********************************************************************  64300017
+CHRPADNG EQU   *                                                        64400017
+         MVC   1(256,RF),0(RF)     PAD 256 BYTES OF BUFFER WITH ONES.   64800017
+         AH    RF,=H'256'          UPDATE POINTER TO NEXT BYTE IN BUF.  65200017
+         SH    R9,=H'256'          UPDATE NUMBER-OF-BYTES-LEFT-COUNTER. 65600017
+         B     CHRBPAD             GO TO CHECK IF BUFFER ALL PADDED     66000018
+CERMVC3  MVC   1(1,RF),0(RF)       EXECUTE MOVE.PROPAGATES ONES THROUGH 66400017
+*                                  REST OF BUFFER.                      66800017
+CHRXLST  DC    C'IGC0Q06C'         CHKPT EXIT RTN(ERROR OR CANCEL)      67100018
+CHRXLIST DC    C'IGC0506C'         CHECK I/O(NORMAL FLOW)               67400018
+CHRXAM0  DC    C'IDA0C06C'              VSAM CHKPT NORMAL FLOW @Z30SSDT 67450003
+*        MASK  USED FOR CONVERTING CHECKID TO UNPACKED DEC            * 67700018
+CHREDIT  DC    X'2120202020202020'                                      68000017
+         DC    X'2020'                                                  68400017
+USERAUTH EQU   X'10'                    USER AUTH FOR MODESET    Y02076 68450002
+AUTHOFF  EQU   X'EF'                    MSK - TURN OFF AUTH BIT  Y02076 68460002
+HIORDER  EQU   8         USED TO SHIFT TTR TO HIGH ORDER BYTES    MFTCR 68500018
+SP253    DC    AL1(253)                 SUBPOOL NO. FOR GETMAIN  Y02076 68510002
+ADDRBYTS EQU   7                        ADDR BITS FOR ICM INSTR  Y02076 68520002
+CKVEQR   EQU   8                        V = R FLAG               Y02076 68550002
+QMNGWALN DC    AL3(280)       256 BYTE QMNGRIO WA + 24(PARM LST) Y02076 68580002
+LPL      EQU   24                       LNGTH OF QMNGRIO PRM LST Y02076 68590002
+LNJCT    EQU   176                      LNGTH OF JCT IN SWA      Y02076 68594002
+CHRID    DC    C'$$/%@/$ CHR %@/$//%'                                   68596003
+*                                                                       68600018
+*                                                                     * 73610000
+*        MAINTENANCE SPACE                                            * 73612000
+*                                                                     * 73614000
+PATCH    DC    XL((*-IGC0206C)/20)'00'   FIVE PERCENT MAINTENANCE SPACE 73616000
+         IEZDEB                                                  Y02076 73616102
+         IEFQMIOP                                                Y02076 73616402
+         IEFJESCT                                                Y02076 73616802
+*                                                                     * 73618000
+*                                                                     * 73620018
+*        MAPPING OF ECB                                               * 73640018
+*                                                                     * 73660018
+ECBSECT  DSECT                                                          73680018
+IOCMPFLG DS    1C        COMPLETION FLAG FOR I/O EVENT                  73700018
+IORBPNT  DS    3C        RB ADDR WHILE WAITING FOR EVENT              * 73720018
+*                                                                     * 73740018
+*        MAPPING OF CHKPT PARAMETER LIST                              * 73760018
+*                                                                     * 73780018
+PARMSECT DSECT                                                          73800018
+PARMFLG  DS    1C        BYTE INDICATING USER/SYSTEM/SYSTEM-RETURN CKID 73820018
+PARMDCB  DS    3C        ADDR OF CHKPT DCB                              73840018
+IDADDR   DS    0F                                                       73860018
+LNCHKID  DS    CL1       LENGTH OF CHECKID OR INDICATES RETURN OF       73880018
+*                        SYSTEM-GENERATED CHECKID                       73900018
+         DS    CL3       CHECKID ADDR                                   73920018
+*                                                                       73940018
+*        MAPPING OF CHECKPOINT HEADER RECORD(CHR)                     * 73960018
+*                                                                       73980018
+CHRSECT  DSECT                                                          74000017
+         DS    0D                                                       74400017
+CHRCOUNT DS    H    NUMBER OF CHKPTS TAKEN                              74800017
+CHRCKIDL DS    H    LENGTH OF CHECKID                                   75200017
+CHRCHKID DS    4F   CHECKID                                             75600017
+CHRDDNM  DS    2F   DDNAME OF CHECKPOINT DATA SET.                      76000017
+CHRPPM   DS    CL4       LOW ORDER ADDR P/P CORE                        76200018
+CHRPPE   DS    CL4       HIGH ORDER ADDRESS P/P CORE                    76400018
+CHRBLKSI DS    CL2       CHKPT D.S.  BLKSIZE                            76600018
+CHRTIOTL DS    CL2       LENGTH OF TIOT                                 76800018
+CHRFLAGS DS    CL1       CHKPT FLAG 1                                   77000018
+CHRWACL  DS    CL3       CHKPT W.A. LENGTH                              77200018
+CHRCKWAD DS    0F                                                       77400018
+CHRFLAG2 DS    CL1       CHKPT FLAG 2                                   77600018
+CHRWAAD  DS    CL3       CHKPT W.A. ADDR                                77800018
+CHRSVRB  DS    CL4       ADDR OF CHKPT SVRB                             78000018
+CHRPPML  DS    CL4       LOW ORDER ADDR CHKPT SVRB                      78200018
+CHRPPEL  DS    CL4       HIGH ORDER ADDR CHKPT SVRB                     78400018
+CHRSYSID DS    CL1                 SYSTEM ID (CVTDCB)          @Z30JSSR 78500003
+CHRIDENT DS    CL19                CHR RECORD IDENT            @Z30JSSR 78550003
+CHRCKID2 EQU   CHRCHKID+1                                               78600018
+CHRPADH  EQU   *    PADDING BEGINS HERE.                                80000017
+         IEEVCHWA   CHRWA,VER=3                                         80400000
+*                                                                     * 80410018
+*        WORK AREA USED FOR CONVERTING CHECKID TO PRINTABLE CHARACTERS* 80420018
+*                                                                     * 80430018
+CHRDEC   DS    0D                                                       80440018
+CHRCHAR1 DS    3C        AREA FOR CHECKID TO BE CONVERTED               80450018
+CHRCHAR4 DS    1C                                                       80460018
+CHRCHAR5 DS    4C                                                       80470018
+CHRCON   DS    0H        AREA  FOR CONVERTED CHECKID                    80480018
+CHRCONC1 DS    1C        EXTRA BYTE USED FOR CONVERSION                 80490018
+         DS    1C                                                       80500018
+CHRCONC2 DS    3H        GENERATED NUMBER                               80510018
+CHRCONC9 DS    CL1                                                      80520018
+CHRCON10 DS    CL2       ZONE BYTE MUST BE UPDATED IN CONVERTED ID      80530018
+CHRXL    DS    2F      NAME OF MODULE TO TRANSFER CONTROL TO            80640017
+CHRAD    DS    0F        POINTER TO XCTL PARMLST(ALSO,WORK SPACE)       80660018
+         DS    1C                                                       80680018
+CHRAD1   DS    3C                                                       80700018
+QMGRPRMA EQU   CKERAS00                 STORE ADR OF PARM LIST   Y02076 80710002
+*                                                                       80720018
+*        JOB QUEUE WORK AREA                                          * 80740018
+*                                                                       80760018
+QJOB     DSECT                                                          80800017
+SCALADCB DS    13F                                                      81200017
+SCADEB   DS    12F                                                      81600017
+SCATALLY DS    F                                                        82000017
+SCASTRKS DS    H    TT OF FIRST TRACT IN Q.                             82400017
+SCALTRKS DS    H    TT OF LAST TRACK IN Q.                              82800017
+SCARECPT DS    CL1  NUMBER OF RECORDS PER PHYSICAL TRACK.               83200017
+         IEFSD005                                                       83600017
+         IEEBASEA                                                       84000017
+         IEZJSCB                                                        84600020
+TIOTSECT DSECT                                                          85200017
+         IEFTIOT1                                                       85600017
+CVTSECT  DSECT                                                          86000000
+         CVT                                                            86050000
+         IKJTCB                                                         86100000
+         DCBD  DSORG=(BS,PO),DEVD=(DA,TA)                               86400017
+NOTREL   EQU   X'42' INDICATES COMMAND CHAINING AND  NON-RELATED CP.    86800017
+NOID     EQU   X'80'               SIGNIFIES LAST WORD IN PARM LIST.    87000017
+DDL      EQU   8         LENGTH OF TIOEDDNM FIELD                       87600017
+CHRPAD   EQU   X'FF'     PADDING FOR CHR                                88000017
+PREL     EQU   4              LENGTH OF CHECKID LENGTH FIELD IN CHR.    88400017
+CCWL     EQU   24   LENGTH OF CHANNEL PROGRAM TO READ OR WRITE TO JOB Q 88800017
+EICL     EQU   68   LENGTH OF  ECB/IOB/CCW WORK AREA                    89200017
+CHRL     EQU   24   LENGTH OF PARM LIST IN CHR.                         89600017
+SUREAD   EQU   X'7F'     RETURN CODE FOR SUCCESSFUL I/O COMPLETION.     90000017
+CKMSG1   EQU   32                  WTO MSG-NOT TAKEN-ENVIRONMENT ERROR  90030017
+CKERIO7  EQU   X'19'    I/O ERROR WHILE READING IN JCT                  90060017
+*                                                                       90070018
+*        ADDRESSING BYTES WITHIN DSECTS                                 90080018
+*                                                                       90090018
+DXDASEEK EQU   DXDAADR+3           ADDR OF IOBSEEK FIELD         Y02076 90110002
+CKTIOTLN EQU   CKTIOLN+2           ADDRESSING TIOT LNG IN CHKWA         90120018
+DXCCW11  EQU   DXCCW1+1            1ST CCW                              90130018
+DXCCW21  EQU   DXCCW2+1            2ND CCW                              90140018
+CKTIOTL2 EQU   CKTIOLN+2           LENGTH OF TIOT IN CHKWA              90150018
+CKWACL1  EQU   CKWACL+1            LENGTH OF CHKWA                      90160018
+CKRETCD2 EQU   CKRETCOD+1          CHKPT RETURN CODE                    90170018
+CKMSGCD2 EQU   CKMSGCOD+1     CHKPT MESSAGE CODE                        90180018
+LXCTLNAM EQU   8         LENGTH OF MODULE NAME FOR XCTL PARMLST         90190018
+LNADDR   EQU   3         LENGTH OF ADDRESS                              90200018
+ADDONE   EQU   1         INCREMENT QUANTITY                             90210018
+ADJR     EQU   8         USED TO ADJUST R OF TTR                        90220018
+ADJTT    EQU   16        USED TO ADJUST TT OF TTR                       90230018
+BLANK    EQU   C' '      BLANKS USED TO INITIALIZE CHECKID FIELD IN CHR 90240018
+LNG15    EQU   15        MAXIMUM LENGTH OF CHECKID MINUS ONE            90250018
+RETCKID  EQU   X'FF'     INDICATES USER REQ. RETURN OF GEN.CHECKID      90260018
+LNCNVID  EQU   10             LENGTH OF CHECKID TO BE CONVERTED         90270018
+LNGENID  EQU   8              LENGTH OF GENERATED CHECKID               90280018
+LNJOBNAM EQU   8              JOB NAME LENGTH IN CSCB                   90290018
+CHARC    EQU   C'C'      USED TO ALTER MODULE NAME TO IGC0206C          90300018
+LNG5     EQU   5         LNG USED IN UNPACK INSTRUC FOR CHECKID         90310018
+DEBVLSQ  EQU   X'25'                    TAPE DEB DISP           YA00142 90360002
+*                                       TO VOL SEQ NO.          YA00142 90370002
+LNG1     EQU   1                        LNGTH OF 1              YA00142 90380002
+*                                                                       90390002
+*        THE FOLLOWING EQUATES ARE FOR VSAM DATA SETS            Y02076 90392002
+*                                                                       90394002
+EXCPTEST EQU   42                  OFFSET TO DCB MACRF FIELD     Y02076 90396002
+DSORGFLD EQU   27                  OFFSET TO ACB/AMB DSORG FLD   Y02076 90398002
+ACBAMBID EQU   X'08'               MASK ACB/AMB DATA SET TEST    Y02076 90398402
+EXCPID   EQU   X'80'               MASK FOR EXCP TEST ON MACRF   Y02076 90398802
+OFFSET0  EQU   0                   OFFSET TO AMB AMBID FIELD     Y02076 90399202
+AMBDSID  EQU   X'40'               MASK FOR AMB ID TEST          Y02076 90399602
+VSAMACB  EQU   X'11'               MASK FOR ACB VSAM DS TEST     Y02076 90399702
+ACBFLAG  EQU   43                  OFFSET TO ACB IND. FLAG FLD   Y02076 90399802
+ END                                                                    90400017

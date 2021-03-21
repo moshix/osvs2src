@@ -1,0 +1,2247 @@
+IOCA     TITLE 'INPUT/OUTPUT - CONTROL - ALLOCATION MODULE FOR THE VS  X00020000
+               LOADER'                                                  00040000
+*********************************************************************** 00060021
+*                                                                     * 00080021
+*TITLE 'HEWLIOCA' - I/O, CONTROL, AND ALLOCATION MODULE FOR THE       * 00100021
+*    VS LOADER                                                       *  00120000
+*                                                                     * 00140021
+*STATUS - CHANGE LEVEL 20                                               00160021
+*        TSO CHANGES FOR IDENTIFICATION,TERM OPTION AND INCORE DS     * 00180021
+*        SECOND BASE REGISTER (4) ADDED                               * 00200021
+*                                                                     * 00220021
+*FUNCTION/OPERATION- THIS MODULE PERFORMS THE FOLLOWING -             * 00240021
+*   1. ISSUES AN UNCONDITIONAL 6K GETMAIN FOR INITIALIZATION    A42698* 00260000
+*   1A. ISSUES AN EXTRACT TO FIND WHETHER TSO IS OPERATING            * 00280021
+*   2. SCANS THE OPTION,DDNAME AND DCB LISTS                          * 00300021
+*   3. ISSUES A VARIABLE CONDITIONAL GETMAIN FOR PROGRAM AND TABLES   * 00320021
+*   4. ALLOCATES AND INITIALIZES THE LOADER COMMUNICATION AREA        * 00340021
+*   4A. SETS SYSPRINT RECORD SIZE AT 81 OR 121 DEPENDING ON WHETHER   * 00360021
+*      TSO IS OPERATING                                               * 00380021
+*   5. ALLOCATES AND CHAINS SAVE AREAS FOR USE DURING LOADING         * 00400021
+*   6. FREEMAINS THE INITIAL 4K STORAGE FOR USE BY DATA MANAGEMENT    * 00420021
+*   7. CONSTRUCTS SYSLIN AND SYSPRINT DCBS                            * 00440021
+*   7A.ALLOCATES SPACE FOR SYSTERM DCB,DECBS, AND BUFFERS             * 00460021
+*   8. OPENS SYSLIN AND SYSPRINT DCBS                                 * 00480021
+*   9. CALLS IEWBUFFR (SEE BELOW) TO ALLOCATE SYSPRINT BUFFERS        * 00500021
+*  10. PRINTS LOADER HEADING, OPTIONS USED, REJECTED OPTIONS, ERRORS  * 00520021
+*      ENCOUNTERED DURING OPEN, AND MAP HEADING                       * 00540021
+*  11. CALLS HEWBUFFR (SEE BELOW) TO ALLOCATE SYSLIN BUFFERS          * 00560021
+*  12. CALLS HEWPRIME (SEE BELOW) TO PRIME OBJECT MODULE BUFFERS      * 00580021
+*  13. CALLS HEWLRELO TO PROCESS OBJECT MODULES                       * 00600021
+*  14. CALLS HEWLODE TO PROCESS LOAD MODULES                          * 00620021
+*  15. CALLS HEWACALL TO PROCESS AUTO-CALL AND FINAL RESOLUTION       * 00640021
+*  16. CALLS AEWBTMAP TO PROCESS THE DIAGNOSTIC MESSAGE DICTIONARY    * 00660021
+*  17. PURGES THE SYSPRINT BUFFERS                                    * 00700021
+*  18. CLOSES DATA SETS                                               * 00720021
+*  19. FREEMAINS STORAGE NOT ALLOCATED TO THE LOADED PROGRAM          * 00740021
+*  20. CONSTRUCTS RETURN PARAMETERS                                   * 00760021
+*  21. RETURNS TO THE INVOKING PROGRAM                                * 00780021
+*                                                                     * 00800021
+*ENTRY POINTS - 'HEWLOAD' - MAIN ENTRY POINT FOR ALIAS HEWLOAD        * 00820021
+*                         LOADING WITH IDENTIFICATION                 * 00840021
+*   'HEWOPNLB' - CLOSES SYSLIN DATA SET                               * 00880021
+*              - OPENS SYSLIB DATA SET                                * 00920021
+*              - CALLS HEWBUFFR (SEE BELOW) TO ALLOCATE SYSLIB BUFFERS* 00940021
+*                                                                     * 00960021
+*   'HEWBUFFR' - DEALLOCATES ANY PREVIOUS INPUT BUFFERS AND DECBS     * 00980021
+*              - ALLOCATES BUFFERS AND DECBS FOR DCB SPECIFIED        * 01000021
+*              - RESETS INPUT I/O FLAGS                               * 01020021
+*                                                                     * 01040021
+*   'HEWPRIME' - ISSUES A 'READ' ON ALL INPUT BUFFERS EXCEPT ONE      * 01060021
+*              - SETS DATA LENGTH TO ZERO ON BUFFER NOT READ          * 01080021
+*              - SETS INPUT RECORD POINTER TO ZERO-LENGTH BUFFER      * 01100021
+*                                                                     * 01120021
+*   'HEWLREAD' - READS PHYSICAL RECORDS (BSAM)                        * 01140021
+*              - DEBLOCKS INCORE DATA SET                             * 01160021
+*              - DEBLOCKS FIXED RECORD FORMAT                         * 01180021
+*                                                                     * 01200021
+*   'HEWLPRNT' - INSERTS ASA CARRIAGE CONTROL CHARACTERS IN RECORDS   * 01220021
+*              - BLOCKS LOGICAL RECORDS INTO PHYSICAL RECORDS         * 01240021
+*              - WRITES PHYSICAL RECORDS                              * 01260021
+*                                                                     * 01280021
+*   'HEWTERM'  - OPENS SYSTERM IF NOT OPEN                            * 01330000
+*                WRITES PHYSICAL RECORDS (BSAM)                       * 01332000
+*                                                                     * 01340021
+*INPUT- STANDARD OS/360 PARAMETER LIST                                * 01360021
+*                                                                     * 01380021
+*OUTPUT- REGISTER 15 - RETURN CODE                                    * 01400021
+*        REGISTER  0 - ENTRY POINT ADDRESS OF LOADED PROGRAM          * 01420021
+*        REGISTER  1 - POINTER TO TWO FULL WORDS                      * 01440021
+*           WHEN INVOKED VIA IEWLOAD                                  * 01460021
+*           TWO WORDS CONTAIN NAME OF IDENTIFIED PROGRAM              * 01480021
+*              EITHER AS SPECIFIED IN NAME PARAMETER OR DEFAULT **GO  * 01500021
+*           WHEN INVOKED VIA IEWLOADR                                 * 01520021
+*           WORD1 - BEGINNING ADDRESS OF STORAGE OCCUPIED BY PROGRAM  * 01540021
+*           WORD2 - EXTENT (IN BYTES) OF PROGRAM                      * 01560021
+*                                                                     * 01580021
+*EXTERNAL ROUTINES-                                                   * 01600021
+*                                                                     * 01620021
+*   'HEWERROR' - LOG ERROR MESSAGES                                   * 01640021
+*   'HEWLRELO' - PROCESS OBJECT MODULES                               * 01660021
+*   'HEWLOAD ' - PROCESS LOAD MODULES                                 * 01680021
+*   'HEWACALL' - PROCESS AUTO-CALL AND FINAL RESOLUTION               * 01700021
+*   'HEWBTMAP' - CONSTRUCT THE DIAGNOSTIC MESSAGE DICTIONARY          * 01720021
+*   'HEWLDDEF' - USED TO OBTAIN DEFAULT OPTIONS AND DDNAMES           * 01740021
+*                                                                     * 01780021
+*EXITS-NORMAL- RETURN TO CALLER VIA REGISTER 14 - REG 15 = 0          * 01800021
+*     -ERROR- RETURN TO CALLER VIA REGISTER 14 - ERROR CODE IN REG 15 * 01820021
+*                                                                     * 01840021
+*TABLES/WORK AREAS-                                                   * 01860021
+*   'HEWLDCOM' - ALL COMMUNICATION INFORMATION                        * 01880021
+*   'DCB     ' - INPUT AND OUTPUT DCBS                                * 01900021
+*   'DECB    ' - INPUT AND OUTPUT DECBS                               * 01920021
+*                                                                     * 01940021
+*ATTRIBUTES- REFRESHABLE,REENTRANT,REUSABLE                           * 01960021
+*                                                                     * 01980021
+*NOTES - TWO BASE REGISTERS USED - 12 AND 4                           * 02000021
+*        SYSLOUT SHOULD BE SUBSTITUED FOR SYSPRINT                    * 02020021
+*                                                                     * 02040021
+*  MAINTANCE CHANGES                                                    02060021
+*                                                                       02080021
+*    PTM  3177   FREEMAIN WITH NO EXTENTS       $352740,353060          02100021
+*                                                                       02120021
+*********************************************************************** 02140021
+         EJECT                                                          02160021
+*   OS/360 LOADER --- MAIN ENTRY POINT                                  02180021
+*                                                                       02200021
+HEWLIOCA CSECT                                                          02220001
+*A061850                                                         A41067 02240021
+*C002600,415800                                                  A42698 02250000
+*                                                                YM3064 02250401
+*                         FIX IS INCORPORATED IN FIX TO 42698 (M1488)   02252000
+*                                                               SA49491 02254001
+*                                                                YM3465 02256001
+*I356500-356540,I356100-356188                                  ZA01334 02258000
+         SAVE  (14,12),,IEWLOADR   SAVE CALLERS REGISTERS               02260021
+         LR    R12,R15               MOVE EP BASE                       02280021
+         USING HEWLIOCA,R12            AND IDENTIFY IT                  02300021
+         LR    R3,R1               MOVE PARAMETER REGISTER              02320021
+         L     R4,IOCABSE2        LOAD SECOND BASE REGISTER             02340021
+         USING HEWLIOCA+4096,R4                                         02360021
+*                                                                       02380021
+         GETMAIN R,LV=DMSIZE,SP=0      GETMAIN FOR INITIALIZATION       02400021
+*                                                                       02420021
+         LR    R10,R1              MOVE POINTER TO ADDRESSING REGISTER  02440021
+         USING INITMAIN,R10          AND IDENTIFY IT                    02460021
+         USING ERCODES,0           IDENTIFY ERROR CODE DSECT            02480021
+*                                                                       02500021
+         SR    R2,R2               SET FORWARD CHAIN                    02520021
+         ST    R2,INITSAVE+8         TO ZERO IN MY SAVE AREA            02540021
+         ST    R13,INITSAVE+4      SET BACKWARD CHAIN TO PREV SAVE      02560021
+         LA    R5,INITSAVE         SET PREVIOUS SAVE AREA'S             02580021
+         ST    R5,8(R13)             FORWARD CHAIN TO ME                02600021
+         LR    R13,R5              MOVE MY SAVE POINTER TO R13          02620021
+*                                                                       02640021
+*   MOVE DEFAULT OPTIONS AND DDNAMES INTO 'INITMAIN' DSECT              02660021
+*                                                                       02680021
+         L     R9,DFLTBASE         GET POINTER TO DEFAULTS CSECT        02700021
+         USING DEFAULTS,R9           AND IDENTIFY IT                    02720021
+         SPACE                                                          02740021
+         MVC   INITDDNM(24),DFLTDDNM    MOVE DEFAULT DDNAMES            02760021
+         MVC   INITDDNM+24(8),DFLTTERM  MOVE DEFAULT SYSTERM DDNAME     02780021
+         MVC   INITRMAX(4),DFLTSIZE     MOVE DEFAULT SIZE               02800021
+         MVC   INITRMIN(4),DFLTMIN      MOVE MIN SIZE (NOT IN IEWLDDEF) 02820021
+         MVC   INITPARM(2),DFLTFLAG     MOVE DEFAULT OPTIONS            02840021
+         MVC   INITPGMN(8),DFLTNAME  STORE DEFAULT PROGRAM NAME         02860021
+         XC    INFLAG3(2),INFLAG3 ZERO OUT FLAGS                        02880021
+         DROP  R9                                                       02900021
+         SPACE                                                          02920021
+         MVI   INITNAME,C' '           BLANK OUT                        02940021
+         MVC   INITNAME+1(7),INITNAME  ENTRY POINT NAME FIELD           02960021
+*                                                                       02980021
+         MVC   INITEXTR(EXTRLEN),EXTR  MOVE EXTRACT PARM LIST           03000000
+         EXTRACT   INITEXAD,MF=(E,INITEXTR)                             03020000
+         L     R6,INITEXAD             GET IT                           03040000
+         LTR   R6,R6                   WAS IT DEFINED                   03060000
+         BZ    MNINIT                  NO. BRANCH                       03080000
+         TM    0(R6),TCBTSTSK          YES. IS IT TIME-SHARING TASK     03100000
+         BNO   MNINIT                  NO. DON'T SET TSO FLAG           03120000
+         OI    INFLAG3,CQTS            SET ON TIME-SHARING FLAG         03140000
+MNINIT   EQU   *                                                        03160021
+         LA    R6,INITREJP        INITIALIZE INVALID OPTIONS            03180000
+         ST    R6,INITREJL        BUFFER ADDRESS                        03200000
+         LR     R1,R3             DID WE ENTER VIA IEWLOAD              03250000
+         N      R1,ENTFLG2        CHANGE FLAG                           03300000
+         C      R1,ENTFLG2        IDEN WANTED?                          03310000
+         BNE    MNPARSE           NO, LEAVE IDEN FLAG OFF               03320000
+         OI    INFLAG3,CQIDEN     SHOW IDENTIFICATION WANTED            03340000
+         SR    R1,R1              CLEAR REGISTER ONE             A41067 03360000
+MNPARSE  EQU   *                                                        03380021
+*                                                                       03400021
+         L     R11,0(R3)            GET POINTER TO LIST                 03420021
+*                                                                       03440021
+         LH    R5,0(R11)               GET LIST LENGTH                  03460021
+         LTR   R5,R5                     IS THE SIZE ZERO               03480021
+         BZ    MNCKDDNM                    YES - NO PARAMETERS          03500021
+*                                                                       03520021
+         SR    R8,R8                         ZERO OUT                   03540021
+         SR    R7,R7                           THE TRANSLATE            03560021
+         STM   R7,R8,INITRTAB                    AND TEST               03580021
+         MVC   INITRTAB+8(256-8),INITRTAB          TABLE                03600021
+         MVI   INITRTAB+C',',C','            MOVE IN COMMA FOR DELIM    03620021
+         MVI   INITRTAB+C'=',C'='                 AND = FOR DELIM       03640021
+*                                                                       03660021
+         LA    R11,2(R11)          POINT TO LIST                        03680021
+         BCTR  R5,0                  DECREMENT COUNT FOR EXECUTE        03700021
+         LA    R14,MNSETCHK            CONTINUE ADDRESS                 03720021
+         LA    R7,255              CHECK IF LENGTH OF OPTIONS           03740021
+         CR    R5,R7                 IS GREATER THAN 256                03760021
+         BNH   MNPRMSCN            LENGTH OK - GO SCAN                  03780021
+         LR    R5,R7               LENGTH GREATER - TRUNCATE TO 256     03800021
+         SPACE                                                          03820021
+*   SCAN PARAMETER LIST TO A COMMA OR EQUAL SIGN                        03840021
+         SPACE                                                          03860021
+MNPRMSCN EX    R5,MNPRMTRT         SCAN TO COMMA                        03880021
+         BNZ   MNPRMCHK              AND CHECK PARM IF COMMA FOUND      03900021
+         LA    R1,1(R11,R5)        SIMULATE COMMA FOUND IF END          03920021
+MNPRMCHK SR    R1,R11              GET SIZE OF PARM                     03940021
+         BCTR  R1,0                 DECRIMENT FOR EXECUTE               03960021
+         BZ    MNNXTPRM              NO PARM IF LENGTH ZERO             03980021
+         BR    R14                 DROP THROUGH IF KEYWORD --           04000021
+*                                    RETURN TO 'MNSIZE' OR 'MNEP'       04020021
+*                                      IF OPERAND                       04040021
+         SPACE                                                          04060021
+MNSETCHK LM    R7,R9,SCANCTRL      LOAD CONTROL WORDS FOR LIST COMPARE  04080021
+         SPACE 2                                                        04100021
+*   COMPARE OPTION IN PARAMETER LIST AGAINST VALID OPTIONS              04120021
+         SPACE                                                          04140021
+MNNXTCHK SR    R2,R2               LOCATE                               04160021
+         IC    R2,0(R7)              ENTRY                              04180021
+         LA    R14,PARMLIST(R2)    IN VALID OPTION LIST                 04200021
+         EX    R1,LENTHCHK         IS LENGTH IN LIST EQ LENGTH OF OPT'N 04220021
+         BNE   MNNXTINC              NO - CHECK NEXT OPTION             04240021
+         EX    R1,PARMSCAN         COMPARE AGAINST OPTION IN USER LIST  04260021
+         BE    MNPARMEQ              OPTION EQUAL -- GO PROCESS IT      04280021
+         SPACE                                                          04300021
+MNNXTINC BXLE  R7,R8,MNNXTCHK      NOT THIS OPTION - CHECK NEXT IF ONE  04320021
+         SPACE                                                          04340021
+*   THE PARAMETER HAS BEEN REJECTED -- PUT INVALID OPTION ONTO LIST     04360021
+         SPACE                                                          04380021
+MNREJECT EX    R1,MVREJECT         MOVE INVALID OPTION TO BUFFER        04400021
+         AR    R6,R1                 UPDATE ADDRESS IN BUFFER           04420021
+         MVI   1(R6),C','              MOVE COMMA IN                    04440021
+         LA    R6,2(R6)            COMPENSATE FOR COMMA AND BCTR        04460021
+         B     MNNXTPRM            GO TO PROCESS NEXT OPTION            04480021
+         SPACE 2                                                        04500021
+*   A MATCH HAS BEEN FOUND -- PERFORM OPERATION DEFINED BY 'SCANLIST'   04520021
+         SPACE                                                          04540021
+MNPARMEQ IC    R2,3(R7)            PICK UP INDEX INTO EXECUTE LIST      04560021
+         IC    R8,1(R7)              PICK UP FUNCTION BYTE              04580021
+         EX    R8,SETPARM(R2)          AND PERFORM OPERATION            04600021
+         SPACE                                                          04620021
+MNNXTPRM LA    R14,MNSETCHK        ESTABLISH CHECK FOR NEW KEYWORD      04640021
+MNOPRAND LA    R1,2(R1)            ADD TO LENGTH FOR COMMA AND BCTR     04660021
+         AR    R11,R1                ADD LENGTH TO PREV ADDRESS         04680021
+         SR    R5,R1                 SUBTRACT LENGTH FROM LIST LENGTH   04700021
+         BNM   MNPRMSCN                AND GO SCAN NEXT IF THERE        04720021
+*                                                                       04740021
+         ST    R6,INITREJL         SAVE END OF REJECTED OPTIONS LIST    04760021
+         B     MNCKDDNM              AND GO CHECK FOR DDNAMES           04780021
+*                                                                       04800021
+*   SCAN OFF ENTRY NAME AND MOVE IT TO 'INITMAIN'                       04820021
+*                                                                       04840021
+MNEP     BAL   R14,MNOPRAND        ENTRY POINT NAME -- SCAN OFF OPERAND 04860021
+         LR    R8,R1                 MOVE OPERAND LENGTH                04880021
+         LA    R7,7                  MAXIMUM LENGTH FOR NAME            04900021
+         CR    R8,R7               IS LENGTH SPECIFIED OK               04920021
+         BNH   MNEPOK                LOW OR EQUAL IS OK                 04940021
+         LR    R8,R7                   MAKE NAME LENGTH = 8 CHARS       04960021
+MNEPOK   EX    R8,MOVEPNM          MOVE ENTRY POINT NAME                04980021
+         OI    INITPARM,CQEPNAME     SET NAME SPECIFIED FLAG            05000021
+         B     MNNXTPRM                AND SCAN NEXT                    05020021
+*                                                                       05040021
+*                                                                       05060021
+MNNAME   BAL   R14,MNOPRAND   PROGRAM NAME - SCAN OFF OPERAND           05080021
+         MVI   INITPGMN,C' '       BLANK OUT                            05100021
+         MVC   INITPGMN+1(7),INITPGMN  PROGRAM NAME FIELD               05120021
+         LR    R8,R1          MOVE OPERAND LENGTH                       05140021
+         LA    R7,7           MAXIMUM LENGTH FOR NAME                   05160021
+         CR    R8,R7          IS LENGTH SPECIFIED OK                    05180021
+         BNH   MNNAMEOK       LOW OR EQUAL IS OK                        05200021
+         LR    R8,R7          MAKE LENGTH = 8 CHARACTERS                05220021
+MNNAMEOK EX    R8,MOVPGMNM    MOVE PROGRAM NAME                         05240021
+         OI    INFLAG3,CQPGMNM     SHOW PROGRAM NAME REC'D              05260021
+         B     MNNXTPRM       AND SCAN NEXT.                            05280021
+*                                                                       05300021
+*   SCAN OFF SIZE OPERAND AND MOVE IT OVER DEFAULT IN 'INITMAIN'        05320021
+*                                                                       05340021
+MNSIZE   BAL   R14,MNOPRAND        SIZE SPECIFIED -- SCAN OFF OPERAND   05360021
+         ST    R11,INITDUM         SAVE POINTER TO OPERAND              05380021
+         LR    R9,R1                   AND LENGTH                       05400021
+         SPACE                                                          05420021
+         ST    R1,INITSCAN             SAVE SCAN POINTER                05440021
+         SPIE  SPIEEXIT,(7)              SPIE FOR DATA EXCEPTION        05460021
+         ST    R1,INITSPIE                 SAVE PREVIOUS PICA ADDRESS   05480021
+         SPACE                                                          05500021
+         LA    R1,1                PUT 1 INTO REG FOR INCR - DECR       05520021
+         CLI   0(R11),C'('         IS FIRST CHAR A PAREN                05540021
+         BNE   MNSIZE1               NO - GO AROUND                     05560021
+         AR    R11,R1                YES - BUMP POINTER OVER IT         05580021
+         SR    R9,R1                       DECRIMENT COUNT              05600021
+         BM    SPIEEXIT         INVALID IF COUNT ZERO                   05620021
+MNSIZE1  LA    R8,0(R9,R11)        POINT TO END OF OPERAND              05640021
+         CLI   0(R8),C')'            IS LAST CHAR A PAREN               05660021
+         BNE   MNSIZE2                 NO - GO AROUND                   05680021
+         SPACE                                                          05700021
+         SR    R8,R1                   YES - BACK UP OVER PAREN         05720021
+         SR    R9,R1                         DECRIMENT LENGTH           05740021
+         BM    SPIEEXIT         INVALID IF LENGTH ZERO                  05760021
+MNSIZE2  CLI   0(R8),C'K'          IS IT A 'K' TYPE SIZE                05780021
+         BNE   MNSIZE3               NO - GO AROUND                     05800021
+         SPACE                                                          05820021
+         SR    R9,R1                 YES - DECRIMENT LENGTH             05840021
+         BM    SPIEEXIT         INVALID IF COUNT ZERO                   05860021
+         SPACE                                                          05880021
+MNSIZE3  EX    R9,PACKSIZE         PACK THE DIGITS                      05900021
+         OI    INITSIGN,X'0F'      INSURE SIGN IS POSITIVE              05920021
+         CVB   R2,INITDBLW           AND CONVERT TO BINARY              05940021
+         CLI   0(R8),C'K'          IS 'K' VALUE SPECIFIED               05960021
+         BNE   MNSIZE4               NO - GO AROUND                     05980021
+         SPACE                                                          06000021
+         SLL   R2,10                 YES -- MULTIPLY RESULT BY K (1024) 06020021
+MNSIZE4  C     R2,INITRMIN         IS SIZE SPECIFIED GREATER THAN MIN   06040021
+         BH    MNSIZE6               YES - OK                           06060021
+         SPACE                                                          06080021
+MNSIZE5  L     R2,INITRMIN         NO - SUBSTITUTE MINIMUM SIZE         06100021
+MNSIZE6  ST    R2,INITRMAX         STORE RESULT INTO MAX REQUEST        06120021
+         SPACE                                                          06140021
+MNSIZE7  LA    R14,MNNXTPRM          SPIE EXIT NOT TAKEN                06160021
+MNSIZE8  L     R1,INITSPIE             PICK UP PREVIOUS PICA ADDRESS    06180021
+         SPIE  MF=(E,(1))                RE-SPIE IT                     06200021
+         L     R1,INITSCAN             RELOAD SCAN POINTER              06220021
+         L     R11,INITDUM         RELOAD OPERAND POINTER               06240021
+         BR    R14                       AND GO SCAN NEXT OPTION        06260021
+         SPACE 2                                                        06280021
+SPIEEXIT MVC   0(5,R6),VPSIZE      INVALID SIZE OPERAND -- MOVE         06300021
+         LA    R6,5(R6)              'SIZE=' TO REJECTED OPTIONS BUFFER 06320021
+         LA    R14,MNREJECT        FIX SO OPERAND IS MOVED              06340021
+         B     MNSIZE8               AND GIVE DEFAULT SIZE              06360021
+         SPACE 3                                                        06380021
+*   CHECK IF DDNAMES PASSED AND MOVE THEM OVER DEFAULTS IN 'INITMAIN'   06400021
+         SPACE 2                                                        06420021
+MNCKDDNM TM    0(R3),X'80'         IS THIS THE END OF LIST              06440021
+         BO    MNVCGTMN              YES - NO DDNAMES PASSED            06460021
+*                                                                       06480021
+         L     R2,4(R3)            NO. GET                              06500021
+         LH    R5,0(R2)            GET COUNT                            06520021
+         LTR   R5,R5                     IS COUNT ZERO                  06540021
+         BZ    MNCHKDCB                                                 06560021
+*                                                                       06580021
+         LA    R2,2(R2)            POINTER TO BEGINNING                 06600021
+         LA    R6,INITLIN            POINTER TO DEFAULT IN LOADER       06620021
+         LA    R7,0                  DISPLACEMENT IN DDNAME LIST        06640021
+         BAL   R14,MNMVDDNM        CHECK IF SYSLIN DEFINED              06660021
+*                                                                       06680021
+         LA    R6,INITLIB            POINTER TO DEFAULT IN LOADER       06700021
+         LA    R7,24                 DISPLACEMENT IN DDNAME LIST        06720021
+         BAL   R14,MNMVDDNM        CHECK IF SYSLIB DEFINED              06740021
+*                                                                       06760021
+         LA    R6,INITPRNT           POINTER TO DEFAULT IN LOADER       06780021
+         LA    R7,40                 DISPLACEMENT IN DDNAME LIST        06800021
+         BAL   R14,MNMVDDNM        CHECK IF SYSPRINT DEFINED            06820021
+         LA    R6,INITTERM         POINTER TO DEFAULT IN LOADER         06840021
+         LA    R7,88               DISPLACEMENT IN DDNAME LIST          06860021
+         BAL   R14,MNMVDDNM        CHECK IF SYSTERM DEFINED             06880021
+*                                                                       06900021
+MNCHKDCB TM    4(R3),X'80'        WERE DDNAMES LAST ENTRY               06920021
+         BO    MNVCGTMN           YES.                                  06940021
+         TM    8(R3),X'80'        PG HDG LAST                           06960021
+         BO    MNVCGTMN           YES                                   06980021
+         L     R2,12(R3)           DCBS PASSED                          07000021
+         L     R5,0(R2)            GET NO ENTRIES IN LIST               07020021
+         LTR   R5,R5              IS COUNT 0                            07040021
+         BZ    MNVCGTMN           YES. NO DCBS PASSED                   07060021
+         L     R6,4(R2)            TRY SYSLIN                           07080021
+         LTR   R6,R6              IS A DCB PASSED                       07100021
+         BZ    MNCKLIB            NO. CHECK SYSLIB                      07120021
+         USING IHADCB,R6                                                07140021
+       CLI     DCBDEVT,X'00'       IS IT INCORE                         07160021
+         BNE   MNCKLIB            NO. IGNORE IT                         07180021
+         OI INFLAG3,CQINCORE+CQPASLIN                                   07200021
+         ST    R6,INLINDCB        SAVE DCB ADDRESS                      07220021
+MNCKLIB  LA    R7,4               SYSLIB IS FOURTH ENTRY                07240021
+         CR    R7,R5              IS IT POSSIBLY HERE                   07260021
+         BH    MNVCGTMN           NO                                    07280021
+         L     R6,16(R2)           YES. PICK IT UP                      07300021
+         LTR   R6,R6              IS IT REALLY HERE                     07320021
+         BZ    MNVCGTMN           NO. WEHRE THRU WITH PARMS             07340021
+         TM    DCBOFLGS,DCBOPEN   IS IT OPEN                            07360021
+         BZ    MNVCGTMN           NO. IGNORE IT                         07380021
+         OI    INFLAG3,CQPASLIB   YES. SET FLAG                         07400021
+         ST    R6,INLIBDCB        SAVE DCB ADDRESS                      07420021
+         B     MNVCGTMN                                                 07440021
+*                                                                       07460021
+*                                                                       07480021
+MNMVDDNM LA    R8,8(R7)            IS LENGTH OF NAME PLUS DISPLACEMENT  07500021
+         CR    R8,R5                 IN LIST GREATER THAN LIST LENGTH   07520021
+         BCR   2,R14                   YES - RETURN                     07540021
+*                                                                       07560021
+         AR    R7,R2               NO. ADD DISPLACEMENT AND BEGIN       07580021
+         NC    0(8,R7),0(R7)             IS DDNAME SPECIFIED ZERO       07600021
+         BCR   8,R14                       YES - RETURN                 07620021
+*                                                                       07640021
+         MVC   0(8,R6),0(R7)               NO - MOVE IN NEW DDNAME      07660021
+         BR    R14                           AND RETURN                 07680021
+*                                                                       07700021
+MOVPGMNM MVC   INITPGMN(0),0(R11)  EXECUTED MOVE PROG NAME FROM LIST    07720021
+MOVEPNM  MVC   INITNAME(0),0(R11)  EXECUTED MOVE EPNAME FROM PARM LIST  07740021
+MNPRMTRT TRT   0(0,R11),INITRTAB   TRT FOR PARAMETER SCAN               07760021
+PACKSIZE PACK  INITDBLW(8),0(0,R11) EXECUTED PACK PARM SIZE             07780021
+PARMSCAN CLC   0(0,R14),0(R11)   COMPARE OPTION FOR MATCH               07800021
+MVREJECT MVC   0(0,R6),0(R11)    MOVE REJECTED OPTION TO BUFFER         07820021
+REJTOCM  MVC   0(0,R2),0(R6)       MOVE REJECTED OPTIONS FROM INIT - CM 07840021
+LENTHCHK CLI   2(R7),0             CHECK LENGTH OF OPTION               07860021
+*                                                                       07880021
+SETPARM  DS    0F                  INDEXED EXECUTE LIST FOR OPTION SET  07900021
+ORPARM   OI    INITPARM,0            SET BIT                            07920021
+ANDPARM  NI    INITPARM,0            CLEAR BIT                          07940021
+SIZEPARM B     MNSIZE                GO TO PROCESS SIZE                 07960021
+EPPARM   B     MNEP                  GO TO PROCESS ENTRY NAME           07980021
+NAMEPARM B     MNNAME         GO TO PROCESS PROGRAM NAME                08000021
+         EJECT                                                          08020021
+*              ENTRY POINT FOR IDENTIFICATION                           08040021
+         USING HEWLOAD,R15                                              08060000
+         ENTRY HEWLOAD                                                  08080000
+HEWLOAD  O     R1,ENTFLG          SHOW WE ENTERED HERE                  08100000
+         L     R15,IOCABASE        NOW GO BACK TO HEWLOADR              08120000
+         BR    R15                                                      08140000
+         DC    C'HEWLOAD '                                              08160000
+         DS    0F                                                       08180000
+ENTFLG   DC    X'FF000000'                                              08200000
+         DROP  R15                                                      08220000
+         EJECT                                                          08240021
+*********************************************************************** 08260021
+*                                                                     * 08280021
+*   VARIABLE CONDITIONAL GETMAIN FOR PROGRAM AND TABLES               * 08300021
+*                                                                     * 08320021
+*********************************************************************** 08340021
+         SPACE 2                                                        08360021
+MNVCGTMN GETMAIN VC,LA=INITRMIN,A=INITMADR,SP=0,MF=(E,INITGTML)         08380021
+*                                                                       08400021
+*                                                                       08420021
+         LTR   R15,R15             WAS MAIN STORAGE ALLOCATED           08440021
+         BZ    MNMAINOK              YES - ALL OK                       08460021
+*                                                                       08480021
+         GETMAIN R,LV=MINREQ,SP=0      GO OUT ON GETMAIN ERROR          08500021
+         LA    R2,MINREQ           SIMULATE VC ALLOCATED                08520021
+         STM   R1,R2,INITMADR        IF UNCONDITIONAL WORKED            08540021
+         SPACE 2                                                        08560021
+*   SET UP BASE ADDRESS FOR THE COMMUNICATION AREA (IEWLDCOM) AND       08580021
+*   INITIALIZE IT                                                       08600021
+         SPACE                                                          08620021
+MNMAINOK L     R11,INITMADR        PICK UP POINTER TO ALLOCATED CORE    08640021
+         LA    R9,CQCMSIZE           SIZE OF STATIC COMMUNICATION AREA  08660021
+         A     R11,INITMSIZ          ADD ALLOCATED CORE SIZE TO POINTER 08680021
+         SR    R11,R9                  SUBTRACT OFF SIZE OF COM AREA    08700021
+*                                                                       08720021
+         USING HEWLDCOM,R11       IDENTIFY COMMUNICATION AREA           08740021
+*                                                                       08760021
+         MVC   CMINITCM(INITCMSZ),INITCMCM   MOVE COMMON AREA FROM      08780021
+*                                              INITIAL AREA TO          08800021
+*                                                COMMUNICATION AREA     08820021
+         SR    R2,R2                         INITIALIZE THE             08840021
+         SR    R3,R3                           REST OF THE              08860021
+         STM   R2,R3,CMINTZRO                    COMMUNICATION AREA     08880021
+         MVC   CMINTZRO+8(CQINTSIZ-8),CMINTZRO     TO ZERO              08900021
+*                                                                       08920021
+         ST    R11,CMLOWTBL        COMMUNICATION BASE IS LOWEST TABLE   08940021
+         AR    R9,R11                COMMUNICATION SIZE + BASE          08960021
+         ST    R9,CMHITBL              IS HIGHEST ALLOCATED CORE        08980021
+*                                                                       09000021
+         L     R2,CMMAINPT         PICK UP BEGINNING OF ALLOC CORE      09020021
+         MVC   0(8,R2),CMPGMNM     MOVE PROGRAM NAME IN                 09040021
+         LA    R2,8(R2)              ALLOW FOR RETURN PARMS             09060021
+         SR    R3,R3                   NEXT TWO WORDS MAY               09080021
+         ST    R3,0(R2)                MAY CONTAIN ADDR AND             09100021
+         ST    R3,4(R2)                LENGTH OF COMPILER-              09120021
+         LA    R2,8(R2)                LOADED TEXT                      09140021
+         ST    R2,CMNXTTXT             AND STORE AS NEXT TEXT ADDRESS   09160021
+         ST    R2,CMLSTTXT                          LAST TEXT ADDRESS   09180021
+         ST    R2,CMBEGADR                          DEFAULT ENTRY POINT 09200021
+         ST    R2,CMOBJST         OBJ MOD START ADDR            XA03395 09210003
+MNCKTSO  TM    CMFLAG3,CQTS       ARE WE TIME-SHARING                   09220000
+         BZ    MN121              NO.                                   09240000
+         MVC   CMMAPLIN(6),PRNT81  YES. 81 CHAR PRINT RECORD            09260000
+         B     MNINITZR                                                 09280000
+MN121    MVC   CMMAPLIN(6),PRNT121  121 PRINT RECORD                    09300021
+MNINITZR EQU   *                                                        09320021
+*                                                                       09340021
+*   MOVE REJECTED OPTIONS FROM INITMAIN AND INITIALIZE CMERLIST         09360021
+*                                                                       09380021
+         L     R7,INITREJL         GET END OF INVALID OPTIONS STRING    09400021
+         LA    R8,7(R7)            ROUND UP TO                          09420021
+         N     R8,DBLMASK            DOUBLE WORD                        09440021
+         LA    R6,INITREJP         LOAD POINTER OR INVALID OPTIONS      09460021
+         SR    R8,R6                 COMPUTE LENGTH OF LIST             09480021
+         AR    R8,R2                   ADD ADDRESS IN VC STORAGE        09500021
+         ST    R8,CMERLIST               AND STORE AS START OF ERROR L  09520021
+         SPACE                                                          09540021
+         SR    R7,R6               COMPUTE LENGTH OF INVALID OPTIONS    09560021
+         BZ    MNALOCSV            ZERO INDICATES NO LIST               09580021
+         SPACE                                                          09600021
+         LH    R8,CMMAXLST        GET MAX LIST LENGTH                   09620021
+         OI    CMSTATUS,CQREJOPT   SET LIST-PRESENT FLAG                09640021
+         CR    R7,R8               IS LIST LENGTH GREATER THAN MAX      09660021
+         BNH   MNREJOPT              NO - MOVE ENTIRE LIST              09680021
+         SPACE                                                          09700021
+         LR    R7,R8                 YES - TRUNCATE                     09720021
+MNREJOPT BCTR  R7,0                                                     09740021
+         BCTR  R7,0                                                     09760021
+         EX    R7,REJTOCM          MOVE THE INVALID OPTIONS TO SAVE     09780021
+         STC   R7,CMOPTECT         SAVE COUNT OF LIST                   09800021
+*                                                                       09820021
+*   ALLOCATE AND FORMAT SAVE AREAS TO BE USED THROUGHOUT LOADING        09840021
+*                                                                       09860021
+MNALOCSV LA    R2,NUMSAVES         NUMBER OF AREAS TO BE ALLOCATED      09880021
+         LA    R0,72                 SIZE OF EACH SAVE AREA             09900021
+         L     R13,4(R13)          POINTER TO CALLING PGM'S SAVE AREA   09920021
+         LR    R9,R13                                                   09940021
+MNMORESV BAL   R14,GETPRIME        GET STORAGE FOR SAVE AREA            09960021
+         ST    R9,4(R1)            BACK CHAIN THIS TO LAST              09980021
+         ST    R1,8(R9)            FORWARD CHAIN LAST TO THIS           10000021
+         LR    R9,R1                 MAKE THIS EQUAL LAST               10020021
+         BCT   R2,MNMORESV             AND GET ANOTHER IF REQD          10040021
+*                                                                       10060021
+         SR    R1,R1               SET LAST FORWARD                     10080021
+         ST    R1,8(R9)              CHAIN TO ZERO                      10100021
+         L     R13,8(R13)              AND PICK UP FIRST AREA           10120021
+         ST    R13,CMFSTSAV        STORE AS FIRST SAVE AREA             10140021
+*                                                                       10160021
+*   FREE THE INITIAL STORAGE FOR DATA MANAGEMENT                        10180021
+*                                                                       10200021
+         LR    R1,R10                                                   10220021
+         FREEMAIN R,LV=DMSIZE,A=(1),SP=0                                10240021
+*                                                                       10260021
+*              ALLOCATE SPACE FOR SYSTERM CONTROL BLOCKS AND BUFFER     10280021
+*                                                                       10300021
+         TM    CMPRMFLG,CQTERM     WAS TERM OPTION WANTED               10320021
+         BNO   MNSETDCB            NO                                   10340021
+         LA    R0,DCBSIZE+2*DECBSIZE+2*TRMBUFLN  YES. GET SPACE         10360021
+         BAL   R14,GETCORE           FOR DCB,DECB AND BUFFERS           10380021
+         ST    R1,CMTDCBPT         SAVE POINTER TO DCB                  10400021
+         LA    R1,DCBSIZE(R1)                                           10420021
+         ST    R1,CMTRMREC         STORE POINTER TO 1ST BUFFER          10440021
+         MVI   0(R1),C' '          BLANK THE                            10460021
+         MVC   1(TRMRECSZ-1,R1),0(R1)    BUFFER                         10480021
+MNSETDCB EQU   *                                                        10500021
+*                                                                       10520021
+*   MOVE SYSLIN AND SYSPRINT DCB'S TO GOTMAIN CORE AND INITIALIZE       10540021
+*                                                                       10560021
+         OI    CMSTATUS,CQMSGSAV   SET REQ FOR OPEN-EXIT TO SAVE ERRORS 10580021
+         TM    CMFLAG3,CQPASLIN   IS SYSLIN PASSED                      10600021
+         BZ    MNLINDCB           NO. GET DCB                           10620021
+         L     R10,CMLINDCB       YES. PICK UP DUMMY DCB                10640021
+         ST    R10,CMRDCBPT       ASSUME INCORE                         10660021
+         USING IHADCB,R10                                               10680021
+         SR    R1,R1               ZERO OUT BUFFER POINTER              10700021
+         ST    R1,CMGETREC        FOR READ ROUTINE                      10720021
+         TM    CMPRMFLG,CQPRINT   IS SYSPRINT REQUESTED                 10740021
+         BO    MNPRTDCB           YES. GET DCB                          10760021
+         B     MNONEBUF           NO. SKIP OPEN ENTIRELY                10780021
+MNLINDCB LA    R0,DCBSIZE         DCB SIZE                              10800021
+         BAL   R14,GETCORE           GET STORAGE FOR INPUT DCB          10820021
+         ST    R1,CMRDCBPT           STORE POINTER TO DCB               10840021
+         LR    R10,R1              MOVE TO ADDRESSING REGISTER          10860021
+         USING IHADCB,R10                                               10880021
+         SPACE                                                          10900021
+         MVC   IHADCB(DCBSIZE),MODELDCB   MOVE IN DCB MODEL             10920021
+         MVC   DCBDDNAM(8),CMLINDD   MOVE SYSLIN DDNAME TO DCB          10940021
+         MVC   DCBDSORG(2),DSORGPS     SET DCB SEQUENTIAL               10960021
+         MVC   DCBMACR(2),MACRREAD      AND INPUT                       10980021
+         SPACE                                                          11000021
+         O     R1,OPENIN           OR OPTION BYTE INTO DCB ADDRESS      11020021
+         ST    R1,CMIOLST1           AND STORE INTO OPEN LIST           11040021
+         SPACE                                                          11060021
+         TM    CMPRMFLG,CQPRINT    IS SYSPRINT REQUESTED                11080021
+         BZ    MNOPENIN              NO - GO OPEN SYSLIN ONLY           11100021
+*                                                                       11120021
+MNPRTDCB LA    R0,DCBSIZE         DCBSIZE                               11140021
+         BAL   R14,GETCORE           GET STORAGE FOR OUTPUT DCB         11160021
+         ST    R1,CMWDCBPT           STORE POINTER TO DCB               11180021
+         LR    R10,R1              MOVE TO ADDRESSING REGISTER          11200021
+*                                                                       11220021
+         MVC   IHADCB(DCBSIZE),MODELDCB   MOVE IN DCB MODEL             11240021
+         MVC   DCBDDNAM(8),CMPRNTDD         MOVE IN SYSPRINT DDNAME     11260021
+         MVC   DCBDSORG(2),DSORGPS          SET DCB SEQUENTIAL          11280021
+         MVC   DCBMACR(2),MACRWRTE            AND OUTPUT                11300021
+         O     R1,OPENOUT          OR OPTION BYTE INTO DCB ADDRESS      11320021
+         TM    CMFLAG3,CQPASLIN   DO WE WANT TO OPEN SYSLIN             11340021
+         BZ    MNBOTH             YES.                                  11360021
+         ST    R1,CMIOLST1        NO. PRINT ONLY                        11380021
+         B     MNOPE                                                    11400021
+MNBOTH   ST    R1,CMIOLST2        STORE DCB ADDRESS INTO OPEN LIST      11420021
+         NI    CMIOLST1,X'7F'      CLEAR LIST DELIMITER ON FIRST ENTRY  11440021
+         SPACE                                                          11460021
+*********************************************************************** 11480021
+*                                                                     * 11500021
+*   OPEN SYSLIN AND SYSPRINT DATA SETS                                * 11520021
+*                                                                     * 11540021
+*********************************************************************** 11560021
+         SPACE                                                          11580021
+MNOPE    OPEN MF=(E,CMIOLST1)                                           11600021
+*                                                                       11620021
+         TM    DCBOFLGS,DCBOPEN    WAS SYSPRINT SUCCESSFULLY OPENED     11640021
+         BO    MNALOCPR              YES - ALLOCATE BUFFERS AND DECB'S  11660021
+*                                                                       11680021
+         LA    R0,DCBSIZE            NO - GET DCB SIZE                  11700021
+         LR    R1,R10                       AND ADDRESS                 11720021
+         BAL   R14,FREECORE                   AND FREE THE STORAGE      11740021
+         L     R10,CMRDCBPT        PICK UP POINTER TO INPUT DCB         11760021
+         B     MNONEBUF              AND GO CHECK IF OPEN               11780021
+*                                                                       11800021
+*                                                                       11820021
+MNALOCPR OI    CMSTATUS,CQPRTDCB   IDENTIFY PRINT DCB OPEN              11840021
+         L     R15,ADRBUFFR          GET POINTER TO BUFFER ALLOCATION   11860021
+         BALR  R14,R15                 AND GO ALLOCATE BUFFERS          11880021
+         TM    CMSTATUS,CQABORT      TERMINATION ERROR OCCURR           11900021
+         BNZ   MNIDEN                  AND GO CLOSE OUT                 11920021
+         OI    CMSTATUS,CQPRTOPN   SET SYSPRINT ALLOCATED FLAG          11940021
+         SPACE 2                                                        11960021
+*   INITIALIZE SYSPRINT DATA SET AND PRINT HEADINGS                     11980021
+         SPACE 2                                                        12000021
+         LA    R1,50            SET MAXIMUM LINE COUNT                  12020021
+         STH   R1,CMMAXLNE        TO 50                                 12040021
+         SPACE                                                          12060021
+         L     R9,CMWDECPT         GET OUTPUT DECB POINTER              12080021
+         USING DECB,R9               AND IDENTIFY IT                    12100021
+         SPACE                                                          12120021
+         L     R2,DECAREA          GET BUFFER POINTER FOR THIS DECB     12140021
+         ST    R2,CMPUTREC           AND STORE AS FIRST LREC            12160021
+         SPACE                                                          12180021
+         MVI   0(R2),C' '                         SET UP                12200021
+         LH    R15,CMWLRECL        GET LENGTH OF RECORD                 12220021
+         BCTR  R15,0               SUBTRACT FIRST BYTE                  12240021
+         BCTR  R15,0              DECREMENT FOR EXECUTE                 12260021
+         EX    R15,MOVEHDNG        CLEAR BUFFER                         12280021
+         MVC   60-HDGLNGTH/2(HDGLNGTH,R2),LOADHEAD    HEADING           12300021
+         MVI   CMPRTCTL,CTEJECT                   EJECT BEFORE PRINT    12320021
+         L     R15,ADRPRNT         PRINT THE                            12340021
+         BALR  R14,R15               HEADING 'OS/360 LOADER'            12360021
+         SPACE 2                                                        12380021
+*   CONSTRUCT LIST OF OPTIONS USED                                      12400021
+         SPACE 2                                                        12420021
+         SR    R1,R1               ZERO REGISTER USED FOR OPTION LENGTH 12440021
+         L     R2,CMPUTREC              GET POINTER TO BUFFER           12460021
+         MVC   1(OKOPTLNG,R2),OKOPTHDG    MOVE PREFIX 'OPTIONS USED'    12480021
+         LA    R2,1+OKOPTLNG(R2)            AND UPDATE BUFFER POINTER   12500021
+         SPACE                                                          12520021
+         LM    R7,R9,OPTCNTRL      GET CONTROL FOR LIST CONSTRUCTION    12540021
+         SPACE                                                          12560021
+MNMOVOPT IC    R3,0(R7)            PICK UP MASK FOR BIT TO TEST         12580021
+         IC    R1,1(R7)              PICK UP LENGTH OF OPTION NAME      12600021
+         LH    R5,2(R7)                AND INDEX TO OPTION NAME         12620021
+         LA    R6,PARMLIST(R5)     FORM ADDRESS FROM INDEX              12640021
+         EX    R3,TESTOP           TEST IF OPTION SPECIFIED             12660021
+         BO    MNPOSOPT              YES - PUT OUT OPTION NAME          12680021
+         SPACE                                                          12700021
+         MVC   1(2,R2),NEGATE        NO - PREFIX OPTION WITH 'NO'       12720021
+         LA    R2,2(R2)                AND UPDATE POINTER               12740021
+         SPACE                                                          12760021
+MNPOSOPT EX    R1,MOVEOPT          MOVE OPTION NAME TO PRINT BUFFER     12780021
+         LA    R2,2(R1,R2)           UPDATE BUFFER POINTER              12800021
+         MVI   0(R2),C','              AND INSERT COMMA AFTER IT        12820021
+         BXLE  R7,R8,MNMOVOPT      GO PUT OUT NEXT OPTION IF PRESENT    12840021
+         SPACE 2                                                        12860021
+*   MOVE MAIN STORAGE SIZE RECEIVED INTO LIST                           12880021
+         SPACE 2                                                        12900021
+         MVC   1(5,R2),VPSIZE      MOVE IN 'SIZE='                      12920021
+         LA    R2,5(R2)            UPDATE BUFFER POINTER                12940021
+         SPACE                                                          12960021
+         L     R6,CMMAINSZ         GET SIZE RECEIVED FROM VC GETMAIN    12980021
+         CVD   R6,CMXDBLWD           CONVERT IT TO DECIMAL              13000021
+         UNPK  1(11,R2),CMXDBLWD(9)    AND UNPACK IT INTO PRINT BUFFER  13020021
+         SPACE                                                          13040021
+         LA    R6,1(R2)            SET UP FOR LEADING ZERO SCAN         13060021
+         LA    R7,9(R2)              COMPUTE END OF SIZE FIELD          13080021
+         SPACE                                                          13100021
+MNCKZERO CLI   0(R6),C'0'          IS THE CHARACTER A ZERO              13120021
+         BNE   MNMVSIZE              NO - END OF SCAN                   13140021
+         LA    R6,1(R6)              YES - UPDATE POINTER               13160021
+         B     MNCKZERO                AND GO CHECK NEXT CHARACTER      13180021
+         SPACE                                                          13200021
+MNMVSIZE SR    R7,R6               GET LENGTH OF NON-ZERO SIZE          13220021
+         EX    R7,MOVEOPT            AND MOVE IT UP IN THE BUFFER       13240021
+         LA    R2,1(R7,R2)         UPDATE THE BUFFER POINTER            13260021
+         MVC   1(10,R2),11(R2)       AND BLANK OUT ANY GARBAGE LEFT     13280021
+         SPACE 2                                                        13300021
+*         MOVE PROGRAM NAME INTO LIST                                   13320021
+         SPACE 2                                                        13340021
+         MVI   1(R2),C','         INSERT COMMA                          13360021
+         MVC   2(5,R2),VPNAME     MOVE IN 'NAME='                       13380021
+         MVC   7(8,R2),CMPGMNM    AND SPECIFIED OR DEFAULT NAME         13400021
+         LA    R2,14(R2)      UPDATE THE BUFFER POINTER                 13420021
+         SPACE 2                                                        13440021
+         SPACE                                                          13460021
+PRINTOPT MVI   CMPRTCTL,CTSPACE2   SPACE 2 BEFORE PRINT                 13480021
+         L     R15,ADRPRNT           AND PRINT THE                      13500021
+         BALR  R14,R15                 OPTIONS USED MESSAGE             13520021
+         SPACE 1                                                        13540021
+*        NEW LINE FOR EP IF USED                                        13560021
+         SPACE 1                                                        13580021
+         TM    CMPRMFLG,CQEPNAME   IS EP NAME SPECIFIED                 13600021
+         BZ    MNNOEP              NO. BRANCH                           13620021
+         L     R2,CMPUTREC         YES. GET NEW LINE                    13640021
+         LA    R2,1+OKOPTLNG(R2)   INDENT                               13660021
+         MVC   1(3,R2),VPEP        MOVE IN 'EP='                        13680021
+         MVC   4(8,R2),CMEPNAME    AND THE NAME SPECIFIED               13700021
+         L     R15,ADRPRNT         AND PRINT                            13720021
+         BALR  R14,R15             THIS LINE                            13740021
+MNNOEP   EQU   *                                                        13760021
+         SPACE 2                                                        13780021
+*   PRINT THE INVALID OPTIONS                                           13800021
+         SPACE 2                                                        13820021
+         TM    CMSTATUS,CQREJOPT   ANY INVALID OPTIONS                  13840021
+         BZ    MNOPNMSG              NO - GO CHECK FOR OPEN ERRORS      13860021
+         SPACE                                                          13880021
+         L     R2,CMPUTREC           YES - GET PRINT BUFFER ADDRESS,    13900021
+         L     R3,CMNXTTXT                   POINTER TO ERRORS,         13920021
+         IC    R1,CMOPTECT                     AND BYTE COUNT           13940021
+         MVC   1(REJOPTLG,R2),REJOPT       MOVE IDENTIFIER              13960021
+         EX    R1,MVREJOPT                   AND INVALID OPTIONS        13980021
+         L     R15,ADRPRNT                 GO PRINT                     14000021
+         BALR  R14,R15                       THE INVALID OPTIONS        14020021
+         SPACE 2                                                        14040021
+*   PRINT ERRORS ENCOUNTERED DURING OPEN                                14060021
+         SPACE 2                                                        14080021
+MNOPNMSG TM    CMSTATUS,CQOPNERR   WERE ERRORS FOUND DURING OPEN        14100021
+         BZ    MNMAPHDG              NO - GO CHECK FOR MAP HEADING      14120021
+         SPACE                                                          14140021
+         MVI   CMPRTCTL,CTSPACE2     YES - SPACE 2 BEFORE MESSAGES      14160021
+         L     R2,CMERLIST                  GET POINTER TO LIST         14180021
+         SPACE                                                          14200021
+MNOPNERR LM    R0,R1,0(R2)                 GET ERROR INFO               14220021
+         L     R15,ADRERROR                  AND PRINT                  14240021
+         BALR  R14,R15                         IT OUT                   14260021
+         SPACE 2                                                        14280021
+*   PRINT MAP HEADING IF REQUIRED                                       14300021
+         SPACE 2                                                        14320021
+MNMAPHDG TM    CMPRMFLG,CQMAP      IS MAP SPECIFIED                     14340021
+         BZ    MNPRDONE              NO - GO FINISH SYSPRINT            14360021
+         SPACE                                                          14380021
+         L     R2,CMPUTREC           YES - GET PRINT BUFFER ADDRESS     14400021
+         LH    R3,CMMAPLIN         R3 HAS LENGTH OF LINE                14420021
+         AR    R3,R2               HIGH ADDRESS                         14440021
+         SPACE                                                          14460021
+MNMORMAP MVC   6(MAPHDLNG,R2),MAPHEAD   MOVE A MAP HEADING ENTRY        14480021
+         LA    R2,ENTRYSZ(R2)      UPDATE DISPLACEMENT TO NEXT          14500021
+         CR    R2,R3               ARE WE OVER LIMIT FOR BUFFER         14520021
+         BL    MNMORMAP            NO. INSERT ANOTHER                   14540021
+         MVI   CMPRTCTL,CTSPACE3       SPACE 3 BEFORE PRINT             14560021
+         L     R15,ADRPRNT               AND PRINT                      14580021
+         BALR  R14,R15                     THE MAP HEADING              14600021
+         SPACE                                                          14620021
+MNPRDONE MVI   CMPRTCTL,CTSPACE2   MOVE SPACE 2 TO CONTROL              14640021
+         L     R10,CMRDCBPT          PICK UP INPUT DCB POINTER          14660021
+         B     MNCHKLIN                AND GO CHECK SYSLIN              14680021
+         SPACE 2                                                        14700021
+TESTOP   TM    CMPRMFLG,0               TEST IF OPTION SPECIFIED        14720021
+MOVEOPT  MVC   1(0,R2),0(R6)            MOVE VALID OPTIONS TO PRINT BUF 14740021
+MVREJOPT MVC   REJOPTLG+2(0,R2),0(R3)   MOVE REJ OPTIONS TO PRINT BUF   14760021
+MOVEHDNG MVC   1(0,R2),0(R2)       EXECUTED CLEAR OF BUFFER             14780021
+         EJECT                                                          14800021
+*********************************************************************** 14820021
+*                                                                     * 14840021
+*   OPEN SYSLIN ONLY -- NOPRINT OPTION SPECIFIED                      * 14860021
+*                                                                     * 14880021
+*********************************************************************** 14900021
+         SPACE 2                                                        14920021
+MNOPENIN OPEN  MF=(E,CMIOLST1)                                          14940021
+         SPACE                                                          14960021
+MNONEBUF LA    R0,121              PROVIDE ONE                          14980021
+         BAL   R14,GETCORE           SYSPRINT BUFFER                    15000021
+         ST    R1,CMPUTREC             SINCE SYSPRINT NOY SPECIFIED     15020021
+         NI    CMPRMFLG,X'FF'-CQMAP  INSURE MAP FLAG IS OFF             15040021
+MNCHKLIN NI    CMSTATUS,X'FF'-CQMSGSAV  TURN OFF MESSAGE SAVE REQUEST   15060021
+         TM    CMFLAG3,CQINCORE   IS SYSLIN INCORE                      15080021
+         BO    MNGOTORL           YES. SKIP PRIME                       15100021
+         TM    CMIOFLGS,CQIOERR    TERMINATION ERROR OCCUR              15120021
+         BO    MNIDEN                  YES. GO CLOSE OUT                15140021
+         TM    DCBOFLGS,DCBOPEN    WAS SYSLIN SUCCESSFULLY OPENED       15160021
+         BO    MNALOCRD              YES - ALLOCATE BUFFERS AND DECB'S  15180021
+*                                                                       15200021
+         LA    R0,ERIOUT1       NO - LOAD ERROR CODE                    15220021
+         LA    R1,CMLINDD                 ADDRESS OF DDNAME             15240021
+         L     R15,ADRERROR               ADDRESS OF ERROR ROUTINE      15260021
+         BALR  R14,R15            GIVE ERROR                            15280021
+         B     MNIDEN                  AND GO CLOSE OUT                 15300021
+         SPACE 2                                                        15320021
+MNALOCRD OI    DCBOFLGS,UNLKATRB     YES - SET UNLIKE ATTRIBUTES BIT    15340021
+         L     R15,ADRBUFFR            AND GO ALLOCATE                  15360021
+         BALR  R14,R15                 FOR SYSLIN                       15380021
+         TM    CMSTATUS,CQABORT      TERMINATION ERROR OCCURR           15400021
+         BNZ   MNIDEN                  YES - GO CLOSE OUT               15420021
+*                                                                       15440021
+         TM    CMIOFLGS,CQFIXED    IS THE RECORD FORMAT FIXED           15460021
+         BO    MNOBJMOD              YES - GO PRIME FOR OBJECT MODULE   15480021
+*                                                                       15500021
+*   LOAD MODULE INPUT -- GO TO IEWLLIBR FOR PROCESSING                  15520021
+*                                                                       15540021
+         L     R15,ADRLMPRC        GET ENTRY POINT TO LOAD MODULE PROC  15560021
+         BALR  R14,R15               AND GO PROCESS                     15580021
+         B     MNEOCRET            LOAD MODULE IN -- GO CHECK FOR MORE  15600021
+*                                                                       15620021
+*   OBJECT MODULE INPUT -- GO TO IEWLRELO FOR PROCESSING                15640021
+*                                                                       15660021
+MNOBJMOD L     R15,ADRPRIME        FIRST -- PRIME THE                   15680021
+         BALR  R14,R15               OBJECT MODULE BUFFERS              15700021
+*                                                                       15720021
+MNGOTORL EQU   *                                                        15740021
+         L     R15,ADROMPRC        THEN -- GO PROCESS                   15760021
+         BALR  R14,R15               THE OBJECT MODULE                  15780021
+         SPACE                                                          15800021
+MNEOCRET TM    CMSTATUS,CQABORT      TERMINATION ERROR OCCUR            15820021
+         BNZ   MNBITMAP                YES - GO CLOSE OUT               15840021
+*                                                                       15860021
+*   RETURN FROM PROCESSING ONE CONCATENATION OF SYSLIN -----            15880021
+*     CHECK FOR ANOTHER CONCATENATION RECEIVED                          15900021
+*                                                                       15920021
+         TM    CMIOFLGS,CQEOCB+CQEOFB   CHECK EOC AND EOF               15940021
+         SPACE                                                          15960021
+         BM    MNALOCRD                   ONLY ONE - ANOTHER CONCAT     15980021
+*                                                                       16000021
+*   ALL PRIMARY INPUT HAS BEEN LOADED --- GO TO IEWACALL TO PROCESS     16020021
+*  AUTO-CALL AND FINAL RESOLUTION                                       16040021
+*                                                                       16060021
+         L     R15,ADRACALL                                             16080021
+         BALR  R14,R15                                                  16100021
+*              LOADING IS COMPLETE     IDENTIFY PROGRAM                 16120021
+*                                                                       16140021
+MNIDEN   L     R1,CMNXTTXT         ROUND UP LAST ADDRESS USED           16160021
+         LA    R1,7(R1)            TO DOUBLEWORD                        16180021
+         N     R1,DBLMASK                                               16200021
+         ST    R1,CMNXTTXT                                              16220021
+         L     R1,CMLOWTBL         ROUND DOWN LOWEST TABLE              16240021
+         N     R1,DBLMASK          ADDRESS USED                         16260021
+         ST    R1,CMLOWTBL                                              16280021
+         TM    CMFLAG3,CQIDEN     IS IDENTIFICATION WANTED              16330000
+         BZ    MNNOID             NO, DON'T IDENTIFY                    16332000
+         TM    CMFLAG4,CQNOEX     IS EXECUTION SCHEDULED                16340000
+         BO    MNNOID             NO. DON'T IDENTIFY                    16360000
+         L     R15,ADRCDE         YES. GO CONSTRUCT CDE OR LPRB         16380000
+         BALR  R14,R15            GO DO IT                              16400000
+MNNOID   EQU   *                                                        16420021
+*                                                                       16440021
+*   LOADING IS COMPLETE -- GO PROCESS THE DIAGNOSTIC MESSAGE DICTIONARY 16460021
+*                                                                       16480021
+MNBITMAP L     R15,ADRABTMP        GO TO PROCESS THE BITMAP             16500021
+         BALR  R14,R15                                                  16520021
+         LR    R5,R15              SAVE THE RETURN CODE                 16540021
+         EJECT                                                          16560021
+*******************************************************************     16580021
+*                                                                 *     16600021
+*   ALL PROCESSING IS COMPLETE -- THE FOLLOWING WILL              *     16620021
+*                                                                 *     16640021
+*     1.  WRITE THE LAST SYSPRINT BLOCK (SHORT IF NECESSARY)      *     16660021
+*     2.  CHECK ALL UNCHECKED SYSPRINT DECB'S                     *     16680021
+*     3.  CLOSE INPUT AND OUTPUT DCB'S                            *     16700021
+*     4.  SET UP THE RETURN PARAMETER LIST                        *     16720021
+*     5.  FREE ALL STORAGE NOT USED BY THE LOADED PROGRAM         *     16740021
+*     6.  RETURN TO THE INVOKING PROGRAM                          *     16760021
+*                                                                 *     16780021
+*   NOTE - REGISTER 5 MUST BE PRESERVED UNTIL RETURN TO THE INVOKING    16800021
+*          PROGRAM.  IT CONTAINS THE RETURN CODE PASSED FROM IEWBTMAP.  16820021
+*                                                                       16840021
+*******************************************************************     16860021
+         SPACE 3                                                        16880021
+MNPRPURG TM    CMSTATUS,CQPRTOPN   IS THE SYSPRINT DCB OPEN             16900021
+         BZ    MNCLOSE               NO - GO CLOSE INPUT DATA-SET       16920021
+         SPACE                                                          16940021
+         L     R10,CMWDCBPT          YES - GET SYSPRINT DCB             16960021
+         USING IHADCB,R10              AND IDENTIFY IT                  16980021
+         L     R9,CMWDECPT           GET CURRENT DECB                   17000021
+         LA    R9,0(R9)              INSURE TOP BYTE IS ZERO            17020021
+         USING DECB,R9                 AND IDENTIFY IT                  17040021
+         SPACE                                                          17060021
+         L     R3,CMPUTREC         COMPUTE SIZE                         17080021
+         AH    R3,DCBLRECL           OF LAST                            17100021
+         S     R3,DECAREA              SYSPRINT BLOCK AND               17120021
+         STH   R3,DCBBLKSI               STORE INTO DCB BLOCKSIZE       17140021
+         SPACE                                                          17160021
+         BAL   R7,WTWRITE             AND WRITE THE LAST BLOCK          17180021
+         SPACE                                                          17200021
+MNNOTRNC LR    R8,R9               SAVE POINTER TO DECB                 17220021
+MNNXTPRG L     R9,DECDECPT         GET POINTER TO NEXT DECB             17240021
+         BAL   R7,WTCHECK            AND GO CHECK IT                    17260021
+         SPACE                                                          17280021
+MNNOCHK  CR    R8,R9               WAS THAT THE LAST DECB               17300021
+         BNE   MNNXTPRG              NO - GO CHECK THE NEXT             17320021
+         SPACE 2                                                        17340021
+MNCLOSE  EQU   *                                                        17360021
+         LA    R3,CMIOLST1         POINT TO BEGINNING OF CLOSE LIST     17380021
+         TM    CMSTATUS,CQLIBOPN  IS LIBRARY OPEN                       17400021
+         BO    MNCLS2             YES. SEE IF IT'S PASSED               17420021
+         TM    CMFLAG3,CQPASLIN   NO. IS LIN PASSED                     17440021
+         BZ    MNCLS3             NO. WE NEED TO CLOSE IT               17460021
+         B     MNCLS35             CHECK SYSPRINT                       17480021
+MNCLS2   TM    CMFLAG3,CQPASLIB   WAS LIB PASSED                        17500021
+         BZ    MNCLS3                  NO.                              17520021
+         L     R10,CMRDCBPT        YES. GET LIB DCB                     17540021
+         MVC   DCBSYNAD+1(3),CMLIBSYN+1   RESTORE EXIT ADDRESSES        17560021
+         MVC   DCBEODAD+1(3),CMLIBEOD+1   RESTORE EXIT ADDRESSES        17580021
+         MVC   DCBEXLST+1(3),CMLIBEXL+1   RESTORE EXIT ADDRESSES        17600021
+         B     MNCLS35             DON'T CLOSE IT                       17620021
+MNCLS3   EQU   *                                                        17640021
+         SPACE 2                                                        17660021
+         L     R10,CMRDCBPT        PICK UP INPUT DCB POINTER            17680021
+         BAL   R8,ENTCLOSE         STORE INTO CLOSE LIST                17700021
+         SPACE                                                          17720021
+MNCLS35  TM    CMSTATUS,CQPRTDCB   IS SYSPRINT OPEN                     17740021
+         BZ    MNCLS4              BRANCH TO CHECK SYSTERM              17760021
+         SPACE                                                          17780021
+         L     R10,CMWDCBPT          YES - PICK UP OUTPUT DCB POINTER   17800021
+         BAL   R8,ENTCLOSE         STORE INTO CLOSE LIST                17820021
+MNCLS4   TM    CMFLAG4,CQTRMOPN    IS SYSTERM OPEN                      17840021
+         BNO   MNCHKCLS            NO. BRANCH                           17860021
+         L     R10,CMTDCBPT        YES. CLOSE IT                        17880021
+         BAL   R8,ENTCLOSE         STORE INTO CLOSE LIST                17900021
+MNCHKCLS LA    R1,CMIOLST1                                              17920021
+         CR    R1,R3               DO WE NEED TO ISSUE CLOSE            17940021
+         BE    MNCLS5              NO.                                  17960021
+         LA    R1,4                YES. BACK TO LAST ENTRY              17980021
+         SR    R3,R1                                                    18000021
+         OI    0(R3),X'80'         FLAG LAST ENTRY                      18020021
+         SPACE 2                                                        18040021
+MNNOPRNT CLOSE MF=(E,CMIOLST1)     CLOSE OUT DATA SETS                  18060021
+MNCLS5   EQU   *                                                        18080021
+         SPACE                                                          18100021
+         L     R1,CMMAINPT             GET 1ST ADDR USED                18120021
+         LR    R2,R1                   SAVE FOR RETURN                  18140021
+         L     R8,CMXLCHN              GET FIRST EXTENT ADDR      M3177 18160021
+*                                      BY COMPILER                      18180021
+         LTR   R8,R8                   WERE THERE ANY?                  18200021
+         BZ    MNCLSG                  NO                               18220021
+         L     R6,4(R8)                                                 18240021
+         ST    R6,8(R1)                STORE FOR LATER FREEMAIN         18260021
+         L     R6,8(R8)                GET 1ST EXTENT LENGTH            18280021
+         ST    R6,12(R1)               STORE FOR LATER FREEMAIN         18300021
+         TM    CMFLAG4,CQNOEX          ARE WE GOING TO EXECUTE?         18320021
+         BNO   MNXOK                   YES.                             18340000
+         TM    CMFLAG4,CQIDONE    NO. HAS PGM BEEN IDENTIFIED?          18350000
+         BNO   MNNOX              NO. GO FREEMAIN EXTENTS               18360000
+MNLDDT   LOAD  EPLOC=CMPGMNM      YES. DE-IDENTIFY W/LOAD & DELETE      18370000
+         DELETE EPLOC=CMPGMNM                                           18380000
+         B     MNNOR1                                                   18390000
+MNCLSG   EQU   *                                                        18460021
+         TM    CMFLAG4,CQNOEX          IS PGM EXECUTABLE?               18480021
+         BNO   MNXOK                   YES.                             18500000
+         TM    CMFLAG4,CQIDONE     NO. HAS PGM BEEN IDENTIFIED?         18510000
+         BO    MNLDDT              YES, GO TO LOAD AND DELETE           18520000
+MNIDCHK  TM    CMFLAG3,CQIDEN      ENTERED THRU IEWLOAD?                18520400
+         BO    MNMARK              YES, FREEMAIN EVERYTHING             18522000
+         B     MNLOADR             NO, PROCESS FOR IEWLOADR             18572000
+MNXOK    EQU   *                                                        18622000
+         TM    CMFLAG3,CQIDEN      ENTERED THRU IEWLOAD?                18672000
+         BO    MNNOR1              YES                                  18722000
+MNLOADR  ST    R1,0(R1)            NO, ENTERED THRU IEWLOADR            18772000
+         L     R3,CMNXTTXT         PICK UP LENGTH                       18774000
+         SR    R3,R1               GET TRUE LENGTH                      18776000
+         ST    R3,4(R1)            AND STORE IT                         18778000
+         B     MNNOR1              GO TO MNNOR1                         18778400
+MNNOX    EQU   *                                                        18780021
+         L     R0,12(R1)               PICK UP 1ST EXTENT LENGTH        18800021
+         L     R1,8(R1)                PICK UP 1ST EXTENT ADDR          18820021
+         FREEMAIN R,LV=(0),A=(1)       FREE 1ST EXTENT                  18840021
+         LR    R1,R2                   RESTORE REG. 1                   18860021
+         B     MNIDCHK                                                  18880000
+MNNOR1   L     R1,CMNXTTXT         HI ADDRESS FOR FREEMAIN              18900021
+MNMARK   L     R8,CMEPADDR         GET ENTRY POINT ADDRESS              18920021
+         L     R13,4(R13)          PICK UP SAVE AREA POINTER            18940021
+         L     R0,CMHITBL          GET HIGHEST CORE ADDRESS             18960021
+         SR    R0,R1                 AND CALCULATE FREEMAIN SIZE        18980021
+*    FREEING TABLE AND BUFFER STORAGE.                                  19000021
+*     ALSO PROGRAM STORAGE IF RETURN CODE GREATER THAN 4                19020021
+         BZ    MNNOFREE            FREEMAIN SIZE ZERO -- NO FREE        19040021
+         SPACE                                                          19060021
+         FREEMAIN R,LV=(0),A=(1)   FREE ALL STORAGE NOT USED BY PRO     19080021
+         SPACE                                                          19100021
+MNNOFREE LR    R0,R8              MOVE EP ADDRESS TO REG 0              19120021
+         LR    R1,R2               MOVE RETURN LIST ADDRESS TO R1       19140021
+         LR    R15,R5              PUT RETURN CODE INTO R15             19160021
+         SPACE                                                          19180021
+*   RETURN TO INVOKING PROGRAM                                          19200021
+         SPACE                                                          19220021
+         L     R14,12(0,13)             LOAD RETURN REGISTER            19240021
+         LM    R2,R12,28(13)              LOAD REGISTERS EXCEPT 15-0-1  19260021
+         MVI   12(13),X'FF'             SET RETURN INDICATION           19280021
+         BR    R14                        AND RETURN                    19300021
+*                                                                       19320021
+*        STORES DCB POINTER INTO CLOSE LIST. R3 POINTS TO LIST ENTRY    19340021
+*                                                                       19360021
+ENTCLOSE O     R10,CLOSE           OR IN OPTION BYTE                    19380021
+         ST    R10,0(R3)           STORE INTO CLOSE LIST                19400021
+         NI    0(R3),X'7F'         CLEAR LIST DELIMITER                 19420021
+         LA    R3,4(R3)            UP TO NEXT ENTRY                     19440021
+         BR    R8                                                       19460021
+         SPACE 3                                                        19480021
+         EJECT                                                          19500021
+*******************************************************************     19520021
+*                                                                 *     19540021
+*   OPEN SYSLIB -- THIS ROUTINE WILL CLOSE 'SYSLIN', MOVE THE     *     19560021
+*  'SYSLIB' DDNAME INTO THE DCB AND RE-OPEN IT FOR PARTITIONED    *     19580021
+*  ORGANIZATION.  IF IT OPENS SUCCESSFULLY, BUFFERS ARE ALLOCATED *     19600021
+*  AND THE 'SYSLIB OPEN' BIT IN THE COMMUNICATIONS AREA IS SET ON.*     19620021
+*   IF THE 'SYSLIB' DATA-SET HAS NOT BEEN ALLOCATED (DCB DOES NOT *     19640021
+*  OPEN), A DIRECT RETURN IS MADE.                                *     19660021
+*                                                                 *     19680021
+*******************************************************************     19700021
+         SPACE 3                                                        19720021
+         ENTRY HEWOPNLB                                                 19740021
+         USING IHADCB,R10                                               19760021
+HEWOPNLB SAVE  (14,12),,*          SAVE CALLERS REGISTERS               19780021
+         USING HEWOPNLB,R15       IDENTIFY ENTRY POINT BASE             19800021
+         L     R12,IOCABASE            LOAD CSECT BASE                  19820021
+         DROP  R15                       DROP ENTRY POINT BASE          19840021
+         USING HEWLIOCA,R12          AND IDENTIFY CSECT BASE            19860021
+         L     R4,IOCABSE2      LOAD AND IDENTIFY                       19880021
+         USING HEWLIOCA+4096,R4    SECOND BASE REGISTER                 19900021
+         SPACE                                                          19920021
+         L     R13,8(R13)          GET NEXT SAVE AREA POINTER           19940021
+*                                                                       19960021
+         L     R10,CMRDCBPT        GET POINTER TO INPUT DCB             19980021
+         TM    CMFLAG3,CQPASLIN   WAS SYSLIN PASSED                     20000021
+         BO    LB1                YES. SKIP CLOSE AND CHECK LIB         20020021
+         O     R10,CLOSE             OR CLOSE OPTIONS INTO IT           20040021
+         ST    R10,CMIOLST1            AND STORE INTO LIST              20060021
+         SPACE                                                          20080021
+         CLOSE MF=(E,CMIOLST1)     CLOSE PRIMARY INPUT DCB              20100021
+LB1      TM    CMFLAG3,CQPASLIB   WAS SYSLIB PASSED                     20120021
+         BO    LB2                YES. ASSUME IT'S OPEN                 20140021
+         TM    CMFLAG3,CQPASLIN   DO WE HAVE TO ALLOCATE                20160021
+         BZ    LB4                NO. USE SYSLIN DCB                    20180021
+         LA    R0,DCBSIZE         ALLOCATE DCB                          20200021
+         BAL   R14,GETCORE                                              20220021
+         ST    R1,CMRDCBPT                                              20240021
+         LR    R10,R1                                                   20260021
+         MVC   IHADCB(DCBSIZE),MODELDCB                                 20280021
+         MVC   DCBMACR(2),MACRREAD                                      20300021
+LB4      EQU   *                                                        20320021
+         SPACE                                                          20340021
+         MVC   DCBDDNAM(8),CMLIBDD      MOVE SYSLIB DDNAME INTO DCB     20360021
+         MVC   DCBDSORG(2),DSORGPO        SET DCB PARTITIONED           20380021
+         SR    R2,R2               ZERO OUT                             20400021
+         STH   R2,DCBLRECL           LRECL AND                          20420021
+         STH   R2,DCBBLKSI             BLKSIZE                          20440021
+         SPACE                                                          20460021
+         LA    R10,0(R10)          ZERO FLAG BYTE IN DCB POINTER        20480021
+         O     R10,OPENIN            OR IN OPTION BYTE                  20500021
+         ST    R10,CMIOLST1            AND STORE INTO LIST              20520021
+         SPACE                                                          20540021
+         OPEN  MF=(E,CMIOLST1)     OPEN DCB FOR AUTO-CALL LIBRARY       20560021
+         SPACE                                                          20580021
+         TM    CMIOFLGS,CQIOERR    TEST IF RECFM=V FOUND IN OPEN        20600021
+         BO    IOABORT               YES - ABORT LOADING                20620021
+LB5      TM    DCBOFLGS,DCBOPEN   WAS THE DCB OPEN                      20640021
+         BZ    LBRETURN              NO - REUTRN                        20660021
+         SPACE                                                          20680021
+         OI    CMSTATUS,CQLIBOPN     YES - SET LIBRARY OPEN BIT         20700021
+         L     R15,ADRBUFFR            AND GO                           20720021
+         BALR  R14,R15                   ALLOCATE BUFFERS               20740021
+         SPACE                                                          20760021
+LBRETURN L     R13,4(R13)          PICK UP PREVIOUS SAVE AREA           20780021
+         RETURN (14,12),T            AND RETURN                         20800021
+LB2      L     R10,CMLIBDCB       GET PASSED DCB                        20820021
+         ST    R10,CMRDCBPT                                             20840021
+         MVC   CMLIBSYN+1(3),DCBSYNAD+1   SAVE EXIT ROUTINE ADDRESSES   20860021
+         MVC   CMLIBEOD+1(3),DCBEODAD+1   SAVE EXIT ROUTINE ADDRESSES   20880021
+         MVC   CMLIBEXL+1(3),DCBEXLST+1   SAVE EXIT ROUTINE ADDRESSES   20900021
+         XC    DCBSYNAD+1(3),DCBSYNAD+1  USE LOADER SYNAD ROUTINE       20920021
+         LA    R7,SYNAD                                                 20940021
+         L     R6,DCBSYNAD                                              20960021
+         OR    R7,R6                                                    20980021
+         ST    R7,DCBSYNAD                                              21000021
+         XC    DCBEODAD+1(3),DCBEODAD+1                                 21020021
+         LA    R7,EODAD                                                 21040021
+         L     R6,DCBEODAD                                              21060021
+         OR    R7,R6                                                    21080021
+         ST    R7,DCBEODAD                                              21100021
+             XC    DCBEXLST+1(3),DCBEXLST+1  USE LOADER DCB EXIT        21120021
+         LA    R7,DCBEXIT                                               21140021
+         L     R6,DCBEXLST                                              21160021
+         OR    R7,R6                                                    21180021
+         ST    R7,DCBEXLST                                              21200021
+         B     LB5                                                      21220021
+         EJECT                                                          21240021
+*********************************************************************** 21260021
+*                                                                     * 21280021
+*   DECB AND BUFFER DEALLOCATION - ALLOCATION ROUTINE                   21300021
+*     UPON ENTRY -- R10 POINTS TO THE DCB FOR WHICH BUFFERS ARE         21320021
+*     TO BE ALLOCATED                                                   21340021
+*                                                                     * 21360021
+*********************************************************************** 21380021
+         SPACE 3                                                        21400021
+         USING DECB,R9                                                  21420021
+         ENTRY HEWBUFFR                                                 21440021
+HEWBUFFR SAVE (14,12)             SAVE REGISTERS                        21460021
+         USING HEWBUFFR,R15       IDENTIFY EP BASE                      21480021
+         L     R12,IOCABASE            LOAD CSECT BASE                  21520021
+         DROP  R15                       DROP EP BASE                   21540021
+         USING HEWLIOCA,R12      AND IDENTIFY CSECT BASE                21560021
+         L     R4,IOCABSE2      LOAD AND IDENTIFY                       21580021
+         USING HEWLIOCA+4096,R4   SECOND BASE REGISTER                  21600021
+         L     R13,8(R13)          PICK UP NEXT SAVE AREA               21620021
+*                                                                       21640021
+         C     R10,CMWDCBPT        IS THIS ALLOCATION FOR SYSPRINT      21660021
+         BE    ALOCPRNT              YES - NO PREVIOUS BUFFERS ALLOC    21680021
+*                                                                       21700021
+         TM    CMIOFLGS,CQFIXED+CQUNDEF  IS THERE A PREV ALLOCATION     21720021
+         BZ    CHKFORMT                    NO - BYPASS DEALLOCATION     21740021
+         SPACE                                                          21760021
+         L     R9,CMRDECPT               PICK UP POINTER TO FIRST DECB  21780021
+         TM    CMIOFLGS,CQUNDEF    WAS THE PREV ALLOC FOR UNDEFINED     21800021
+         BZ    DEALFIXD              NO - DEALLOCATE FIXED              21820021
+*                                                                       21840021
+         TM    DCBRECFM,UNDEFINE   IS THIS ALLOCATION FOR UNDEFINED     21860021
+         BO    UNDFINSH              YES - LEAVE ALLOCATION THE SAME    21880021
+*                                                                       21900021
+*   THE PREVIOUS ALLOCATION WAS FOR UNDEFINED AND THIS ONE IS FOR       21920021
+*  FIXED -- DEALLOCATE THE UNDEFINED BUFFERS BEFORE ALLOCATION FOR      21940021
+*  THE FIXED FORMAT                                                     21960021
+*                                                                       21980021
+         L     R1,CMGETREC         PICK UP POINTER TO THE RLD BUFFER    22000021
+         LA    R0,RLDSIZE            PUT SIZE INTO R0                   22020021
+         BAL   R14,FREECORE            AND FREE THE BUFFER              22040021
+*                                                                       22060021
+         L     R1,DECDECPT         PICK UP POINTER TO SECOND DECB       22080021
+         LA    R0,DECBSIZE         PUT DECB SIZE INTO R0                22100021
+         BAL   R14,FREECORE          AND FREE THE SECOND DECB           22120021
+*                                                                       22140021
+         LR    R1,R9               POINTER TO FIRST DECB TO PARM REG    22160021
+         LA    R0,DECBSIZE         SIZE OF DECB                         22180021
+         BAL   R14,FREECORE          FREE THE FIRST DECB                22200021
+*                                                                       22220021
+         B     ALFIXSET            GO ALLOCATE FOR THIS CONCATENATION   22240021
+*                                                                       22260021
+*   DEALLOCATE A LIST OF FIXED SIZE BUFFERS AND THEIR ASSOCIATED DECB'S 22280021
+*                                                                       22300021
+DEALFIXD LR    R6,R9               LIMIT IS POINTER TO FIRST DECB       22320021
+*                                                                       22340021
+DEALMORE L     R7,DECDECPT         GET THE POINTER TO NEXT DECB         22360021
+         L     R1,DECAREA          BUFFER POINTER FOR THIS DECB         22380021
+         LH    R0,CMBLKSIZ           SIZE OF BUFFER                     22400021
+         BAL   R14,FREECORE        FREE THE BUFFER                      22420021
+*                                                                       22440021
+         LR    R1,R9               MOVE THE DECB POINTER                22460021
+         LA    R0,DECBSIZE           SIZE OF DECB                       22480021
+         BAL   R14,FREECORE        FREE THE DECB                        22500021
+*                                                                       22520021
+         LR    R9,R7               POINT TO NEXT DECB                   22540021
+         CR    R9,R6                 IS IT BACK AROUND TO THE FIRST     22560021
+         BNE   DEALMORE                NO - GO FREE THIS COMBINATION    22580021
+*                                                                       22600021
+CHKFORMT TM    DCBRECFM,UNDEFINE   IS THIS ALLOCATION FOR UNDEFINED     22620021
+         BO    ALOCUNDF              YES - GO ALLOCATE FOR IT           22640021
+*                                                                       22660021
+*   ALLOCATE A LIST OF FIXED SIZE BUFFERS AND THEIR ASSOCIATED DECB'S   22680021
+*     THE SIZE OF THE BUFFERS IS FOUND IN 'DCBBLKSI'                    22700021
+*     THE NUMBER OF BUFFERS IS FOUND IN 'DCBNCP'                        22720021
+*                                                                       22740021
+ALFIXSET EQU   *                                                        22760021
+ALOCPRNT SR    R7,R7               GET THE NUMBER                       22780021
+         IC    R7,DCBNCP             PICK UP NUMBER OF BUFFERS          22800021
+         SPACE                                                          22820021
+ALOCFIXD BAL   R15,GETDECB         GET A DECB                           22840021
+         LR    R6,R9                 SAVE POINTER TO IT                 22860021
+         B     FIXDSTRT                AND GO ALLOCATE THE LIST         22880021
+         SPACE                                                          22900021
+FIXDMORE LR    R8,R9               SAVE POINTER TO THIS DECB            22920021
+         BAL   R15,GETDECB           AND GET ANOTHER                    22940021
+         SPACE                                                          22960021
+FIXDSTRT LH    R0,DCBBLKSI         GET SIZE OF A BUFFER                 22980021
+         BAL   R14,GETCORE           AND GET A BUFFER FOR THE DECB      23000021
+*                                                                       23020021
+         ST    R1,DECAREA          STORE BUFFER ADDRESS INTO DECB       23040021
+         ST    R8,DECDECPT           CHAIN THIS DECB TO THE LAST        23060021
+         BCT   R7,FIXDMORE             AND GO GET ANOTHER IF NEEDED     23080021
+*                                                                       23100021
+*   ALL BUFFERS AND DECB'S HAVE BEEN ALLOCATED                          23120021
+*                                                                       23140021
+         ST    R9,DECDECPT-DECB(R6)  CHAIN LAST DECB TO THE FIRST       23160021
+*                                                                       23180021
+         C     R10,CMWDCBPT        IS THIS ALLOCATION FOR SYSPRINT      23200021
+         BNE   FIXDIND               NO - SET INPUT INDICATORS          23220021
+*                                                                       23240021
+         ST    R9,CMWDECPT           YES - STORE POINTER FOR OUTPUT     23260021
+         B     ALOCRETN                  AND RETURN                     23280021
+*                                                                       23300021
+FIXDIND  MVC   CMBLKSIZ(2),DCBBLKSI     SAVE BLKSIZE FOR NEXT CONCAT    23320021
+         MVI   CMIOFLGS,CQFIXED     TURN OFF ALL I/O FLAGS EXCEPT FIXED 23340021
+         B     INPFINSH              AND GO FINISH UP                   23360021
+*                                                                       23380021
+*   ALLOCATE 2 DECB'S AND 1 RLD BUFFER FOR UNDEFINED FORMAT             23400021
+*     THE FIRST DECB IS FOR THE RLD RECORDS AND IS POINTED TO           23420021
+*    BY 'CMRDECPT'                                                      23440021
+*     THE RLD BUFFER POINTER IS STORED INTO THE DECB AND 'CMGETREC'     23460021
+*     THE SECOND DECB IS CHAINED TO THE RLD DECB                        23480021
+*     THE SECOND DECB HAS NO BUFFER ALLOCATED FOR IT -- IT IS USED      23500021
+*    FOR READING TEXT DIRECTLY TO THE LOCATION WHERE IT WILL REMAIN     23520021
+*                                                                       23540021
+ALOCUNDF BAL   R15,GETDECB         GET A DECB                           23560021
+         LR    R7,R9                 MOVE POINTER                       23580021
+         BAL   R15,GETDECB         GET ANOTHER                          23600021
+         ST    R7,DECDECPT           STORE POINTER TO LAST INTO IT      23620021
+         ST    R9,DECDECPT-DECB(R7)  STORE POINTER TO THIS INTO LAST    23640021
+         SPACE                                                          23660021
+         LA    R0,RLDSIZE          GET A BUFFER                         23680021
+         STH   R0,DECLNGTH              STORE SIZE INTO DECB            23700021
+         BAL   R14,GETCORE           FOR RLD RECORDS                    23720021
+         ST    R1,DECAREA          STORE BUFFER POINTER IN DECB         23740021
+         ST    R1,CMGETREC         STORE BUFFER POINTER IN COMMON AREA  23760021
+*                                                                       23780021
+UNDFINSH MVI   CMIOFLGS,CQUNDEF    CLEAR I/O FLAGS EXCEPT UNDEFINED     23800021
+*                                                                       23820021
+INPFINSH ST    R9,CMRDECPT         STORE POINTER TO DECB CHAIN          23840021
+ALOCRETN L     R13,4(R13)          PICK UP PREVIOUS SAVE AREA POINTER   23860021
+         RETURN (14,12),T            AND RETURN                         23880021
+         SPACE 3                                                        23900021
+GETDECB  LA    R0,DECBSIZE         SIZE OF A DECB                       23920021
+         BAL   R14,GETCORE           GET STORAGE FOR IT                 23940021
+         LR    R9,R1                   MOVE POINTER TO USING REG        23960021
+         XC    DECB(DECBSIZE-4),DECB     CLEAR IT OUT                   23980021
+         ST    R10,DECDCBAD                STORE THE DCB POINTER        24000021
+         BR    R15                           AND RETURN                 24020021
+         EJECT                                                          24040021
+*********************************************************************** 24060021
+*                                                                     * 24080021
+*   ROUTINE TO ALLOCATE STORAGE FROM A LIST OF FREE AREAS POINTED TO    24100021
+*  BY 'CMFRECOR' -- AND PRIME (NEVER ALLOCATED) CORE IF A PREVIOUSLY    24120021
+*  ALLOCATED AREA IS NOT AVAILABLE                                      24140021
+*                                                                       24160021
+*   UPON ENTRY -- REGISTER 0 CONTAINS THE SIZE REQUESTED                24180021
+*                                                                       24200021
+*   UPON RETURN -- REGISTER 1 POINTS TO THE ALLOCATED AREA              24220021
+*                                                                       24240021
+*   THIS ROUTINE DOES NOT SAVE AND RESTORE REGISTERS ---                24260021
+*     REGISTERS 2 THROUGH 5 ARE USED AND THEREFOR ARE VOLITILE          24280021
+*                                                                       24300021
+*********************************************************************** 24320021
+         SPACE 2                                                        24340021
+GETCORE  LA    R2,CMFRECOR         PICK UP POINTER TO FREE CORE CHAIN   24360021
+         SPACE                                                          24380021
+         LR    R3,R0               ROUND                                24400021
+         LA    R0,7(R3)              SIZE UP TO                         24420021
+         N     R0,DBLMASK              DOUBLE WORD                      24440021
+         SPACE                                                          24460021
+GCAGAIN  L     R1,0(R2)            GET POINTER TO NEXT AREA             24480021
+         LTR   R1,R1                 IS THERE A NEXT AREA               24500021
+         BZ    GETPRIME                NO - GO ALLOCATE PRIME CORE      24520021
+*                                                                       24540021
+         L     R5,4(R1)                  YES - GET SIZE OF THE AREA     24560021
+         SR    R5,R0              SUBTRACT REQUEST SIZE FROM THIS SIZE  24580021
+         BZ    GCGIVEL               IF EQUAL -- GIVE THE ENTIRE AREA   24600021
+         BP    GCSUBDIV              IF THIS SIZE LARGER - GIVE PORTION 24620021
+         LR    R2,R1                 NOT ENOUGH ----                    24640021
+         B     GCAGAIN                 TRY NEXT AREA                    24660021
+*                                                                       24680021
+*                                                                       24700021
+GCGIVEL  L     R5,0(R1)           PICK UP POINTER TO NEXT AREA          24720021
+         ST    R5,0(R2)             AND CHAIN IT TO LAST AREA           24740021
+         BR    R14                 RETURN WITH AREA                     24760021
+*                                                                       24780021
+GCSUBDIV ST    R5,4(R1)           STORE NEW SIZE AS DIFFERENCE          24800021
+         AR    R1,R5                ADD DIFFERENCE TO POINTER           24820021
+         BR    R14                     AND RETURN                       24840021
+*                                                                       24860021
+*                                                                       24880021
+GETPRIME L     R1,CMLOWTBL         GET LOWEST ADDRESS USED SO FAR       24900021
+         SR    R1,R0                 SUBTRACT OFF REQUESTED SIZE        24920021
+         ST    R1,CMLOWTBL             AND STORE AS NEW LOW ADDRESS     24940021
+         C     R1,CMLSTTXT         IS IT LOWER THAN THE HIGHEST TEXT    24960021
+         BCR   10,R14                NO -- RETURN GIVING AREA           24980021
+*                                                                       25000021
+*   TABLE OVERFLOW -- GIVE ERROR MESSAGE AND EXIT                       25020021
+*                                                                       25040021
+         LA    R0,ERSIZE2          LOAD MESSAGE NUMBER                  25060021
+         L     R15,ADRERROR          ENTRY POINT TO ERROR LIST          25080021
+         BR    R15                     AND ABORT LOADING                25100021
+         EJECT                                                          25120021
+*********************************************************************** 25140021
+*                                                                     * 25160021
+*   ROUTINE TO RETURN STORAGE TO A FREE LIST POINTED TO BY 'CMFRECOR'   25180021
+*                                                                       25200021
+*   UPON ENTRY -- REGISTER 1 POINTS TO THE AREA TO BE FREED             25220021
+*                 REGISTER 0 CONTAINS THE SIZE OF THE AREA TO BE FREED  25240021
+*                                                                       25260021
+*   THIS ROUTINE DOES NOT SAVE AND RESTORE REGISTERS ---                25280021
+*     REGISTERS 1 THROUGH 4 ARE USED AND THEREFOR ARE VOLITILE          25300021
+*                                                                       25320021
+*********************************************************************** 25340021
+         SPACE 2                                                        25360021
+FREECORE LA    R1,0(R1)            INSURE TOP BYTE OF POINTER IS ZERO   25380021
+         LA    R2,CMFRECOR         GET POINTER TO FREE CORE CHAIN       25400021
+         SPACE                                                          25420021
+         LR    R3,R0               ROUND                                25440021
+         LA    R0,7(R3)              SIZE UP TO                         25460021
+         N     R0,DBLMASK              DOUBLE WORD                      25480021
+         SPACE                                                          25500021
+FCAGAIN  L     R3,0(R2)            GET POINTER TO FREE AREA             25520021
+         LTR   R3,R3                 IS THERE REALLY ONE THERE          25540021
+         BZ    FCSTASH                 NO - GO SAVE THIS ONE BY ITSELF  25560021
+*                                                                       25580021
+         LR    R5,R1            DOES THE ADDRESS PLUS SIZE OF           25600021
+         AR    R5,R0              THE RETURNING AREA EQUAL              25620021
+         CR    R5,R3                THE START OF THIS AREA              25640021
+         BE    FCBELOW          YES - COMBINE THE TWO INTO ONE BIG ONE  25660021
+*                                                                       25680021
+         L     R5,4(R3)         DOES THE ADDRESS PLUS SIZE OF           25700021
+         AR    R5,R3              THIS ONE EQUAL THE START              25720021
+         CR    R5,R1                OF THE RETURNING AREA               25740021
+         BE    FCABOVE          YES -- COMBINE THESE TWO TOGETHER       25760021
+*                                                                       25780021
+         LR    R2,R3          THE RETURNING BLOCK IS NOT CONTIGUOUS     25800021
+         B     FCAGAIN          WITH THIS ONE -- GO CHECK THE NEXT      25820021
+*                                                                       25840021
+*                                                                       25860021
+FCABOVE  LR    R1,R3          MAKE SUBJECT AREA EQ THIS ONE             25880021
+FCBELOW  A     R0,4(R3)         ADD IT'S SIZE TO SUBJECT SIZE           25900021
+         L     R5,0(R3)         TAKE IT OUT                             25920021
+         ST    R5,0(R2)           OF THE CHAIN                          25940021
+         B     FCAGAIN        AND GO TRY TO MERGE THIS ONE              25960021
+*                                                                       25980021
+*                                                                       26000021
+FCSTASH  ST    R1,0(R2)       PUT THE BLOCK ON THE END OF THE LIST      26020021
+         ST    R3,0(R1)         ZERO IT'S POINTER FIELD                 26040021
+         ST    R0,4(R1)           STORE IT'S SIZE                       26060021
+         BR    R14                  AND RETURN                          26080021
+         EJECT                                                          26100021
+*********************************************************************** 26120021
+*                                                                     * 26140021
+*   OBJECT MODULE BUFFER PRIME ROUTINE                                  26160021
+*                                                                       26180021
+*********************************************************************** 26200021
+         SPACE 2                                                        26220021
+         ENTRY HEWPRIME                                                 26240021
+HEWPRIME SAVE  (14,12),,*         SAVE CALLERS REGISTERS                26260021
+         USING HEWPRIME,R15       IDENTIFY ENTRY POINT BASE             26280021
+         L     R12,IOCABASE            LOAD CSECT BASE                  26320021
+         DROP  R15                       DROP ENTRY POINT BASE          26340021
+         USING HEWLIOCA,R12       AND IDENTIFY CSECT BASE               26360021
+         L     R4,IOCABSE2      LOAD AND IDENTIFY                       26380021
+         USING HEWLIOCA+4096,R4   SECOND BASE REGISTER                  26400021
+         SPACE 2                                                        26420021
+         L     R13,8(R13)          GET POINTER TO NEXT SAVE AREA        26440021
+         L     R9,CMRDECPT         GET POINTER TO INPUT DECB CHAIN      26460021
+         USING DECB,R9               AND IDENTIFY IT                    26480021
+         SPACE                                                          26500021
+         LR    R8,R9               SET READ LIMIT TO THIS DECB          26520021
+         L     R9,DECDECPT           AND GET POINTER TO NEXT DECB       26540021
+         BAL   R7,RDREAD           READ ALL INTERVENING DECB'S          26560021
+         SPACE                                                          26580021
+         LR    R9,R8               GET POINTER TO DECB NOT READ         26600021
+         L     R6,DECAREA            LOAD IT'S BUFFER POINTER           26620021
+         ST    R6,CMGETREC           AND STORE AS LAST RECORD ADDRESS   26640021
+         SR    R7,R7               SET LENGTH OF READ                   26660021
+         STH   R7,DECLNGTH           TO ZERO (NO DATA)                  26680021
+         ST    R9,CMRDECPT           STORE THIS DECB AS CURRENT         26700021
+         SPACE 2                                                        26720021
+         L     R13,4(R13)          LOAD POINTER TO CALLERS SAVE AREA    26740021
+         RETURN (14,12),T            AND RETURN                         26760021
+         EJECT                                                          26780021
+*********************************************************************** 26800021
+*                                                                       26820021
+*   READ ROUTINE FOR THE LOADER --- ALL REQUESTS FOR DATA IN THE        26840021
+*  LOADER ARE MADE THROUGH THIS ROUTINE.                                26860021
+*                                                                       26880021
+*     FOR READING OBJECT MODULE INPUT ---                               26900021
+*        NO PARAMETERS ARE PASSED                                       26920021
+*        THE ADDRESS OF THE NEW BUFFER IS RETURNED IN 'CMGETREC'        26940021
+*                                                                       26960021
+*     FOR READING LOAD MODULE INPUT ---                                 26980021
+*        THREE OPTIONS EXIST                                            27000021
+*          1 - (REGISTER 0 IS ZERO) - READ AN RLD RECORD                27020021
+*          2 - (REGISTER 0 IS POSITIVE) - READ A TEXT RECORD            27040021
+*              REGISTER 0 CONTAINS THE LENGTH TO BE READ                27060021
+*              REGISTER 1 CONTAINS THE ADDRESS TO READ THE TEXT         27080021
+*          3 - (REGISTER 0 IS NEGATIVE) - READ A TEXT AND RLD RECORD    27100021
+*              REGISTER 0 CONTAINS THE COMPLEMENT OF LENGTH OF TEXT   * 27120021
+*              REGISTER 1 CONTAINS THE ADDRESS TO READ THE TEXT         27140021
+*                                                                       27160021
+*                                                                       27180021
+*     REGISTERS USED FOR IMPLIED ADDRESSING (USING STATEMENTS)          27200021
+*                                                                       27220021
+*        REGISTER 12 - PROGRAM BASE                                     27240021
+*        REGISTER 11 - LOADER COMMUNICATION AREA                        27260021
+*        REGISTER 10 - DCB ADDRESS (DATA CONTROL BLOCK)                 27280021
+*        REGISTER  9 - DECB ADDRESS (DATA EVENT CONTROL BLOCK)          27300021
+*                                                                       27320021
+*********************************************************************** 27340021
+         SPACE 2                                                        27360021
+         ENTRY HEWLREAD                                                 27380021
+         USING IHADCB,R10                                               27400021
+         USING DECB,R9                                                  27420021
+*                                                                       27440021
+*                                                                       27460021
+HEWLREAD SAVE  (14,12),,*         SAVE CALLERS REGISTERS                27480021
+         USING HEWLREAD,R15       IDENTIFY ENTRY POINT ADDRESS          27500021
+         L     R12,IOCABASE            LOAD CSECT BASE                  27520021
+         DROP  R15                       DROP ENTRY POINT BASE          27540021
+         USING HEWLIOCA,R12            IDENTIFY CSECT BASE              27560021
+         L     R4,IOCABSE2      LOAD AND IDENTIFY                       27580021
+         USING HEWLIOCA+4096,R4   SECOND BASE REGISTER                  27600021
+         L     R13,8(R13)          PICK UP NEXT SAVE AREA               27620021
+*                                                                       27640021
+         L     R10,CMRDCBPT        LOAD BASE FOR DCB                    27660021
+         L     R9,CMRDECPT           AND DECB                           27680021
+         TM    CMFLAG3,CQINCORE   ARE WE READING INCORE DATA SET        27700021
+         BO    RDINCORE           YES.                                  27720021
+*                                                                       27740021
+         TM    CMIOFLGS,CQRECFM    IS THIS A FIXED OR UNDEFINED READ    27760021
+         BO    RDUNDEFN              IT'S UNDEFINED                     27780021
+*                                                                       27800021
+*   AN OBJECT MODULE IS BEING PROCESSED -- READ FIXED RECORD FORMAT     27820021
+*                                                                       27840021
+         L     R2,CMGETREC         GET POINTER TO LAST RECORD           27860021
+         LH    R3,DCBLRECL           GET LOGICAL RECORD SIZE            27880021
+         AR    R2,R3                   COMPUTE NEW RECORD ADDRESS       27900021
+         AR    R3,R2                     ADD RECORD SIZE AND ADDRESS    27920021
+         S     R3,DECAREA                  SUBTRACT OFF BUFFER BASE     27940021
+         CH    R3,DECLNGTH         WILL THIS RECORD GO OVER END OF BLK  27960021
+         BNH   RDFIXFIN              NO - GIVE THIS RECORD AND RETURN   27980021
+*                                                                       28000021
+*   END OF BLOCK HAS BEEN REACHED -- READ ANOTHER                       28020021
+*                                                                       28040021
+         L     R8,DECDECPT         SET READ LIMIT TO NEXT DECB          28060021
+         BAL   R7,RDREAD             AND GO READ THE NEXT BLOCK         28080021
+*                                                                       28100021
+         LR    R9,R8               MOVE NEXT DECB TO CURRENT            28120021
+         BAL   R7,RDCHECK            AND CHECK IT FOR COMPLETION        28140021
+*                                                                       28160021
+         ST    R9,CMRDECPT         STORE IT AS THE CURRENT DECB         28180021
+         L     R8,DECIOBPT      GET THE IOB ADDRESS FROM THE DECB       28200021
+         LH    R5,DCBBLKSI         GET BLKSIZE FROM THE DCB             28220021
+         SH    R5,14(R8)          SUBTRACT OFF RESIDUAL COUNT           28240021
+         STH   R5,DECLNGTH             AND STORE INTO THE DECB          28260021
+*                                                                       28280021
+         L     R2,DECAREA          PICK UP BUFFER ADDRESS FROM DECB     28300021
+*                                                                       28320021
+RDFIXFIN ST    R2,CMGETREC         STORE NEW RECORD POINTER INTO COMMUN 28340021
+         B     RDRETURN              AND EXIT                           28360021
+*                                                                       28380021
+*            INCORE DATA SET -- ONE BLOCK ASSUMED                       28400021
+*                                                                       28420021
+RDINCORE L     R2,CMGETREC             GET ADR OF LAST RECORD           28440021
+         TM    DCBRECFM,VARIABLE       IS THIS VARIABLE FORMAT          28460021
+         BNO   FIXFORM                 NO, GOTO PROCESS FIXED FROMAT    28480021
+*                                      VARIABLE LENGTH RECORDS          28500021
+         LTR   R2,R2                   WAS THERE A LAST RECORD          28520021
+         BNZ   VARINC1                 YES                              28540021
+         L     R2,DCBRELAD             NO, PICK UP ADDRESS              28560021
+         LA    R2,8(R2)                SKIPCNTRL WDS-1ST TIME ONLY      28580021
+         B     RDFIXFIN                                                 28600021
+VARINC1  LA    R3,4                    MOVE BACK TO                     28620021
+         SR    R2,R3                   GET CONTROL WORD WITH LENGTH     28640021
+         AH    R2,0(R2)                GET ADDRESS OF NEW RECORD        28660021
+         LA    R2,3(R2)                ROUND UP                         28680021
+         N     R2,FULMSK               TO FULLWORD                      28700021
+         LR    R3,R2                                                    28720021
+         S     R3,DCBRELAD             SUBTRACT BEGINNING OF DATA SET   28740021
+         CH    R3,DCBBLKSI             ARE WE DONE                      28760021
+         BL    VARINC2                 NO,SEND BACK THIS RECORD         28780021
+COMMON   OI    CMIOFLGS,CQEOFB+CQEOCB  THRU WITH SYSLIN                 28800021
+         NI    CMFLAG3,X'FF'-CQINCORE                                   28820021
+         B     RDRETURN                                                 28840021
+VARINC2  LA    R2,4(R2)                SKIP CONTRL WRD-NOT 1ST TIME     28860021
+         B     RDFIXFIN                                                 28880021
+*                                      FIXED    LENGTH RECORDS          28900021
+FIXFORM  LTR   R2,R2                   WAS THERE A LAST RECORD          28920021
+         BNZ   FIXINC1                                                  28940021
+         L     R2,DCBRELAD             NO, PICK UP ADDRESS              28960021
+         B     RDFIXFIN                                                 28980021
+FIXINC1  LH    R3,DCBLRECL             GET RECORD LENGTH                29000021
+         AR    R2,R3                   GET ADDRESS OF NEW RECORD        29020021
+         LR    R3,R2                                                    29040021
+         S     R3,DCBRELAD             SUBTRACT BEGINNING OF DATA SET   29060021
+         CH    R3,DCBBLKSI             ARE WE DONE                      29080021
+         BL    RDFIXFIN                NO,SEND THIS RECORD BACK         29100021
+         B     COMMON                  THRU WITH SYSLIN                 29120021
+*                                                                       29140021
+*                                                                       29160021
+*   A LOAD MODULE IS BEING PROCESSED -- TEST FOR TYPE OF READ REQUIRED  29180021
+*                                                                       29200021
+RDUNDEFN LTR   R0,R0                                                    29220021
+         BZ    RDRLD               ZERO - READ RLD/CONTROL RECORD       29240021
+         BP    RDTXT               POSITIVE - READ TEXT                 29260021
+*                                                                       29280021
+*   REGISTER 0 IS NEGATIVE --- READ TEXT AND RLD/CONTROL                29300021
+*                                                                       29320021
+         LPR   R0,R0               COMPLEMENT THE SIZE                  29340021
+         L     R9,DECDECPT           PICK UP TXT DECB POINTER           29360021
+         STH   R0,DECLNGTH             STORE TXT SIZE INTO DECB         29380021
+         ST    R1,DECAREA              STORE TXT ADDRESS INTO DECB      29400021
+         LR    R8,R9               SET READ LIMIT TO THIS DECB          29420021
+         BAL   R7,RDREAD             AND GO READ TXT/RLD RECORDS        29440021
+*                                                                       29460021
+*   THE TEXT DECB MUST BE CHECKED FIRST                                 29480021
+*                                                                       29500021
+         LR    R9,R8               GET TEXT DECB POINTER                29520021
+         BAL   R7,RDCHECK            AND CHECK IT FOR COMPLETION        29540021
+         L     R9,DECDECPT         PICK UP POINTER TO NEXT DECB         29560021
+         TM    CMIOFLGS,CQEOCB     DID END OF CONCATENATION OCCUR       29580021
+         BZ    RDLSTCHK              NO - GO CHECK THE OTHER DECB       29600021
+*                                                                       29620021
+         OI    CMIOFLGS,CQEOFSB      YES - SET BIT TO INDICATE NO REC   29640021
+         B     RDRETURN                AND RETURN                       29660021
+*                                                                       29680021
+*                                                                       29700021
+*   REGISTER 0 IS POSITIVE --- READ A TEXT RECORD                       29720021
+*                                                                       29740021
+RDTXT    L     R9,DECDECPT         GET POINTER TO TEXT DECB             29760021
+         STH   R0,DECLNGTH           STORE TXT SIZE INTO DECB           29780021
+         ST    R1,DECAREA            STORE TXT ADDRESS INTO DECB        29800021
+*                                                                       29820021
+*   REGISTER 0 IS ZERO --- READ AN RLD/CONTROL RECORD                   29840021
+*     (OR TEXT IF FALL THROUGH FROM ABOVE)                              29860021
+*                                                                       29880021
+RDRLD    L     R8,DECDECPT         SET READ LIMIT TO NEXT DECB          29900021
+         BAL   R7,RDREAD             AND READ THIS DECB                 29920021
+*                                                                       29940021
+RDLSTCHK BAL   R7,RDCHECK          CHECK THE DECB FOR COMPLETION        29960021
+*                                                                       29980021
+RDRETURN L     R13,4(R13)          GET POINTER TO LAST SAVE AREA        30000021
+         RETURN (14,12),T            AND RETURN                         30020021
+         EJECT                                                          30040021
+*********************************************************************** 30060021
+*                                                                       30080021
+*   COMMON READ AND CHECK ROUTINES                                      30100021
+*                                                                       30120021
+*     UPON ENTRY -- REGISTER 9 POINTS TO THE DECB TO READ OR CHECK      30140021
+*                -- REGISTER 8 POINTS TO A DECB WHICH SHOULD NOT BE     30160021
+*                 READ OTHER THAN FIRST                                 30180021
+*                                                                       30200021
+*     UPON EXIT FROM CHECK -- ALL REGISTERS (EXCEPT 14-15-0-1) ARE      30220021
+*                           THE SAME AS WHEN ENTERED                    30240021
+*                                                                       30260021
+*     UPON EXIT FROM READ -- REGISTER 9 POINTS TO THE LAST DECB READ    30280021
+*                          ALL OTHERS (EXCEPT 14-15-0-1) ARE THE SAME   30300021
+*                          AS WHEN ENTERED                              30320021
+*                                                                       30340021
+*     EXIT IS VIA REGISTER 7                                            30360021
+*                                                                       30380021
+*********************************************************************** 30400021
+         SPACE 3                                                        30420021
+RDREAD   READ  (R9),SF,MF=E        READ DECB POINTED TO BY R9           30440021
+         LA    R0,72                                                    30444021
+         LR    R1,R13                                                   30448021
+         SR    R1,R0              GET NEXT SAVE AREA IN CHAIN           30452021
+         ST    R1,8(R13)          RESET FORWARD PTR                     30456021
+         C     R8,DECDECPT           DOES LIMIT EQUAL NEXT DECB         30460021
+         BCR   8,R7                    YES - RETURN                     30480021
+*                                                                       30500021
+         L     R9,DECDECPT             NO - GET NEXT DECB POINTER       30520021
+         B     RDREAD                    AND GO READ IT                 30540021
+*                                                                       30560021
+*                                                                       30580021
+RDCHECK  CHECK (R9)                CHECK DECB POINTED TO BY R9          30600021
+         LA    R0,72                                                    30604021
+         LR    R1,R13                                                   30608021
+         SR    R1,R0              GET NEXT SAVE AREA IN CHAIN           30612021
+         ST    R1,8(R13)          RESET FORWARD PTR                     30616021
+         TM    CMIOFLGS,CQIOERR    ANY I/O ERRORS                       30620021
+         BCR   8,R7                  NO - RETURN TO CALLER              30640021
+         SPACE                                                          30660021
+IOABORT  L     R13,4(R13)            YES - PICK UP PREVIOUS SAVE AREA   30680021
+         C     R13,CMFSTSAV            IS THIS THE HIGHEST LEVEL        30700021
+         BNE   IOABORT                   NO - GET PREVIOUS TO THIS      30720021
+         SPACE                                                          30740021
+         RETURN (14,12),T                YES - RETURN TO HIGHEST LEVEL  30760021
+         EJECT                                                          30780021
+*********************************************************************** 30800021
+*                                                                       30820021
+*   PRINT ROUTINE --- ALL OUTPUT TO THE SYSPRINT DATA-SET IS PROCESSED  30840021
+*  THROUGH THIS ROUTINE                                                 30860021
+*                                                                       30880021
+*     NO PARAMETERS ARE PASSED OR RETURNED                              30900021
+*                                                                       30920021
+*     THE PRINT RECORD ADDRESS IS IN 'CMPUTREC'                         30940021
+*       AN ASA CARRIAGE CONTROL CHARACTER IS INSERTED BEFORE PRINT.     30960021
+*       THE PROPER CODE IS OBTAINED FROM THE 'PRTCNTRL' TABLE VIA       30980021
+*       AN INDEX FOUND IN 'CMPRTCTL'.  THIS INDEX IS RESET TO SPACE 1   31000021
+*       UNLESS CHANGED BEFORE THE NEXT PRINT.                           31020021
+*       BEFORE RETURN, 'CMPUTREC' IS UPDATED TO POINT TO A NEW BUFFER.  31040021
+*       THE NEW BUFFER IS BLANKED AND 'CMWTBFCT' IS ZEROED.             31060021
+*                                                                       31080021
+*     IF THE SYSPRINT DATA-SET IS NOT OPEN, A DIRECT RETURN IS MADE     31100021
+*                                                                       31120021
+*********************************************************************** 31140021
+         SPACE 3                                                        31160021
+         ENTRY HEWLPRNT                                                 31180021
+         USING *,R15                                                    31200021
+         SPACE                                                          31220021
+HEWLPRNT B     14(0,15)           EXPAND                                31240021
+         DC    AL1(8)                ENTRY POINT                        31260021
+         DC    CL8'HEWLPRNT'       IDENTIFIER                           31280021
+         SPACE                                                          31300021
+         TM    CMSTATUS,CQPRTOPN   IS THE SYSPRINT DATA SET OPEN        31320021
+         BO    PRNTOPEN              YES - GO PROCESS                   31340021
+*                                                                       31360021
+         SR    R15,R15               NO - SET RETURN CODE OK            31380021
+         STH   R15,CMWTBFCT            ZERO BYTE COUNT FOR LIST         31400021
+         BR    R14                       AND RETURN                     31420021
+         SPACE 2                                                        31440021
+PRNTOPEN SAVE  (14,12)             SAVE CALLERS REGISTERS               31460021
+         L     R12,IOCABASE          LOAD CSECT BASE                    31480021
+         DROP  R15                     DROP ENTRY POINT BASE            31500021
+         USING HEWLIOCA,R12       AND IDENTIFY CSECT BASE               31520021
+         L     R4,IOCABSE2      LOAD AND IDENTIFY                       31540021
+         USING HEWLIOCA+4096,R4   SECOND BASE REGISTER                  31560021
+*                                                                       31580021
+         L     R13,8(R13)          LOAD POINTER TO NEXT SAVE AREA       31600021
+*                                                                       31620021
+         L     R10,CMWDCBPT        LOAD POINTER TO OUTPUT DCB           31640021
+         L     R9,CMWDECPT         LOAD POINTER TO DECB CHAIN           31660021
+         USING IHADCB,R10            IDENTIFY DCB BASE                  31680021
+         USING DECB,R9               IDENTIFY DECB BASE                 31700021
+         L     R3,CMPUTREC         LOAD POINTER TO LAST RECORD          31720021
+         SPACE                                                          31740021
+         SR    R7,R7               SET UP FOR                           31760021
+         SR    R6,R6                 CARRIAGE CONTROL MAINTENANCE       31780021
+         LH    R5,CMLNECNT         PICK UP CURRENT LINE-COUNT           31800021
+         IC    R7,CMPRTCTL           GET INDEX FOR CONTROL CHARACTER    31820021
+         IC    R6,PRTCNTRL+1(R7)       GET SPACE-COUNT                  31840021
+         SR    R5,R6               SUBTRACT SPACE-COUNT FROM LINE-COUNT 31860021
+         BP    PRNOEJCT              NO OVERFLOW IF POSITIVE            31880021
+         SPACE                                                          31900021
+         LA    R7,CTEJECT            OVERFLOW - GET EJECT INDEX         31920021
+         LH    R5,CMMAXLNE           PICK UP MAXIMUM LINE-COUNT         31940021
+PRNOEJCT IC    R6,PRTCNTRL(R7)     PICK UP CONTROL CHARACTER            31960021
+         STH   R5,CMLNECNT         STORE CURRENT LINE-COUNT             31980021
+         LA    R7,CTSPACE1           GET SPACE1 INDEX FOR RESET         32000021
+         STC   R6,0(R3)            STORE CONTROL CHARACTER INTO BUFFER  32020021
+         STC   R7,CMPRTCTL           STORE RESET INDEX FOR NEXT LINE    32040021
+         SPACE                                                          32060021
+         AH    R3,DCBLRECL           ADD RECORD LENGTH TO IT            32080021
+         L     R2,DECAREA          LOAD BUFFER POINTER                  32100021
+         AH    R2,DCBBLKSI           ADD BLOCKSIZE TO IT                32120021
+         CR    R2,R3               WILL ANOTHER RECORD FIT IN THIS BLK  32140021
+         BH    PRNOWRTE              YES - BRANCH AROUND WRITE          32160021
+*                                                                       32180021
+*   THIS BLOCK MUST BE WRITTEN                                          32200021
+*                                                                       32220021
+         BAL   R7,WTWRITE            NO - WRITE THIS BLOCK              32240021
+*                                                                       32260021
+         L     R9,DECDECPT         PICK UP POINTER TO NEXT DECB         32280021
+         BAL   R7,WTCHECK            AND CHECK IT FOR COMPLETION        32300021
+*                                                                       32320021
+PRNOCHK  L     R3,DECAREA          GET POINTER TO BUFFER                32340021
+         ST    R9,CMWDECPT         STORE POINTER TO NEW DECB            32360021
+*                                                                       32380021
+PRNOWRTE ST    R3,CMPUTREC         STORE NEW RECORD POINTER             32400021
+*                                                                       32420021
+         LH    R15,CMWLRECL       GET BUFFER LENGTH                     32440021
+         BCTR  R15,0              DECREMENT FOR                         32460021
+         BCTR  R15,0                    EXECUTE                         32480021
+         MVI   0(R3),C' '         BLANK THE                             32500021
+         EX    R15,PRCLREX            BUFFER                            32520021
+*                                                                       32540021
+         SR    R15,R15             ASSUME EVERYTHING OK                 32560021
+         STH   R15,CMWTBFCT          ZERO BYTE COUNT FOR LIST           32580021
+         L     R13,4(R13)          GET POINTER TO CALLERS SAVE AREA     32600021
+         RETURN (14,12),T                                               32620021
+PRCLREX  MVC   1(0,R3),0(R3)      CLEARS THE BUFFER                     32640021
+         SPACE 3                                                        32660021
+*   STANDARD LINKAGE TO WRITE AND CHECK ROUTINES PLUS 'WRITE FLAG'      32680021
+*   MAINTENANCE                                                         32700021
+         SPACE 2                                                        32720021
+WTWRITE  MVI   DECDECPT,WRTFLG     SET WRITE FLAG IN DECB               32740021
+         WRITE (R9),SF,MF=E          ISSUE THE WRITE                    32760021
+         LA    R0,72                                                    32764021
+         LR    R1,R13                                                   32768021
+         SR    R1,R0              GET NEXT SAVE AREA IN CHAIN           32772021
+         ST    R1,8(R13)          RESET FORWARD PTR                     32776021
+         BR    R7                      AND RETURN                       32780021
+         SPACE 2                                                        32800021
+WTCHECK  LA    R9,0(R9)            INSURE HIGH ORDER BYTE CLEAR         32820021
+         TM    DECDECPT,WRTFLG     HAS THIS DECB BEEN WRITTEN           32840021
+         BCR   8,R7                  NO - NO CHECK REQUIRED             32860021
+         CHECK (R9)                  YES - CHECK FOR COMPLETION         32880021
+         LA    R0,72                                                    32884021
+         LR    R1,R13                                                   32888021
+         SR    R1,R0              GET NEXT SAVE AREA IN CHAIN           32892021
+         ST    R1,8(R13)          RESET FORWARD PTR                     32896021
+         NI    DECDECPT,X'FF'-WRTFLG   TURN OFF THE WRITE FLAG          32900021
+         BR    R7                        AND RETURN                     32920021
+         EJECT                                                          32940021
+**********************************************************************  32960021
+*                                                                     * 32980021
+*    SYSTERM PRINT AND OPEN ROUTINE                                   * 33000021
+*                                                                     * 33020021
+*              NO PARAMETERS ARE PASSED OR RETURNED.                  * 33040021
+*              THE DCB IS POINTED TO BY CMTDCBPT.                     * 33060021
+*              THE RECORD TO BE PRINTED IS POINTED TO BY              * 33080021
+*                  CMTRMREC.  BEFORE RETURN THIS IS UPDATED TO        * 33100021
+*                  POINT TO THE OTHER BUFFER, WHICH IS BLANKED.       * 33120021
+*              IF SYSTERM WON'T OPEN, THE TERM OPTION IS SET OFF AND  * 33140021
+*                  RETURN IS MADE                                     * 33160021
+*                                                                     * 33180021
+**********************************************************************  33200021
+         SPACE 4                                                        33220021
+         ENTRY HEWTERM                                                  33240021
+         USING *,R15                                                    33260021
+HEWTERM  SAVE  (14,12)            SAVE REGISTERS                        33280021
+         L     R12,IOCABASE        SET UP BASE REGISTER                 33300021
+         DROP  R15                                                      33320021
+         USING HEWLIOCA,R12                                             33340021
+         L     R4,IOCABSE2         SECOND BASE REGISTER                 33360021
+         USING HEWLIOCA+4096,R4                                         33380021
+         L     R13,8(R13)          SAVE AREA                            33400021
+         L     R8,CMTRMREC         GET BUFFER POINTER                   33420021
+         L     R10,CMTDCBPT        GET DCB POINTER                      33440021
+         USING IHADCB,R10                                               33460021
+         TM    CMFLAG4,CQTRMOPN    IS IT OPEN                           33480021
+         BO    TRM3                 YES.                                33500021
+*                                                                       33520021
+*              OPEN SYSTERM                                             33540021
+*                                                                       33560021
+         MVC   IHADCB(DCBSIZE),MODELDCB  MOVE IN DCB MODEL              33580021
+         MVC   DCBDDNAM(8),CMTERMDD  MOVE IN DDNAME                     33600021
+         MVC   DCBDSORG(2),DSORGPS  SET DCB SEQUENTION AND              33620021
+         MVC   DCBMACR(2),MACRWRTE         OUTPUT                       33640021
+         O     R10,OPENOUT         OR OPEN BIT INTO LIST                33660021
+         ST    R10,CMIOLST1        STORE ADDRESS OF DCB                 33680021
+         OI    CMIOLST1,X'80'      SET LIST DELIMITER                   33700021
+         OPEN  MF=(E,CMIOLST1)     OPEN IT                              33720021
+         TM    DCBOFLGS,DCBOPEN    DID IT OPEN OK                       33740021
+         BO    TRMOPN              YES.                                 33760021
+         NI    CMPRMFLG,X'FF'-CQTERM NO. SET OFF TERM FLAG       YM3064 33780001
+TRMRET   L     R13,4(R13)          RESTORE REGISTER 13                  33800021
+         RETURN (14,12),T          AND RETURN                           33820021
+*                                                                       33830000
+*     THESE VCONS MUST BE WITHIN FIRST 4K OF CSECT.                     33832000
+*                                                                       33834000
+IOCABASE DC    A(HEWLIOCA)        CSECT BASE ADDRESS                    33836000
+IOCABSE2 DC    A(HEWLIOCA+4096)  SECOND BASE REGISTER CONTENTS          33838000
+*                                                                       33840021
+*              ALLOCATE SYSTERM BUFFERS AND DECBS                       33860021
+*                                                                       33880021
+TRMOPN   OI    CMFLAG4,CQTRMOPN    SET ON TERM OPEN FLAG                33900021
+         LR    R9,R8               BUFFER1 POINTER IN R8 AND R9         33920021
+         LA    R9,TRMBUFLN(R9)     DECB1 POINTER IN R9                  33940021
+         USING DECB,R9                                                  33960021
+         XC    DECB(DECBSIZE-4),DECB   CLEAR IT OUT                     33980021
+         ST    R10,DECDCBAD   STORE DCB ADDRESS                         34000021
+         ST    R8,DECAREA          STORE BUFFER ADDRESS                 34020021
+         LR    R6,R8                                                    34040021
+         LA    R6,2*TRMBUFLN+DECBSIZE(R6)  GET OTHER DECB POINTER       34060021
+         ST    R6,DECDECPT         STORE IT                             34080021
+         USING DECB,R6                                                  34100021
+         MVC   DECB(DECBSIZE-4),0(R9)  INITIALIZE DECB                  34120021
+         ST    R9,DECDECPT         STORE DECB POINTER                   34140021
+         LA    R9,DECBSIZE(R9)                                          34160021
+         ST    R9,DECAREA          SOTRE BUFFER ADDR                    34180021
+*                                                                       34200021
+*                                  WRITE SYSTERM                        34220021
+*                                                                       34240021
+         USING DECB,R9                                                  34260021
+TRM3     LR    R9,R8               GET BUFFER POINTER                   34280021
+         LA    R9,TRMBUFLN(R9)     GET DECB POINTER                     34300021
+         BAL   R7,WTWRITE          WRITE BUFFER                         34320021
+         L     R9,DECDECPT         CHECK OTHER DECB                     34340021
+         BAL   R7,WTCHECK                                               34360021
+         L     R3,DECAREA          STORE POINTER TO NEW BUFFER          34380021
+         ST    R3,CMTRMREC         IN COMMUNICATIONS AREA               34400021
+         MVI   0(R3),C' '          CLEAN IT OUT                         34420021
+         MVC   1(TRMRECSZ-1,R3),0(R3)                                   34440021
+         B     TRMRET                                                   34460021
+         EJECT                                                          34580021
+*********************************************************************** 34600021
+*                                                                     * 34620021
+*   DCB EXIT ROUTINE --- THIS ROUTINE GAINS CONTROL WHEN ANY DCB        34640021
+*  IS OPENED AND WHEN CONCATENATION TAKES PLACE ON SYSLIN               34660021
+*                                                                       34680021
+*********************************************************************** 34700021
+         SPACE 2                                                        34720021
+DCBEXIT  DS    0F                  DCB EXIT ADDRESS                     34740021
+         DC    X'85'                                                    34760021
+         DC    AL3(OPENEXIT)                                            34780021
+         SPACE 2                                                        34800021
+OPENEXIT EQU   *                                                        34805021
+         LA    R2,72                                                    34810021
+         LR    R3,R13                  PRESENT PTR TO SAVE AREA         34815021
+         SR    R3,R2                   PICK UP NEW PTR                  34820021
+         ST    R3,8(R13)               RESET  FORWARD PTR               34825021
+         L     R13,8(R13)              RESET R13                        34830021
+         SAVE  (14,12)               SAVE REGISTERS                     34840021
+         L     R13,8(R13)          PICK UP NEXT SAVE FOR ERROR PRINT    34860021
+         SPACE                                                          34880021
+         LA    R10,0(R1)           MOVE DCB POINTER AND CLEAR TOP BYTE  34900021
+         USING IHADCB,R10            IDENTIFY IT                        34920021
+         SPACE                                                          34940021
+         L     R9,CMERLIST         GET POINTER TO ERROR MSG LIST        34960021
+         OI    CMSTATUS,CQRETURN     AND SET RETURN REQ FROM ERROR      34980021
+*                                                                       35000021
+         C     R10,CMWDCBPT        IS THIS THE SYSPRINT DCB             35020021
+         BE    EXPRINT               YES - ASSUME FIXED                 35040021
+         C     R10,CMTDCBPT        IS IT SYSTERM                        35060021
+         BE    EXTERM              YES. BRANCH                          35080021
+*                                                                       35100021
+         OI    CMIOFLGS,CQEOCB     SET END OF CONCATENATION ON INPUT    35120021
+         TM    CMLIBFLG,CQAUTOC    IS THE AUTO-CALL FLAG ON             35140021
+         LA    R1,CMLINDD                    POINT TO SYSLIN DDNAME     35160021
+         BZ    EXLIN                 NO - IT'S SYSLIN                   35180021
+         LA    R1,CMLIBDD            YES - IT'S SYSLIB                  35200021
+         SPACE                                                          35220021
+EXLIN    TM    DCBRECFM,UNDEFINE   IS RECFM UNDEFINED                   35240021
+         BO    EXUNDEF               YES - PROCESS FOR LOAD MODULE      35260021
+*                                                                       35280021
+         TM    DCBRECFM,FIXED      IS RECFM FIXED                       35300021
+         BO    EXINFIX               YES - PROCESS FIXED                35320021
+*                                                                       35340021
+         TM    DCBRECFM,VARIABLE   IS RECFM VARIABLE                    35360021
+         BZ    EXINFIX               NO - ASSUME FIXED                  35380021
+*                                                                       35400021
+*   AN INPUT DATA SET HAS VARIABLE RECORD FORMAT -- TERMINAL ERROR      35420021
+*                                                                       35440021
+         LA    R0,ERIOUT3          LOAD ERROR CODE                      35460021
+         BAL   R8,EXMSGPRT           GO LOG THE MESSAGE                 35480021
+         OI    CMIOFLGS,CQIOERR        SET I/O ERROR FLAG               35500021
+         B     EXRETURN                  AND RETURN                     35520021
+*                                                                       35540021
+*                                                                       35560021
+EXPRINT  MVI   DCBRECFM,FBSA       FORCE RECFM=FBSA AND                 35580021
+         LH    R5,CMWLRECL         R5 = LOGICAL RECORD LENGTH           35600021
+         DEVTYPE CMPRNTDD,CMXDBLWD     DEVTYPE MACRO FOR PRNT   ZA01334 35610000
+         LTR   R15,R15                 TEST FOR SUCCESS         ZA01334 35612000
+         BNZ   NOPRINT                 IF NOT,GO GIVE MESSAGE   ZA01334 35614000
+         TM    CMXDBLWD+2,X'A0'        TEST FOR UNIT RECORD     ZA01334 35616000
+         BM    BLKOK                   NOT UNIT RECORD          ZA01334 35618000
+         STH   R5,DCBBLKSI             SET BLOCKSIZE=LRECL      ZA01334 35618400
+BLKOK    EQU   *                                                ZA01334 35618800
+         LA    R1,CMPRNTDD             POINT TO SYSPRINT DDNAME         35620021
+         B     EXLRECL             GO CHECK BUFNO                       35640021
+NOPRINT  EQU   *                                                ZA01334 35650000
+         NI    DCBOFLGS,X'EF'          TURN OFF OPEN FLAG       ZA01334 35652000
+         B     EXFINISH                BRANCH TO FINISH         ZA01334 35654000
+         SPACE                                                          35660021
+EXINFIX  OI    DCBRECFM,FB         SET FB (S MAY ALSO BE PRESENT)       35680021
+         NI    DCBRECFM,X'FF'-STANDARD  TURN OFF STANDARD               35700021
+         LH    R5,DCBLRECL      PICK UP LRECL                           35720021
+         LTR   R5,R5              IS IT DEFINED                         35740021
+         BNZ   EXFIXED                 YES - LEAVE IT ALONE             35760021
+         SPACE                                                          35780021
+         LA    R5,80                NO - DEFAULT TO 80                  35800021
+EXLRECL  STH   R5,DCBLRECL      STORE LRECL                             35820021
+         SPACE                                                          35840021
+EXFIXED  SR    R2,R2               PICK UP NUMBER                       35860021
+         IC    R2,DCBBUFNO           OF BUFFERS                         35880021
+         LA    R3,2                IS IT EQUAL TO                       35900021
+         CR    R2,R3                 OR GREATER THAN 2                  35920021
+         BH    EXNCP                   YES - ITS OK                     35940021
+*                                                                       35960021
+         LR    R2,R3                   NO - FORCE TO 2                  35980021
+*                                                                       36000021
+EXNCP    STC   R2,DCBNCP           FORCE NCP TO BUFNO                   36020021
+*                                                                       36040021
+         LH    R7,DCBBLKSI           PICK UP BLKSIZE                    36060021
+         LTR   R7,R7                   IS IT DEFINED                    36080021
+         BNZ   EXTRNKCK                  YES - CHECK IF MULTIPLE OF REC 36100021
+*                                                                       36120021
+         STH   R5,DCBBLKSI          NO - DEFAULT TO LRECL               36140021
+         B     EXFINISH                    AND GO FINISH UP             36160021
+*                                                                       36180021
+EXTRNKCK SR    R6,R6               DIVIDE BLKSIZE                       36200021
+         DR    R6,R5              BY LRECL                              36220021
+         LTR   R6,R6               IS THE REMAINDER ZERO                36240021
+         BZ    EXFINISH              YES - ALL OK                       36260021
+*                                                                       36280021
+         LA    R7,1(R7)              NO - ROUND UP TO                   36300021
+         MR    R6,R5              MEXT HIGHEST MULTIPLE                 36320021
+         STH   R7,DCBBLKSI               AND STORE INTO DCB             36340021
+EXERR    LA    R0,ERINPT1          LOG ERROR                            36360021
+         BAL   R8,EXMSGPRT             'INVALID BLKSIZE'                36380021
+         B     EXFINISH            GO FINISH UP                         36400021
+*                                                                       36420021
+*                                                                       36440021
+EXTERM   MVI   DCBRECFM,FSA        FORCE FIXED FORMAT                   36460021
+         LA    R5,TRMRECSZ         GET RECORD SIZE                      36480021
+         LA    R1,CMTERMDD                                              36500021
+         STH   R5,DCBLRECL         FORCE RECORD SIZE                    36520021
+         STH   R5,DCBBLKSI             FORCE BLOCKSIZE                  36540021
+         MVI   DCBNCP,2            FORCE 2 BUFFERS                      36560021
+         B     EXFINISH                GO TO FINISHING CODE             36580021
+EXUNDEF  MVI   DCBNCP,2            FORCE NCP=2 FOR LOAD MODULES         36600021
+*                                                                       36620021
+*                                                                       36640021
+EXFINISH EQU   *                                                        36660021
+EXZERO   MVI   DCBBUFNO,X'00'          ZERO BUFNO IN DCB                36680021
+EXRETURN NI    CMSTATUS,X'FF'-CQRETURN  TURN OFF RETURN REQ BIT         36700021
+         L     R13,4(R13)                 LOAD PREV SAVE AREA POINTER   36720021
+         LM    R14,R12,12(R13)     RELOAD REGISTERS                     36740021
+         L     R13,4(R13)            LOAD PREV SAVE AREA POINTER        36760021
+         BR    R14                       AND RETURN                     36780021
+         SPACE 2                                                        36800021
+EXMSGPRT TM    CMSTATUS,CQMSGSAV   SHOULD MESSAGE BE SAVED              36820021
+         BZ    EXPRTMSG              NO - GO PRINT IT                   36840021
+         SPACE                                                          36860021
+         OI    CMSTATUS,CQOPNERR     YES - INDICATE ONE SAVED           36880021
+         STM   R0,R1,0(R9)             SAVE INFO ABOUT MESSAGE          36900021
+         BR    R8                            AND RETURN TO PROCESSING   36920021
+         SPACE                                                          36940021
+EXPRTMSG L     R15,ADRERROR        GET POINTER TO ERROR ROUTINE         36960021
+         BALR  R14,R15               AND GO LOG THE ERROR               36980021
+         BR    R8                  RETURN TO PROCESSING                 37000021
+         SPACE 2                                                        37020021
+EODAD    OI    CMIOFLGS,CQEOFB+CQEOCB   SET EOF AND EOC ON INPUT        37040021
+         BR    R14                                                      37060021
+         EJECT                                                          37080021
+*********************************************************************** 37100021
+*                                                                     * 37120021
+*   SYNAD EXIT ROUTINE -- THIS ROUTINE GAINS CONTROL WHEN A           * 37140021
+*  SYNCHRONOUS I/O ERROR OCCURRS.  IT PRINTS THE ERROR, ACCEPTS       * 37160021
+*  THE ERROR AND RETURNS CONTROL.                                     * 37180021
+*                                                                     * 37200021
+*********************************************************************** 37220021
+         SPACE 3                                                        37240021
+SYNAD    EQU   *                                                        37248021
+         LA    R0,72                                                    37256021
+         LR    R5,R13                                                   37264021
+         SR    R5,R0                   GET NEXT SAVE AREA IN CHAIN      37272021
+         USING IHADCB,R10          IDENTIFY DCB                         37280021
+         OI    CMSTATUS,CQRETURN     SET RETURN REQUEST FROM ERROR      37300021
+         LA    R2,8                                                     37320021
+         L     R3,DECIOBPT         GET THE RIGHT IOB POINTER            37340021
+         L     R6,DCBIOBA         SAVE CONTENTS OF THIS SLOT            37360021
+         SR    R3,R2                   DECRIMENT BY 8                   37380021
+         ST    R3,DCBIOBA                AND STORE FOR SYNADAF          37400021
+         TM    DCBDSORG,X'02'      IS DCB PARTITIONED ORGANIZATION      37420021
+         BO    SYNBPAM               YES - GO AROUND                    37440021
+         SPACE                                                          37460021
+         SYNADAF ACSMETH=BSAM        NO - GIVE SYNAD MACRO FOR BSAM     37480021
+         B     SYNSAVE                 AND GO PRINT ERROR               37500021
+         SPACE                                                          37520021
+SYNBPAM  SYNADAF ACSMETH=BPAM        GIVE SYNAD MACRO FOR BPAM          37540021
+         SPACE                                                          37560021
+SYNSAVE  ST    R5,8(R13)           INSERT THE SYNAD PROVIDED            37580021
+         ST    R13,4(R5)             SAVE AREA INTO LOADER CHAIN        37600021
+         SAVE  (14,12)             SAVE REGISTERS                       37620021
+         LR    R13,R5              GET NEXT SAVE AREA                   37640021
+         SPACE                                                          37660021
+         SPACE                                                          37680021
+         LA    R0,ERIOUT2          LOAD ERROR MESSAGE NUMBER            37700021
+         LA    R1,59(R1)           ADDRESS OF SYNAD MESSAGE             37720021
+         L     R15,ADRERROR             ADDRESS OF ERROR ROUTINE        37740021
+         BALR  R14,R15                    AND GO LOG THE ERROR          37760021
+         SPACE                                                          37780021
+         L     R13,4(R13)          GET PREVIOUS SAVE AREA               37800021
+         LM    14,12,12(13)          RELOAD REGISTERS                   37820021
+         ST    R6,DCBIOBA       RESTORE IOB POINTER FOR DATA MGMT       37840021
+         SPACE                                                          37860021
+         SYNADRLS                      RELEASE SYNAD STORAGE            37880021
+         SPACE                                                          37900021
+         ST    R5,8(R13)           RE-CHAIN THE                         37920021
+         ST    R13,4(R5)             LOADER SAVE AREAS                  37940021
+         OI    CMIOFLGS,CQIOERR        IDENTIFY I/O ERROR               37960021
+         BR    R14                     AND RETURN FOLLOWING CHECK       37980021
+         EJECT                                                          38000021
+PARMLIST EQU   *                                                        38020021
+         SPACE                                                          38040021
+NEGATE   EQU   *                                                        38060021
+VPNOMAP  DC    C'NO'                                                    38080021
+VPMAP    DC    C'MAP'                                                   38100021
+VPNOLET  DC    C'NO'                                                    38120021
+VPLET    DC    C'LET'                                                   38140021
+VPNOCALL DC    C'NO'                                                    38160021
+VPCALL   DC    C'CALL'                                                  38180021
+VPNCAL   DC    C'NCAL'                                                  38200021
+VPNORES  DC    C'NO'                                                    38220021
+VPRES    DC    C'RES'                                                   38240021
+VPNOPRNT DC    C'NO'                                                    38260021
+VPPRINT  DC    C'PRINT'                                                 38280021
+VPSIZE   DC    C'SIZE='                                                 38300021
+VPEP     DC    C'EP='                                                   38320021
+VPNAME   DC    C'NAME='                                                 38340021
+VPTERM   DC    C'TERM'                                                  38360021
+VPNOTERM DC    C'NOTERM'                                                38380021
+         EJECT                                                          38400021
+ORINDEX  EQU   ORPARM-SETPARM                                           38420021
+ANDINDEX EQU   ANDPARM-SETPARM                                          38440021
+SIZEINDX EQU   SIZEPARM-SETPARM                                         38460021
+EPINDEX  EQU   EPPARM-SETPARM                                           38480021
+NAMEINDX EQU   NAMEPARM-SETPARM                                         38500021
+CQFF     EQU   X'FF'                                                    38520021
+         SPACE 2                                                        38540021
+PRMMAP   EQU   VPMAP-PARMLIST      INDEX TO OPTION MAP                  38560021
+PRMNOMAP EQU   VPNOMAP-PARMLIST    INDEX TO OPTION NOMAP                38580021
+PRMLET   EQU   VPLET-PARMLIST      INDEX TO OPTION LET                  38600021
+PRMNOLET EQU   VPNOLET-PARMLIST    INDEX TO OPTION NOLET                38620021
+PRMCALL  EQU   VPCALL-PARMLIST     INDEX TO OPTION CALL                 38640021
+PRMNOCAL EQU   VPNOCALL-PARMLIST   INDEX TO OPTION NOCALL               38660021
+PRMPRINT EQU   VPPRINT-PARMLIST    INDEX TO OPTION PRINT                38680021
+PRMNOPRT EQU   VPNOPRNT-PARMLIST   INDEX TO OPTION NOPRINT              38700021
+PRMRES   EQU   VPRES-PARMLIST      INDEX TO OPTION RES                  38720021
+PRMNORES EQU   VPNORES-PARMLIST    INDEX TO OPTION NORES                38740021
+PRMEP    EQU   VPEP-PARMLIST       INDEX TO OPTION EP                   38760021
+PRMNAME  EQU   VPNAME-PARMLIST         INDEX TO OPTION HNAME'           38780021
+PRMSIZE  EQU   VPSIZE-PARMLIST     INDEX TO OPTION SIZE                 38800021
+PRMNCAL  EQU   VPNCAL-PARMLIST     INDEX TO OPTION NCAL                 38820021
+PRMTERM  EQU   VPTERM-PARMLIST    INDEX TO OPTION TERM                  38840021
+PRMNOTRM EQU   VPNOTERM-PARMLIST  INDEX TO OPTION NOTERM                38860021
+         EJECT                                                          38880021
+*********************************************************************** 38900021
+*                                                                     * 38920021
+*   LIST USED FOR SCANNING VALID OPTIONS PASSED IN THE PARAMETER LIST * 38940021
+*                                                                     * 38960021
+*     EACH ENTRY IS 4 BYTES LONG                                      * 38980021
+*       FIRST BYTE  -- INDEX FROM 'PARMLIST' TO VALID OPTION NAME     * 39000021
+*       SECOND BYTE -- MASK USED FOR SETTING OR CLEARING OPTION FLAG  * 39020021
+*       THIRD BYTE  -- LENGTH-1 OF OPTION NAME                        * 39040021
+*       FORTH BYTE  -- INDEX INTO EXECUTE LIST FOR PERFORMING OPERAT'N* 39060021
+*                                                                     * 39080021
+*********************************************************************** 39100021
+         SPACE 3                                                        39120021
+SCANLIST DS    0F                                                       39140021
+         DC    AL1(PRMMAP),AL1(CQMAP),AL1(2),AL1(ORINDEX)               39160021
+         DC    AL1(PRMLET),AL1(CQLET),AL1(2),AL1(ORINDEX)               39180021
+         DC    AL1(PRMSIZE),AL1(0),AL1(3),AL1(SIZEINDX)                 39200021
+         DC    AL1(PRMEP),AL1(0),AL1(1),AL1(EPINDEX)                    39220021
+         DC    AL1(PRMNAME),AL1(0),AL1(3),AL1(NAMEINDX)                 39240021
+         DC    AL1(PRMNCAL),AL1(CQFF-CQCALL-CQRES),AL1(3),AL1(ANDINDEX) 39260021
+         DC    AL1(PRMNOMAP),AL1(CQFF-CQMAP),AL1(4),AL1(ANDINDEX)       39280021
+         DC   AL1(PRMNOCAL),AL1(CQFF-CQCALL-CQRES),AL1(5),AL1(ANDINDEX) 39300021
+         DC    AL1(PRMNORES),AL1(CQFF-CQRES),AL1(4),AL1(ANDINDEX)       39320021
+         DC    AL1(PRMNOPRT),AL1(CQFF-CQPRINT),AL1(6),AL1(ANDINDEX)     39340021
+         DC    AL1(PRMPRINT),AL1(CQPRINT),AL1(4),AL1(ORINDEX)           39360021
+         DC    AL1(PRMRES),AL1(CQRES+CQCALL),AL1(2),AL1(ORINDEX)        39380021
+         DC    AL1(PRMCALL),AL1(CQCALL),AL1(3),AL1(ORINDEX)             39400021
+         DC    AL1(PRMNOLET),AL1(CQFF-CQLET),AL1(4),AL1(ANDINDEX)       39420021
+         DC    AL1(PRMTERM),AL1(CQTERM),AL1(3),AL1(ORINDEX)             39440021
+         DC    AL1(PRMNOTRM),AL1(CQFF-CQTERM),AL1(5),AL1(ANDINDEX)      39460021
+LISTEND  EQU   *                                                        39480021
+SCANCTRL DC    A(SCANLIST),F'4',A(LISTEND-4)                            39500021
+         EJECT                                                          39520021
+*********************************************************************** 39540021
+*                                                                     * 39560021
+*   LIST USED FOR RECONSTRUCTING OPTIONS SPECIFIED                      39580021
+*                                                                       39600021
+*     EACH ENTRY IS 4 BYTES LONG                                        39620021
+*        FIRST BYTE      -- MASK USED FOR TESTING IF OPTION PRESENT     39640021
+*        SECOND BYTE     -- LENGTH-1 OF OPTION NAME                     39660021
+*        THIRD AND FORTH -- INDEX FROM 'PARMLIST' TO OPTION NAME        39680021
+*                                                                     * 39700021
+*********************************************************************** 39720021
+         SPACE 2                                                        39740021
+OPUSELST DS    0F                                                       39760021
+         DC    AL1(CQPRINT),AL1(4),AL2(PRMPRINT)                        39780021
+         DC    AL1(CQMAP),AL1(2),AL2(PRMMAP)                            39800021
+         DC    AL1(CQLET),AL1(2),AL2(PRMLET)                            39820021
+         DC    AL1(CQCALL),AL1(3),AL2(PRMCALL)                          39840021
+         DC    AL1(CQRES),AL1(2),AL2(PRMRES)                            39860021
+         DC    AL1(CQTERM),AL1(3),AL2(PRMTERM)                          39880021
+ENDOPUSE EQU   *                                                        39900021
+         SPACE                                                          39920021
+OPTCNTRL DC    A(OPUSELST),F'4',A(ENDOPUSE-4)                           39940021
+         EJECT                                                          39960021
+         SPACE 2                                                        39980021
+*********************************************************************** 40000021
+*                                                                     * 40020021
+*   ASA CARRIAGE CONTROL CHARACTER DEFINITIONS                          40040021
+*     THEY MUST REMAIN IN THE ORDER DEFINED IN THE 'CTPRTCTL'           40060021
+*     DSECT EXPANDED WITH IEWLOCOM                                      40080021
+*                                                                     * 40100021
+*********************************************************************** 40120021
+         SPACE 3                                                        40140021
+PRTCNTRL DS    0F                                                       40160021
+         SPACE                                                          40180021
+         DC    C' ',AL1(1)         SPACE 1                              40200021
+         DC    C'0',AL1(2)         SPACE 2                              40220021
+         DC    C'-',AL1(3)         SPACE 3                              40240021
+         DC    C'1',AL1(60)        EJECT                                40260021
+         EJECT                                                          40280021
+ADRERROR DC    V(HEWERROR)        ERROR ROUTINE ENTRY POINT             40300021
+ADRBUFFR DC    A(HEWBUFFR)        ADDRESS OF BUFFER ALLOCATION          40320021
+ADRPRIME DC    A(HEWPRIME)        ADDRESS OF OBJECT BUFFER PRIME        40340021
+ADRPRNT  DC    A(HEWLPRNT)        PRINT ROUTINE ENTRY POINT             40360021
+ADROMPRC DC    V(HEWLRELO)        ADDRESS OF OBJECT MODULE PROCESSOR    40380021
+ADRLMPRC DC    V(HEWLODE)      ADDRESS OF LOAD MODULE PROCESSOR         40400021
+ADRACALL DC    V(HEWACALL)        ADDRESS OF AUTO-CALL PROCESSOR        40420021
+ADRABTMP DC    V(HEWBTMAP)        BIT MAP PROCESSOR ENTRY POINT         40440021
+ADRCDE   DC    V(HEWLIDEN)        ADDRESS OF CDE CONSTRUCTOR            40460000
+DFLTMIN  DC    A(MINREQ)           MINIMUM STORAGE REQUEST              40480021
+DFLTNAME DC    C'**GO    '                                              40500021
+DFLTTERM DC    C'SYSTERM '         DEFAULT DIAGNOSTIC DDNAME            40520021
+         EXTRN HEWLDDEF                                                 40540021
+DFLTBASE DC    A(HEWLDDEF)        DEFAULT OPTIONS CSECT                 40560021
+         SPACE                                                          40580021
+DUMMYDCB EQU   0                                                        40600021
+OPENIN   OPEN  (DUMMYDCB,(INPUT,DISP)),MF=L                             40620021
+OPENOUT  OPEN  (DUMMYDCB,(OUTPUT,DISP)),MF=L                            40640021
+CLOSE    CLOSE (DUMMYDCB,DISP),MF=L                                     40660021
+EXTR     EXTRACT   EXTR,'S',FIELDS=(TSO),MF=L                           40680000
+TCBTSTSK EQU   X'80'               TIMESHARING FLAG IN TCBTSFLG FIELD   40700021
+         SPACE                                                          40720021
+DBLMASK  DS    0F                                                       40740021
+         DC    X'00FFFFF8'         DOUBLE WORD MASK                     40760021
+FULMSK   DS    0F                                                       40780021
+         DC    X'00FFFFFC'               FULLWORD MASK                  40800021
+ENTFLG2  DC    X'FF000000'                                              40820021
+         SPACE                                                          40840021
+DSORGPS  DC    BL2'0100000000000000'    PHISICAL SEQUENTIAL             40860021
+DSORGPO  DC    BL2'0000001000000000'    PARTITIONED ORGANIZATION        40880021
+MACRREAD DC    BL2'0010000000000000'    READ                            40900021
+MACRWRTE DC    BL2'0000000000100000'    WRITE                           40920021
+         SPACE                                                          40940021
+LOADHEAD DC    C' VS LOADER   '                                  YM3465 40960001
+HDGLNGTH EQU   *-LOADHEAD                                               40980021
+OKOPTHDG DC    C'OPTIONS USED -'                                        41000021
+OKOPTLNG EQU   *-OKOPTHDG                                               41020021
+REJOPT   DC    C'OPTIONS REJECTED -'                                    41040021
+REJOPTLG EQU   *-REJOPT                                                 41060021
+MAPHEAD  DC    C'NAME  TYPE  ADDR'                                      41080021
+MAPHDLNG EQU   *-MAPHEAD                                                41100021
+ENTRYSZ  EQU   24                  SIZE OF MAP ENTRY                    41120021
+         SPACE                                                          41140021
+*                                                                       41160021
+*              81 CHARACTER RECORD                                      41180021
+*              THESE THREE FIELDS MOVED TO CMMAPLIN,CMWLRECL,CMMAXLST   41200021
+*                 IF TSO IS OPERATING.                                  41220021
+*                                                                       41240021
+         DS    0H                                                       41260021
+PRNT81   DC    AL2(LN81)           LENGTH OF MAP LINE                   41280021
+LN81     EQU   3*ENTRYSZ           THREE ENTRIES PER LINE               41300021
+         DC    H'81'               LENGTH OF RECORD                     41320021
+         DC    H'60'                LENGTH OF INVALID OPTIONS           41340021
+*                                                                       41360021
+*                                  121 CHARACTER RECORD                 41380021
+*              THESE THREE FIELDS MOVED TO CMMAPLIN,CMWLRECL,CMMAXLST   41400021
+*                 IF TSO IS NOT OPERATING.                              41420021
+*                                                                       41440021
+PRNT121  DC    AL2(LN121)          LENGTH OF MAP LINE                   41460021
+LN121    EQU   5*ENTRYSZ           FIVE ENTRIES PER LINE                41480021
+         DC    H'121'              LENGTH OF RECORD                     41500021
+         DC    H'100'              LENGTH OF INVALID OPTIONS            41520021
+*                                                                       41540021
+         SPACE                                                          41560021
+DMSIZE   EQU   6144                INITMAIN REQUEST SIZE         A42698 41580000
+MINREQ   EQU   2048                MINIMUM VC REQUEST SIZE              41600021
+NUMSAVES EQU   9                   NUMBER OF SAVE AREAS ALLOCATED       41620021
+TRMBUFLN EQU   88        LENGTH OF SYSTERM BUFFER (DBLWRDS)             41640021
+TRMRECSZ EQU   81        LENGTH OF SYSTERM RECORD                       41660021
+RLDSIZE  EQU   256                                                      41680021
+FSA      EQU   B'10001100'         FIXED,STANDARD,ASA                   41700021
+FBSA     EQU   B'10011100'         FIXED,BLOCKED,STANDARD,ASA           41720021
+FB       EQU   B'10010000'         FIXED, BLOCKED                       41740021
+STANDARD EQU   B'00001000'         STANDARD BLOCKS ONLY                 41760021
+UNDEFINE EQU   X'C0'               UNDEFINED RECFM IN DCB               41780021
+FIXED    EQU   X'80'               FIXED RECORD FORMAT IN DCB           41800021
+VARIABLE EQU   X'40'               VARIABLE RECORD FORMAT IN DCB        41820021
+CHAINED  EQU   X'20'               CHAINED SCHED IN OPTCD OF DCB        41840021
+WRTFLG   EQU   X'80'               DECB WRITTEN BUT NOT CHECKED         41860021
+DCBOPEN  EQU   X'10'               BIT SET IF OPEN WAS SUCCESSFUL       41880021
+UNLKATRB EQU   X'08'               UNLIKE ATTRIBUTES BIT IN DCBOFLGS    41900021
+         SPACE 2                                                        41920021
+R0       EQU   0                                                        41940021
+R1       EQU   1                                                        41960021
+R2       EQU   2                                                        41980021
+R3       EQU   3                                                        42000021
+R4       EQU   4                                                        42020021
+R5       EQU   5                                                        42040021
+R6       EQU   6                                                        42060021
+R7       EQU   7                                                        42080021
+R8       EQU   8                                                        42100021
+R9       EQU   9                                                        42120021
+R10      EQU   10                                                       42140021
+R11      EQU   11                                                       42160021
+R12      EQU   12                                                       42180021
+R13      EQU   13                                                       42200021
+R14      EQU   14                                                       42220021
+R15      EQU   15                                                       42240021
+MAINTAIN DS    40F                 MAINTENANCE AREA                     42260021
+         SPACE 2                                                        42280021
+         EJECT                                                          42300021
+         DS    0D                                                       42320021
+MODELDCB DCB   DDNAME=SYSPRINT,EODAD=EODAD,EXLST=DCBEXIT,SYNAD=SYNAD,  X42340021
+               DEVD=DA,DSORG=PS,MACRF=(W)                               42360021
+         DS    0D                                                       42380021
+DCBSIZE  EQU   *-MODELDCB                                               42400021
+         EJECT                                                          42420021
+         DCBD  DSORG=BS,DEVD=DA                                         42440021
+         EJECT                                                          42460021
+         HEWLDCOM                                                       42480021
+         EJECT                                                          42500021
+*********************************************************************** 42520021
+*                                                                     * 42540021
+*    DATA EVENT CONTROL BLOCK DEFINITION                              * 42560021
+*                                                                     * 42580021
+*      IF THE DECB IS CHANGED BY DATA MANAGEMENT, THIS DSECT MUST     * 42600021
+*      BE CHANGED.                                                    * 42620021
+*                                                                     * 42640021
+*      ONE EXTRA WORD HAS BEEN ADDED AT THE END OF THE NORMAL DECB    * 42660021
+*      FOR CONTROLLING MULTIPLE BUFFERS.                              * 42680021
+*                                                                     * 42700021
+*********************************************************************** 42720021
+         SPACE 3                                                        42740021
+DECB     DSECT                                                          42760021
+         SPACE                                                          42780021
+DECSDECB DC    F'0'                EVENT CONTROL BLOCK                  42800021
+DECTYPE  DC    H'0'                I/O MACRO TYPE                       42820021
+DECLNGTH DC    H'0'                LENGTH OF DATA                       42840021
+DECDCBAD DC    A(0)                ADDRESS OF DCB                       42860021
+DECAREA  DC    A(0)                ADDRESS OF BUFFER                    42880021
+DECIOBPT DC    A(0)                ADDRESS OF IOB                       42900021
+DECDECPT DC    A(0)                ADDRESS OF NEXT DECB                 42920021
+DECBSIZE EQU   *-DECB                                                   42940021
+         EJECT                                                          42960021
+*********************************************************************** 42980021
+*                                                                     * 43000021
+*    DSECT OF 'IEWLDDEF' CSECT -- DEFAULT OPTIONS DEFINITION          * 43020021
+*                                                                     * 43040021
+*        IF THE SYSGEN MACRO 'SGIEW050' IS ALTERED TO CAUSE A CHANGE  * 43060021
+*        IN THE DISPLACEMENTS OF ANY OF THE FOLLOWING DEFINITIONS,    * 43080021
+*        THIS DSECT MUST BE CORRESPONDINGLY ALTERED.                  * 43100021
+*                                                                     * 43120021
+*********************************************************************** 43140021
+         SPACE 3                                                        43160021
+DEFAULTS DSECT                                                          43180021
+         SPACE                                                          43200021
+DFLTDDNM EQU   *                                                        43220021
+DFLTPRNT DC    CL8'SYSPRINT'       DIAGNOSTIC MESSAGE DATA SET          43240021
+DFLTLIN  DC    CL8'SYSLIN'         PRIMARY INPUT DATA SET               43260021
+DFLTLIB  DC    CL8'SYSLIB'         AUTO-CALL LIBRARY DATA SET           43280021
+         SPACE                                                          43300021
+DFLTSIZE DC    F'102400'           DEFAULT SIZE                         43320021
+         SPACE                                                          43340021
+DFLTFLAG DC    B'00010101'         SELF-DEFINING KEYWORD OPTIONS        43360021
+DFLTXTRA DC    B'00000000'         RESERVED FOR EXPANSION               43380021
+         EJECT                                                          43400021
+*    DSECT FOR INITIAL MAIN STORAGE (UNCONDITIONAL) REQUEST             43420021
+         SPACE                                                          43440021
+INITMAIN DSECT                                                          43460021
+INITSAVE DS    18F                 INITIAL SAVE AREA                    43480021
+         SPACE                                                          43500021
+*    EVERYTHING IN THE BOX MUST REMAIN TOGETHER AND IN THE SAME ORDER.  43520021
+*      IT IS MOVED TO 'CMINITCM' IN ONE PIECE.  IF IT IS CHANGED, THE   43540021
+*      CORRESPONDING AREA IN THE COMMUNICATION DSECT MUST BE CHANGED.   43560021
+         SPACE                                                          43580021
+INITCMCM EQU   *           ******************************************** 43600021
+INITMADR DS    F           *  VC MAIN STORAGE ADDRESS                 * 43620021
+INITMSIZ DS    F           *  VC MAIN STORAGE SIZE                    * 43640021
+INITDDNM EQU   *           *                                          * 43660021
+INITPRNT DS    8C          *  DDNAME FOR PRINT                        * 43680021
+INITLIN  DS    8C          *  DDNAME FOR THE PRIMARY INPUT            * 43700021
+INITLIB  DS    8C          *  DDNAME FOR THE LIBRARY                  * 43720021
+INITTERM DS    8C          *  DDNAME FOR DIAGNOSTICS                  * 43740021
+INITNAME DS    8C          *  PARAMETER LIST ENTRY POINT NAME         * 43760021
+INITPGMN DS    8C          *  PROGRAM NAME                            * 43780021
+INLINDCB DS    F           *  ADDR OF PASSED SYSLIN DCB               * 43800021
+INLIBDCB DS    F           *  ADDR OF PASSED SYSLIB DCB               * 43820021
+INITPARM DS    H           *  PARAMETER FLAGS AND ERROR FLAGS         * 43840021
+INFLAG3  DS    X           *  ASSORTED FLAGS                          * 43860021
+INFLAG4  DS    X           *  ASSORTED FLAGS                          * 43880021
+INITCMSZ EQU   *-INITCMCM  ******************************************** 43900021
+INITSPIE DS    F              POINTER TO PREVIOUS SPIE FOR 'SIZE=' SCAN 43920021
+INITSCAN DS    F              SCAN POINTER SAVE AREA FOR 'SIZE=' SPIE   43940021
+INITDUM  DS    F                   SAVE WORD FOR REGISTER DURING SIZE   43960021
+*                                             PROCESSING                43980021
+INITREJL DS    F                   END OF REJECTED OPTIONS LIST         44000021
+INITRMIN DS    F              MINIMUM SIZE REQUEST FOR VC               44020021
+INITRMAX DS    F              MAXIMUM SIZE REQUEST FOR VC               44040021
+INITGTML GETMAIN MF=L         LIST FOR VC GETMAIN                       44060021
+INITEXTR EXTRACT INITEXAD,'S',FIELDS=(TSO),MF=L  LIST FOR EXTRACT       44080000
+EXTRLEN  EQU   *-INITEXTR                                               44100000
+INITEXAD DS    F                   EXTRACT WILL PUT ADDRESS OF TSO      44120021
+*                                       FIELD HERE                      44140021
+INITDBLW DS    0D                  DOUBLE WORD FOR                      44160021
+         DS    7X                    PARM 'SIZE' CONVERT                44180021
+INITSIGN DS    X                   SIGN POSITION FOR PACKED FORMAT      44200021
+INITRTAB DS    32D                                                      44220021
+INITREJP EQU   *                   REJECTED OPTIONS BUFFER              44240021
+INITSIZE EQU   *-INITMAIN                                               44260021
+         END   HEWLIOCA                                                 64260021

@@ -1,0 +1,1416 @@
+HALT     TITLE 'IGC0003C - HALTIO SVC ROUTINE - SVC 33'                 00210002
+*****************************************************************       00220002
+*                                                               *       00230002
+* MODULE NAME = IGC0003C ( OS/VS2  )                            *       00252002
+*                                                               *       00254002
+* DESCRIPTIVE NAME = HALT I/O SVC ROUTINE                       *       00260002
+*                                                               *       00270002
+* COPYRIGHT = NONE                                              *       00280002
+*                                                               *       00290002
+* STATUS = RELEASE 3, LEVEL=0                                   *       00292002
+*                                                               *       00294002
+* FUNCTION = THIS MODULE ENABLES USERS TO HALT I/O ACTIVITY     *       00296002
+*            ON A TP OR CTC DEVICE.                             *   CTC 00298002
+*       TP - FOR A TP DEVICE THE METHOD USED TO STOP THE I/O    *   CTC 00298102
+*            ACTIVITY IS EITHER TO LINK TO THE IOS HALT I/O     *       00298402
+*            SUBROUTINE TO ISSUE A HDV INSTRUCTION OR THE EXCP  *       00298802
+*            CCW NOP MODIFY ROUTINE TO MODIFY A CCW TO A NOP.   *       00299202
+*            THE METHOD SELECTED IS DETERMINED BY THE INPUT     *       00299602
+*            PARAMETERS PASSED TO THIS MODULE.  THE CCW MODIFY  *       00299702
+*            OPTION, HOWEVER, IS ONLY VALID FOR I/O ORIGIN-     *       00299802
+*            ALLY PASSED TO IOS BY THE EXCP DRIVER.             *       00299902
+*            VALIDITY CHECKING IS DONE TO ASSURE THAT;          *       00301902
+*              - A VALID UCB ADDRESS IS PASSED.                 *       00303902
+*              - THE INPUT UCB IS ASSOCIATED WITH A TP DEVICE.  *       00305902
+*              - THE INPUT UCB IS ASSOCIATED WITH AN ACTIVE     *       00306302
+*                DEVICE.                                        *       00306402
+*              - THE INPUT UCB IS ASSOCIATED WITH A REQUEST     *       00306502
+*                WHICH IS SCHEDULED FOR PROCESSING IN THE       *       00309802
+*                CALLER OF SVC 33'S MEMORY.                     *       00311802
+*      CTC - FOR A CTC DEVICE A VALID HALTIO REQUEST MAY OCCUR  *   CTC 00312202
+*            WITH THE UCB NOT ACTIVE.  THE CHANNEL MAY EVEN BE  *   CTC 00312602
+*            BUSY WITH ANOTHER DEVICE.  IF A CTC IS BEING HALTED*   CTC 00313002
+*            AND THE UCB IS NOT ACTIVE AND IT IS ON A SELECTOR  *   CTC 00313102
+*            CHANNEL THEN SPECIAL CTC PROCESSING WILL OCCUR.    *   CTC 00313202
+*            SPECIAL CTC PROCESSING WILL SCHEDULE A SUBROUTINE  *   CTC 00315002
+*            WITHIN SVC-33 USING A SRB WITH CPU AFFINITY.  THE  *   CTC 00317002
+*            SCHEDULED SUBROUTINE WILL ASSURE THE SELECTOR -    *   CTC 00317102
+*            CHANNEL IS CLEARED BEFORE ENTERING THE IOS HALTIO  *   CTC 00317202
+*            SUBROUTINE (IECIHIO).                              *   CTC 00317302
+*            F0R A CTC DEVICE WITH AN ACTIVE CHANNEL PROGRAM,   *   CTC 00317702
+*            OR ON A CHANNEL OTHER THAN A SELECTOR CHANNEL      *   CTC 00317802
+*            THE SPECIAL CTC PROCESSING WILL NOT BE USED AND    *   CTC 00318102
+*            PROCESSING WILL BE THE SAME AS FOR TP DEVICES.     *   CTC 00318502
+*            VALIDITY CHECKING IS DONE TO ASSURE THAT;          *   CTC 00318602
+*              - A VALID UCB ADDRESS IS PASSED.                 *   CTC 00318702
+*              - THE INPUT UCB IS ASSOCIATED WITH A CTC DEVICE. *   CTC 00318802
+*              - IF THERE IS AN ACTIVE REQUEST THAT IT WAS      *   CTC 00318902
+*                SCHEDULED IN THE SAME MEMORY AS THE CALLER OF  *   CTC 00319002
+*                SVC-33.                                        *   CTC 00319102
+*                                                               *       00319302
+* NOTES = SEE BELOW                                             *       00319402
+*                                                               *       00321002
+*    DEPENDENCIES = NONE                                        *       00322802
+*                                                               *       00324602
+*    RESTRICTIONS = NONE                                        *       00326402
+*                                                               *       00328202
+*    REGISTER CONVENTIONS = SEE GENERAL REGISTER ASSIGNMENT     *       00330002
+*                           COMMENT SECTION WITHIN THIS         *       00332002
+*                           MODULE                              *       00336002
+*                                                               *       00338002
+*    PATCH LABEL = HALTPATC - A 5 PER CENT DC AREA              *       00338402
+*                                                               *       00338802
+*    LOCKS AQUIRED = IOSUCB - (ALSO RELEASED )                  *       00338902
+*                    LOCAL - IF CTC SUBROUTINE IS EXECUTED      *   CTC 00339002
+*                                                               *       00339102
+* MODULE TYPE = CONTROL                                         *       00339202
+*                                                               *       00339602
+*    PROCESSOR = ASSEMBLER XF                                   *       00339702
+*                                                               *       00339802
+*    MODULE SIZE = 600 DECIMAL BYTES                            *       00339902
+*                                                               *       00343202
+*    ATTRIBUTES = RE-ENTRANT                                    *       00345202
+*                 REFRESHABLE                                   *       00345302
+*                 SUPERVISOR STATE                              *       00345402
+*                 PROTECT KEY 0                                 *       00345502
+*                 TYPE 3 SVC                                    *       00348802
+*                                                               *       00349702
+* ENTRY POINT = IGC0003C FROM SVC SLIH                          *       00350602
+*                                                               *       00351502
+*    PURPOSE = SEE FUNCTION                                     *       00352402
+*                                                               *       00353302
+*    LINKAGE = REGISTER     CONTENTS                            *       00354202
+*                                                               *       00355102
+*                 0      OFFSET FROM IOB TO VIRTUAL CCW         *       00356002
+*                        CORRESPONDING TO REAL CCW TO BE        *       00356902
+*                        MODIFIED TO A NOP  (ONLY USED WHEN     *       00357802
+*                        BYTE 1 OF REGISTER 1 = X'80' -         *       00358702
+*                        OTHERWISE CONTENTS ARE IGNORED)        *       00359602
+*                                                               *       00360502
+*                 1      BYTE 0 = IGNORED                      @YM01069 00361402
+*                        BYTE 1 = INPUT OPTION                  *       00362302
+*                                 X'00' - USE IOS HALT I/O      *       00363202
+*                                         SUBROUTINE            *       00364102
+*                                 X'80' - USE EXCP CCW MODIFY   *       00365002
+*                                         SUBROUTINE            *       00365902
+*                        BYTES 2-3 = ADDRESS OF UCB ASSOCIATED  *       00366802
+*                                    WITH HALT REQUEST          *       00367702
+*                                                               *       00369302
+*                 3      ADDRESS OF THE CVT                     *       00369502
+*                                                               *       00371702
+*                 5      ADDRESS OF SVRB                        *       00373802
+*                                                               *       00373902
+*                 7      ADDRESS OF ASCB                        *       00374202
+*                                                               *       00374602
+*                 14     RETURN ADDRESS                         *       00374702
+*                                                               *       00375002
+*    INPUT = CONSISTS OF THE FOLLOWING                          *       00376302
+*                                                               *       00378302
+*       - POINTER TO UCB ASSOCIATED WITH HALT REQUEST           *       00378602
+*       - SPECIFICATION OF HALT OR CCW MODIFY OPTION            *       00380902
+*       - OFFSET FROM IOB TO VIRTUAL CCW CORRESPONDING TO REAL  *       00383202
+*          CCW TO BE SET TO NOP IF CCW MODIFY OPTION SPECIFIED  *       00385502
+*       - POINTER TO CVT                                        *       00387802
+*       - POINTER TO SVRB                                       *       00389802
+*       - POINTER TO ASCB                                       *       00389902
+*       - RETURN ADDRESS                                        *       00390002
+*                                                               *       00390102
+*    OUTPUT = ACTION TAKEN INDICATED BY RETURN CODE IN REGISTER *       00392402
+*             15                                                *       00394402
+*                                                               *       00397002
+*    EXIT - NORMAL = RETURN CODE IN REGISTER 15 SET TO X'00'.   *       00397102
+*                                                               *       00397602
+*               - I/O HAS BEEN HALTED BY IOS SUBROUTINE OR      *       00398002
+*                 CORRESPONDING REAL CCW MODIFIED TO A NOP      *       00398402
+*                 AS REQUESTED ON INPUT                         *       00398802
+*                                                               *       00399202
+*               - IOSCOD FIELD OF IOSB SET TO X'48' TO SHOW     *       00399302
+*                 PURGED REQUEST IF HALT OPTION REQUESTED       *       00399402
+*                                                               *       00399502
+*    EXIT - ERROR = REGISTER 15 RC.     REASON                  *       00399602
+*                                                               *       00399702
+*                     X'04'         DEVICE NOT ACTIVE           *       00399802
+*                                                               *       00399902
+*                     X'08'         NON-TP DEVICE               *       00405602
+*                                                               *       00415602
+*                     X'0C'         INVALID UCB OR I/O ERROR    *       00416002
+*                                   ATTEMPTING TO HALT THE      *       00416402
+*                                   DEVICE                      *       00416802
+*                                                               *       00416902
+*                     X'10'         MODIFY OPTION SELECTED      *       00417002
+*                                   BUT ORIGINAL EXCP REQUEST   *       00417102
+*                                   WAS NOT VIRTUAL             *       00418002
+*                                                               *       00418402
+*                     X'14'         MODIFY OPTION SELECTED BUT  *       00418802
+*                                   THE TRANSLATION IS NOT YET  *       00419202
+*                                   COMPLETE                    *       00419602
+*                                                               *       00419702
+*                     X'18'         MODIFY OPTION SELECTED BUT  *       00419802
+*                                   INPUT VIRTUAL CCW ADDRESS   *       00419902
+*                                   IS NOT WITHIN ORIGINAL CCW  *       00423002
+*                                   CHAIN GIVEN TO EXCP         *       00425002
+*                                                               *       00427002
+*                     X'1C'         MODIFY OPTION SELECTED BUT  *       00429002
+*                                   ORIGINAL I/O REQUEST WAS    *       00429402
+*                                   NOT MADE BY THE EXCP DRIVER *       00429502
+*                                                               *       00430702
+* EXTERNAL REFERENCES = SEE BELOW                               *       00432702
+*                                                               *       00432802
+*    ROUTINES = THE FOLLOWING                                   *       00432902
+*             - IOS HALT I/O SUBROUTINE - IECIHIO               *       00433002
+*             - EXCP CCW NOP MODIFY SUBROUTINE - IECVEXPR(+4)   *       00434102
+*                                                               *       00436102
+*    DATA-AREAS = NONE                                          *       00436502
+*                                                               *       00436602
+*    CONTROL BLOCKS = CONTROL BLOCK       MAPPING MACRO         *       00438702
+*                                                               *       00439102
+*                      PSA                 IHAPSA               *       00439502
+*                      FRRS                IHAFRRS              *       00439902
+*                      IOSB                IECDIOSB             *       00440702
+*                      UCB                 IEFUCBOB             *       00442702
+*                      IOQ                 IECDIOQ              *       00442802
+*                      CVT                 CVT                  *       00442902
+*                      VOID                IECDVOID             *       00443102
+*                      IOCM                IECDIOCM             *       00443502
+*                      SVRB                IHARB                *       00446302
+*                      SDWA                IHASDWA              *       00448302
+*                      ASCB                IHAASCB              *       00448702
+*                                                               *       00449602
+* TABLES/WORKAREAS =                                            *       00452402
+*                                                               *       00454402
+*          SVRB EXTENSION                                       *       00454802
+*          FRR PARAMETER AREA                                   *       00454902
+*          GETMAINED REGISTER SAVE AREA - SUBPOOL 253           *       00455002
+*          GETMAINED SRB - SUBPOOL 245                          *       00455103
+*                                                               *       00455202
+* MACROS = THE FOLLOWING EXECUTABLE MACROS                      *       00458002
+*                                                               *       00460802
+*          GETMAIN                                              *       00463602
+*          SETLOCK                                              *       00466402
+*          SETFRR                                               *       00469202
+*          FREEMAIN                                             *       00472002
+*          PGFIX                                                *       00474002
+*          PGFREE                                               *       00474402
+*          SETRP                                                *       00474502
+*          WAIT                                                 *       00474602
+*          ESTAE                                                *       00474703
+*                                                               *       00474802
+* CHANGE ACTIVITY = AS FOLLOWS                                  *       00477602
+*                   NONE                                        *       00480402
+*****************************************************************       00483202
+         EJECT                                                          00486002
+         IHAPSA                                                         00488802
+         EJECT                                                          00491602
+         IHAFRRS                                                        00494402
+         EJECT                                                          00497202
+         IECDIOSB                                                       00500002
+         EJECT                                                          00550002
+         IEFUCBOB LIST=YES,PREFIX=YES                                   00600002
+         EJECT                                                          00650002
+         IECDIOQ                                                        00700002
+         EJECT                                                          00750002
+         CVT   DSECT=YES                                                00800002
+         EJECT                                                          00850002
+         IECDVOID                                                       00900002
+         EJECT                                                          00950002
+         IECDIOCM                                                       01000002
+         EJECT                                                          01050002
+         IHARB                                                          01060002
+         SPACE 1                                                        01070002
+         ORG   RBEXSAVE                                                 01080002
+ECB      DS    F                   ECB USED FOR PGFIX                   01090002
+R0R1SAVE DS    2F                  REGISTER 0 AND 1 SAVE AREA           01090402
+R14SAVE  DS    F                   REGISTER 14 SAVE AREA                01090802
+RCODSAVE DS    F                   SA FOR RETURN CODE          @ZA06062 01091203
+R12TO14  DS    3F             SA FOR REGS 12,13,14 FOR SETLOCK @ZA06062 01091603
+         ORG   R12TO14                                          @ZA9235 01091703
+*  FOLLOWING MUST NOT EXCEED X'20' BYTES                        @ZA9235 01091803
+ESTACOR  DS    XL(28)         AREA FOR ESTAE PARMLIST           @ZA9235 01091903
+         EJECT                                                          01093303
+         IHASDWA                                                        01094002
+         EJECT                                                          01094402
+*****************************************************************       01094802
+*                                                               *       01094902
+*        THE FOLLOWING DSECTS MAP SVC 33'S USAGE OF THE         *       01095003
+*        SDWA VARIABLE RECORDING AREA                           *       01095602
+*                                                               *       01095702
+*****************************************************************       01095802
+         SPACE 1                                                        01095902
+VRECORD  DSECT                                                          01096102
+VRECREG0 DS    F                   SVC 33 INPUT REGISTER 0              01096502
+VRECREG1 DS    F                   SVC 33 INPUT REGISTER 1              01096602
+VRECIOQ  DS    XL(IOQL)            IOQ                                  01097002
+VRECUCBP DS    XL(UCBCURPX)        UCB - PREFIX PORTION                 01097102
+VRECUCBB DS    XL(UCBDEV-UCBOB)    UCB - BASIC PORTION                  01097202
+VRECLEN  EQU   *-VRECORD           LENGTH OF VARIABLE DATA AREA         01097902
+ESTAREC  DSECT                     RECORDING AREA FOR ESTAE    @ZA09235 01098003
+EFREEA   DS    F                   FREEMAIN ADDR               @ZA09235 01098103
+EFREELEN DS    F                   FREEMAIN LEN AND SP         @ZA09235 01098203
+ERECUCBP DS    XL(UCBCURPX)        UCB PREFIX PORTION          @ZA09235 01098303
+ERECUCBB DS    XL(UCBDEV-UCBOB)    UCB BASIC PORTION           @ZA09235 01099803
+ERECLEN  EQU   *-ESTAREC           LENGTH OF VARIABLE AREA     @ZA09235 01099903
+*                                  *USED FOR RECORDING                  01100003
+         EJECT                                                          01100103
+*****************************************************************       01100203
+*                                                               *       01100403
+*        THE FOLLOWING DSECT MAPS SVC 33'S USAGE OF THE         *       01100603
+*        FRR AND ESTAE PARM AREAS                               *       01100803
+*                                                               *       01102203
+*****************************************************************       01102503
+         SPACE 1                                                        01102803
+FRRPARM  DSECT                                                          01103103
+FRRUCBA  DS    A                   POINTER TO UCB (PREFIX)              01103403
+FRRIOQA  DS    A                   IOQ ADDRESS                          01103703
+FRRREG0  DS    F                   SVC 33 INPUT PARAMETER               01104003
+*                                  *REGISTER 0                          01104303
+FRRREG1  DS    F                   SVC 33 INPUT PARAMETER               01104603
+*                                  *REGISTER 1                          01105402
+FRRUCBF  DS    H                   SAVE AREA FOR UCBSFLS                01112202
+FRRFLAG  DS    XL1                 FLAGS FOR FRR               @ZA06062 01113203
+FRRUCBLK EQU   X'01'               INDICATES UCBLOCK HELD      @ZA06062 01114203
+FRRLOCLK EQU   X'02'               INDICATES LOCAL LOCAL HELD  @ZA06062 01115203
+*                                  *ACROSS IECIHIO INTERFACE            01118502
+ESTAPARM DSECT                     DSECT FOR ESTAE             @ZA09235 01119503
+ESTLIST  ESTAE MF=(L)                                          @ZA09235 01119703
+ESTALEN  EQU   *-ESTLIST           LENGTH FOR PARMLIST         @ZA09235 01119903
+ESTADATA DS    0F                  LABEL FOR USING IN ESTAE    @ZA09235 01120103
+FREEADDR DS    F                   ADDR FOR FREEMAIN           @ZA09235 01120303
+FREELEN  DS    F                   LEN + SP FOR FREEMAIN       @ZA09235 01121103
+EUCBADR  DS    F                   UCB ADDRESS                 @ZA09235 01121503
+GMLEN    EQU   *-ESTAPARM          LENGTH FOR GETMAIN          @ZA09235 01122603
+         EJECT                                                          01124802
+         IHAASCB                                                        01131102
+         EJECT                                                      CTC 01141102
+*****************************************************************   CTC 01143602
+*                                                               *   CTC 01157702
+*        DSECT OF IOS CHANNEL TABLE ENTRY (IECRCTBL)            *   CTC 01159702
+*                                                               *   CTC 01167702
+*****************************************************************   CTC 01169702
+CHT      DSECT                                                      CTC 01171702
+         DS    C                   RESERVED                         CTC 01176402
+CHTTYPE  DS    C                   CHANNEL TYPE                     CTC 01178402
+*                                                                   CTC 01180402
+* CODE DEFINITIONS FOR CHTTYPE                                      CTC 01180802
+*                                                                   CTC 01180902
+CHTMPX   EQU   1                   BYTE MULTIPLEXOR CHANNEL         CTC 01181002
+CHTHSMPX EQU   2                   HI-SPEED MULTIPLEXOR CHANNEL     CTC 01181102
+CHTSEL   EQU   3                   SELECTOR CHANNEL                 CTC 01185802
+CHTBMPX  EQU   4                   BLOCK MULTIPLEXOR CHANNEL        CTC 01187802
+*                                                                   CTC 01189802
+CHTMASK  DS    H                   CHANNEL MASK FOR (IRTCHMSK)      CTC 01190202
+CHTCSM   DS    A                   ADDRESS OF CHANNEL SEARCH MODULE CTC 01190302
+CHTEL    EQU   8                   SIZE OF ENTRY IN BYTES           CTC 01190402
+CHTELP2  EQU   3                   SIZE OF ENTRY IN POWERS OF 2     CTC 01190502
+         EJECT                                                      CTC 01202402
+         IHASRB                                                     CTC 01212402
+         EJECT                                                          01212503
+*                                                                   CTC 01212802
+HALTCSAV DS    14F                 R0 - R13 SAVE AREA               CTC 01213202
+HALTCS14 DS    F                   R14 SAVE AREA                    CTC 01213602
+HALTCS15 DS    F                   R15 SAVE AREA                    CTC 01214002
+HALTCECB DS    F                   ECB FOR CTC HALT SUBROUTINE      CTC 01214102
+         IECDCRCA                                              @Y30CQLG 01214203
+         IECDLCH                                                        01215203
+         IHACSD                                                         01216203
+         IHAPCCA                                                        01217203
+         IECDCAT                                                        01218203
+         EJECT                                                      CTC 01219203
+IGC0003C CSECT                                                          01220203
+         SPACE 1                                                        01226202
+*****************************************************************       01238102
+*                                                               *       01250002
+*        GENERAL REGISTER ASSIGNMENT                            *       01300002
+*                                                               *       01350002
+*****************************************************************       01400002
+         SPACE 1                                                        01450002
+R0       EQU   0                   INPUT REGISTER 0                     01500002
+R1       EQU   1                   INPUT REGISTER 1                     01550002
+R2       EQU   2                   REG FOR ESTAE               @ZA09235 01560003
+IOSBREG  EQU   2                   IOSB ADDRESSABILITY REGISTER         01570003
+CVTREG   EQU   3                   CVT ADDRESSABILITY REGISTER          01650002
+WORKD    EQU   4                   WORK REGISTER                        01700002
+SVRBREG  EQU   5                   SVRB ADDRESSABILITY REGISTER         01750002
+BASEREG  EQU   6                   BASE REGISTER                        01800002
+UCBREG   EQU   7                   UCB ADDRESSABILITY REGISTER          01850002
+WORKA    EQU   8                   WORK REGISTER                        01900002
+WORKB    EQU   9                   WORK REGISTER                        01950002
+WORKC    EQU   10                  WORK REGISTER                        02000002
+R11      EQU   11                  WORK REGISTER                        02050002
+FRRREG   EQU   12                  FRR PARAMETER AREA REGISTER          02100002
+SAVREG   EQU   13                  SAVE AREA REGISTER                   02150002
+RETREG   EQU   14                  RETURN REGISTER                      02200002
+R15      EQU   15                  BRANCH/RETURN CODE REGISTER          02250002
+         SPACE 1                                                        02260002
+*****************************************************************       02270002
+*                                                               *       02280002
+*        GENERAL EQUATES                                        *       02290002
+*                                                               *       02292002
+*****************************************************************       02294002
+         SPACE 1                                                        02296002
+ONEBYTE  EQU   8                   SHIFT VALUE OF ONE BYTE              02299202
+MODPURGE EQU   4                   OFFSET FROM ENTRY POINT OF           02299602
+*                                  *EXCP DRIVER VOID PURGE              02299702
+*                                  *ROUTINE TO CCW MODIFY               02299802
+*                                  *ROUTINE                             02299902
+RETCOD4  EQU   X'04'               DEVICE NOT ACTIVE RETURN CODE        02323202
+RETCOD8  EQU   X'08'               DEVICE NOT ELIGABLE FOR HALT         02333202
+*                                  *BY SVC 33 RETURN CODE               02335202
+RETCODC  EQU   X'0C'               INVALID UCB OR I/O ERROR             02337202
+*                                  *TRYING TO HALT RETURN CODE          02339202
+RETCOD1C EQU   X'1C'               MODIFY OPTION INVALID BECAUSE        02339602
+*                                  *ORIGINAL I/O REQUEST ISSUED         02339702
+*                                  *BY OTHER THAN EXCP DRIVER           02342202
+CPU0     EQU   X'80'               CPU 0 ID FOR SRB                 CTC 02344202
+CPU1     EQU   X'40'               CPU 1 ID FOR SRB                 CTC 02346202
+L0       EQU   0                   CONSTANT OF ZERO                     02346602
+L4       EQU   4                   CONSTANT OF FOUR                     02347002
+L8       EQU   8                   CONSTANT OF EIGHT                    02347402
+L12      EQU   12                  CONSTANT OF TWELVE                   02364102
+L20      EQU   20                  CONSTANT OF 20              @ZA06062 02367103
+L229     EQU   229                 SUBPOOL 229                 @ZA09235 02370103
+L24      EQU   24                  THREE BYTE SHIFT VALUE               02374102
+L245     EQU   245                 SUBPOOL 253                 @ZA09235 02375103
+CC7F     EQU   X'7F'               ECB COMPLETION CODE - OK             02378102
+CC41     EQU   X'41'               ECB COMPLETION CODE - BAD            02380102
+ALL      EQU   X'FF'               MASK FOR AND                @ZA06062 02380203
+TWO      EQU   2                   CONSTANT 2                  @Y30CQLG 02380403
+         EJECT                                                          02380802
+*****************************************************************       02397502
+*                                                               *       02399502
+*        INITIALIZATION PROCESSING                              *       02449502
+*                                                               *       02499502
+*****************************************************************       02499902
+         SPACE 1                                                        02500002
+         BALR  BASEREG,0           ESTABLISH                            02550002
+         USING *,BASEREG           *BASE ADDRESSABILITY                 02600002
+         USING PSA,0                                                    02606003
+         SPACE 1                                                        02612002
+         LR    WORKD,UCBREG        ESTABLISH ASCB                       02614002
+         USING ASCB,WORKD          *ADDRESSABILITY                      02620002
+         SPACE 1                                                        02650002
+         USING RBBASIC,SVRBREG     INDICATE SVRB ADDRESSABILITY         02660002
+         ST    RETREG,R14SAVE      SAVE SUPERVISOR RETURN               02700002
+*                                  *ADDRESS                             02750002
+         STM   R0,R1,R0R1SAVE      SAVE REGISTER 0 AND 1                02760002
+         SPACE 1                                                        02800002
+***                                                           ***       03100002
+*        VALIDITY CHECK UCB                                     *       03150002
+***                                                           ***       03200002
+         SPACE 1                                                        03250002
+         LR    UCBREG,R1           INITIALIZE UCB              @YM01069 03300002
+         N     UCBREG,HIGH2OFF     *REGISTER TO POINT                   03350002
+         LA    WORKA,UCBPRFX       *TO UCB                              03360002
+         SR    UCBREG,WORKA        *PREFIX SECTION                      03400002
+         BM    HALT0705            BRANCH IF NEGATIVE ADDRESS           03450002
+         SPACE 1                                                        03500002
+         USING UCB,UCBREG          INDICATE UCB PREFIX                  03510002
+*                                  *ADDRESSABILITY                      03520002
+         SPACE 1                                                        03530002
+         CLI   UCBID,UCBSTND       TEST FOR VALID UCB                   03550002
+         BNE   HALT0705            BRANCH IF NOT VALID                  03600002
+         SPACE 1                                                        03650002
+***                                                           ***       03660002
+*        CHECK FOR ACCEPTABLE DEVICE FOR HALT PROCESSING        *       03670002
+***                                                           ***       03680002
+         SPACE 1                                                        03682402
+         CLI   UCBTBYT3,UCB3COMM   TEST FOR TP DEVICE TYPE              03682802
+         BE    HALT0020            YES/BR-                          CTC 03684802
+         CLI   UCBTBYT3,UCB3CTC    Q/CTC DEVICE TYPE                CTC 03686002
+         BE    HALT0020            YES, BR                      SUP3270 03706002
+         SPACE                                                          03726002
+*** SUPPORT FOR 3270 - 3277 DISPLAY DEVICE                      SUP3270 03746002
+         LA    R1,UCB3DISP         CLASS FLAG FOR 3270,TBYT3    SUP3270 03766002
+         SLL   R1,8                SHIFT OVER 1 BYTE            SUP3270 03786002
+         LA    R1,UCB3211(R1)      ADD TYPE BYTE, TBYT4         SUP3270 03806002
+         LH    WORKA,UCBTBYT3      CHECK FOR 3270-3277          SUP3270 03826002
+         CLR   R1,WORKA                                         SUP3270 03846002
+         SPACE                                                          03866002
+         BNE   HALT0720            BRANCH IF IT IS NOT                  03900002
+         SPACE 1                                                        03950002
+***                                                           ***       04150002
+*        CHECK FOR ACTIVE CHANNEL PROGRAM                       *       04200002
+***                                                           ***       04250002
+         SPACE 1                                                        04300002
+HALT0020 DS    0H                                                   CTC 04350002
+         SLR   WORKA,WORKA         INDICATE REQUEST WAS ACTIVE      CTC 04360002
+         TM    UCBFLA,UCBACTV      TEST FOR CHANNEL PROGAM              04400002
+*                                  *ACTIVE                              04450002
+         BO    HALT0050            YES/BR-                          CTC 04500002
+         CLI   UCBTBYT3,UCB3CTC    Q/CTC DEVICE TYPE                CTC 04502002
+         BNE   HALT0735            NO/BR-INACTIVE AND NOT CTC       CTC 04504002
+***                                                           ***   CTC 04506002
+*        INACTIVE CTC - TEST FOR SELECTOR CHANNEL               *   CTC 04508002
+***                                                           ***   CTC 04508402
+         SPACE 1                                                        04510002
+         USING CVT,CVTREG                                           CTC 04512002
+         IC    WORKA,UCBCHA        CHANNEL ADDRESS                  CTC 04516002
+         LA    WORKB,CHTEL         CHANNEL TABLE ENTRY LENGTH       CTC 04518002
+         MR    WORKA,WORKA         ACTUALY MULTS WORKA*WORKB & @YM07225 04518402
+*                                  PUTS RESULT IN WORKB INDEX  @YM07225 04518602
+         L     WORKA,CVTIXAVL      IOCOM ADDRESS                    CTC 04518803
+         L     WORKA,IOCCTBL-IOCOM(,WORKA)   GET ADDR CHAN TBL @OZ02362 04519003
+         AR    WORKB,WORKA         ADD FOR CHT ENTRY                CTC 04519202
+         USING CHT,WORKB                                            CTC 04519602
+         CLI   CHTTYPE,CHTSEL      TEST FOR SELECTOR CHANNEL        CTC 04519702
+         BE    HALT2000            YES/BR-CTC SCHEDULE SUBROUTINE   CTC 04519802
+         DROP  CVTREG,WORKB                                         CTC 04519902
+HALT0050 DS    0H                                                   CTC 04523202
+***                                                           ***       04526702
+*        OBTAIN A REGISTER SAVE AREA                            *       04530002
+***                                                           ***       04540002
+         SPACE 1                                                        04548002
+         L     R0,SAVELEN          LOAD AMOUNT OF CORE TO               04548402
+*                                  *GETMAIN AND ITS SUBPOOL             04548802
+         SPACE 1                                                        04548902
+         GETMAIN R,LV=(0)          GETMAIN SAVE AREA                    04549202
+         SPACE 1                                                        04549602
+         LR    WORKB,R1            SAVE GETMAINED SAVE AREA    @OZ02116 04549703
+*                                  *ADDRESS                             04550102
+         SPACE 1                                                        04551702
+***                                                           ***       04553602
+*        FIX ALL PAGES OF THIS MODULE                           *       04554002
+***                                                           ***       04554402
+         SPACE 1                                                        04555002
+         SR    R11,R11             CLEAR WORK REGISTER                  04555102
+         ST    R11,ECB             SET ECB FOR PGFIX TO 0               04555202
+         LA    R11,ECB             LOAD POINTER TO ECB                  04555302
+         SPACE 1                                                        04555402
+         PGFIX R,                  FIX IGC0003C PAGES                  *04555502
+               A=IGC0003C,         *MODULE START ADDRESS               *04555602
+               EA=HALT9999,        *MODULE END ADDRESS + 1             *04555802
+               ECB=(11)            *ECB ADDRESS                         04556102
+         SPACE 1                                                        04556202
+         LTR   R15,R15             CHECK FOR 0 RC              @ZA07162 04557203
+         BZ    HALT0138            IF RC=0, NO WAIT            @ZA07162 04558203
+         WAIT  ECB=ECB             WAIT FOR PAGEFIX COMPLETION          04559203
+         SPACE 1                                                        04560202
+***                                                           ***       04576602
+*        OBTAIN UCB LOCK  AND SET AN FRR                        *       04580502
+***                                                           ***       04584402
+         SPACE 1                                                        04588302
+HALT0138 LA    R11,UCBLOCK         POINT AT UCB LOCK           @OZ00762 04592203
+         SPACE 1                                                        04596102
+HALT0140 EQU   *                                                        04600002
+         SETLOCK OBTAIN,           OBTAIN THE UCB LOCK                 *04650002
+               TYPE=IOSUCB,        *UCB LOCK                           *04700002
+               ADDR=(11),          *POINTER TO LOCK                    *04750002
+               MODE=UNCOND,        *SPIN TILL AQUIRED                  *04800002
+               RELATED=(UCB,IGC0003C(HALT0884))                         04900002
+         SPACE 1                                                        04950002
+         LR    SAVREG,WORKB        PLACE GETMAINED AREA ADDR.  @OZ02116 04960003
+*                                  *IN SAVE AREA REGISTER               04970002
+         SPACE 1                                                        04980002
+         SETFRR A,                 SET UP FRR FOR RECOVERY             *05000002
+               FRRAD=FRRADCON,     *ADDRESS OF FRR ROUTINE             *05050002
+               PARMAD=(FRRREG),    *REGISTER FOR FRR AREA              *05100002
+               WRKREGS=(WORKB,WORKC) *WORK REGISTERS                    05150002
+         SPACE 1                                                        05200002
+***                                                           ***       05210002
+*        INITIALIZE FRR PARAMETER AREA                          *       05220002
+***                                                           ***       05230002
+         SPACE 1                                                        05240002
+         USING FRRPARM,FRRREG      INDICATE FRR PARAMETER               05242002
+*                                  *AREA ADDRESSABILITY                 05244002
+         SPACE 1                                                        05246002
+         ST    UCBREG,FRRUCBA      STORE UCB ADDRESS IN FRR             05248802
+*                                  *PARAMETER AREA                      05249202
+         MVC   FRRREG0(L8),R0R1SAVE SAVE INPUT PARAMETER            CTC 05249602
+*                                  *REGISTERS 0 AND 1 IN                05249702
+*                                  *FRR PARAMETER AREA                  05249802
+         OI    FRRFLAG,FRRUCBLK    INDICATE UCBLOCK HELD       @ZA06062 05259803
+         SPACE 1                                                        05290003
+***                                                           ***       05293003
+*        INSURE DEVICE IS STILL ACTIVE OR CTC DEVICE            *       05300002
+***                                                           ***       05350002
+         SPACE 1                                                        05400002
+         TM    UCBFLA,UCBACTV      TEST FOR CHANNEL PROGAM              05450002
+*                                  *ACTIVE                              05500002
+         BO    HALT0150            YES/BR-IOSB ASSOCIATION          CTC 05510002
+         CLI   UCBTBYT3,UCB3CTC    Q/IS IT A CTC DEVICE             CTC 05520002
+         BNE   HALT0730            BR-INACTIVE AND NOT CTC          CTC 05532002
+         LTR   WORKA,WORKA         Q/WAS UCBACTV AT FIRST TEST      CTC 05534002
+         BZ    HALT0730            YES/BR-REQUEST COMPLETED         CTC 05536002
+         SLR   IOSBREG,IOSBREG     INDICATE NO IOSB            @OZ02363 05541003
+         B     HALT0300            BR-TO HALT INACTIVE CTC          CTC 05546002
+         SPACE 1                                                        05560002
+***                                                           ***       05562002
+*        DETERMINE IF AN IOSB IS ASSOCIATED WITH THE UCB        *       05564002
+***                                                           ***       05566002
+         SPACE 1                                                        05568002
+HALT0150 DS    0H                                                   CTC 05578002
+         TM    UCBFLA,UCBPST       TEST IF A NORMAL IOQ/IOSB            05590002
+*                                  *IS ASSOCIATED WITH THIS UCB         05592002
+         BO    HALT0180            BRANCH IF THERE IS                   05594002
+         SPACE 1                                                        05596002
+         TM    UCBFLB,UCBSPST      TEST IF A SENSE IOQ IS               05598002
+*                                  *ASSOCIATED WITH THIS UCB            05598402
+         BNO   HALT0730            BRANCH IF THERE IS NOT               05598802
+         SPACE 1                                                        05599202
+         TM    UCBFLC,UCBWAA       TEST IF AN IOSB IS POINTED           05599602
+*                                  *TO BY THE IOQ                       05599702
+         BO    HALT0730            BRANCH IF THERE IS NOT               05599802
+         SPACE 1                                                        05599902
+***                                                           ***       05609902
+*        LOCATE IOSB                                            *       05611902
+***                                                           ***       05615902
+         SPACE 1                                                        05616302
+HALT0180 EQU   *                                                        05616602
+         L     WORKC,UCBIOQ        ESTABLISH IOQ                        05626602
+         USING IOQ,WORKC           *ADDRESSABILITY                      05628602
+         SPACE 1                                                        05630602
+         ST    WORKC,FRRIOQA       STORE IOQ ADDRESS IN FRR             05631002
+*                                  *PARAMETER AREA                      05631402
+         SPACE 1                                                        05631802
+         L     IOSBREG,IOQIOSB     ESTABLISH IOSB                       05632602
+         USING IOSB,IOSBREG        *ADDRESSABILITY                      05633002
+         SPACE 1                                                        05633302
+***                                                           ***       05643302
+*        DETERMINE WHETHER INVOKER OF SVC33 IS AUTHORIZED       *       05645302
+*        TO HALT THIS DEVICE                                    *       05647302
+***                                                           ***       05649302
+         SPACE 1                                                        05649902
+         CLC   ASCBASID,IOSASID    TEST IF THE INVOKER OF SVC33         05666602
+*                                  *IS IN THE SAME MEMORY AS THE        05676602
+*                                  *MEMORY TO BE USED FOR I/O           05678602
+*                                  *INTERRUPT PROCESSING                05680602
+         BNE   HALT0702            BRANCH IF IT IS NOT         @ZA06062 05681603
+         SPACE 1                                                        05683002
+***                                                           ***       05683302
+*        DETERMINE WHICH OPTION HAS BEEN SELECTED               *       05700002
+***                                                           ***       05750002
+         SPACE 1                                                        05800002
+         LM    R0,R1,R0R1SAVE      RESTORE ENTRY PARAMETERS         CTC 05810002
+         SLL   R1,ONEBYTE          TEST IF MODIFY                       05850002
+         LTR   R1,R1               *OPTION                              05860002
+         BNM   HALT0300            BRANCH IF IT IS NOT                  05900002
+         EJECT                                                          05950002
+*****************************************************************       06000002
+*                                                               *       06010002
+*        MODIFY OPTION PROCESSING                               *       06050002
+*                                                               *       06100002
+*****************************************************************       06110002
+         SPACE 1                                                        06150002
+***                                                           ***       06400002
+*        VALIDITY CHECK IOS DRIVER                              *       06950002
+***                                                           ***       07000002
+         SPACE 1                                                        07050002
+         SR    WORKA,WORKA         CLEAR WORK REGISTER                  07210002
+         IC    WORKA,IOSDVRID      INSERT DRIVER ID                     07220002
+         SPACE 1                                                        07230002
+         CLI   IOSDVRID,IOSXCPID   TEST IF EXCP DROVE IOS               07250002
+         BNE   HALT0740            BRANCH IF IT DID NOT                 07300002
+         SPACE 1                                                        07350002
+***                                                           ***       07400002
+*        SET UP TO LINK TO DRIVER TO COMPLETE PROCESSING        *       07450002
+***                                                           ***       07500002
+         SPACE 1                                                        07660002
+         LA    WORKB,VOIEL         CALCULATE OFFSET TO DRIVER           07750002
+         MR    WORKA,WORKA         *VOID ENTRY                          07800002
+         SPACE 1                                                        07850002
+         USING CVT,CVTREG          INDICATE CVT ADDRESSABILITY          07852002
+         SPACE 1                                                        07854002
+         L     R15,CVTIXAVL        ESTABLISH IOCOM                      07856002
+         USING IOCOM,R15           *ADDRESSABILITY                      07858002
+         SPACE 1                                                        07858402
+         L     R15,IOCVOID         ESTABLISH ADDRESSABILITY             07860002
+         LA    R15,0(WORKB,R15)    *TO DRIVER                           07900002
+         USING VOID,R15            *VOID ENTRY                          07950002
+         SPACE 1                                                        07960002
+         L     R15,VOIPRG          LOAD EXCP PURGE ROUTINE              08000002
+*                                  *ADDRESS                             08050002
+         SPACE 1                                                        08100002
+***                                                           ***       08110002
+*        LINK TO DRIVER MODIFY ROUTINE                          *       08120002
+***                                                           ***       08130002
+         SPACE 1                                                        08140002
+         BAL   RETREG,MODPURGE(R15) BRANCH AND LINK TO EXCP CCW         08150002
+*                                  *MODIFY ROUTINE                      08200002
+         SPACE 1                                                        08210002
+         ST    R15,RCODSAVE        SAVE RETURN CODE            @ZA06062 08215003
+         B     HALT0690            BRANCH TO EXIT LINKAGE               08250002
+         EJECT                                                          08350002
+*****************************************************************       08400002
+*                                                               *       08450002
+*        HALT OPTION PROCESSING                                 *       08500002
+*                                                               *       08550002
+*****************************************************************       08600002
+         SPACE 1                                                        08650002
+***                                                           ***       08660002
+*        SET UP AND LINK TO IOS HIO ROUTINE                     *       08670002
+***                                                           ***       08680002
+         SPACE 1                                                        08690002
+HALT0300 EQU   *                                                        08700002
+         MVC   FRRUCBF,UCBSFLS     SAVE UCB STATUS FLAGS ACROSS         08750002
+*                                  *HIO INTERFACE                       08800002
+         SPACE 1                                                        08850002
+         L     R15,CVTIXAVL        ESTABLISH IOCOM                      08900002
+         USING IOCOM,R15           *ADDRESSABILITY                      08910002
+         SPACE 1                                                        08920002
+         L     R15,IOCHIO          LOAD IOS HIO ROUTINE ADDRESS         08950002
+         SPACE 1                                                        09000002
+         BALR  RETREG,R15          BRANCH AND LINK TO IOS HIO           09050002
+*                                  *ROUTINE                             09100002
+         SPACE 1                                                        09150002
+         MVC   UCBSFLS,FRRUCBF     RESTORE UCB STATUS FLAGS             09152002
+         SPACE 1                                                        09152402
+         SR    WORKB,WORKB         RESET UCBSFLS SAVE AREA IN           09152802
+         STH   WORKB,FRRUCBF       *FRR PARAMETER AREA TO 0             09153202
+         ST    R15,RCODSAVE        SAVE RETCODE                @ZA06062 09153603
+         SPACE 1                                                        09154002
+         LTR   R15,R15             SAVE RETURN CODE IN WORK    @ZA06062 09157003
+*                                  *REGISTER AND TEST IT FOR            09162002
+*                                  *0                                   09164002
+         BNZ   HALT0700            BRANCH IF IT IS NOT                  09170002
+         LTR   IOSBREG,IOSBREG     IS THERE AN IOSB ASSOCIATED @OZ02363 09180003
+         BZ    HALT0690                                                 09190003
+         SPACE 1                                                        09220002
+         MVI   IOSCOD,IOSPRGC      SET PURGED REQUEST CODE IN           09332402
+*                                  *IOSB                                09332802
+         NI    IOSFLA,X'FF'-IOSERR RESET ERROR ROUTINE IN               09333202
+*                                  *CONTROL INDICATOR                   09338802
+         EJECT                                                          09344402
+*****************************************************************       09350002
+*                                                               *       09400002
+*        EXIT LINKAGE                                           *       09450002
+*                                                               *       09500002
+*****************************************************************       09550002
+         SPACE 1                                                        09600002
+HALT0690 EQU   *                   FREE RESOURCES                       09650002
+         BAL   WORKC,HALT0880      LINK TO RELEASE FRR,                 09760002
+*                                  *UCB LOCK,                           09810002
+         BAL   WORKC,HALT0885      *UNFIX THIS MODULE + FREE SAVE   CTC 09860002
+*  DELETED FOR PTM 3477                                        @YM3477P 09880002
+         SPACE 1                                                        09900002
+         L     R15,RCODSAVE        SET RETURN CODE             @ZA06062 09905003
+         SPACE 1                                                        09920002
+HALT0695 EQU   *                   RESTORE REGISTERS AND RETURN         09930002
+         LM    R0,R1,R0R1SAVE      RESTORE REGISTERS 0 AND 1            09932002
+         L     RETREG,R14SAVE      RESTORE SUPERVISOR RETURN            09940002
+*                                  *ADDRESS                             09942002
+         BR    RETREG              RETURN TO SUPERVISOR                 09992002
+         SPACE 1                                                        10000002
+HALT0700 EQU   *                   FREE RESOURCES                       10050002
+         CH    R15,HLTRTRY         SHOULD HALT BE RETRIED      @OZ00762 10051003
+         BNE   HALT0702            NO, CONTINUE                @OZ00762 10052003
+         XR    R15,R15                                                  10053003
+         LA    WORKC,HALT0138      SET TO REGET UCBLOCK AFTER  @OZ00762 10054003
+         B     HALT0880            ENABLE TO CLEAR CU BZY,RTRY @OZ00762 10055003
+HALT0702 BAL   WORKC,HALT0880      LINK TO RELEASE FRR,        @OZ00762 10060003
+*                                  *UCB LOCK,                           10070002
+         BAL   WORKC,HALT0885      *UNFIX THIS MODULE               CTC 10080002
+*   DELETED FOR PTM3477                                        @YM3477P 10082002
+         SPACE 1                                                        10090002
+HALT0705 EQU   *                   SET RETURN CODE                      10092002
+         LA    R15,RETCODC         SET INVALID UCB OR I/O ERROR         10100002
+*                                  *RETURN CODE                         10110002
+         SPACE 1                                                        10150002
+         B     HALT0695            BRANCH TO EXIT LINKAGE               10200002
+         SPACE 1                                                        10250002
+HALT0720 EQU   *                   SET RETURN CODE                      10300002
+         LA    R15,RETCOD8         SET INVALID DEVICE TYPE              10350002
+*                                  *RETURN CODE                         10400002
+         SPACE 1                                                        10450002
+         B     HALT0695            BRANCH TO EXIT LINKAGE               10500002
+         SPACE 1                                                        10550002
+HALT0730 EQU   *                   FREE RESOURCES                       10600002
+         BAL   WORKC,HALT0880      LINK TO RELEASE FRR,                 10650002
+*                                  *UCB LOCK,                           10700002
+         BAL   WORKC,HALT0885      *UNFIX THIS MODULE               CTC 10750002
+*  DELETED FOR PTM 3477                                        @YM3477P 10760002
+         SPACE 1                                                        10800002
+HALT0735 EQU   *                   SET RETURN CODE                      10850002
+         LA    R15,RETCOD4         SET NO CHANNEL PROGRAM ACTIVE        10900002
+*                                  *RETURN CODE                         10950002
+         SPACE 1                                                        11000002
+         B     HALT0695            BRANCH TO EXIT LINKAGE               11050002
+         SPACE 1                                                        11100002
+HALT0740 EQU   *                   FREE RESOURCES                       11150002
+         BAL   WORKC,HALT0880      LINK TO RELEASE FRR,                 11200002
+*                                  *UCB LOCK,                           11250002
+         BAL   WORKC,HALT0885      *UNFIX THIS MODULE + FREE SAVE   CTC 11300002
+*  DELETED FOR PTM 3477                                        @YM3477P 11320002
+         SPACE 1                                                        11350002
+         LA    R15,RETCOD1C        SET INVALID DRIVER ID                11400002
+*                                  *RETURN CODE                         11450002
+         SPACE 1                                                        11500002
+         B     HALT0695            BRANCH TO EXIT LINKAGE               11550002
+         EJECT                                                          11600002
+*****************************************************************       11650002
+*                                                               *       11700002
+*        TERMINATION SUBROUTINE                                 *       11750002
+*                                                               *       11800002
+*****************************************************************       11850002
+         SPACE 1                                                        11900002
+***                                                           ***       11950002
+*        RELEASE FRR                                            *       12000002
+***                                                           ***       12050002
+         SPACE 1                                                        12100002
+HALT0880 EQU   *                                                        12150002
+         SPACE 1                                                        12300002
+         SETFRR D,                 DELETE FRR                          *12350002
+               WRKREGS=(R11,WORKB) *WORK REGISTERS             @ZA06062 12370003
+         SPACE 1                                                        12450002
+***                                                           ***       12460002
+*        RELEASE UCB LOCK                                       *       12470002
+***                                                           ***       12480002
+         SPACE 1                                                        12490002
+         LR    WORKB,SAVREG        SAVE CONTENTS OF REGISTER            12492002
+*                                  *13 ACROSS SETLOCK AND PGFREE        12494002
+*                                  *INTERFACE                           12496002
+HALT0884 EQU   *                                                        12498003
+         LA    R11,UCBLOCK         LOAD ADDRESS OF UCB LOCK             12500002
+         SPACE 1                                                        12550002
+         STM   FRRREG,RETREG,R12TO14  SAVE REGS                @ZA06062 12570003
+         SETLOCK RELEASE,          RELEASE THE UCB LOCK                *12650002
+               TYPE=IOSUCB,        *UCB LOCK                           *12700002
+               ADDR=(11),          *POINTER TO LOCK                    *12750002
+               RELATED=(UCB,IGC0003C(HALT0140))                         12800002
+         LM    FRRREG,RETREG,R12TO14   RESTORE REGS            @ZA06062 12805003
+         BR    WORKC               RETURN TO CALLER                 CTC 12810002
+         SPACE 1                                                        12850002
+***                                                           ***       12900002
+*        FREE (UNFIX) ALL PAGES OF THIS MODULE                  *       12950002
+***                                                           ***       13000002
+         SPACE 1                                                        13050002
+HALT0885 DS    0H                                                   CTC 13052002
+         PGFREE R,                 FREE IGC0003C PAGES                 *13060002
+               A=IGC0003C,         *MODULE START ADDRESS               *13070002
+               EA=HALT9999         *MODULE END ADDRESS + 1              13080002
+         SPACE 1                                                        13090002
+***                                                           ***       13100002
+*        FREEMAIN SAVE AREA                                     *       13150002
+***                                                           ***       13200002
+         SPACE 1                                                        13250002
+HALT0890 EQU   *                                                        13300002
+         L     R0,SAVELEN          LOAD AMOUNT OF CORE TO FREE          13350002
+*                                  *AND ITS SUBPOOL                     13400002
+         LR    R1,WORKB            LOAD ADDRESS OF CORE TO BE           13450002
+*                                  *FREED                               13460002
+         SPACE 1                                                        13500002
+         FREEMAIN R,LV=(0),A=(1)   FREEMAIN SAVE AREA                   13550002
+         SPACE 1                                                        13600002
+         BR    WORKC               RETURN TO CALLER                     13650002
+         SPACE 1                                                        13660002
+         EJECT                                                      CTC 13670002
+*****************************************************************   CTC 13680002
+*                                                               *   CTC 13692002
+*        SPECIAL CTC HALT ROUTINE - USED TO HALT CTC DEVICES ON *   CTC 13694002
+*              A SELECTOR CHANNEL IF THE UCB IS NOT ACTIVE.     *   CTC 13696002
+*           OPERATION;                                          *   CTC 13706002
+*              FIX ALL PAGES OF SVC-33.                         *   CTC 13716002
+*              GETMAIN AN SRB/SAVE/ECB AREA.                    *   CTC 13718002
+*              INITIALIZE THE SRB AND SAVE THE REGISTERS.       *   CTC 13720002
+*              SCHEDULE THE SUBROUTINE WITH CPU AFFINITY.       *   CTC 13720402
+*              WAIT ON AN ECB FOR THE SUBROUTINE TO COMPLETE.   *   CTC 13727802
+*              GET THE IECIHIO RETURN CODE FROM THE ECB;        *   CTC 13729802
+*                 X'7F' = RETURN CODE ZERO                      *   CTC 13731802
+*                 X'41' = RETURN CODE TWELVE                    *   CTC 13733802
+*              FREE ALL PAGES OF THIS MODULE                    *   CTC 13734202
+*              RETURN TO CALLER OF SVC-33.                      *   CTC 13734602
+*        SPECIAL CTC SUBROUTINE;                                *   CTC 13735202
+*           OPERATION;                                          *   CTC 13737202
+*              TEST CHANNEL TO CLEAR THE SELECTOR CHANNEL.      *   CTC 13739202
+*              OBTAIN THE UCBLOCK.                              *   CTC 13739602
+*              SET AN FRR.                                      *   CTC 13740002
+*              TEST CHANNEL TO ASSURE IT IS STILL AVAILABLE.    *   CTC 13740402
+*              BALR TO THE IOS HALTIO SUBROUTINE(IECIHIO)       *   CTC 13740802
+*              RELEASE THE FRR,AND THE UCBLOCK.                 *   CTC 13740902
+*              GET THE LOCAL LOCK.                              *   CTC 13741002
+*              POST THE ECB FOR SVC-33.                         *   CTC 13741102
+*              RELEASE THE LOCAL LOCK.                          *   CTC 13742302
+*              RETURN TO SVC-33.                                *   CTC 13744302
+*                                                               *   CTC 13748802
+*****************************************************************   CTC 13750002
+HALT2000 DS    0H                                                   CTC 13756802
+         XC    ECB,ECB                                              CTC 13771202
+         LA    R0,ECB                                               CTC 13771302
+***                                                           ***   CTC 13773302
+*        FIX ALL PAGES OF THIS MODULE                           *   CTC 13775302
+***                                                           ***   CTC 13775702
+         PGFIX R,A=IGC0003C,EA=HALT9999,ECB=(R0)                    CTC 13776102
+         WAIT  ECB=ECB                                              CTC 13778102
+* SET UP FOR ESTAE TO PROTECT GETMAIN FOR SRB                  @ZA09235 13778203
+         USING ESTAPARM,WORKD                                  @ZA09235 13779503
+         LA    WORKD,ESTACOR         GET ADDR OF SVRBAREA FOR  @ZA09235 13779603
+*                                  *ESTAE PARMLIST             @ZA09235 13780003
+         MVC   ESTLIST(ESTALEN),ESTAPLST  PUT LIST FORM IN     @ZA09235 13780103
+*                                  SVRB                        @ZA09235 13780203
+         LA    R11,ESTADATA        SET UP FOR ESTAE            @ZA09235 13780303
+         USING ESTADATA,R11                                    @ZA09235 13780403
+         SR    WORKB,WORKB         CLEAR REG                   @ZA09235 13780803
+         ST    WORKB,FREEADDR      INIT FREEADDR TO 0 FOR ESTAE@ZA09235 13780903
+         LA    WORKA,HALTESTA      GET ADDR OF ESTAE ROUTINE   @ZA09235 13781003
+         ESTAE (WORKA),PURGE=NONE,TERM=YES,PARAM=(R11),MF=(E,(WORKD))   13781103
+         ST    UCBREG,EUCBADR      PUT UCB ADDR IN ESTAE AREA  @ZA09235 13781203
+***                                                           ***   CTC 13781303
+*        GETMAIN SPACE FOR SRB/SAVE/ECB                         *   CTC 13781403
+***                                                           ***   CTC 13781503
+         LA    R0,HALTCECB+L4-SRBSECT GETMAIN SIZE                      13782602
+         LA    R1,L245             SUBPOOL ID                  @ZA09235 13783603
+         SLL   R1,L24                                               CTC 13787602
+         OR    R0,R1                                                CTC 13789702
+         ST    R0,FREELEN          PUT LEN IN ESTAE LIST       @ZA09235 13790703
+         GETMAIN R,LV=(0)                                           CTC 13791802
+         ST    R1,FREEADDR         PUT ADDR IN ESTAE LIST      @ZA09235 13792803
+         SPACE 1                                                    CTC 13793902
+* R1 HAS SRB/SAVE/ECB ADDRESS                                   *   CTC 13796002
+         SPACE 1                                                    CTC 13798102
+***                                                           ***   CTC 13800202
+*        SRB INITIALIZATION                                     *   CTC 13802202
+***                                                           ***   CTC 13812202
+         USING SRBSECT,WORKA                                        CTC 13814202
+         LR    WORKA,R1                                             CTC 13818202
+         XC    L0(HALTCECB+L4-SRBSECT,WORKA),L0(WORKA) CLEAR CORE   CTC 13820202
+         LA    R1,HALT3000         ADDRESS OF SCHEDULED SUBROUTINE  CTC 13820602
+         ST    R1,SRBEP                                             CTC 13821002
+         MVI   SRBCPAFF,CPU0       SET CPU ID = 0                   CTC 13821402
+         CLI   UCBCPU,0            Q/CPU 0                          CTC 13821802
+         BE    HALT2200            YES/BR-                          CTC 13821902
+         MVI   SRBCPAFF,CPU1       SET CPU ID = 1                   CTC 13822002
+HALT2200 DS    0H                                                   CTC 13822102
+         MVI   SRBPRIOR,SRBPSYS    SET NO ENQUEUE PRIORITY IN SRB   CTC 13826102
+         L     WORKD,PSAAOLD       GET ASCB ADDR               @ZA06062 13827103
+         ST    WORKD,SRBASCB       ASCB ADDRESS                     CTC 13828102
+         USING ASCB,WORKD                                      @ZA09235 13828303
+         MVC   SRBPASID,ASCBASID   PURGEDQ ASID                     CTC 13828502
+         MVC   SRBPTCB,PSATOLD-PSA PURGEDQ TCB                      CTC 13828902
+         MVC   SRBID,SRBEBD        MOVE SRB EBIDIC INTO SRB    @OZ05656 13829003
+         STM   R0,R15,HALTCSAV     SAVE ALL REGS FOR SCHEDULED RTN  CTC 13829203
+***                                                           ***   CTC 13829302
+*        SCHEDULE THE CTC HALT SUBROUTINE                       *   CTC 13830102
+***                                                           ***   CTC 13830502
+         LR    R1,WORKA            RESTORE SRB @ IN GR1        @OZ05966 13831103
+         SCHEDULE SRB=(1),SCOPE=GLOBAL  GPR'S 0,1,14,15 LOST   @ZA06062 13831403
+***                                                           ***   CTC 13833702
+*        WAIT FOR THE CTC SUBROUTINE TO COMPLETE                *   CTC 13835702
+***                                                           ***   CTC 13837702
+         WAIT  ECB=HALTCECB                                     *   CTC 13839702
+***                                                           ***   CTC 13839802
+*        GET COMPLETION CODE FROM SUBROUTINE                    *   CTC 13839902
+***                                                           ***   CTC 13848702
+         SR    WORKD,WORKD                                          CTC 13850402
+         CLI   HALTCECB,CC7F       TEST FOR GOOD RETURN             CTC 13852402
+         BE    HALT2400            BRANCH YES                       CTC 13854402
+         LA    WORKD,L12           SET RETURN CODE             @ZA06062 13854903
+***                                                           ***   CTC 13867302
+*        FREE THE SRB/SAVE/ECB AREA                             *   CTC 13868902
+***                                                           ***   CTC 13870902
+HALT2400 DS    0H                                                   CTC 13872902
+         LA    R0,HALTCECB+L4-SRBSECT LENGTH TO FREE                CTC 13878902
+         LA    R1,L245             SUBPOOL ID                  @ZA09235 13879903
+         SLL   R1,L24                                               CTC 13881602
+         OR    R0,R1                                                CTC 13882002
+         FREEMAIN R,LV=(0),A=(WORKA)                                CTC 13882402
+         SR    R1,R1               CLEAR REG                   @ZA09235 13883403
+         ST    R1,FREEADDR         ZERO FREE ADDR              @ZA09235 13884403
+         ESTAE 0                   DELETE ESTAE                @ZA09235 13885403
+***                                                           ***   CTC 13892402
+*        FREE ALL PAGES OF THIS MODULE                          *   CTC 13894402
+***                                                           ***   CTC 13896402
+         PGFREE R,                                                  CTCX13898402
+               A=IGC0003C,         MODULE START ADDRESS             CTCX13898802
+               EA=HALT9999         MODULE ENDING ADDRESS+1          CTC 13899202
+         LR    R15,WORKD           SET RETURN CODE                  CTC 13904302
+         B     HALT0695            BR-RETURN                        CTC 13907102
+         EJECT                                                      CTC 13909902
+*****************************************************************   CTC 13910302
+*                                                               *   CTC 13910402
+*        SCHEDULED CTC HALT SUBROUTINE                          *   CTC 13912702
+*                                                               *   CTC 13915502
+*****************************************************************   CTC 13919802
+         SPACE 2                                                    CTC 13920402
+HALT3000 DS    0H                                                   CTC 13921802
+         LR    WORKA,R0                                             CTC 13922402
+         LM    R1,SAVREG,HALTCSAV+L4  SET SVC-33 REGISTERS          CTC 13923002
+         DROP  WORKA                                                CTC 13923102
+         USING SRBSECT,WORKD                                        CTC 13923202
+         LR    WORKD,R0                                             CTC 13923302
+         LA    SAVREG,HALTCSAV     SETUP SAVE AREA PTR              CTC 13923402
+         ST    RETREG,SRBSAVE      SAVE RETURN ADDRESS              CTC 13923802
+         SPACE 2                                                    CTC 13925102
+***                                                           ***   CTC 13925203
+*        ESTABLISH AN FRR                                       *   CTC 13925403
+***                                                           ***   CTC 13925603
+         SPACE 2                                                    CTC 13925803
+         SETFRR A,                                                  CTCX13926503
+               FRRAD=FRRADCON,                                      CTCX13926603
+               PARMAD=(FRRREG),                                     CTCX13926703
+               WRKREGS=(WORKB,WORKC)  VOLATILE WORK REGS            CTC 13927503
+         SPACE 2                                                    CTC 13928203
+***                                                           ***   CTC 13928303
+*        INITIALIZE FRR PARAMETER AREA                          *   CTC 13928403
+***                                                           ***   CTC 13928603
+         SPACE 2                                                    CTC 13928803
+         USING FRRPARM,FRRREG                                       CTC 13929103
+         ST    UCBREG,FRRUCBA                                       CTC 13929403
+         MVC   FRRREG0(L8),R0R1SAVE                                 CTC 13929703
+***                                                           ***   CTC 13930003
+*        CLEAR THE SELECTOR CHANNEL                             *   CTC 13930303
+***                                                           ***   CTC 13930603
+         SPACE 2                                                    CTC 13931703
+HALT3100 DS    0H                                                   CTC 13931803
+         L     SVRBREG,HALTCSAV+L20  RELOAD SVRB PTR           @ZA06062 13931903
+         LH    WORKB,UCBCHAN       GET CHANNEL ADDRESS              CTC 13932003
+         SPACE                                                          13932103
+         BAL   RETREG,CRHHOOK1     CHECK IF CRH ACTIVE, FOR TCH@Y30CQLG 13932203
+*                                  IF CRH ACTIVE RETURNS+4              13932403
+         SPACE                                                          13932503
+         TCH   0(WORKB)                                             CTC 13932603
+         BC    4+2,HALT3100        BUSY/INT PEND-LOOP UNTIL AVAIL   CTC 13933003
+         SPACE 2                                                    CTC 13933303
+         BC    1,HALT3300          NOT OPER-BR TO ERROR             CTC 13933803
+         SPACE 2                                                    CTC 13933903
+***                                                           ***   CTC 13934503
+*        GET UCBLOCK                                            *   CTC 13935303
+***                                                           ***   CTC 13935703
+         SPACE 2                                                    CTC 13936603
+         LA    R11,UCBLOCK                                          CTC 13937003
+         SETLOCK OBTAIN,                                            CTCX13937803
+               TYPE=IOSUCB,        UCB LOCK                         CTCX13938603
+               ADDR=(11),          PTR TO LOCK                      CTCX13939003
+               MODE=UNCOND,        SPIN UNTIL GOTTEN                CTCX13939603
+               REGS=USE,                                       @ZA06062X13939903
+               RELATED=(UCB,IGC0003C(HALT0884))                     CTC 13940203
+         SPACE 2                                                    CTC 13940903
+         OI    FRRFLAG,FRRUCBLK    INDICATE UCBLOCK HELD       @ZA06062 13950603
+         SPACE 2                                                    CTC 13951203
+***                                                           ***   CTC 13951303
+* TEST TO SEE IF THE CHANNEL IS STILL CLEAR                     *   CTC 13952003
+***                                                           ***   CTC 13952703
+         SPACE 2                                                    CTC 13953603
+         LH    WORKB,UCBCHAN       CHANNEL ADDRESS                  CTC 13953703
+         SPACE                                                          13954603
+         BAL   RETREG,CRHHOOK2                                 @Y30CQLG 13955503
+         SPACE                                                          13956403
+         TCH   0(WORKB)                                             CTC 13957303
+         BC    8,HALT3200          BR-CHANNEL IS AVAIL              CTC 13958203
+         LA    WORKB,L12           SET ERROR RETURN CODE       @ZA11353 13958603
+         BC    1,HALT3250          BR-NOT OPERATIONAL               CTC 13960003
+         BAL   WORKC,HALT0884      DELETE FRR & FREE UCB LOCK       CTC 13960403
+         NI    FRRFLAG,ALL-FRRUCBLK CLEAR LOCK HELD INDICATOR  @ZA06062 13960903
+         B     HALT3100            BR-TRY AGAIN                     CTC 13961803
+         SPACE 2                                                    CTC 13962703
+***                                                           ***   CTC 13964403
+*        LINK TO IOS HALT ROUTINE (IECIHIO)                     *   CTC 13965403
+***                                                           ***   CTC 13966403
+         SPACE 2                                                    CTC 13967403
+HALT3200 DS    0H                                                   CTC 13968403
+         SR    IOSBREG,IOSBREG     SETUP R2 FOR HALT           @ZA06062 13968903
+         MVC   FRRUCBF,UCBSFLS     SAVE UCB STATUS FLAGS            CTC 13969403
+         L     R15,CVTIXAVL        IOCOM ADDRESS                    CTC 13970403
+         L     R15,IOCHIO          PTR TO IECIHIO                   CTC 13971403
+         BALR  RETREG,R15          BALR TO HALTIO SUBROUTINE        CTC 13972403
+         LA    WORKB,L0(R15)       SAVE THE RETURN CODE        @ZA11353 13972903
+         MVC   UCBSFLS,FRRUCBF     RESTORE UCB FLAGS                CTC 13974402
+         XC    FRRUCBF,FRRUCBF     CLEAR FLAG SAVE AREA             CTC 13974802
+         SPACE 2                                                    CTC 13976002
+***                                                           ***   CTC 13978002
+*        RELEASE UCBLOCK                                        *   CTC 13978203
+***                                                           ***   CTC 13979602
+         SPACE 2                                                    CTC 13979902
+HALT3250 BAL   WORKC,HALT0884        FREE UCB LOCK                  CTC 13980303
+         NI    FRRFLAG,ALL-FRRUCBLK  CLEAR LOCK HELD INDICATOR @ZA06062 13980703
+         SPACE 2                                                    CTC 13981102
+***                                                           ***   CTC 13981902
+*        POST INTERFACE                                         *   CTC 13983102
+*              GET LOCAL LOCK                                   *   CTC 13983502
+*              BRANCH ENTER POST                                *   CTC 13983902
+*              FREE THE LOCAL LOCK                              *   CTC 13984002
+***                                                           ***   CTC 13984302
+         SPACE 2                                                    CTC 13984702
+HALT3300 SETLOCK OBTAIN,                                            CTCX13985502
+               TYPE=LOCAL,                                          CTCX13986702
+               MODE=UNCOND,                                         CTCX13987902
+               REGS=USE,                                            CTCX13989102
+               RELATED=(POST,IGC0003C(HALT3500))                    CTC 13990302
+         OI    FRRFLAG,FRRLOCLK    INDICATE LOCAL LOCK HELD    @ZA06062 13990403
+         SPACE                                                          13990603
+         BAL   RETREG,CRHHOOK3     IF DIAG ACTIVE, DEDIAGNOSE  @Y30CQLG 13990903
+         SPACE                                                          13991203
+         LA    WORKC,CC7F          POST INTFC-RC=0                  CTC 13991502
+         SLL   WORKC,L24           GET COMP.CODE IN HIGH ORD @OZ05697   13992103
+         LTR   WORKB,WORKB         POST INTFC-RC=0             @ZA11353 13992403
+         BZ    HALT3400            POST INTFC-                      CTC 13993902
+         LA    WORKC,CC41          POST INTFC-                      CTC 13995102
+         SLL   WORKC,L24          GET COMP.CODE IN HIGH ORD BYT@OZ05697 13995703
+HALT3400 DS    0H                  POST INTFC-                      CTC 13996302
+         LA    R11,HALTCECB        POST INTFC-ECB ADDRESS           CTC 13997502
+         L     R15,CVT0PT02        POST INTFC-ENTRY POINT           CTC 13998702
+         BALR  RETREG,R15          POST INTFC-ENTER POST            CTC 13999902
+HALT3500 DS    0H                                                   CTC 14001102
+         SETLOCK RELEASE,                                           CTCX14002302
+               TYPE=LOCAL,                                          CTCX14003502
+               REGS=USE,                                            CTCX14004702
+               RELATED=(POST,IGC0003C(HALT3300))                    CTC 14005902
+         NI    FRRFLAG,ALL-FRRLOCLK  CLR LOCK HELD INDICATOR   @ZA06062 14006103
+         SPACE 2                                                    CTC 14006302
+***                                                           ***   CTC 14007102
+* RETURN TO SVC-33                                              *   CTC 14008302
+***                                                           ***   CTC 14009502
+         SPACE 2                                                    CTC 14009902
+         SETFRR D,WRKREGS=(R11,WORKB)  DELETE FRR              @ZA06062 14010103
+         L     RETREG,SRBSAVE      GET RETURN ADDRESS               CTC 14010302
+         BR    RETREG              RETURN TO CALLER                 CTC 14010702
+         DROP  WORKD                                                CTC 14011903
+         EJECT                                                          14012103
+         TITLE 'IGC0003C - CRHHOOK1 ROUTINE'                            14012303
+************************************************************   @Y30CQLG 14012503
+*                                                              @Y30CQLG 14012703
+*        CHANNEL RECONFIGURATION HARDWARE HOOK 1 ROUTINE       @Y30CQLG 14012903
+*                 IF CRH ACTIVE, ADJUST FOR CRH CHANNEL        @Y30CQLG 14013103
+*                                                              @Y30CQLG 14015503
+************************************************************   @Y30CQLG 14015803
+         SPACE                                                          14016103
+         USING CRCA,WORKC                                      @Y30CQLG 14016403
+         SPACE                                                          14016703
+CRHHOOK1 L     WORKC,CVTCRCA       CHECK FOR ADDR TO CRCA      @Y30CQLG 14017003
+         LTR   WORKC,WORKC         IS CRH ACTIVE ?             @Y30CQLG 14017303
+         BZR   RETREG              NOT ACTIVE, RETURN          @Y30CQLG 14017903
+         SPACE                                                          14018003
+         TM    CRCAFLG1,CRCADIAG   IS DIAG ON                  @Y30CQLG 14018103
+         BOR   RETREG              DONT DO IT AGAIN            @Y30CQLG 14018203
+         SPACE                                                          14018303
+*        IF THERE IS NOT A PATH FROM THIS CPU, NEED TO DIAG ETC@Y30CQLG 14018703
+         IOSGEN  MAP,TABLE=PTH,UCB=(UCBREG),LINKR=(R11),VAR=1  @Y30CQLG 14019103
+         LH    R15,PSACPUSA        GET CPU ADDR                @Y30CQLG 14019503
+         LTR   R15,R15             AM I ON CPU 00 ?            @Y30CQLG 14019903
+         BNZ   CRHLBL01            NO, THEN ON CPU1            @Y30CQLG 14020303
+         SPACE                                                          14020703
+         IC    R15,CPU0PRIM        ON CPU0, GET PRIM PATH MSK  @Y30CQLG 14021103
+         SLL   R15,8               MAKE ROOM FOR SECONDARY     @Y30CQLG 14021503
+         IC    R15,CPU0SEC         GET SECONDARY PATH MSK      @Y30CQLG 14021903
+         LTR   R15,R15             IS THER A PATH FOR THIS CPU @Y30CQLG 14022303
+         BNZR  RETREG              THERE IS A PATH, RETURN     @Y30CQLG 14022703
+         B     CRHLBL10            NO PATH, GO DIAG ETC FOR CRH@Y30CQLG 14023103
+CRHLBL01 XR    R15,R15             CLEAR R15, CHECK CPU 1      @Y30CQLG 14023503
+         IC    R15,CPU1PRIM        GET PRIM PATH MASK, CPU 1   @Y30CQLG 14023903
+         SLL   R15,8               SHIFT 1 BYTE                @Y30CQLG 14024303
+         IC    R15,CPU1SEC         GET SECONDARY PATH MSK      @Y30CQLG 14024703
+         LTR   R15,R15             IS THERE A PATH, THIS CPU   @Y30CQLG 14025103
+         BNZR  RETREG              THRE IS A PATH, RETURN      @Y30CQLG 14025503
+         SPACE                                                          14025903
+CRHLBL10 SETFRR A,FRRAD=FRRADCON,PARMAD=(FRRREG),              @Y30CQLGX14026303
+               WRKREGS=(WORKA,R11)  SET THE FRR FOR UCBLCK     @Y30CQLG 14026703
+         SPACE                                                          14028603
+         USING FRRPARM,FRRREG                                           14029103
+         ST    UCBREG,FRRUCBA      STORE UCB ADDR IN FRR PARM  @Y30CQLG 14029603
+         MVC   FRRREG0(L8),R0R1SAVE     SAVE INPUT REGS 0 & 1  @Y30CQLG 14030103
+         SPACE                                                          14030603
+         LA    R11,UCBLOCK         GET UCBLOCK SO CAN DIAG ETC @Y30CQLG 14031103
+         SETLOCK OBTAIN,TYPE=IOSUCB,ADDR=(11),MODE=UNCOND,             X14031603
+               RELATED=(UCB,IGC0003C(HALT0884))                @Y30CQLG 14032103
+         OI    FRRFLAG,FRRUCBLK    INDICATE UCBLOCK HELD       @ZA06062 14032303
+         STCM  WORKB,TWO,CRCAMCWF  IND CHAN ADDR TO MCW        @Y30CQLG 14032603
+         OI    UCBFLB,UCBIORST     IND PATH FROM INOP CPU      @Y30CQLG 14033103
+         OI    CRCAMCWF,CRCAMCWI+CRCAMCWM  TURN ON BITS 26 & 27@Y30CQLG 14033603
+         STH   WORKB,CRCACHAN      STORE CHANNEL & UNIT FOR CRH@Y30CQLG 14034103
+         ICM   WORKB,TWO,CHAN6     INDICATE CHAN 6 FOR CRH     @Y30CQLG 14034603
+         OI    CRCAFLG1,CRCADIAG   INDICATE OUTSTANDING DIAG   @Y30CQLG 14035103
+         SPACE                                                          14035603
+         DC    X'8300'             DIAGNOSE INSTR              @Y30CQLG 14036103
+         DC    S(CRCAMCW)          ADDR OF MCW                 @Y30CQLG 14036603
+         SPACE                                                          14037103
+         SPACE                                                          14037303
+         SETLOCK RELEASE,TYPE=IOSUCB,ADDR=(11),   RELEASE      @Y30CQLGX14037603
+               RELATED=(UCB,IGC0003C(HALT0884))                @Y30CQLG 14037803
+         NI     FRRFLAG,ALL-FRRUCBLK  CLR LOCK HELD INDICATOR  @ZA06062 14037903
+         SPACE                                                          14038103
+         SETFRR D,WRKREGS=(WORKA,R11)                          @Y30CQLG 14039303
+         SPACE                                                          14040503
+         BR    RETREG              RETURN TO MAINLINE          @Y30CQLG 14040903
+         SPACE                                                          14041303
+         DROP  WORKC                                                    14041503
+         EJECT                                                          14041703
+         TITLE 'IGC0003C - CRHHOOK2 ROUTINE'                            14042103
+*************************************************************  @Y30CQLG 14042503
+*                                                              @Y30CQLG 14042703
+*        CRH HOOK ROUTINE2                                     @Y30CQLG 14042903
+*              IF CRH IS ACTIVE, DO TCH, DEDIAG & RETURN       @Y30CQLG 14043303
+*              WITH PROPER C.C.                                @Y30CQLG 14043703
+*                                                              @Y30CQLG 14043903
+*************************************************************  @Y30CQLG 14044103
+         SPACE                                                          14044503
+         USING CRCA,WORKC                                               14044903
+         SPACE                                                          14045103
+CRHHOOK2 L     WORKC,CVTCRCA       CHECK FOR ADDR TO CRCA      @Y30CQLG 14045303
+         LTR   WORKC,WORKC         IS CRH ACTIVE ?             @Y30CQLG 14045703
+         BZR   RETREG              NO, RETURN                  @Y30CQLG 14046103
+         SPACE                                                          14046303
+         TM    UCBFLB,UCBIORST     IS THE DEVICE ON THIS CPU ? @Y30CQLG 14046503
+         BZR   RETREG              YES, RETURN                 @Y30CQLG 14046903
+         SPACE                                                          14047303
+         TM    CRCAFLG1,CRCADIAG   MAKE SURE DIAG OUTSTANDING  @Y30CQLG 14047703
+         BO    HOOK201             YES DON'T DIAG AGAIN        @Y30CQLG 14048103
+         SPACE                                                          14048503
+         STH   WORKB,CRCACHAN      CHAN & UNIT ADDR FOR CRH    @Y30CQLG 14048903
+         STCM  WORKB,TWO,CRCAMCWF  INDICATE CHAN ADDR TO MCW   @Y30CQLG 14049303
+         OI    CRCAMCWF,CRCAMCWI+CRCAMCWM    TURN ON 26 & 27   @Y30CQLG 14050003
+         OI    CRCAFLG1,CRCADIAG   INDICATE OUTSTANDING DIAG   @Y30CQLG 14050403
+         DC    X'8300'             DIAG OP CODE                @Y30CQLG 14050803
+         DC    S(CRCAMCW)          ADDR OF MCW                 @Y30CQLG 14051203
+         SPACE                                                          14051603
+HOOK201  ICM   WORKB,TWO,CHAN6     INDICATE CHAN 6, CRH        @Y30CQLG 14052003
+         TCH   0(WORKB)            DO REAL TCH TO CHAN6, CRH   @Y30CQLG 14052303
+         BALR  R15,0               SAVE RTN CODE               @Y30CQLG 14052603
+         XI    CRCAMCWF,CRCAMCWM   TURN OFF BIT 27 TO DEDIAG   @Y30CQLG 14052903
+         SPACE                                                          14053203
+         DC    X'8300'             DEDIAGNOSE TURN OFF CRH     @Y30CQLG 14053503
+         DC    S(CRCAMCW)          ADDR OF MCW                 @Y30CQLG 14054003
+         SPACE                                                          14054203
+         XI    CRCAFLG1,CRCADIAG   INDICATE DIAG NOT OUTSTANDNG@Y30CQLG 14054403
+         LH    WORKB,UCBCHAN       RELOAD WORKB WITH ORIG CHAN @Y30CQLG 14054603
+         SPM   R15                 RESET C. C.                 @Y30CQLG 14054803
+         B     4(RETREG)           RETURN NEXT INSTR AFTER TCH @Y30CQLG 14055003
+         SPACE                                                          14055203
+         DROP  WORKC                                                    14055403
+         DROP  BASEREG                                                  14055503
+         EJECT                                                          14055603
+         TITLE 'CRH HOOK ROUTINE 3'                                     14055703
+*************************************************************  @Y30CQLG 14055803
+*                                                              @Y30CQLG 14056003
+*        CRH HOOK ROUTINE 3                                    @Y30CQLG 14056303
+*              IF CRH ACTIVE, DEDIAG                           @Y30CQLG 14057203
+*                                                              @Y30CQLG 14057603
+*************************************************************  @Y30CQLG 14058003
+         SPACE                                                          14058403
+         USING CRCA,WORKC                                      @Y30CQLG 14058803
+         SPACE                                                          14059203
+CRHHOOK3 L     WORKC,CVTCRCA       CHECK FOR ADDR TO CRCA      @Y30CQLG 14060003
+         LTR   WORKC,WORKC         IS CRH ACTIVE               @Y30CQLG 14060203
+         BZR   RETREG              NO, RETURN                  @Y30CQLG 14060403
+         SPACE                                                          14060603
+         TM    CRCAFLG1,CRCADIAG   IS DIAG ON                  @Y30CQLG 14061003
+         BZR   RETREG              NO, RETURN                  @Y30CQLG 14061103
+         SPACE                                                          14061203
+         XI    CRCAMCWF,CRCAMCWM   TURN OFF BIT 27             @Y30CQLG 14061303
+         SPACE                                                          14061403
+         DC    X'8300'             DEDIAGNOSE TURN OFF CRH     @Y30CQLG 14061503
+         DC    S(CRCAMCW)          ADDR OF MCW                 @Y30CQLG 14061603
+         SPACE                                                          14062003
+         XI    CRCAFLG1,CRCADIAG   INDICATE NO DIAG            @Y30CQLG 14062103
+         SPACE                                                          14062203
+         BR    RETREG              RETURN                      @Y30CQLG 14062303
+         EJECT                                                          14062403
+         TITLE 'HALT FRR'                                               14064003
+*****************************************************************       14066003
+*                                                               *       14067003
+*        FRR ROUTINE                                            *       14068003
+*                                                               *       14070003
+*****************************************************************       14071003
+         SPACE 1                                                        14072003
+HALT0900 EQU   *                                                        14074003
+         BALR  BASEREG,0           RE-ESTABLISH BASE                    14075003
+         USING *,BASEREG           *ADDRESSABILITY                      14077003
+         USING CVT,CVTREG                                      @ZM30451 14077303
+         L     CVTREG,FLCCVT       LOAD CVT PTR                @ZM30451 14077603
+         SPACE 1                                                        14078003
+         LR    WORKA,RETREG        SAVE RTM RETURN ADDRESS              14079003
+         SPACE                                                          14080003
+         BAL   RETREG,CRHFRR       CHECK FOR CRH ACTIVE        @Y30CQLG 14081003
+         SPACE                                                          14082003
+         SPACE 1                                                        14083003
+         USING SDWA,R1             INDICATE SDWA ADDRESSABILITY         14084003
+         SPACE 1                                                        14085003
+         L     FRRREG,SDWAPARM     ESTABLISH FRR PARAMETER AREA         14086003
+*                                  *ADDRESSABILITY                      14090002
+         SPACE 1                                                        14090402
+***                                                           ***       14090802
+*        RESTORE UCBFLS FIELD IF SAVED                          *       14091202
+***                                                           ***       14091602
+         SPACE 1                                                        14091702
+         L     UCBREG,FRRUCBA      ESTABLISH UCB ADDRESSABILITY         14092002
+         SPACE 1                                                        14094002
+         LH    WORKB,FRRUCBF       LOAD CONTENTS OF UCBSFLS SAVE        14096002
+*                                  *AREA IN FRR PARAMETER AREA          14098002
+         SPACE 1                                                        14098102
+         LTR   WORKB,WORKB         TEST FOR ANYTHING TO RESTORE YM01120 14098402
+         BZ    HALT0920            BRANCH IF NOTHING                    14098802
+         SPACE 1                                                        14099202
+         STH   WORKB,UCBSFLS       RESTORE UCBSFLS FIELD                14099602
+         SPACE 1                                                        14099702
+***                                                           ***       14101702
+*        DETERMINE IF THIS FRR HAS BEEN PERCOLATED TO           *       14103702
+***                                                           ***       14103802
+         SPACE 1                                                        14105002
+HALT0920 EQU   *                                                        14106302
+         TM    SDWAERRC,SDWAPERC   TEST IF PERCOLATION IS FLAGGED       14107002
+         BO    HALT0980            BRANCH IF IT IS INDICATED            14107203
+         SPACE 1                                                        14107502
+***                                                           ***       14107602
+*        FILL IN VARIABLE RECORDING DATA AREA OF SDWA           *       14107702
+***                                                           ***       14107802
+         SPACE 1                                                        14107902
+         LA    WORKB,SDWAVRA       ESTABLISH ADDRESSABILITY TO          14108002
+         USING VRECORD,WORKB       *SDWA VARIABLE RECORDING DATA        14108102
+*                                  *AREA                                14109302
+         SPACE 1                                                        14111602
+         MVC   VRECREG0,FRRREG0    MOVE SVC 33 INPUT REGISTERS 0        14111702
+         MVC   VRECREG1,FRRREG1    *AND 1 TO RECORDING AREA             14111902
+         SPACE 1                                                        14112302
+         L     WORKC,FRRIOQA       ESTABLISH IOQ ADDRESSABILITY         14116202
+         USING IOQ,WORKC                                                14116403
+         LTR   WORKC,WORKC         Q/ANY IOQ                        CTC 14116602
+         BZ    HALT0940            NO/BR-SKIP RECORDING IOQ         CTC 14117002
+         SPACE 1                                                        14118202
+         MVC   VRECIOQ(IOQL),IOQ   MOVE IOQ TO RECORDING AREA           14118302
+         SPACE 1                                                        14118402
+HALT0940 DS    0H                                                   CTC 14120202
+         MVC   VRECUCBP(UCBCURPX),UCBPXST   MOVE UCB PREFIX AND         14126202
+         MVC   VRECUCBB(UCBDEV-UCBOB),UCBOB *BASE TO RECORDING          14128002
+*                                            *AREA                      14129802
+         SPACE 1                                                        14131602
+         MVI   SDWAURAL,VRECLEN    INDICATE LENGTH OF VARIABLE          14133402
+*                                  *RECORDING AREA USED                 14135202
+         SPACE 1                                                        14137002
+***                                                           ***       14138802
+*        ISSUE SETRP TO INDICATE PERCOLATION                    *       14140602
+*                                RECORDING                      *       14142402
+*                                DUMPING                        *       14144202
+***                                                           ***       14147802
+         SPACE 1                                               @ZA06062 14148703
+         SETRP RC=0,               INDICATE PERCOLATION                *14151402
+               RECORD=YES,         *RECORDING ON                       *14153202
+               RECPARM=RECPARM,    *LOGREC                             *14155002
+               DUMP=YES,           *TAILORED                           *14156802
+               DUMPOPT=DUMPOPT     *DUMP                                14157703
+         SPACE 1                                                        14162202
+         SPACE 1                                                        14165802
+***                                                           ***       14167602
+*        ISSUE SETRP TO INDICATE PERCOLATION                    *       14169402
+*                                FREEING OF UCB LOCK            *       14171202
+***                                                           ***       14173002
+         SPACE 1                                                        14174802
+HALT0980 EQU   *                                                        14176602
+         TM    FRRFLAG,FRRUCBLK  IS UCBLOCK HELD?              @ZA06062 14176903
+         BZ    HALT0945          NO DON'T FREE                 @ZA06062 14177203
+         SETRP RC=0,                                           @ZA06062*14177503
+               FRELOCK=IOSUCB(UCBLOCK)                         @ZA06062 14177803
+HALT0945 TM    FRRFLAG,FRRLOCLK  IS LOCAL LOCK HELD?           @ZA06062 14178103
+         BZ    HALT0990          NO DON'T FREE                 @ZA06062 14178403
+         SETRP FRELOCK=LOCAL                                   @ZA06062 14179003
+         SPACE 1                                                        14183802
+***                                                           ***       14185602
+*        RETURN TO RTM                                          *       14187402
+***                                                           ***       14189202
+         SPACE 1                                                        14191002
+HALT0990 EQU   *                                                        14192802
+         LR    RETREG,WORKA        RESTORE RETURN ADDRESS               14194602
+         BR    RETREG              RETURN TO RTM                        14196402
+         EJECT                                                          14196703
+         TITLE 'CRH HOOK FOR FRR'                                       14197003
+***************************************************************@Y30CQLG 14197303
+*                                                                       14197603
+*        CRH HOOK FOR FRR                                               14197903
+*              IF CRH ACTIVE, DEDIAGNOSE                                14198203
+*                                                                       14200203
+***************************************************************@Y30CQLG 14202203
+         SPACE                                                          14204203
+         USING CRCA,WORKC                                      @Y30CQLG 14206203
+         SPACE                                                          14208203
+CRHFRR   L     WORKC,CVTCRCA       CHECK FOR ADDR TO CRCA      @Y30CQLG 14210203
+         LTR   WORKC,WORKC         IS CRH ACTIVE ?             @Y30CQLG 14212203
+         BZR   RETREG              NO, RETURN                  @Y30CQLG 14214203
+         SPACE                                                          14216203
+         TM    CRCAFLG1,CRCADIAG   IS THERE AN OUTSTANDING DIAG@Y30CQLG 14218203
+         BZR   RETREG              NO DIAG, RETURN             @Y30CQLG 14220203
+         SPACE                                                          14222203
+         XI    CRCAMCWF,CRCAMCWM   TURN OFF BIT 27 TO DEDIAG   @Y30CQLG 14224203
+         SPACE                                                          14226203
+         DC    X'8300'             DEDIAGNOSE TURN OFF CRH     @Y30CQLG 14228203
+         DC    S(CRCAMCW)          ADDR OF MCW                 @Y30CQLG 14230203
+         SPACE                                                          14232203
+         XI    CRCAFLG1,CRCADIAG   INDICATE NO DIAG            @Y30CQLG 14234203
+         SPACE                                                          14236203
+         BR    RETREG              RETURN TO FRR               @Y30CQLG 14250003
+         EJECT                                                          14260003
+*****************************************************************       14260503
+*                                                               *       14261003
+*        ESTAE ROUTINE                                          *       14261503
+*                                                               *       14262003
+***************************************************************@ZA09235 14262503
+HALTESTA BALR  FRRREG,0            ESTABLISH ADDRESSABILITY    @ZA09235 14263003
+         USING *,FRRREG                                        @ZA09235 14263103
+         DROP  R11                                             @ZA09235 14263203
+         LR    SAVREG,RETREG       SAVE RET ADDR               @ZA09235 14263303
+         LR    WORKA,R2            GET PARM LIST ADDR          @ZA09235 14264003
+         SR    WORKC,WORKC         CLEAR REG                   @ZA09235 14264503
+         LA    R11,L12                                         @ZA09235 14265003
+         CR    R11,R0              IS THERE AN SDWA            @ZA09235 14265503
+         BE    HALTES01            NO-GO ON                    @ZA09235 14266003
+         L     WORKA,L0(R1)        GET PARM LIST ADDR          @ZA09235 14266503
+         LR    WORKC,R1            GET SDWA ADDRESSABILITY     @ZA09235 14267003
+         USING ESTADATA,WORKA                                  @ZA09235 14267303
+HALTES01 L     WORKB,FREEADDR      GET FREEMAIN ADDR           @ZA09235 14268003
+         LTR   WORKB,WORKB         IS IT ZERO?                 @ZA09235 14268503
+         BZ    HALTES02            YES DON'T DO FREEMAIN       @ZA09235 14269003
+         L     R0,FREELEN          GET LEN AND SP FOR FREEMAIN @ZA09235 14269503
+         FREEMAIN R,LV=(0),A=(WORKB)                           @ZA09235 14270003
+         SPACE 1                                               @ZA09235 14270703
+HALTES02 LTR   WORKC,WORKC         IS THERE AN SDWA            @ZA09235 14271403
+         BZ    HALTES04            NO - EXIT                   @ZA09235 14272103
+         USING SDWA,WORKC                                      @ZA09235 14272803
+         TM    SDWAERRC,SDWAPERC   IS IT PERCOLATION           @ZA09235 14273503
+         BO    HALTES03            YES - EXIT                  @ZA09235 14274203
+         L     WORKB,SDWAVRA       GET ADDR OF VAR REC AREA    @ZA09235 14274903
+         USING ESTAREC,WORKB                                            14275203
+         MVC   EFREEA(L8),FREEADDR PUT DATA IN RECORDING AREA  @ZA09235 14275603
+         L     UCBREG,EUCBADR      GET UCB ADDRESS             @ZA09235 14275703
+         MVC   ERECUCBP(UCBCURPX),UCBPXST  MOVE UCB PREFIX AND @ZA09235 14275803
+         MVC   ERECUCBB(UCBDEV-UCBOB),UCBOB BASE TO REC AREA   @ZA09235 14275903
+         MVI   SDWAURAL,ERECLEN    FILL IN LEN OF VAR REC AREA @ZA09235 14276003
+         SETRP DUMP=YES,DUMPOPT=DUMPOPT,RECORD=YES,RECPARM=RECPARME,WKA*14276303
+               REA=(WORKC)                                              14276503
+HALTES03 SETRP RC=0,WKAREA=(WORKC) SET TO CONTINUE TERMINATION @ZA09235 14277003
+HALTES04 EQU   *                                               @ZA09235 14277103
+         SR    R15,R15             SET 0 RETURN CODE           @ZA09235 14277203
+         LR    RETREG,SAVREG       RESTORE RETURN ADDR         @ZA09235 14277303
+         BR    RETREG              RETURN                      @ZA09235 14277703
+         EJECT                                                          14278003
+*****************************************************************       14278403
+*                                                               *       14280003
+*        CONSTANTS                                              *       14300002
+*                                                               *       14350002
+*****************************************************************       14400002
+HLTRTRY  DC    X'00FF'                                         @OZ00762 14420003
+         SPACE 1                                                        14450002
+         DS    0F                  FULL WORD BOUNDRY                    14460002
+SRBEBD   DC    C'SRB '             SRB EBIDIC                  @OZ05656 14460203
+SAVELEN  DC    AL1(253),AL3(72)    SUBPOOL AND LENGTH OF SAVE           14460402
+*                                  *AREA FOR CALLED SUBROUTINES         14460802
+CHAN6    DC    X'06'               FOR CRH CHAN 6              @Y30CQLG 14462403
+PTH      DS    0D                  PATH TABLE FOR IOSGEN       @Y30CQLG 14462603
+DADDR1   DC    X'0000'             DEVICE ADDR PRIM PATH       @Y30CQLG 14462803
+CPU0PRIM DC    X'00'               PRIM PATH CPU 0 STATUS      @Y30CQLG 14463003
+CPU1PRIM DC    X'00'               PRIM PATH CPU 1 STATUS      @Y30CQLG 14463203
+DADDR2   DC    X'0000'             DEVICE ADDR SEC PATH        @Y30CQLG 14463403
+CPU0SEC  DC    X'00'               SEC PATH CPU 0              @Y30CQLG 14463603
+CPU1SEC  DC    X'00'               SEC PATH CPU 1              @Y30CQLG 14463803
+         SPACE 1                                                        14464003
+*                                  *THE FOLLOWING MACRO IS THE          14464603
+*                                  *LIST FORM OF SNAP TO INDICATE       14466403
+DUMPOPT  SNAP  SDATA=(TRT,CB),     *DUMP TRACE DATA, TASK RELATED      *14468203
+               STORAGE=(IGC0003C,HALT9999), *CONTROL BLOCKS AND        *14470003
+               MF=L                *MODULE STORAGE                      14471003
+         SPACE 1                                                        14473003
+RECPARM  DS    0F                  FIXED RECORDING AREA PARAMETER       14475503
+*                                  *LIST                                14476503
+         DC    C'IGC0003C'         MODULE MICROFICHE NAME               14477503
+         DC    C'IGC0003C'         CSECT NAME                           14480003
+         DC    C'HALT0900'         RECOVERY ROUTINE ID                  14481003
+RECPARME DS    0F              FIXED RECORDING AREA PARAMETER  @ZA09235 14481203
+         DC    C'IGC0003C'         FICHE NAME                  @ZA09235 14481403
+         DC    C'IGC0003C'         CSECT NAME                  @ZA09235 14481603
+         DC    C'HALTESTA'         RECOVERY RTN                @ZA09235 14481803
+         SPACE 1                                                        14482003
+ESTAPLST ESTAE MF=(L),PURGE=NONE,TERM=YES                      @ZA09235 14482503
+FRRADCON DC    A(HALT0900)         ADDRESS OF FRR ROUTINE               14483003
+HIGH2OFF DC    X'0000FFFF'         MASK TO SET HIGH ORDER TWO           14484003
+*                                  *BYTES OF A REGISTER TO 0            14485003
+         SPACE 1                                                        14490002
+HALTPLEN EQU   (*-IGC0003C)/20     5 PER CENT PATCH AREA LENGTH         14500002
+HALTPATC DC    XL(HALTPLEN)'00'    PATCH AREA                           14600002
+         SPACE 1                                                        14610002
+HALT9999 EQU   *                   END OF MODULE + 1                    14620002
+*                                  *THIS MUST REMAIN THE LAST           14630002
+*                                  *LABEL OF IGC0003C                   14640002
+         END                                                            14650002

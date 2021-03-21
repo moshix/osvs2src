@@ -1,0 +1,983 @@
+ TITLE 'IFASMFDP'  SYSTEM MANAGEMENT FACILITIES DUMP.                   00000240
+*                                                                     * 00000440
+* STATUS--CHANGE LEVEL - REL 3.7  PTF UZ17626                 @ZA31142* 00000540
+*                                                                     * 00000840
+* FUNCTION/OPERATION--THIS PROGRAM COPIES THE INPUT DATA SET, DUMPIN, * 00001040
+*    TO THE OUTPUT DATA SET, DUMPOUT.  IT USES THE BASIC SEQUENTIAL   * 00001240
+*    ACCESS METHOD OF DATA MANAGEMENT TO PERFORM A PHYSICAL COPY.     * 00001440
+*    SYSTEM MANAGEMENT FACILITIES RECORD TYPES 2 AND 3--DUMP HEADER   * 00001640
+*    AND DUMP TRAILER--ARE WRITTEN AS THE FIRST AND FINAL RECORDS,    * 00001840
+*    RESPECTIVELY, OF THE OUTPUT DATA SET.  OUTPUT RECORDS ARE        * 00002040
+*    WRITTEN DIRECTLY FROM THE INPUT BUFFERS, WITH NO INTERMEDIATE    * 00002240
+*    MOVEMENT OF DATA.  THIS PROGRAM WILL ALSO CHECK FOR      @ZA06487* 00002440
+*    PROPER SEGMENTATION OF RECORDS -- IF THE SYSTEM CRASHED  @ZA06487* 00002640
+*    BEFORE THE LAST SEGMENT OF A LOGICAL RECORD WAS WRITTEN  @ZA06487* 00002840
+*    TO EITHER MANX OR MANY,AN INCOMPLETE RECORD WOULD APPEAR @ZA06487* 00003040
+*    ON OUTPUT DATA SET WHICH WILL CAUSE 002 ABEND IF USER    @ZA06487* 00003240
+*    QSAM GET ON IT. THEREFORE,THE BAD RECORD WILL BE DELETED.@ZA06487* 00003440
+*    WHEN THE LAST RECORD HAS BEEN READ,THE OUTSTANDING READS @ZA31142* 00003640
+*    WILL BE CHECKED AND THE REMAINING BUFFERS WRITTEN.       @ZA31142* 00003740
+*    AFTER CONCLUSION OF COPY,DUMPIN IS CLOSED, REOPENED, AND @ZA06487* 00004040
+*    CLOSED AGAIN. THIS RESETS THE DSCB FOR DUMPIN TO THE     @ZA06487* 00004140
+*    PROPER CONDITION FOR USE AS AN SMF OUTPUT DATA SET.      @ZA06487* 00004240
+*    AN ENQ IS DONE PRIOR TO OPENING THE SMF DATA SET         @ZA06487* 00004340
+*    A DEQ IS DONE AFTER THE SMF DATA SET IS CLOSED           @ZA06487* 00004440
+*                                                                     * 00004640
+*    IFASMFDP WILL ISSUE DOM MACRO TO DELETE WTO MESSAGE      @ZA07764  00004840
+*    ISSUED BY SMF WRITER WHEN MANX/Y DATA SET BECAME FULL.   @ZA07764* 00005040
+*                                                                     * 00005240
+* ENTRY POINTS--                                                      * 00005440
+*         IFASMFDP, THE MAIN ENTRY-- CALLED BY                        * 00005640
+*    L    15,=A(IFASMFDP)                                             * 00005840
+*    LR   14,15                                                       * 00006040
+*         INEXIT, THE DCB EXIT ROUTINE FOR DUMPIN-- CALLED BY         * 00006240
+*    LA   1,DCB                                                       * 00006440
+*    L    15,=A(INEXIT)                                               * 00006640
+*    BALR 14,15                                                       * 00006840
+*         OUTEXIT, THE DCB EXIT ROUTINE FOR DUMPOUT--CALLED BY        * 00007040
+*    LA    1,DCB                                                      * 00007240
+*    L     15,=A(OUTEXIT)                                             * 00007440
+*    BALR 14,15                                                       * 00007640
+*         ERRRTN, THE SYNAD ERROR ROUTINE--CALLED BY                  * 00007840
+*    LA   0,DECB                                                      * 00008040
+*    LA   1,DCB                                                       * 00008240
+*    L    15,=A(ERRTN)                                                * 00008440
+*    BALR 14,15                                                       * 00008640
+*         EOFRTN, THE END-OF-DATA ROUTINE--CALLED BY                  * 00008840
+*    LA   1,DCB                                                       * 00009040
+*    L    15,=A(EOFRTN)                                               * 00009240
+*    BALR 14,15                                                       * 00009440
+*                                                                     * 00009640
+* INPUT--DATA SET DUMPIN, WHICH CONTAINS RECORDS PRODUCED BY SYSTEM   * 00009840
+*    MANAGEMENT FACILITIES.  THESE RECORDS ARE ASSUMED TO BE BLOCKED, * 00010040
+*    VARIABLE-LENGTH.  THE DATA SET ITSELF IS ASSUMED TO RESIDE ON A  * 00010240
+*    DIRECT ACCESS DEVICE.                                            * 00010440
+*                                                                     * 00010640
+* OUTPUT--DATA SET DUMPOUT, WHICH CONTAINS AN SMF DUMP HEADER RECORD, * 00010840
+*    FOLLOWED BY A PHYSICAL COPY OF THE RECORDS FROM DUMPIN, FOLLOWED * 00011040
+*    BY AN SMF DUMP TRAILER RECORD.  ALL RECORDS ARE ASSUMED TO BE    * 00011240
+*    BLOCKED, VARIABLE-LENGTH.  THE DATA SET ITSELF IS ASSUMED TO     * 00011440
+*    RESIDE ON TAPE.                                                  * 00011640
+*                                                                     * 00011840
+* EXTERNAL REFERENCES--SUPERVISOR AND DATA MANAGEMENT (BSAM) SERVICES.* 00012040
+*    THE FOLLOWING SYSTEM MACROS ARE USED--SAVE, RETURN, GETMAIN,     * 00012240
+*    FREEMAIN, TIME, OPEN, CLOSE, GETPOOL, FREEPOOL, READ, WRITE,     * 00012440
+*    CHECK, SYNADAF, SYNADRLS, NOTE, POINT.                           * 00012640
+*                                                                     * 00012840
+* EXITS,NORMAL--CLOSE INPUT AND OUTPUT DATA SETS, RELEASE ALL MAIN    * 00013040
+*    STORAGE OBTAINED DURING EXECUTION, AND RETURN TO                 * 00013240
+*    CALLER WITH A CONDITION CODE OF 0.                               * 00013440
+* EXITS,ERRORS--TYPES                                                 * 00013640
+*    1. NO DD CARD SPECIFIED FOR DUMPIN.                              * 00013840
+*    2. NO DD CARD SPECIFIED FOR DUMPOUT.                             * 00014040
+*    4. BLKSIZE SPECIFIED FOR DUMPOUT IS SMALLER THAN                 * 00014240
+*    BLKSIZE SPECIFIED FOR DUMPIN.                                    * 00014440
+*    5. PERMANENT I/O ERROR ON DUMPIN OR DUMPOUT.                     * 00014640
+*    6. REQUEST MADE TO DUMP ACTIVE SMF DATA SET                      * 00014840
+*    PROCEDURE                                                        * 00015040
+*    WRITE AN ERROR MESSAGE ON SYSPRINT (IF A DD IS                   * 00015240
+*    PROVIDED), CLOSE INPUT AND OUTPUT DATA SETS, RELEASE             * 00015440
+*    ALL MAIN STORAGE OBTAINED DURING EXECUTION, AND                  * 00015640
+*    RETURN TO CALLER WITH A CONDITION CODE OF 16.                    * 00015840
+*                                                                     * 00016040
+* TABLES/WORK AREAS--                                                 * 00016240
+*                                                                     * 00016440
+*    SAVE AND WORK AREAS OBTAINED VIA GETMAIN FROM IEBSMFDP.          * 00016640
+*    A DESCRIPTION OF THE FIELDS COMPRISING THE AREA CAN BE FOUND     * 00016840
+*    IN THE DSECT AT THE END OF THIS LISTING.                         * 00017040
+*                                                                     * 00017240
+*    BUFFER CONTROL TABLE OBTAINED VIA GETMAIN FROM INEXIT.           * 00017440
+*    THE BCT CONSISTS OF N ENTRIES, WHERE N IS THE NUMBER OF          * 00017640
+*    BUFFERS.  EACH ENTRY HAS THE FOLLOWING FORMAT--                  * 00017840
+*    BYTES      PURPOSE                                               * 00018040
+*    .....      .......                                               * 00018240
+*    0-3        POINTER TO NEXT ENTRY (SEE NOTE)                      * 00018440
+*    4-7        ADDRESS OF ASSOCIATED BUFFER                          * 00018640
+*    8-27       SPACE FOR ASSOCIATED DECB                             * 00018840
+*    28         FLAGS - X'01' =OUTSTANDING READ FOR THIS BCTE @ZA31142* 00019040
+*    29-31      RESERVED                                      @ZA31142* 00019140
+*    NOTE--THE NTH ENTRY CONTAINS A POINTER TO THE FIRST ENTRY,       * 00019440
+*    THUS PROVIDING A CIRCULAR CHAIN.                                 * 00019540
+*                                                                     * 00019640
+*    BUFFER POOL OBTAINED VIA GETPOOL FROM INEXIT.                    * 00019840
+*    BYTES 0-7 CONTAIN BUFFER POOL CONTROL INFORMATION.               * 00020040
+*    BUFFER SPACE IS SUPPLIED BY THE NEXT (M TIMES N+1) BYTES @ZA06487* 00020240
+*    WHERE M IS BLOCK SIZE AND N+1 IS THE NUMBER OF I/O       @ZA06487* 00020440
+*    BUFFERS(N) PLUS AN EXTRA USED AS A SAVE AREA TO CORRECT  @ZA06487* 00020640
+*    SEGMENTATION ERRORS CAUSED BY A SYSTEM CRASH WHILE       @ZA06487* 00020840
+*    WRITING MANX OR MANY DATA SET.                           @ZA06487* 00021040
+*                                                                     * 00021240
+* ATTRIBUTES--THIS PROGRAM IS COMPLETELY RE-ENTRANT.                  * 00021440
+*                                                                     * 00021640
+* CHARACTER CODE DEPENDENCY                                           * 00021840
+*    N/A                                                              * 00022040
+*                                                                     * 00022240
+* NOTES--                                                             * 00022440
+*                                                                     * 00022640
+         EJECT                                                          00022840
+IFASMFDP START 0                        SMF DATA SET DUMP ROUTINE       00023040
+*A 228020,250096,250603,284017,284037,284057                     XM5301 00023240
+*A 250923,251336,284984-285107,877985,928000,960993-961143       XM5302 00023440
+*C 877985,877984                                                 XM5302 00023640
+*A 640500,641500,649000,649500                                   XM4745 00023840
+*A 283400                                                        A46781 00024040
+*A 284097,284197                                                 A43334 00024240
+*C 817200                                                        A42348 00024440
+*C 668000-670000                                                 A39034 00024640
+*A 938500                                                        A39034 00024840
+*A 282600-285432,876500-877992,956500-959840,960939-963439       A35637 00025040
+*C 625000,628000                                                 A34575 00025240
+*D 530000-540000,877960,959994-960639                            Y01034 00025440
+*C 249996,338000,959964,959976,959988                            Y01034 00025640
+*C 877988,877992,936000,938500                                   XM0123 00025840
+*C 102000,748000,285165                                        @ZA06487 00026040
+*A 028000,304000,746000,877500                                 @ZA06487 00026240
+*A 40810,93210-93240,144210,166610-166660                      @ZA09423 00026340
+*D 93200,93300                                                 @ZA09423 00026440
+*C CLEANUP - RE-SET RECFM=VBS                                  @ZA15009 00026540
+*A PATCH - ADD MODULE PATCH AREA                               @ZA15009 00026640
+*C CHKSIZ -  TEST FOR OUTPUT DCB LRECL SPECIFIED, OR DEFAULT   @ZA15387 00026740
+*C MSG5 - CHANGE DSECT CL TO 73                                @ZA17833 00026840
+*C BADREC - ADD BRANCH TO PROCESS TTR AT TTRCVD                @ZA19255 00026940
+*A DUMPER - ADD NEW SUB-RTNE TTRCVD                            @ZA19255 00027040
+*A SMFDPMSG - ADD NEW MAPPING DSECT FOR MSG IFA009I            @ZA19255 00027240
+*C SMFDPMSG - CHANGE MSGE SIZE.                                @ZA19255 00027440
+*C MESS6 - CHANGE FORMAT, TEXT OF MSG IFA009I                  @ZA19255 00027640
+*C CHKBLKED - ADD TEST OF ZERO SEGMENT LENGTH                 @ZA25463* 00027740
+*C 46000 - MODID MACRO                                         @ZA31142 00027940
+*A PRIMER - SET OUTSTANDING READ FLAG                          @ZA31142 00028040
+*A CYCLE1 - RESET OUTSTANDING READ FLAG                        @ZA31142 00028140
+*C READMORE  - TEST FOR OUTSTANDING READS AT LAST INPUT RECORD @ZA31142 00028240
+*A READMOR1 - SET OUTSTANDING READ FLAG                        @ZA31142 00028340
+*A BADREC - DO CHECK ON OUTSTANDING READS                      @ZA31142 00028440
+         SPACE 3                                                        00028540
+*    REGISTER DEFINITIONS                                               00028640
+RIN      EQU   2                        POINTER TO DUMPIN DCB           00028740
+ROUT     EQU   3                        POINTER TO DUMPOUT DCB          00028840
+RTO      EQU   2                        MVCL TO ADDRESS       @ZA09423  00028940
+RDECB    EQU   4                        TEMPORARY DECB POINTER          00029040
+RTOL     EQU   3                        MVCL TO LENGTH        @ZA09423  00029140
+RFROM    EQU   4                        MVCL FROM ADDRESS     @ZA09423  00029240
+RBUF     EQU   5                        TEMPORARY BUFFER POINTER        00029340
+RFROML   EQU   5                        MVCL FROM LENGTH      @ZA09423  00029440
+JBASE    EQU   6                        BASE FOR JFCB WORK AREA         00029540
+RRECL    EQU   6                        LENGTH OF PHYSICAL REC @ZA06487 00029640
+RSDW     EQU   7                        SDW ADDRESS            @ZA06487 00029740
+R7       EQU   7                        WK REG TO CHECK JFCB            00029840
+RBCTE    EQU   8                        CURRENT BCT ENTRY      @ZA06487 00029940
+RMSG     EQU   8                        POINTER TO SYSPRINT DCB         00030040
+R8       EQU   8                        WK REG TO CHECK JFCB            00030140
+MSGBASE  EQU   9                        BASE FOR MESSAGE CSECT          00030240
+RSAVEBUF EQU   10                       ADDR SAVE BUFFER       @ZA06487 00030540
+RCTL     EQU   10                       USED FOR LOOPS AND CALLS        00030640
+WORK     EQU   11                       GENERAL PURPOSE REGISTER        00030740
+BASE     EQU   12                       BASE REGISTER                   00030840
+         SPACE 3                                                        00030940
+*  DISPLACEMENTS                                                        00031040
+SMCAPTR  EQU   196                      IN CVT FOR ADDRESS OF SMCA      00031140
+SYSID    EQU   16                       IN SMCA FOR CPU I. D.           00031240
+SMCAPDEV EQU   24                       IN SMCA FOR VOL ID SERIALXM5301 00031340
+SMCAXORY EQU   35                       IN SMCA FOR X/Y INDICATION      00031440
+SMCAYORX EQU   51                                              @ZA07764 00031540
+SMCADOMX EQU   136                                             @ZA07764 00031640
+SMCADOMY EQU   140                                             @ZA07764 00031740
+SMCAADEV EQU   40                                              @ZA07764 00031840
+CVTPTR   EQU   16                                                       00032040
+BUFNO    EQU   20                       IN DCB FOR NO. OF BUFFERS       00032240
+BUFCB    EQU   20                       IN DCB FOR BUFFER CTL BLK       00032440
+RECFM    EQU   36                       IN DCB FOR RECORD FORMAT        00032640
+EXLST    EQU   37                       IN DCB FOR EXIT LIST            00032840
+DDNAME   EQU   40                       IN DCB FOR ASSOCIATED DD        00033040
+OFLGS    EQU   48                       IN DCB FOR OPEN FLAGS           00033240
+MACRF    EQU   50                       IN DCB FOR MACROS USED          00033440
+BLKSI    EQU   62                       IN DCB FOR BLOCK SIZE           00033640
+NCP      EQU   72                       IN DCB FOR NO. OF CHANNEL PGMS  00033840
+LRECL    EQU   82                       IN DCB FOR LOG. REC. LENGTH     00034040
+SMCASWA  EQU   104                      IN SMCA FOR DATA LOST SW A43334 00034240
+BL       EQU   0                        BLOCK LENGTH IN BDW    @ZA06487 00034440
+SL       EQU   0                        SEGMENT LENGTH IN SDW  @ZA06487 00034640
+ST       EQU   2                        SEGMENT TYPE IN SDW    @ZA06487 00034840
+*                                  ADDITIONS FOR STANDARDS UPDATE       00035040
+R0       EQU    0                        REG                            00035240
+R1       EQU   1                         REG                            00035440
+R13      EQU   13                        REG                            00035640
+R14      EQU   14                        REG                            00035840
+R15      EQU   15                        REG                            00036040
+R3       EQU   3                         REG                            00036240
+D1       EQU   1                         DISP                           00036440
+D4       EQU   4                         DISP                           00036640
+D5       EQU   5                         DISP                           00036840
+D8       EQU   8                         DISP                           00037040
+D12      EQU   12                        DISP                           00037240
+D14      EQU   14                        DISP                           00037440
+D16      EQU   16                        DISP                           00037640
+D32      EQU   32                        DISP                           00037840
+D41      EQU   41                        DISP                           00038040
+D118     EQU   118                       DISP                    XM5301 00038240
+D256     EQU   256                       DISP                           00038440
+L1       EQU   1                         LENGTH                         00038640
+L2       EQU   2                         LENGTH                         00038840
+L3       EQU   3                         LENGTH                         00039040
+L4       EQU   4                         LENGTH                         00039240
+L6       EQU   6                         LENGTH                  XM5301 00039440
+L8       EQU    8                        LENGTH                         00039640
+L20      EQU   20                        LENGTH                         00039840
+L24      EQU   24                        LENGTH                         00040040
+L42      EQU   42                        LENGTH                         00040240
+L44      EQU   44                        DSN LENGTH                     00040440
+L53      EQU   53                        LENGTH                         00040640
+L54      EQU   54                        LENGTH                         00040840
+L62      EQU   62                        LENGTH                @ZA09423 00040940
+L74      EQU   74                        LENGTH                  XM5302 00041040
+L80      EQU   80                        LENGTH                         00041240
+L88      EQU   88                        LENGTH                         00041440
+M1       EQU   1                         MASK                           00041640
+K0       EQU   0                         CONSTANT                       00041840
+K1       EQU   1                         CONSTANT                       00042040
+K2       EQU   2                         CONSTANT                       00042240
+K3       EQU   3                         CONSTANT                       00042440
+X40      EQU   X'40'                     HEX                            00042640
+XF7      EQU   X'F7'                     HEX                            00042840
+X08      EQU   X'08'                     HEX                            00043040
+X10      EQU   X'10'                     HEX                            00043240
+X80      EQU   X'80'                     HEX                     XM5302 00043440
+XDF      EQU   X'DF'                     HEX                            00043640
+OFF      EQU   X'00'                     SWITCH OFF CONDITION  @ZA06487 00043840
+ON       EQU   X'01'                     SWITCH ON CONDITION   @ZA06487 00044040
+XF0      EQU   X'F0'                     UNPK SIGN BIT CONVERT @ZA19255 00044140
+*        BYTE 3 OF SDW INDICATES SEGMENT TYPE                  @ZA06487 00044240
+NOSEG    EQU   X'00'                     REC NOT SEGMENTED     @ZA06487 00044440
+FIRSTSEG EQU   X'01'                     FIRST SEGMENT         @ZA06487 00044640
+LASTSEG  EQU   X'02'                     LAST SEGMENT          @ZA06487 00044840
+MIDSEG   EQU   X'03'                     MIDDLE SEGMENT        @ZA06487 00045040
+C2       EQU   C'2'                      CHAR                           00045240
+VERSION  EQU   X'02'                     VS2 VERSION                    00045440
+         EJECT                                                          00045640
+         USING *,R15                                                    00045840
+         MODID BR=YES                                          @ZA31142 00046040
+         SAVE  (14,12)                                         @ZA31142 00046140
+         DROP  R15                                                      00046640
+         LR    BASE,R15                 ESTABLISH ADDRESSABILITY        00046840
+         USING IFASMFDP,BASE                                            00047040
+         L     MSGBASE,MSGADDR          ESTABLISH ADDR TO MESSAGE CSECT 00047240
+         USING SMFDPMSG,MSGBASE                                         00047440
+         LA    R0,LENGTH                                                00047640
+         GETMAIN    R,LV=(0)            OBTAIN SAVE AND WORK SPACE      00047840
+*                                                                       00048040
+         ST    R1,D8(R13)               SAVE ADDRESS OF THIS SAVE AREA  00048240
+         ST    R13,D4(R1)               SAVE ADDRESS OF CALLER'S AREA   00048440
+         LR    R13,R1                   LOAD ADDRESS OF THIS SAVE AREA  00048640
+         USING WORKAREA,13                                              00048840
+         SR    WORK,WORK                                                00049040
+         ST    WORK,CONCAT              CLEAR CONCATENATION SWITCH      00049240
+         ST    WORK,RETCOD              CLEAR RETURN CODE               00049440
+         STC   WORK,TRUNCSW             CLEAR TRUNCATION SW    @ZA06487 00049640
+         ST    WORK,SAVDOMID            INIT TO NO DOM REQ'D   @ZA07764 00049840
+         EJECT                                                          00050040
+* START THE CHECK FOR CONCURRENT USE OF REQUESTED SMF DATA SET          00050240
+         LA    R0,JLENGTH                                        A35637 00050440
+         GETMAIN    R,LV=(0)            OBTAIN WK AREA FOR JFCB  A35637 00050640
+         LR    JBASE,R1                                          A35637 00050840
+         USING  JWKAREA,JBASE           ESTABLISH ADDRESSIBILITY A35637 00051040
+         XC    JWKAREA(D256),JWKAREA    ZERO OUT JFCB WORK AREA  A35637 00051240
+         XC    JWKAREA+D256(JLENGTH-D256),JWKAREA+D256           A46781 00051440
+         LA    RCTL,CONT                INIT CONTINUATION ADDR   A35637 00051640
+*                                       TO VALID DATA SET RQST   A35637 00051840
+         MVC   JFCBDCB(L88),DCBSKEL     INIT DUMPIN DCB FOR JFCB A35637 00052040
+         LA    R7,JFCBDCB                                        A35637 00052240
+         O     R7,JPARLIST              INIT DCB ADDR IN RDJFCB  A35637 00052440
+         ST    R7,JLSTFM                 MACRO LIST              A35637 00052640
+*                                                                       00052840
+         O     R1,JHEXCDE               INIT DCB EXIT LIST ENTRY A35637 00053040
+         ST    R1,JEXLST                TO '87' PLUS JFCB WORK   A35637 00053240
+*                                       AREA ADDRESS             A35637 00053440
+         LA    R7,JEXLST                INSERT EXIT LIST ADDRESS A35637 00053640
+         ST    R7,JEXADDR               INTO DCB   WITHOUT       A35637 00053840
+         MVC   JFCBDCB+EXLST(L3),JEXADDR+K1 DESTROYING RECFM     A35637 00054040
+*                                                                       00054240
+         LA    R1,JLSTFM                                         A35637 00054440
+         RDJFCB MF=(E,(1))              READ JFCB INTO ITS AREA  A35637 00054640
+         MVC   OBTDSNME(L44),JFCB       SAVE DSN FOR OBTAIN    @ZA09423 00054840
+         LA    R1,OBTDSNME              ADDR OF DSN FOR PARM LIST       00055040
+*                                                              @ZA09423 00055240
+         ST    R1,OBTDSN                SAVE ADDR OF DSN IN PARM LIST   00055440
+*                                                              @ZA09423 00055640
+         MVC   OBTVOLSR(L6),JFCB+D118   VOL-SER OF DSN FOR OBTAIN       00055840
+*                                                              @ZA09423 00056040
+         LA    R1,OBTVOLSR              ADDR OF VOL-SER FOR PARM LIST   00056240
+*                                                              @ZA09423 00056440
+         ST    R1,OBTVSER               SAVE ADDR OF VOL-SER IN LIST    00056640
+*                                                              @ZA09423 00056840
+         CLC   JFCB(L8),JSMFDSN         IS D.S. NAME 'SYS1.MAN'? A35637 00057040
+         BNE   RQSTOK                   IF NOT, ASSUME DUMP      A35637 00057240
+*                                        WANTED                  A35637 00057440
+         L     R7,CVTPTR                GET ADDRRESS OF CVT      A35637 00057640
+         L     R7,SMCAPTR(R7)           GET ADDRESS OF SMCA      A35637 00057840
+         CLC   JFCB+D8(L1),SMCAXORY(R7) COMPARE (X/Y) OF ACTIVE  A35637 00058040
+*                                  D.S. TO X/Y IN JFCB DD NAME   A35637 00058240
+         BNE   DOMCHK                   IF UNEQUAL, RQST IS OK @ZA07764 00058440
+         CLC   JFCB+D118(L6),SMCAPDEV(R7) IF DATA SET ON DIFF VOLXM5301 00058640
+         BNE   RQSTOK                   THEN RQST IS OK          XM5301 00058840
+*                                                                XM5301 00059040
+         TM    SMCASWA(R7),X40          IF BOTH DATA SETS FULL   A43334 00059240
+         BNO   INITERR                  CANNOT DUMP ACTIVE VOL @ZA07764 00059440
+         CLI   SMCAXORY(R7),C'X'        ARE WE DUMPING MANX    @ZA07764 00059640
+         BE    DOMMANX                  GO DOM MANX DUMP MSG   @ZA07764 00059840
+DOMMANY  MVC   SAVDOMID(L4),SMCADOMY(R7) SAVE MANY DOM ID      @ZA07764 00060040
+         B     RQSTOK                   CONTINUE WITH DUMP     @ZA07764 00060240
+DOMCHK   EQU   *                        CHK FOR ALTERNATE MANX/@ZA07764 00060440
+         CLC   JFCB+D118(L6),SMCAADEV(R7) AND DOM IF SAME      @ZA07764 00060640
+         BNE   RQSTOK                   ELSE CONTINUE WITH DUMP@ZA07764 00060840
+         CLI   SMCAYORX(R7),C'X'        IS THIS MANX DATA SET  @ZA07764 00061040
+         BNE   DOMMANY                  NO, GO PROCESS MANY    @ZA07764 00061240
+DOMMANX  MVC   SAVDOMID(L4),SMCADOMX(R7) SAVE MANX DOM ID      @ZA07764 00061440
+         B     RQSTOK                   CONTINUE WITH DUMP     @ZA07764 00061640
+*                                                              @ZA07764 00061840
+INITERR  MVC   JWTORLST(L80),WTOMSG1    INIT WTOR LIST FORM    @ZA07764 00062040
+WTO1     LA    R1,JWTORLST              GET ERROR MESSAGE        A35637 00062240
+         LA    R7,JREPLY                GET OPERATOR REPLY       A35637 00062440
+         LA    R8,JECB                  GET ECB ADDRESS FOR WAIT A35637 00062640
+         WTOR  ,(R7),,(R8),MF=(E,(1))   NOTIFY OPERATOR OF ERROR A35637 00062840
+         WAIT  ECB=(R8)                 WAIT FOR ACKNOWLEDGMENT  A35637 00063040
+         CLC   RCANCEL(L4),JREPLY       OPERATOR REPLY = CANCEL? A35637 00063240
+         BE    CNCLRQST                 THEN REPLY ACCEPTED;     A35637 00063440
+         XC    JECB(L4),JECB            ELSE ZERO OUT JECB AND   A35637 00063640
+         B     WTO1                     GO REPEAT ERROR MESSAGE  A35637 00063840
+*                                                                       00064040
+CNCLRQST EQU   *                                                 A35637 00064240
+         MVC   OPENLIST(L24),PARLIST    SET UP OPEN,CLOSE PARMS  XM5302 00064440
+         MVC   MSGDCB(L88),DCBMESS      SET SYSPRINT DCB,        XM5302 00064640
+         LA    RMSG,MSGDCB                 AND POINT TO IT.      XM5302 00064840
+         LA    R1,OPENLIST+D4           GET OPENLIST             XM5302 00065040
+         OI    0(R1),X80                FLAG SYSPRINT DCB AS LASTXM5302 00065240
+         OPEN  ((RMSG),(OUTPUT)),MF=(E,(1)) OPEN SYSPRINT        XM5302 00065440
+         MVC   MSGBUF(L74),MSG5         GET ERROR MSG            XM5302 00065640
+         LA    RBUF,MSGBUF                                       XM5302 00065840
+         BAL   RCTL,ERROUT              GO PRINT ERROR           XM5302 00066040
+         LA    R1,CLOSELST              GET CLOSELIST            XM5302 00066240
+         OI    0(R1),X80                FLAG SYSPRINT DCB AS LASTXM5302 00066440
+         CLOSE ((RMSG),DISP),MF=(E,(1)) CLOSE SYSPRINT           XM5302 00066640
+*                                                                       00066840
+         LA    R1,WTOMSG2               GET 'DUMP CANCELLED' MSG A35637 00067040
+         WTO   MF=(E,(1))               AND NOTIFY OPERATOR      A35637 00067240
+         LA    RCTL,NODUMP              RESET CONT ADDR TO     @ZA06487 00067440
+*                                       CANCEL DUMP              A35637 00067640
+RQSTOK   EQU   *                                                 A35637 00067840
+         LA    R0,JLENGTH               FREE JFCB WORK AREA      A35637 00068040
+         LR    R1,JBASE                                          A35637 00068240
+         FREEMAIN  R,LV=(0),A=(1)                                A35637 00068440
+         DROP JBASE                                              A35637 00068640
+         BR    RCTL                    CONTINUE DUMP             A35637 00068840
+         EJECT                                                          00069040
+CONT     MVC   OPENLIST(L24),PARLIST    SET PARAMETERS FOR OPEN, CLOSE  00069240
+         MVC   MSGDCB(L88),DCBMESS      SET SYSPRINT DCB,               00069440
+         LA    RMSG,MSGDCB                 AND POINT TO IT.             00069640
+         MVC   DUMPIN(L88),DCBSKEL      SET DUMPIN DCB,                 00069840
+         LA    RIN,DUMPIN                  AND POINT TO IT.             00070040
+         MVC   DUMPOUT(L88),DCBSKEL     SET DUMPOUT DCB,                00070240
+         LA    ROUT,DUMPOUT                AND POINT TO IT.             00070440
+         NI    RECFM(RIN),XF7           ELIMINATE SPANNING              00070640
+         NI    MACRF(ROUT),XDF          ELIMINATE READ                  00070840
+         MVC   DDNAME+D4(R3,ROUT),OUTNAME MODIFY NAME TO DUMPOUT        00071040
+         MVC   EXLST(R3,ROUT),OUTXADD+D1  SET OUTPUT EXIT               00071240
+*                                                              @ZA06487 00071440
+*   ENQUE ON SMF DATA SET WHILE DUMPING                        @ZA06487 00071640
+*                                                              @ZA06487 00071840
+         ENQ   (QNAMSMFD,RNAMDATA,E,7,SYSTEM)                  @ZA06487 00072040
+         LA    R1,OPENLIST                                              00072240
+         OPEN  ((RIN),(INPUT)),MF=(E,(1))                               00072440
+         LA    R1,OPENLIST+D4                                           00072640
+         OPEN  ((RMSG),(OUTPUT),(ROUT),(OUTPUT)),MF=(E,(1))             00072840
+*                                                                       00073040
+         TM    OFLGS(RIN),X10           WAS OPEN SUCCESSFUL             00073240
+         BO    CHKOUT                   YES, CHECK DUMPOUT.             00073440
+         MVC   MSGBUF(L53),MSG1         IF NOT, DD CARD MISSING.        00073640
+         LA    RBUF,MSGBUF                                              00073840
+         BAL   RCTL,ERROUT              GO PRINT ERROR                  00074040
+         B     CLEANUP                  FOR EXIT                        00074240
+CHKOUT   TM    OFLGS(ROUT),X10          WAS OPEN SUCCESSFUL             00074440
+         BO    HEADER                   YES, WRITE HEADER.              00074640
+         MVC   MSGBUF(L53),MSG1         IF NOT, DD CARD MISSING.        00074840
+         LA    RBUF,MSGBUF                                              00075040
+         MVI   MSGBUF+D14,C2                                            00075240
+         MVC   MSGBUF+D41(L3),OUTNAME                            Y01034 00075440
+         BAL   RCTL,ERROUT              GO PRINT ERROR                  00075640
+         B     ENDUMP                   GO TO                           00075840
+HEADER   MVI   RECTYP,K2                REQUEST DUMP HEADER             00076040
+         BAL   RCTL,DUMPER              WRITE SMF RECORD                00076240
+         OI    OFLGS(RIN),X08           INDICATE P.P. CONCATENATION     00076440
+         NI    SPANFLAG,OFF             SHOW NO SPAN REC FOUND @ZA06487 00076640
+         MVC   OBTOPTN(4),SEARCH        OPTION TO PARAM LIST   @ZA09423 00076840
+         LA    R1,DSCBAREA   ADDR OF WORK AREAFOR OBTAIN       @ZA09423 00077040
+         ST    R1,OBTWORK         STORE IN OBTAIN PARM LIST    @ZA09423 00077240
+         LA    R1,OBTLIST         ADDR OF PARM LIST IN REG 1   @ZA09423 00077440
+         OBTAIN (R1)              ISSUE OBTAIN MACRO FOR DSCB  @ZA09423 00077640
+REREAD   EQU   *                                                        00077840
+         L     RCTL,RETCOD                                              00078040
+         LTR   RCTL,RCTL                WERE EXITS SUCCESSFUL           00078240
+         BZ    BEGDMP                   YES                             00078440
+         LA    RBUF,MSGBUF                                              00078640
+         B     ERROUT                   GO ENDUMP              @ZA06487 00078840
+BEGDMP   EQU   *                        BEGIN COPYING          @ZA06487 00079040
+         L     RBCTE,BCTADRS            GET ADDR FIRST ENTRY   @ZA06487 00079240
+         L     RCTL,BUFNUM              GET NUMBER OF BUFFERS           00079440
+PRIMER   LA    RDECB,D8(RBCTE)                                 @ZA06487 00079640
+         MVC   0(L20,RDECB),READDECB    INITIALIZE DECB FOR READ        00079840
+         L     RBUF,D4(RBCTE)           GET BUFFER FOR READ    @ZA06487 00080040
+         READ  (RDECB),SF,(RIN),(RBUF),MF=E                             00080240
+*                                                                       00080440
+         OI    28(RBCTE),ON          SET OUTSTANDING READ FLAG @ZA31142 00080540
+         L     RBCTE,0(RBCTE)           BUMP READ CHAIN        @ZA06487 00080740
+         BCT   RCTL,PRIMER              PRIME ALL BUFFERS               00080840
+         L     RSAVEBUF,SAVEBUFA        GET ADDR SAVE BUFFER   @ZA06487 00081040
+         EJECT                                                          00081240
+CYCLE1   LA    RDECB,D8(RBCTE)          LA FROM RDECB          @ZA06487 00081440
+         CHECK (RDECB)                  CHECK READS                     00081640
+         NI    28(RBCTE),OFF      RESET OUTSTANDING READ FLAG @ZA31142  00081740
+*                                                                       00081940
+         NOTE  (RIN)                  GET ADDR OF LAST BLK READ@ZA09423 00082040
+         ST    R1,SAVENOTE            SAVE ADDRESS OF BLOCK    @ZA09423 00082240
+         TM    CONCAT,M1                IF CONCATENATION OCCURRED,      00082440
+         BO    REINIT                   PERFORM REINITIALIZATION.       00082640
+         MVC   0(L20,RDECB),WRITDECB    INITIALIZE DECB FOR WRITE       00082840
+         L     RBUF,D4(RBCTE)           GET BUFFER FOR WRITE   @ZA06487 00083040
+         WRITE (RDECB),SF,(ROUT),(RBUF),MF=E                            00083240
+*                                                                       00083440
+         LA    RSDW,4(RBUF)             ADDR 1ST SDW IN BLOCK  @ZA06487 00083640
+         LH    RRECL,SL(RSDW)           LGTH 1ST SEGMENT       @ZA06487 00083840
+         LA    RRECL,4(RRECL)           ADD LGTH BDW(4 BYTES)  @ZA06487 00084040
+         CLI   SPANFLAG,ON              IS REC SPANNED         @ZA06487 00084240
+         BE    SPANNED                  YES IF NOT ZERO        @ZA06487 00084440
+*                                                                       00084640
+NOTSPAN  EQU   *                        REC NOT SPANNED        @ZA06487 00084840
+         CLI   ST(RSDW),FIRSTSEG        IS THIS A 1ST SEGMENT  @ZA06487 00085040
+         BNE   NOTFIRST                 IF NOT X'01' BRANCH    @ZA06487 00085240
+         OI    SPANFLAG,ON              SHOW SPAN REC FOUND    @ZA06487 00085440
+         LA    WORK,4(RBUF)             GET ADDR 1ST SDW       @ZA06487 00085640
+         CR    RSDW,WORK                IS TRUNC NECESSARY     @ZA06487 00085840
+         BE    CHKNOTE                  NO IF X'01' ONLY SEG   @ZA06487 00086040
+         OI    TRUNCSW,ON               SHOW TRUNC REQ'D       @ZA06487 00086240
+         SR    RSDW,RBUF                GET SDW OFFSET         @ZA06487 00086440
+         AR    RSDW,RSAVEBUF            GET SDW ADDR IN SAVE   @ZA06487 00086640
+         ST    RSDW,SAVESDW           SAVE ADDR SDW FOR TRUNC  @ZA06487 00086840
+         STM   RTO,RFROML,SAVEREGS    SAVE REGS USED IN MVCL   @ZA09423 00086940
+         LR    RTO,RSAVEBUF           ADDRESS OF TO BUFFER     @ZA09423 00087040
+         LR    RFROM,RBUF             ADDRESS OF FROM BUFFER   @ZA09423 00087140
+         LH    RTOL,BL(RBUF)          LENGTH TO MOVE           @ZA09423 00087240
+         LR    RFROML,RTOL            LENGTH TO MOVE           @ZA09423 00087340
+         MVCL  RTO,RFROM              SAVE THIS BLOCK          @ZA09423 00087440
+         LM    RTO,RFROML,SAVEREGS    RESTOR MVCL REGS         @ZA09423 00087540
+CHKNOTE  EQU   *           REMEMBER PHYS ADDR OF LAST WRITE    @ZA06487 00087840
+         CHECK (RDECB)     ALL WRITES CHKED BEFORE NOTE        @ZA06487 00087940
+         NOTE  (ROUT)      GET TTR0 OF LAST WRITE              @ZA06487 00088040
+         ST    R1,LASTWRT  SAVE PHYS ADDR RETURNED FROM NOTE   @ZA06487 00088140
+         B     READMORE    CONTINUE READING RECORDS            @ZA06487 00088240
+*                                                                       00088640
+NOTFIRST EQU   *                    MUST FIND X'00'            @ZA06487 00088840
+         CLI   ST(RSDW),NOSEG       IS EEC SEGMENTED           @ZA06487 00089040
+         BNE   BADREC               YES IF NOT X'01'(BAD)      @ZA06487 00089240
+CHKBLKED EQU   *                    CHK FOR MORE SEGS IN BLK   @ZA06487 00089440
+         CH    RRECL,BL(RBUF)       ANY MORE SEGS              @ZA06487 00089640
+         BE    CHKCURR              NO IF EQUAL, GO CHK WRT    @ZA06487 00089840
+         LH    WORK,SL(RSDW)        LGTH CURR SEGMENT          @ZA06487 00090040
+         LTR   WORK,WORK            ZERO LENGTH SEGMENT?      @ZA25463* 00090240
+         BZ    BADREC               YES,BAD RECORD, EXIT      @ZA25463* 00090340
+         AR    RSDW,WORK            POINT TO NEAXT SDW         @ZA06487 00090440
+         AH    RRECL,SL(RSDW)       NEW PHYS REC LENGTH        @ZA06487 00090540
+         B     NOTSPAN              CONTINUE CHECKING BLOCK    @ZA06487 00090740
+*                                                                       00090840
+CHKCURR  EQU   *                    CHECK CURRENT WRITE        @ZA06487 00091040
+         CHECK (RDECB)              CHECK CURRENT WRITE        @ZA06487 00091240
+READMORE EQU   *                    CONTINUE READING BLOCKS    @ZA06487 00091440
+         MVC   0(L20,RDECB),READDECB INIT DECB FOR READ        @ZA06487 00091640
+         CLC   SAVENOTE(3),DS1LSTAR COMPARE LAST BLOCK ADDRESS @ZA09423 00091840
+         BNE   READMOR1             WITH LAST BLOCK WRITTEN    @ZA31142 00092040
+         L     RBCTE,0(RBCTE)       GET NEXT BCTE              @ZA31142 00092140
+         TM    28(RBCTE),ON         OUTSTANDING READ?          @ZA31142 00092240
+         BNO   EOFRTN               NO, GO TO EOF ROUTINE      @ZA31142 00092340
+         B     CYCLE1               YES, PROCESS IT            @ZA31142 00092440
+READMOR1 EQU   *                                               @ZA31142 00092540
+         READ  (RDECB),SF,(RIN),(RBUF),MF=E  READ PHYS BLOCK   @ZA06487 00092640
+         OI    28(RBCTE),ON         SET OUTSTANDING READ FLAG  @ZA31142 00092740
+         L     RBCTE,0(RBCTE)       ADDR NEXT BCT ENTRY        @ZA06487 00093040
+         B     CYCLE1               CONTINUE PROCESSING        @ZA06487 00093140
+*                                                                       00093240
+BADREC   EQU   *                    FATAL RECORD ERROR         @ZA06487 00093340
+         L     RBCTE,0(RBCTE)       GET NEXT BCTE ADDRESS      @ZA31142 00093440
+         TM    28(RBCTE),ON         OUTSTANDING READ?          @ZA31142 00093540
+         BNO   BADREC1              NO, CONTINUE               @ZA31142 00093640
+         LA    RDECB,8(RBCTE)       YES, GET DECB ADDRESS      @ZA31142 00093740
+         CHECK (RDECB)              CHECK IT                   @ZA31142 00093940
+         NI    28(RBCTE),OFF       RESET OUTSTANDING READ FLAG@ZA31142  00094040
+         B     BADREC               MORE OUTSTANDING READS?    @ZA31142 00094140
+BADREC1  EQU   *                                               @ZA31142 00094240
+         MVC   MSGBUF(L62),MSG6     MOVE MSG6 TO BUFFER        @ZA09423 00094340
+         LA    RBUF,MSGBUF          GET BUFFER ADDRESS         @ZA09423 00094440
+         BAL   RCTL,TTRCVD          PROCESS TTR FOR MESSAGES   @ZA19255 00094540
+         BAL   RCTL,ERROUT          GO PRINT ERROR             @ZA09423 00094640
+         B     EOFRTN               EXIT DUMP PGM              @ZA09423 00094740
+SPANNED  EQU   *                    CHK PROPER SEGMENTATION    @ZA06487 00094840
+         CLI   ST(RSDW),MIDSEG      IS THIS MIDDLE SEGMENT     @ZA06487 00094940
+         BE    CHKCURR              YES IF X'03', GO ON        @ZA06487 00095040
+         CLI   ST(RSDW),LASTSEG     IS THIS LAST SEGMENT       @ZA06487 00095140
+         BNE   FIXUP                IF NOT X'02' FIX RECORD    @ZA06487 00095240
+         NI    SPANFLAG,OFF         TERMINATE SPANNING SEARCH  @ZA06487 00095340
+         NI    TRUNCSW,OFF          RESET TRUNCATION SWITCH    @ZA06487 00095440
+         B     CHKBLKED             CONT CHKING WITHIN BLOCK   @ZA06487 00095540
+*                                                                       00095640
+FIXUP    EQU   *             BAD BUT CORRECTIBLE REC FOUND     @ZA06487 00095740
+         CHECK (RDECB)              CHECK PREV WRITE           @ZA06487 00095840
+         BAL   RCTL,POINTAT         GO POINT AND FIX RECORD    @ZA06487 00095940
+         L     RSAVEBUF,SAVEBUFA    RESTORE SAVE BUF ADDR      @ZA06487 00096040
+         SR    WORK,WORK            ZERO TO CLEAR ECB          @ZA06487 00096240
+         ST    WORK,0(RDECB)        CLEAR ECB FOR WRITE        @ZA06487 00096440
+         WRITE (RDECB),SF,(ROUT),(RBUF),MF=E                   @ZA06487 00096640
+         B     NOTSPAN              REPROCESS CURRENT BUFFER   @ZA06487 00096840
+*                                                                       00097040
+POINTAT  EQU   *        POINT AT PHYS RECORD, FIX DATA SET     @ZA06487 00097240
+         POINT (ROUT),LASTWRT       SET UP FOR REWRITE         @ZA06487 00097440
+         NI    SPANFLAG,OFF         TURN OFF SPAN SEARCH       @ZA06487 00097640
+         CLI   TRUNCSW,OFF          IS TRUNCATION REQ'D        @ZA06487 00097840
+         BE    0(RCTL)              NO IF OFF, GO RETURN       @ZA06487 00098040
+         NI    SPANFLAG,OFF         TURN OFF SPANNING SEARCH   @ZA06487 00098240
+         NI    TRUNCSW,OFF          RESET TRUNCATION SWITCH    @ZA06487 00098440
+         L     R1,SAVESDW           GET LOC SEG 1 WITHIN BLK   @ZA06487 00098640
+         L     WORK,SAVEBUFA        GET SAVE BUF ADDR          @ZA06487 00098840
+         LH    R0,BL(WORK)      GET OLD PHYS BLOCK LGTH        @ZA06487 00099040
+         SH    R0,SL(R1)            CALC NEW LENGTH OF BLK     @ZA06487 00099240
+         STH   R0,BL(WORK)      TRUNCATION COMPLETE            @ZA06487 00099440
+         SR    R1,R1                ZERO TO CLEAR ECB          @ZA06487 00099640
+         ST    R1,0(RDECB)          CLEAR ECB FOR NEXT WRITE   @ZA06487 00099840
+         WRITE (RDECB),SF,(ROUT),(WORK),MF=E                   @ZA06487 00100040
+         CHECK (RDECB)              CHK WRT OF TRUNC BLOCK     @ZA06487 00100240
+         BR    RCTL                 RETURN TO CALLER           @ZA06487 00100440
+*                                                                       00100640
+REINIT   EQU   *                        REINITIALIZATION POINT          00100840
+         MVI   CONCAT,K0                RESET CONCATENATION SWITCH      00101040
+         CLI   SPANFLAG,OFF             WAS LAST REC SPANNED   @ZA06487 00101240
+         BE    FIRST                    IF NOT, GO TO FIRST    @ZA06487 00101440
+         BAL   RCTL,POINTAT             ELSE, FIX UP DATA SET  @ZA06487 00101640
+         BAL   R14,CHKSIZ               RECHECK OUTPUT SIZE    @ZA06487 00101840
+         LA    WORK,REREAD                                              00102040
+         ST    WORK,SAVE14                                              00102240
+FREEUP   LM    R0,R1,BCTSIZE            GET SIZE AND ADDRESS OF TABLE   00102440
+         FREEMAIN   R,LV=(0),A=(1)      RELEASE BUFFER CONTROL TABLE    00102640
+*                                                                       00102840
+         FREEPOOL   (RIN)               RELEASE INPUT BUFFERS           00103040
+*                                                                       00103240
+         L     R0,BUFNUM                                                00103440
+         AH    R0,ONE           EXTRA BUFFER FOR ERRORS        @ZA06487 00103640
+         SLL   R0,D16                                                   00103840
+         AH    R0,BLKSI(RIN)                                            00104040
+         B     NEXT3                    GO TO                           00104240
+         EJECT                                                          00104440
+         CNOP  0,4                                                      00104640
+INLIST   DC    X'85',AL3(INEXIT)        INLIST                          00104840
+INEXIT   EQU   *                        INPUT DCB EXIT ROUTINE          00105040
+         ST    R14,SAVE14               SAVE RETURN ADDRESS             00105240
+         TM    OFLGS(RIN),X08                                           00105440
+         BZ    FIRST                    BRANCH IF FIRST EXIT            00105640
+         MVI   CONCAT,K1                SET CONCATENATION SWITCH        00105840
+FIRST    EQU   *                                                        00106040
+         SR    R0,R0                                                    00106240
+         IC    R0,BUFNO(RIN)                                            00106440
+         LTR   R0,R0                      IF BUFNO WAS NOT              00106640
+         BP    NEXT                        SUPPLIED BY DD CARD,         00106840
+         LA    R0,K2                       SET DEFAULT.                 00107040
+         STC   R0,BUFNO(RIN)                                            00107240
+NEXT     STC   R0,NCP(RIN)              NO. CHANNEL PGMS = BUFNO        00107440
+         ST    R0,BUFNUM                 SAVE NUMBER OF BUFFERS         00107640
+         AH    R0,ONE                    EXTRA FOR ERRORS      @ZA06487 00107840
+         SLL   R0,D16                                                   00108040
+         AH    R0,BLKSI(RIN)            INCLUDE BLOCK SIZE              00108240
+         CLC   BLKSI(L2,RIN),ZEROS        IF BLKSIZE WAS NOT            00108440
+         BNE   NEXT2                      SUPPLIED BY DD CARD,          00108640
+NEXT1    AH    R0,LRECL(RIN)                                            00108840
+         STH   R0,BLKSI(RIN)                                            00109040
+NEXT2    TM    CONCAT,M1                 IF CONCATENATION OCCURRED,     00109240
+         BO    QUIT                     REINITIALIZE DUMOUT.   @ZA06487 00109440
+NEXT3    GETPOOL    (RIN),(0)           GET A POOL OF BUFFERS           00109640
+*                                                                       00109840
+         L     R0,BUFNUM                GET NUMBER OF BUFFERS           00110040
+         SLL   R0,D5                       TIMES CONTROL SPACE.         00110240
+         ST    R0,BCTSIZE               SAVE SIZE OF TABLE              00110440
+         GETMAIN    R,LV=(0)            GET STORAGE FOR CONTROL TABLE   00110640
+*                                                                       00110840
+         ST    R1,BCTADRS               SAVE ADDRESS OF TABLE           00111040
+         LR    R14,R1                                                   00111240
+         L     RCTL,BUFNUM              GET NUMBER OF BUFFERS           00111440
+         L     RBUF,BUFCB(RIN)          GET POINTER TO BUFFER POOL      00111640
+         LA    RBUF,D8(RBUF)            BUMP PAST CONTROL INFO @ZA06487 00111840
+         ST    RBUF,SAVEBUFA            SAVE ADDR TROUBLE BUF  @ZA06487 00112040
+         AH    RBUF,BLKSI(RIN)          BUMP TO NEX BUFFER     @ZA06487 00112240
+INCONT2  ST    RBUF,D4(R1)              SET ADDRESS OF BUFFER           00112440
+         BCT   RCTL,INCONT1             LOOP                            00112640
+         L     R14,BCTADRS              LOCATE FIRST ENTRY              00112840
+         ST    R14,0(R1)                COMPLETE CHAIN                  00113040
+QUIT     L     R14,SAVE14               RESTORE RETURN ADDRESS          00113240
+         BR    R14                      RETURN TO OPEN                  00113440
+INCONT1  AH    RBUF,BLKSI(RIN)          POINT TO NEXT BUFFER            00113640
+         LA    R14,D32(R14)             POINT TO NEXT ENTRY             00113840
+         ST    R14,0(R1)                SET CHAIN                       00114040
+         LR    R1,R14                                                   00114240
+         B     INCONT2                  LOOP                            00114440
+         EJECT                                                          00114640
+         CNOP  0,4                                                      00114840
+OUTLIST  DC    X'85',AL3(OUTEXIT)       SELF DEFINING                   00115040
+OUTEXIT  EQU   *                        OUTPUT DCB EXIT ROUTINE         00115240
+         MVC   SAVBLKSI(L2),BLKSI(ROUT)                                 00115440
+         MVC   SAVBUFNO(L1),BUFNO(ROUT)                                 00115640
+         MVC   SAVNCP(L1),NCP(ROUT)                                     00115840
+CHKSIZ   LH    WORK,SAVBLKSI                                            00116040
+         LTR   WORK,WORK                IF DUMPOUT BLKSIZE IS           00116240
+         BZ    OVLAY                       ZERO, EQUATE TO DUMPIN.      00116440
+         CH    WORK,BLKSI(RIN)        ERROR IF DUMPOUT BLKSIZE          00116640
+         BNL   TOOPEN                 IS LESS THAN DUMPIN               00116840
+         LA    WORK,ENDUMP                                              00117040
+         ST    WORK,RETCOD              OUTPUT EXIT ERROR               00117240
+         MVC   MSGBUF(L53),MSG3                                         00117440
+         BR    R14                      RETURN TO OPEN           A34575 00118140
+OVLAY    MVC   BLKSI(L2,ROUT),BLKSI(RIN)                                00118240
+TOOPEN   MVC   BUFNO(L1,ROUT),BUFNO(RIN)                         A34575 00118340
+         MVC   NCP(L1,ROUT),NCP(RIN)                                    00118440
+         LH    WORK,LRECL(ROUT)        GET OUTPUT LRECL        @ZA15387 00118540
+         LTR   WORK,WORK               CHECK IF SPECIFIED      @ZA15387 00118640
+         BNZ   RETOPEN                 YES, LEAVE IT           @ZA15387 00118740
+         MVC   LRECL(L2,ROUT),LRECL(RIN)  MOVE IN DEFAULT FROM INPUT    00118840
+*                                         DCB LRECL            @ZA15387 00118940
+RETOPEN  EQU   *                                               @ZA15387 00119040
+         BR    R14                       RETURN TO OPEN                 00119140
+         EJECT                                                          00119240
+ERRRTN   EQU   *                        SYNAD EXIT                      00119340
+         SYNADAF    ACSMETH=BSAM                                        00119440
+*                                                                       00119540
+         LR    WORK,R13                 SAVE SYNAD SAVEAREA ADDR XM4745 00119640
+         L     R13,D4(R13)              FOR SYNADRLS AND SET UP         00119740
+         ST    WORK,SAVE14              ADDR TO OUR WORKAREA     XM4745 00119840
+         MVC   D8(L42,R1),MSG4          MOVE MSG4 INTO SYNAD BUFFER     00120040
+         LR    RBUF,R1                  GET BUFFER ADDRESS              00120240
+         BAL   RCTL,ERROUT              GO PRINT ERROR                  00120440
+         MVC   D8(D4,R13),SAVE14        RESTORE FORWARD WKAREA   XM4745 00120640
+*                                       PTR TO SYNAD SAVEAREA           00120840
+         L     R13,D8(R13)              RESTORE SAVEAREA REG     XM4745 00121040
+         SYNADRLS                                                       00121240
+         B     ENDUMP                     LEAVE                         00121440
+*                                                                       00121640
+ERROUT   EQU   *                                                        00121840
+         LA    WORK,D16                                                 00122040
+         ST    WORK,RETCOD              SET RETURN CODE                 00122240
+         LA    RMSG,MSGDCB                                              00122440
+         TM    OFLGS(RMSG),X10          WAS OPEN SUCCESSFUL             00122640
+         BCR   8,RCTL                   NO, RETURN TO CALLER.           00122840
+         LA    RDECB,ERDECB             YES                      A39034 00123040
+         MVC   ERDECB(L20),WRITDECB     INIT MSG DECB FOR WRITE  A39034 00123240
+         WRITE (RDECB),SF,(RMSG),(RBUF),MF=E                            00123440
+*                                                                       00123640
+         CHECK (RDECB)                  CHECK THIS WRITE                00123840
+*                                                                       00124040
+         BR    RCTL                     RETURN TO CALLER                00124240
+         EJECT                                                          00124440
+EOFRTN   EQU   *                        EODAD EXIT                      00124640
+         CLI   SPANFLAG,OFF             WAS REC COMPLETE       @ZA06487 00124840
+         BE    TRAILER                  YES IF 0               @ZA06487 00125040
+         BAL   RCTL,POINTAT             GO FIX DATASET         @ZA06487 00125240
+TRAILER  MVI   RECTYP,K3                 REQUEST DUMP TRAILER           00125440
+         BAL   RCTL,DUMPER              WRITE SMF RECORD                00125640
+ENDUMP   LM    R0,R1,BCTSIZE            GET SIZE AND ADDRESS OF TABLE   00125840
+         FREEMAIN   R,LV=(0),A=(1)      RELEASE BUFFER CONTROL TABLE    00126040
+*                                                                       00126240
+         FREEPOOL   (RIN)               RELEASE INPUT BUFFERS           00126440
+*                                                                       00126640
+CLEANUP  LA    R1,CLOSELST                                              00126840
+         LA    RMSG,MSGDCB                                              00127040
+         CLOSE ((RMSG),DISP,(RIN),REREAD,(ROUT),DISP),MF=(E,(1))        00127240
+*                                                                       00127440
+         L     WORK,RETCOD                                              00127640
+         LTR   WORK,WORK                IF ERROR EXISTS,                00127840
+         BNZ   NOCLOS                      DON'T RESET DSCB.            00128040
+         OI    RECFM(RIN),X08       RE-SET RECFM=VBS FOR DSCB  @ZA15009 00128140
+         LA    R1,OPENLIST+D8                                           00128240
+         OPEN  ((RIN),OUTPUT),MF=(E,(1))   REOPEN DUMPIN                00128440
+*                                                                       00128640
+         LA    R1,CLOSELST+D8                                           00128840
+         CLOSE ((RIN),DISP),MF=(E,(1))     RECLOSE DUMPIN               00129040
+*                                                                       00129240
+NOCLOS   EQU   *                                               @ZA06487 00129440
+*                                                              @ZA06487 00129640
+*   DEQUE FROM SMF DATA SET                                    @ZA06487 00129840
+*                                                              @ZA06487 00130040
+         DEQ   (QNAMSMFD,RNAMDATA,7,SYSTEM)                    @ZA06487 00130240
+NODUMP   EQU   *                                               @ZA06487 00130440
+         ICM   R1,B'1111',SAVDOMID             GET DOM ID      @ZA07764 00130640
+         BZ    NODOM                   IF 0, NO DOM REQ'D      @ZA07764 00130840
+         DOM   MSG=(1)                 DELETE DUMP WTO         @ZA07764 00131040
+NODOM    LR    R1,R13                                          @ZA06487 00131240
+         L     WORK,RETCOD               LOAD WORK REG                  00131440
+         L     R13,D4(R13)               GET ADDRESS OF CALLER'S AREA   00131640
+         LA    R0,LENGTH                 LA FROM R0                     00131840
+         FREEMAIN   R,LV=(0),A=(1)      RELEASE SAVE AND WORK SPACE     00132040
+*                                                                       00132240
+         LR    R15,WORK                  GET RETURN CODE                00132440
+         RETURN     (14,12),T,RC=(15)                                   00132640
+*                                                                       00132840
+         EJECT                                                          00133040
+DUMPER   EQU   *                                                        00133240
+         TIME  BIN                      GET TIME FOR RECORD,            00133440
+*                                                                       00133640
+         STM   R0,R1,WORK1                   AND STORE IT.              00133840
+         MVC   BUILD(L8),CTLWDS          SET BLOCK AND LRECL COUNTS     00134040
+         MVI   HDRFLAG,VERSION             SET SYSTEM IDENTIFICATION    00134240
+         MVC   TIME(L8),WORK1            SET TIME AND DATE              00134440
+         L     WORK,D16                  GET ADDRESS OF CVT             00134640
+         L     WORK,SMCAPTR(WORK)        GET ADDRESS OF SMCA            00134840
+         MVC   CPUID(L4),SYSID(WORK)     SET CPU ID                     00135040
+         LA    RDECB,HTDECB                                             00135240
+         MVC   HTDECB(L20),WRITDECB      INITIALIZE DECB FOR WRITE      00135440
+         LA    RBUF,BUILD                GET BUFFER LOCATION            00135640
+         WRITE (RDECB),SF,(ROUT),(RBUF),MF=E                            00135840
+*                                                                       00136040
+         CHECK (RDECB)                  CHECK THIS WRITE                00136240
+*                                                                       00136440
+         BR    RCTL                     RETURN TO CALLER                00136640
+         EJECT                                                          00136740
+TTRCVD   EQU   *                                               @ZA19255 00136840
+*                                                                       00136940
+*   ENTRY HERE IS TO CONVERT THE TTR OF INVALID BLOCK FOR      @ZA19255 00137040
+*   OUTPUT IN MESSAGE IFA009I.                                 @ZA19255 00137240
+*                                                                       00137340
+         USING MSG009I,RBUF         ADDRESSBILITY TO MSG DSECT @ZA19255 00137540
+         ST    WORK,SAVEREGS        SAVE REG11 VALUE           @ZA19255 00137640
+         L     WORK,SAVENOTE        GET HEX TTR VALUE          @ZA19255 00137840
+         CVD   WORK,BUILD           CONVERT TTR TO DECIMAL     @ZA19255 00137940
+         L     WORK,SAVEREGS        RESTORE REG11 VALUE        @ZA19255 00138140
+         UNPK  MSGTTR(L6),BUILD+L2(L6)  UNPACK TTR             @ZA19255 00138240
+         OI    MSGCVDB,XF0              FLIP SIGN BYTE         @ZA19255 00138440
+         BR    RCTL                     RETURN                 @ZA19255 00138540
+         EJECT                                                          00138740
+OUTXADD  DC    A(OUTLIST)               ADDRESS                         00138940
+MSGADDR  DC    V(IFASMFMG)              ADDRESS OF MESSAGE CSECT        00139040
+CTLWDS   DC    H'22'                    CONTROL WORDS                   00139240
+         DC    H'0'                     FILL                            00139340
+         DC    H'18'                    FILL                            00139540
+ZEROS    DC    H'0'                     SELF DEFINING                   00139640
+ONE      DC    H'1'                     SELF DEFINIG           @ZA06487 00139840
+OUTNAME  DC    C'OUT'                   OUTNAME                         00139940
+SEARCH   DC    X'C1000000'          OPTION FOR OBTAINMACRO              00140140
+DCBMESS  DCB   DSORG=PS,MACRF=W,RECFM=VB,DDNAME=SYSPRINT,              *00140240
+               BLKSIZE=132,LRECL=128                             A42348 00140440
+*                                                                       00140540
+DCBSKEL  DCB   DSORG=PS,MACRF=(RP,WP),RECFM=VBS,DDNAME=DUMPIN,         *00140740
+               SYNAD=ERRRTN,EODAD=EOFRTN,EXLST=INLIST          @ZA06487 00140840
+*                                                                       00140940
+         READ  READDECB,SF,MF=L                                         00141040
+         WRITE WRITDECB,SF,MF=L                                         00141140
+*                                                                       00141240
+PARLIST  EQU   *                                                        00141340
+         OPEN  (DCBSKEL,(INPUT)),MF=L                                   00141440
+         OPEN  (DCBMESS,(OUTPUT),DCBSKEL,(OUTPUT)),MF=L                 00141540
+         CLOSE (DCBMESS,DISP,DCBSKEL,REREAD,DCBSKEL,DISP),MF=L          00141640
+*                                                                       00141740
+RCANCEL  DC    C'CANC'                  CORRECT OPER REPLY       A35637 00141840
+JSMFDSN  DC    C'SYS1.MAN'              SMF DATA SET NAME        A35637 00141940
+JHEXCDE  DC    X'87000000'              EXIT LIST ENTRY HEX CODE A35637 00142040
+QNAMSMFD DC    C'SYSSMF01'              ENQUE MAJOR NAME       @ZA06487 00142240
+RNAMDATA DC    C'DATASET'               ENQUE MINOR NAME       @ZA06487 00142440
+*                                                                       00142640
+JPARLIST DS    0F                                              @ZA06487 00142840
+         RDJFCB     0000,MF=L           READ JFCB LIST MACRO     A35637 00143040
+*                                                              @ZA15009 00143140
+* MODULE PATCH AREA                                            @ZA15009 00143240
+*                                                              @ZA15009 00143340
+PATCH    DC    CL100'***IFASMFDP***'                           @ZA15009 00143440
+*                                                              @ZA15009 00143540
+         EJECT                                                          00143640
+SMFDPMSG DSECT                                                          00143740
+MSG1     DS    CL53                     MESSAGE (IFA001I)               00143840
+MSG3     DS    CL53                     MESSAGE (IFA003I)               00143940
+MSG4     DS    CL42                     MESSAGE (IFA004I)        XM5302 00144040
+MSG5     DS    CL73                     MESSAGE (IFA008I)      @ZA17833 00144240
+MSG6     DS    CL74                     MESSAGE (IFA009I)      @ZA19255 00144340
+WTOMSG1  DS    20F                      MESSAGE (IFA006A)        XM0123 00144540
+WTOMSG2  DS    8F                       MESSAGE (IFA007I)        XM0123 00144640
+         SPACE 5                                                        00144740
+MSG009I  DSECT                                                          00144840
+MSGTXT1  DS    CL51                MSG TEXT FOR IFA0091        @ZA19255 00144940
+MSGTTR   DS    0CL6                TTR VARIABLE PORTION OF MSG @ZA19255 00145040
+MSGADR   DS    CL5                                             @ZA19255 00145240
+MSGCVDB  DS    CL1                 SIGN BYTE OF UNPK INSTR.    @ZA19255 00145640
+MSGTXT2  DS    CL17                BALANCE OF TEXT             @ZA19255 00145740
+         EJECT                                                          00145840
+WORKAREA DSECT                          WORK AREA USED TO PROCESS DUMP  00145940
+*                                       OF SMF DATA                     00146040
+SAVE     DS    CL72                     STANDARD SAVE AREA              00146140
+*                                                                       00146340
+OPENLIST DS    CL12                     WORK AREA FOR LIST OPEN         00146440
+CLOSELST DS    CL12                     WORK AREA FOR LIST CLOSE        00146640
+*                                                                       00146740
+DUMPIN   DS    CL88                     DUMPIN DCB                      00146840
+DUMPOUT  DS    CL88                     DUMPOUT DCB                     00146940
+*                                                                       00147040
+WORK1    DS    CL4                      TIME FROM TIME BIN MACRO        00147140
+WORK2    DS    CL4                      DATE FROM TIME BIN MACRO        00147240
+*                                                                       00147440
+BUFNUM   DS    CL4                      NUMBER OF BUFFERS               00147640
+BCTSIZE  DS    CL4                      SIZE OF BUFFER CONTROL TABLE    00147840
+BCTADRS  DS    CL4                      ADDRESS OF BUFFER CONTROL TABLE 00148040
+*                                                                       00148240
+SAVBLKSI DS    CL2                      DUMPOUT BLKSIZE                 00148440
+SAVBUFNO DS    CL1                      DUMPOUT BUFNO                   00148640
+SAVNCP   DS    CL1                      DUMPOUT NCP                     00148840
+*                                                                       00149040
+SAVEREGS DS    4F                     SAVE AREA FOR MVCL REGS  @ZA09423 00149140
+SAVE14   DS    CL4                      REGISTER 14 STORAGE AND         00149240
+*                                       SYNAD SAVEAREA ADDRESS (REG13)  00149440
+CONCAT   DS    CL4                      CONCATENATION SWITCH            00149640
+RETCOD   DS    CL4                      ERROR INDICATOR                 00149840
+*                                                                       00150040
+MSGBUF   DS    CL74                     ERROR MESSAGE BUFFER     XM5302 00150240
+*                                                                       00150440
+MSGDCB   DS    CL88                     SYSPRINT DCB                    00150640
+*                                                                       00150840
+HTDECB   DS    5F                       DECB STORAGE             XM0123 00151040
+*                                                                       00151240
+ERDECB   DS    5F                       ERROR MSG DECB STORAGE   XM0123 00151440
+LASTWRT  DS    A                        ADDR RETD FROM NOTE    @ZA06487 00151640
+SAVESDW  DS    A                        SDW ADDR OF SEG 1      @ZA06487 00151840
+SAVEBUFA DS    A                        ADDR TROUBLE BUFFER    @ZA06487 00152040
+SAVDOMID DS    CL4                                             @ZA07764 00152240
+TRUNCSW  DS    CL1                      INDICATES TRUNC REQ'D  @ZA06487 00152440
+SPANFLAG DS    CL1                      INDICATES SPANNING     @ZA06487 00152640
+         DS    0D                  FORECE DOUBLEWORD BOUNDARY  @ZA19255 00152740
+BUILD    DS    CL8                      BLOCK AND LRECL COUNTS          00153040
+HDRFLAG  DS    CL1                      RESERVE BYTE                    00153240
+RECTYP   DS    CL1                      SMF RECORD TYPE                 00153440
+TIME     DS    CL4                      TIME OF RECORD                  00153640
+DATE     DS    CL4                      DATE OF RECORD                  00153840
+CPUID    DS    CL4                      SYSTEM AND MODEL                00154040
+         DS    0F                  FORCE FULLWORD BOUNDARY     @ZA19255 00154140
+OBTLIST  DS    CL16          OBTAIN PARAMETER LIST                      00154240
+         ORG   OBTLIST                                                  00154440
+OBTOPTN  DS    CL4           OPTION FOR OBTAIN                          00154640
+OBTDSN   DS    AL4           ADDR OF DATA SET NAME IN VIRT              00154840
+OBTVSER  DS    AL4           ADDR OF VOL SER FOR DATA SET               00155040
+OBTWORK  DS    AL4           ADDR OF WORK AREA                          00155240
+         ORG                                                            00155440
+DSCBAREA DS    148C          WORK AREA FOR OBTAIN                       00155640
+         ORG   DSCBAREA      MASK DSCB WORK AREA                        00155840
+NOTIMPT  DS    CL54          NON-REQUIRED FIELDS IN DSCB WORK AREA      00156040
+DS1LSTAR DS    CL3           ADDR OF LAST BLOCK WRITTEN                 00156240
+         ORG                                                            00156440
+LASTBLK  DS    CL3           DATA AREA FOR RESULT OF NOTE               00156640
+OBTDSNME DS    CL44          DATA AREA TO SAVE D.S. NAME                00156840
+OBTVOLSR DS    CL6           DATA AREA TO SAVE VOL-SER                  00157040
+         DS    0F                                                       00157240
+SAVENOTE DS    AL4           SLOT FOR -NOTE- RESULT                     00157440
+*                                                                       00157640
+* CAUTION--DSECT DOES NOT END ON A FULL-WORD BOUNDARY                   00157840
+LENGTH   EQU   *-WORKAREA                                               00158040
+         EJECT                                                          00158240
+JWKAREA  DSECT                              WORK AREA USED TO    A35637 00158440
+*                                        CHECK FOR VALID DUMP REQUEST   00158640
+JFCB     DS    CL180                    AREA INTO WHICH JFCB IS READ    00158840
+*                                                                       00159040
+JFCBDCB  DS    CL88                     DUMPIN DCB FOR JFCB READ        00159240
+*                                                                       00159440
+JWTORLST DS    CL80                     LIST FORM OF WTOR MACRO         00159640
+*                                                                       00159840
+JREPLY   DS    CL8                      OPERATOR'S REPLY TO WTOMSG1     00160040
+*                                                                       00160240
+JECB     DS    CL4                      ECB SIGNIFYING OPERATOR         00160440
+*                                       RESPONSE TO MESSAGE             00160640
+JLSTFM   DS    CL4                      LIST FORM OF JFCB READ MACRO    00160840
+*                                                                       00161040
+JEXADDR  DS    CL4                      JFCB EXIT LIST ADDRESS          00161240
+*                                                                       00161440
+JEXLST   DS    CL4                      ADDRESS OF JFCB IN JWKAREA      00161640
+*                                                                       00161840
+JLENGTH  EQU   *-JWKAREA                                                00162040
+         EJECT                                                          00162240
+IFASMFMG  CSECT    0                   MESSAGE MODULE                   00162440
+*                                                                       00162640
+* ANY CHANGES MADE TO THIS CSECT MUST ALSO BE MADE TO DSECT             00162840
+* 'SMFDPMSG' IN MODULE 'IFASMFDP'                                       00163040
+*                                                                       00163240
+MESS1    DC    AL2(MESS3-*)            DC                        Y01034 00163440
+         DC    AL2(0)                  DC                               00163640
+         DC    AL2(MESS3-*)            DC                        Y01034 00163840
+         DC    AL2(0)                  DC                               00164040
+         DC    C' IFA001I DCB OPEN FAILED FOR DUMPIN  DATA SET'  Y01034 00164240
+MESS3    DC    AL2(MESS4-*)             DC                              00164440
+         DC    AL2(0)                   DC                              00164640
+         DC    AL2(MESS4-*)             DC                              00164840
+         DC    AL2(0)                   DC                              00165040
+         DC    C' IFA004I OUTPUT BLKSIZE IS SMALLER THAN INPUT'    MS3  00165240
+MESS4    DC    CL42' IFA005I PERMANENT I/O ERROR DIAGNOSIS--'      MS4  00165440
+MESS5    DC    AL2(MESS6-*)             DC                              00165640
+         DC    AL2(0)                   DC                              00165840
+         DC    AL2(MESS6-*)             DC                              00166040
+         DC    AL2(0)                   DC                              00166240
+         DC    C' IFA008I SMF DUMP CANCELED - REQUEST MADE TO DUMP ACTIX00166440
+               VE DATA SET'                                        MS5  00166640
+MESS6    DC    AL2(MESSEND-*)                                  @ZA09423 00166740
+         DC    AL2(0)                                          @ZA09423 00166840
+         DC    AL2(MESSEND-*)                                  @ZA09423 00166940
+         DC    AL2(0)                                          @ZA09423 00167140
+         DC    C' IFA009I INVALID RECORD ENCOUNTERD.  TTR = XXXXXX. DUMX00167240
+               P TERMINATED'                                   @ZA19255 00167340
+MESSEND  EQU   *                                                        00167640
+*                                                                       00167740
+         DS    0F                                                       00167840
+WTOMESS1  EQU   *                                                A35637 00168040
+         WTOR  'IFA006A REQUEST MADE TO DUMP ACTIVE SMF DATA SET - REPLX00168140
+               Y CANCEL',,8,,ROUTCDE=(2),DESC=2,MF=L                    00168340
+*                                                                       00168440
+         DS    0F                                                       00168540
+WTOMESS2  EQU   *                                                A35637 00168640
+         WTO   'IFA007I SMF DUMP CANCELLED',ROUTCDE=(2),DESC=6,MF=L     00168740
+         END                                                            00168840
+*    AN ENQ IS DONE PRIOR TO OPENING THE SMF DATA SET         @ZA07764* 02830040
+*    A DEQ IS DONE AFTER THE SMF DATA SET IS CLOSED           @ZA07764* 02850040
+*                                                                     * 02890040
+*    IFASMFDP WILL ISSUE DOM MACRO TO DELETE WTO MESSAGE      @ZA07764* 02920040
+*    ISSUED BY SMF WRITER WHEN MANX/Y DATA SET BECOMES FULL   @ZA07764* 02950040
+*C 102000,748000,285165                                        @ZA07764 19596040
+*A 028000,304000,746000,877500                                 @ZA07764 19597040
+SMCAYORX EQU   51                                              @ZA07764 23280040
+SMCADOMX EQU   136                                             @ZA07764 23310040
+SMCADOMY EQU   140                                             @ZA07764 23340040
+SMCAADEV EQU   40                                              @ZA07764 23370040
+OFF      EQU   X'00'                     SWITCH OFF CONDITION  @ZA07764 25135840
+ON       EQU   X'01'                     SWITCH ON CONDITION   @ZA07764 25136240
+         ST    WORK,SAVDOMID            INIT TO NO DOM REQD.   @ZA07764 28220040
+         BNO   INITERR                  CANNOT DUMP ACTIVE VOL @ZA07764 28410340
+         CLI   SMCAXORY(R7),C'X'        ARE WE DUMPING MANX    @ZA07764 28410940
+         BE    DOMMANX                  GO DOM MANX DUMP MSG   @ZA07764 28411540
+DOMMANY  MVC   SAVDOMID(L4),SMCADOMY(R7) SAVE MANY DOM ID      @ZA07764 28412140
+         B     RQSTOK                   CONTINUE WITH DUMP     @ZA07764 28412740
+DOMCHK   EQU   *                        CHK FOR ALTERNATE MANX @ZA07764 28413340
+         CLC   JFCB+D118(L6),SMCAADEV(R7) AND DOM IF SAME      @ZA07764 28413940
+         BNE   RQSTOK                   ELSE CONTINUE WITH DUMP@ZA07764 28414540
+         CLI   SMCAYORX(R7),C'X'        IS THIS MANX DATA SET  @ZA07764 28415140
+         BNE   DOMMANY                  NO,GO PROCESS MANY     @ZA07764 28415740
+DOMMANX  MVC   SAVDOMID(L4),SMCADOMX(R7) SAVE MANX DOM ID      @ZA07764 28416340
+         B     RQSTOK                   CONTINUE WITH DUMP     @ZA07764 28416940
+*                                                              @ZA07764 28417540
+INITERR  MVC   JWTORLST(L80),WTOMSG1    INIT WTOR LIST FORM    @ZA07764 28418140
+         LA    RCTL,NODUMP              RESET CONT ADDR TO     @ZA07764 28530440
+*                                                              @ZA07764 30440040
+*    ENQUE ON SMF DATA SET WHILE DUMPING                       @ZA07764 30470040
+*                                                              @ZA07764 30500040
+         ENQ   (QNAMSMFD,RNAMDATA,E,7,SYSTEM)                  @ZA07764 30530040
+*                                                              @ZA07764 74407040
+NOCLOS   EQU   *                                               @ZA07764 74427040
+*                                                              @ZA07764 74447040
+*    DEQUE FROM SMF DATA SET                                   @ZA07764 74467040
+*                                                              @ZA07764 74487040
+         DEQ   (QNAMSMFD,RNAMDATA,7,SYSTEM)                    @ZA07764 74507040
+NODUMP   EQU   *                                               @ZA07764 74527040
+         BZ    NODOM                    IF 0,NO DOM REQD       @ZA07764 74640040
+         DOM   MSG=(1)                  DELETE DUMP WTO        @ZA07764 74680040
+NODOM    LR    R1,R13                                                   74720040
+RNAMDATA DC    C'DATASET'               ENQUE MINOR NAME       @ZA07764 87761040
+*                                                                       87764040
+SAVDOMID DS    CL4                                             @ZA07764 93900040

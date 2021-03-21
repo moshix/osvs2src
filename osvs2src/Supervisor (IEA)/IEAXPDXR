@@ -1,0 +1,521 @@
+IEAXPDXR CSECT                                                          32130000
+*********************************************************************** 32200000
+*                                                                     * 32270000
+* MODULE NAME - IEAXPDXR                                              * 32340000
+*                                                                     * 32410000
+* TITLE - SIMULATOR INTERFACE FOR EXTENDED PRECISION DIVIDE (DXR)     * 32480000
+*                                                                     * 32550000
+* FUNCTION/OPERATION - IEAXPDXR HANDLES OPERATION INTERRUPTS. IF THE  * 32620000
+*        OP-CODE INTERRUPT OCCURRED AS A RESULT OF AN EXTENDED        * 32690000
+*        PRECISION DIVIDE (DXR), CONTROL IS PASSED TO THE SIMULATOR.  * 32760000
+*        THE PSW IS MODIFIED APPROPRIATELY AFTER SIMULATION.          * 32830000
+*                                                                     * 32900000
+* STATUS - CHANGE LEVEL 0                                             * 32970000
+*                                                                     * 33040000
+* ENTRY POINT - IEAXPDXR                                              * 33110000
+*                                                                     * 33180000
+* INPUT - REGISTER 1 CONTAINS THE POINTER TO A PARAMETER LIST WHICH   * 33250000
+*        CONTAINS A PTR TO THE PIE, A PTR TO AN AREA WITH REGS AT     * 33320000
+*        INTERRUPT TIME (0-15), A PTR TO A WORK AREA, A PTR TO A BYTE * 33390000
+*        WHICH IS NON-ZERO IF THE LAST BIT OF DXR IS NOT TO BE        * 33460000
+*        GUARANTEED.                                                  * 33530000
+*                                                                     * 33600000
+* TABLES/WORK AREAS -                                                 * 33670000
+*        1 - RC - REG  CODE EXTRACTED FROM THE INSTRUCTION TO BE      * 33740000
+*        SIMULATED                                                    * 33810000
+*                                                                     * 33880000
+* EXITS - RETURN IS ALWAYS TO THE CALLING ROUTINE VIA REG 14. A RETURN* 33950000
+*        CODE IS PLACED IN REG 15.                                    * 34020000
+*        CODE    MEANING                                              * 34090000
+*        X'00'   OPERATION SUCCESSFUL AND NO EXCEPTIONAL CONDITIONS   * 34160000
+*                OCCURRED.                                            * 34230000
+*        X'FF'   1 - AN EXTENDED PRECISION DIVIDE INSTRUCTION WAS NOT * 34300000
+*                    ENCOUNTERED                                      * 34370000
+*                2 - OVERFLOW, UNDERFLOW, OR FLOATING POINT DIVIDE    * 34440000
+*                    ERROR OCCURRED IN SIMULATING.                    * 34510000
+*                3 - THIRD BYTE OF DXR NOT X'00' (SPECIFICATION)      * 34580000
+*                                                                     * 34650000
+* EXTERNAL ROUTINES - THE SIMULATOR KERNEL IEAXKDXR                   * 34720000
+*                                                                     * 34790000
+* ATTRIBUTES - THIS MODULE IS REENTRANT.                              * 34860000
+*                                                                     * 34930000
+*********************************************************************** 35000000
+         EJECT                                                          35070000
+* REGISTER DEFINITIONS                                                  35140000
+PARM     EQU   1                   PARAMETER REG                        35210000
+R2       EQU   2                   UTILITY REG                          35280000
+R3       EQU   3                   UTILITY REG                          35350000
+R4       EQU   4                   UTILITY REG                          35420000
+INST     EQU   5                   PTR TO INSTRUCTION                   35490000
+PIEAD    EQU   6                   PTR TO PIE                           35560000
+WRK      EQU   7                                                        35630000
+BASE     EQU   8                   BASE REG                             35700000
+LINK     EQU   9                   BRANCHING REG                        35770000
+CODE1    EQU   15                  RETURN CODE REG                      35840000
+         SPACE 3                                                        35910000
+* MISCELLANEOUS CODES                                                   35980000
+DIVOP    EQU   X'2D'               HALF OF EXTENDED DIVIDE OPCODE       36120000
+LOWBY    EQU   X'0F'               SETS OFF HIGH 4 BITS OF A BYTE       36130000
+ON       EQU   X'FF'               SETS SWITCH ON                       36190000
+XOV      EQU   X'0C'               ERROR CODES - EXPONENT OVERFLOW      36260000
+XUN      EQU   X'0D'                             EXPONENT UNDERFLOW     36330000
+DCK      EQU   X'0F'                             FLOATING POINT DIVIDE  36400000
+BADOP    EQU   X'FF'               ILLEGAL OPERATION INDICATION         36410000
+         EJECT                                                          36470000
+         USING XPDXR,15                                                 36540000
+         USING WRKAREA,WRK                                              36610000
+         SPACE                                                          36680000
+XPDXR    B     PROLOG                                                   36750000
+         DC    X'08'                                                    36820000
+         DC    CL8'IEAXPDXR'                                            36890000
+         SPACE                                                          36960000
+PROLOG   STM   14,12,12(13)        SAVE REGS                            37030000
+         BALR  BASE,0              SET UP ADDRESSABILITY                37100000
+         USING *,BASE                                                   37170000
+         L     WRK,8(PARM)                                              37240000
+         ST    13,SAVESIM+4                                             37310000
+         LA    R2,SAVESIM          SAVE AREA FOR KERNEL                 37380000
+         ST    R2,8(13)            LINK SAVE AREAS                      37450000
+               SPACE                                                    37520000
+         MVI   72(WRK),X'00'                                            37590000
+         MVC   73(8,WRK),72(WRK)   INITIALIZE WORK AREA                 37660000
+         L     PIEAD,0(PARM)       PICK UP ADDRESS OF PIE               37730000
+         SPACE                                                          37740000
+* CALCULATE PTR TO INSTRUCTION CAUSING INTERRUPT                        37750000
+         L     INST,8(PIEAD)                                            37880000
+         LA    INST,0(INST)        NEXT INSTRUCTION ADDRESS             37890000
+         SH    INST,FOUR           ILC ADJUSTMENT                       38080000
+         TM    8(PIEAD),X'80'      ILC 2 ?                              38150000
+         BZ    ADD2                YES - ADD 2 TO ADDRESS               38220000
+         TM    8(PIEAD),X'C0'      ILC 6 ?                              38290000
+         BM    EXTEST              NO - ILC IS 4                        38360000
+         SH    INST,TWO            ILC 6 - SUBTRACT                     38430000
+         B     EXTEST              GO TEST FOR EX                       38500000
+ADD2     AH    INST,TWO            ILC 4                                38570000
+         EJECT                                                          38640000
+* THIS ROUTINE TESTS FOR AN EXECUTE INSTRUCTION. IF THE INTERRUPT WAS   38710000
+* CAUSED BY AN EXECUTE, THE ADDRESS OF THE EXECUTED INSTRUCTION IS      38780000
+* CALCULATED AND THE MASK IS SET.                                       38850000
+         SPACE                                                          38920000
+EXTEST   CLI   0(INST),X'44'       IS INSTRUCTION AN EXECUTE ?          38990000
+         BNE   DIVCK               NO - CHECK FOR DIVIDE                39060000
+         SR    R2,R2                                                    39130000
+         MVC   BYTES(1),1(INST)                                         39200000
+         NI    BYTES,LOWBY                                              39270000
+         IC    R2,BYTES            INDEX REGISTER                       39340000
+         L     R4,4(PARM)          PTR TO REGS AT INTERRUPT TIME        39410000
+         LTR   R2,R2               REG 0 NOT INDEX REG                  39480000
+         BZ    ADD                                                      39550000
+         SLL   R2,2                                                     39620000
+         L     R2,0(R2,R4)         CONTENTS OF INDEX REG                39690000
+         LA    R2,0(R2)                                                 39760000
+ADD      SR    R3,R3                                                    39830000
+         IC    R3,2(INST)          BASE REGISTER                        39900000
+         SRL   R3,4                                                     39970000
+         LTR   R3,R3               REG 0 NOT BASE REG                   40040000
+         BZ    ADD1                                                     40110000
+         SLL   R3,2                                                     40180000
+         L     R3,0(R3,R4)         CONTENTS OF BASE REG                 40250000
+         LA    R3,0(R3)                                                 40320000
+ADD1     AR    R3,R2               BASE, INDEX                          40390000
+         MVC   BYTES(2),2(INST)    DISPLACEMENT                         40460000
+         NI    BYTES,LOWBY                                              40530000
+         AH    R3,BYTES            ADDRESS                              40600000
+         SPACE                                                          40670000
+         SR    R2,R2                                                    40740000
+         IC    R2,1(INST)          PICK UP REG USED FOR EX              40810000
+         SRL   R2,4                                                     40880000
+         SLL   R2,2                                                     40950000
+         LTR   R2,R2               IS EX REG 0 ?                        41000000
+         BZ    LOADREG             YES - DO NOT SET MASK                41010000
+         L     R2,0(R2,R4)         GET CONTENTS OF REG                  41020000
+         STC   R2,BYTES                                                 41090000
+         MVC   EXSV,1(R3)          SAVE ORIGINAL FIELD                  41160000
+         OI    EXSW,ON             INDICATE EXECUTE INSTRUCTION         41230000
+         OC    1(1,R3),BYTES       SET MASK IN INST TO BE EXECUTED      41300000
+LOADREG  LR    INST,R3             PICK UP PTR TO INST                  41370000
+         SPACE 3                                                        41440000
+DIVCK    CLC   0(2,INST),DIV       EXTENDED DIVIDE ?                    41510000
+         BNE   ERRRET              NO -GO BACK WITH X'FF' CODE          41580000
+         CLI   2(INST),X'00'       THIRD BYT                            41650000
+         BNE   SETSPEC             INDICATE SPECIFICATION ERROR         41720000
+         EJECT                                                          41790000
+* THIS ROUTINE CHECKS THAT R1 AND R2 ARE SPECIFIED AS 0 OR 4. IF NOT,   41860000
+* THE PSW IN PIE IS SET TO INDICATE A SPECIFICATION ERROR AND X'FF'     41930000
+* IS SET AS RETURN CODE.                                                42000000
+         SPACE                                                          42070000
+         SR    R2,R2                                                    42140000
+         IC    R2,3(INST)                                               42210000
+         SRDL  R2,4                R1 OF DIVIDE                         42280000
+         BAL   LINK,SPECTST        CHECK FOR F.P. REG 0 OR 4            42350000
+         LR    R2,R3                                                    42420000
+         SRL   R2,28               R2 OF DIVIDE                         42490000
+         BAL   LINK,SPECTST        CHECK FOR F.P. REG 0 OR 4            42560000
+         SPACE                                                          42630000
+* THIS ROUTINE SETS UP THE PARAMETER AREA FOR THE KERNEL: X'PM0S2DRA',  42700000
+* WHERE PM IS THE PROGRAM MASK, S IS DXR SWITCH, 2D MUST BE 2D,         42770000
+* R IS REG 1, AND A IS REG 2.                                           42780000
+         SPACE                                                          42840000
+         MVI   RC+2,DIVOP          SET OPCODE                           42910000
+         MVC   RC+3(1),3(INST)     SET REG 1 AND REG 2                  42980000
+         IC    R2,8(PIEAD)         GET PROGRAM MASK FROM THE PSW        43050000
+         SLL   R2,4                                                     43120000
+         STC   R2,RC               SET PROGRAM MASK IN PARM FOR SIM     43190000
+         LA    13,SAVESIM          SAVE AREA FOR SIMULATOR              43330000
+         LA    R2,RC               SET INSTRUCTION AND REG CODE         43400000
+         ST    R2,LIST                  IN PARAMETER LIST               43470000
+         LA    R2,SIMWRK           SET ADDRESS OF SIM WORKAREA          43540000
+         ST    R2,LIST+4                IN PARAMETER LIST               43610000
+         LA    R2,EXCEP            SET ADDRESS OF ERROR RETURN          43680000
+         ST    R2,LIST+8                IN PARAMETER LIST               43750000
+         L     R2,12(PARM)         PICK UP DXR ADJUST SWITCH            43960000
+         TM    0(R2),X'FF'         SHOULD ADJUST BE DONE?               43970000
+         BZ    TOSIM               YES - BRANCH                         43980000
+         MVI   RC+1,X'01'          INDICATE TO KERNEL NOT TO ADJUST     43990000
+TOSIM    LA    PARM,LIST           ADDRESS OF PARAMETER LIST            44100000
+         L     15,=V(IEAXKDXR)                                          44170000
+         BALR  14,15               BRANCH TO SIMULATOR                  44240000
+         SPACE                                                          44250000
+         B     OUT                 GOOD RETURN FORM SIMULATOR           44380000
+         SPACE                                                          44390000
+* USING RETURN CODE FROM KERNEL, SET PSW APPROPRIATELY.                 44400000
+EXCEP    CLI   RETCD+3,BADOP       DID KERNEL FIND OPCODE ERROR ?       44450000
+         BE    ERRRET              GIVE ERROR RETURN CODE               44660000
+         L     15,RETCD            PICK UP RETURN CODE                  44670000
+         EX    0,SETINT(15)        ADJUST INTERRUPT CODE                45010000
+         B     ERRRET                                                   45080000
+         SPACE 3                                                        45150000
+SETINT   EQU   *-4                                                      45220000
+         MVI   7(PIEAD),XOV                                             45290000
+         MVI   7(PIEAD),XUN                                             45360000
+         MVI   7(PIEAD),DCK                                             45430000
+         MVI   7(PIEAD),DCK                                             45500000
+         SPACE 3                                                        45570000
+SPECTST  LTR   R2,R2               IS REG 0 ?                           45640000
+         BCR   8,LINK              YES - RETURN                         45710000
+         CH    R2,FOUR             IS REG 4 ?                           45780000
+         BCR   8,LINK              YES - RETURN                         45850000
+         SPACE                                                          45920000
+* CONTROL COMES TO THIS SECTION IF A REGISTES HAS BEEN SPECIFIED        45990000
+* INCORRECTLY. THE PSW IS SET TO INDICATE A SPECIFICATION ERROR.        46060000
+         SPACE                                                          46130000
+SETSPEC  EQU   *                                                        46200000
+         LA    R2,6                                                     46270000
+         STH   R2,6(PIEAD)         SET PSW IN PIE                       46340000
+         SPACE                                                          46410000
+ERRRET   LA    CODE1,255           SET X'FF' RETURN CODE                46480000
+         SPACE                                                          46550000
+OUT      TM    EXSW,ON             WAS INST AN EXECUTE ?                46620000
+         BZ    RETURN              NO - RETURN                          46690000
+         MVC   1(1,INST),EXSV      RESTORE FIELD MODIFIED FOR EXECUTE   46760000
+         SPACE                                                          46770000
+RETURN   L     13,SAVESIM+4        RESTORE CALLER'S SAVE AREA POINTER   46780000
+         L     14,12(13)           GET RETURN LOCATION                  46790000
+         LM    0,12,20(13)         RESTORE REGISTERS                    46800000
+         MVI   12(13),X'FF'        INDICATE RETURN                      46810000
+         BR    14                  RETURN                               46820000
+         SPACE 3                                                        46830000
+* CONSTANT DATA AREA                                                    47180000
+         SPACE                                                          47250000
+TWO      DC    H'2'                                                     47320000
+FOUR     DC    H'4'                                                     47390000
+DIV      DC    X'B22D'             EXTENDED DIVIDE OPCODE - DXR         47460000
+         SPACE 3                                                        47530000
+* VARIABLE DATA AREA                                                    47600000
+         SPACE                                                          47670000
+WRKAREA  DSECT                                                          47740000
+SAVESIM  DS    18F                 SAVE AREA FOR KERNEL                 47810000
+RC       DC    F'0'                PARAMETER AREA FOR KERNEL            47880000
+BYTES    DC    H'0'                SCRATCH AREA                         47950000
+EXSW     DC    X'00'               INDICATES EXECUTE INSTRUCTION        48020000
+EXSV     DC    X'00'               ORIGINAL FIELD OF INST EXECUTED      48090000
+LIST     DC    A(RC)               PARAMETER LIST FOR KERNEL            48300000
+         DC    A(SIMWRK)                                                48370000
+         DC    X'80',AL3(EXCEP)                                         48440000
+         DS    0D                                                       48450000
+RETCD    DS    0F                  RETURN CODE FROM KERNEL              48460000
+SIMWRK   DS    15D                 WORK AREA FOR KERNEL                 48470000
+PAD      DS    6F                  NOT USED - RESERVED FOR MAINTAINENCE 48580000
+         EJECT                                                          48650000
+* THE SIMULATOR KERNEL                                                  48660000
+GRS      EQU   13 ...........SAVE AREA POINTER                          51170000
+GRR      EQU   14 ...........RETURN REGISTER                            51240000
+GRL      EQU   15 ...........LINK REGISTER                              51310000
+GR0      EQU   0 ............CONTAINS CODE FOR OPERATION AT ENTRY       51380000
+GR1      EQU   1 ............SCRATCH REGISTERS                          51450000
+GR2      EQU   2                                                        51520000
+GR3      EQU   3                                                        51590000
+GR4      EQU   4                                                        51660000
+GR5      EQU   5                                                        51730000
+GR6      EQU   6                                                        51800000
+GRM      EQU   7 ............MASK REGISTER TO HOLD MASK '7F'            51870000
+GR8      EQU   8 ............ADJUST SWITCH FOR DXR                      51940000
+GR9      EQU   9 ............RECURSIVE CALL SWITCH                      52010000
+GRW      EQU   12 ...........WORK AREA POINTER                          52080000
+FR0      EQU   0 ............FLOATING POINT REGISTERS                   52150000
+FR2      EQU   2                                                        52220000
+FR4      EQU   4                                                        52290000
+FR6      EQU   6                                                        52360000
+         SPACE                                                          52430000
+SAVEAREA DSECT                                                          52500000
+         SPACE                                                          52570000
+CODE     EQU   * ............INSTRUCTION CODE                           52640000
+SAVEGRW  EQU   *+4*17 .......DISPLACEMENT FOR SAVE BUFFER OF GRW        52710000
+         DS    18F                                                      52780000
+         SPACE                                                          52850000
+WORKAREA DSECT                                                          52920000
+         SPACE                                                          52990000
+SAVEFR0  DS    D ............SAVE BUFFER FOR FR0                        53060000
+SAVEFR2  DS    D ............SAVE BUFFER FOR FR2                        53130000
+SAVEFR4  DS    D ............SAVE BUFFER FOR FR4                        53200000
+SAVEFR6  DS    D ............SAVE BUFFER FOR FR6                        53270000
+OPND1    DS    D ............HIGH-ORDER 14 DIGITS OF OPERAND 1          53340000
+         DS    D ............LOW-ORDER 14 DIGITS OF OPERAND 1           53410000
+         DS    D ............GUARD DIGIT OF OPERAND1                    53480000
+OPND2    DS    D ............HIGH-ORDER 14 DIGITS OF OPERAND 2          53550000
+         DS    D ............LOW-ORDER 14 DIGITS OF OPERAND 2           53620000
+         DS    D ............GUARD DIGIT OF OPERAND2                    53690000
+CHAR1    DS    H ............SIGN/CHAR OF HIGH PART OF OPERAND 1        53760000
+HCHAR    DS    H ............MAX(/CHAR1/,/CHAR2/)                       53830000
+CHAR2    DS    H ............SIGN/CHAR OF HIGH PART OF OPERAND 2        53900000
+ERRFLAG  DS    H ............RETURN CODE                                53970000
+PADK     DS    D             NOT USED - RESERVED FOR MAINTAINENCE       53980000
+BUFF1    DS    D ............TEMPORARY STORAGES, USED BY DXR ONLY       54040000
+BUFF2    DS    D                                                        54110000
+PADK1    DS    D             NOT USED - RESERVED FOR MAINTAINENCE       54120000
+SIZE     EQU   *                                                        54130000
+         EJECT                                                          54390000
+IEAXKDXR CSECT                                                          54740000
+         ENTRY IEAXKDXR                                                 54750000
+         SPACE                                                          54950000
+         USING WORKAREA,GRW                                             55020000
+         USING SAVEAREA,GRS                                             55090000
+         USING *,GRL                                                    55160000
+         SPACE                                                          55230000
+         B     PROLOGA ............NORMAL ENTRY POINT                   55860000
+         DC    X'08'                                                    55930000
+         DC    CL8'IEAXKDXR'                                            56000000
+         SPACE                                                          56140000
+PROLOGA  STM   GRR,GRW,12(GRS) .SAVE REGISTERS                          56210000
+         L     GRW,4(GR1) ...WORK AREA ADDRESSABILITY                   56280000
+         L     GR2,0(GR1)                                               56350000
+         L     0,0(GR2) .....INSTRUCTION CODE                           56420000
+         ST    0,CODE                                                   56490000
+         SR    GR8,GR8 ......CLEAR PROGRAM MASK                         56560000
+         SPM   GR8                                                      56630000
+         IC    GR8,CODE+1 ...PICK UP ADJUST CODE                        57770000
+*                                                                       57820000
+*     PROLOG SECTION: DETERMINE OPERATION TO BE SIMULATED,              57890000
+*                     STORE OPERANDS, SAVE SIGN AND CHAR. OF            57960000
+*                     OPERANDS, AND SCALE OPERANDS                      58030000
+*                                                                       58100000
+PROLOGC  STD   FR0,SAVEFR0 ..SAVE FLOATING POINT REGISTERS              58170000
+         STD   FR2,SAVEFR2                                              58240000
+         STD   FR4,SAVEFR4                                              58310000
+         STD   FR6,SAVEFR6                                              58380000
+         MVI   ERRFLAG,X'00' CLEAR RETURN CODE FLAG                     58450000
+         LA    GRM,X'7F' ....SET UP MASK REGISTER FOR X'7F'             58520000
+         LR    GR1,GR0 ......DETERMINE 1ST OPERAND REGISTER             58590000
+         SRL   GR1,4                                                    58660000
+         SLL   GR1,4                                                    58730000
+         EX    GR1,STORE1 ...STORE HIGH PART OPERAND 1 IN OPND1         58800000
+         MVC   CHAR1(1),OPND1 SAVE SIGN/CHARACTERISTIC OF OPERAND 1     58870000
+         MVI   OPND1,X'40' ..FORCE + AND CHARACTERISTIC OF X'40'        58940000
+         LR    GR2,GR0 ......DETERMINE 2ND OPERAND REGISTER             59010000
+         SLL   GR2,4                                                    59080000
+         EX    GR2,STORE2 ...STORE HIGH PART OPERAND 2 IN OPND2         59150000
+         MVC   CHAR2(1),OPND2 SAVE SIGN/CHARACTERISTIC OF OPERAND 2     59220000
+         MVI   OPND2,X'40' ..FORCE + AND CHARACTERISTIC OF X'40'        59290000
+         LA    GR2,X'20'(GR2)                                           59920000
+         EX    GR2,STORE3 ...STORE LOW PART OPERAND 2 IN OPND2+8        59990000
+         MVI   OPND2+8,X'32' FORCE SIGN + AND CHAR. OF X'32'            60060000
+         LA    GR1,X'20'(GR1)                                           60550000
+         EX    GR1,STORE4 ...STORE LOW PART OPERAND 1 IN OPND1+8        60620000
+         MVI   OPND1+8,X'32' FORCE SIGN + AND CHAR. OF X'32'            60690000
+         SPACE                                                          60760000
+         SDR   FR0,FR0 ......PRENORMALIZE OPERANDS                      61320000
+         STD   FR0,OPND1+16 ...CLEAR GUARD DIGIT                        61390000
+         BAL   GRR,NORM .......NORMALIZE 1ST OPERAND                    61460000
+         LM    GR3,GR6,OPND1 ..SAVE 1ST OPERAND, AND MOVE 2ND           61530000
+         MVC   OPND1(16),OPND2 ..OPERAND FOR NORMALIZATION              61600000
+         BAL   GRR,NORM .......NORMALIZE 2ND OPERAND                    61670000
+         MVC   OPND2(16),OPND1 SWITCH BACK OPERANDS SINCE DXR           61740000
+         STM   GR3,GR6,OPND1 ....IS NOT COMMUTATIVE                     61810000
+         SPACE                                                          61880000
+         CLI   CODE+2,X'2D' .IF OP CODE = '2D', GO TO DXR SECTION       62230000
+         BE    DXR                                                      62300000
+         MVI   ERRFLAG,X'FF' IF OP CODE IS NONE OF THE ABOVE,           62370000
+         B     EPILOG6 ........ILLEGAL OP CODE.  SET FLAG AND RETURN    62440000
+         SPACE 3                                                        62510000
+EPILOGA  IC    GR1,OPND1 ....PRE-EPILOG FOR DXR                         62580000
+         NR    GR1,GRM ........CHAR. OF SCALED RESULT IN GR1            62650000
+         IC    GR2,CHAR2 ......CHAR. OF 2ND OPERAND IN GR2              62720000
+         NR    GR2,GRM                                                  62790000
+         IC    GR0,CHAR1 ......CHAR. OF 1ST OPERAND TO GR0              63700000
+         NR    GR0,GRM                                                  63770000
+         XC    CHAR1(1),CHAR2 .MULTIPLY SIGNS OF THE 2 OPERANDS         63840000
+         SPACE                                                          65940000
+*                                                                       66010000
+*     EPILOG NUCLEUS: DETERMINE CHAR. AND SIGN OF RESULT                66080000
+*                     TEST EXPONENT OVERFLOW AND UNDERFLOW              66150000
+*                     PROVIDE EXPONENT WRAP-AROUND IF CALLED FOR        66220000
+*                     LOAD RESULT INTO CORRECT REGISTER(S)              66290000
+*                     RESTORE OTHER REGISTERS AND PROGRAM MASK          66360000
+*                                                                       66430000
+EPILOG   CLC   OPND1(4),ZERO IF SCALED RESULT IS NORMAL 0, SKIP         66500000
+         BE    EPILOG4                                                  66570000
+         AR    GR1,GR0 ......OTHERWISE, CHAR. OF ANS = GR0+GR1-GR2      66640000
+         SR    GR1,GR2                                                  66710000
+         BNM   EPILOG2 ......IF CHAR. IS NOT NEGATIVE, SKIP             66780000
+         SPACE                                                          66850000
+         TM    CODE,X'20' ...UNDERFLOW CASE                             66920000
+         BO    EPILOG1                                                  66990000
+         SDR   FR0,FR0 ......IF UNDERFLOW MASK IS OFF, WE SHOULD        67060000
+         STD   FR0,OPND1 ......GIVE NORMAL ZERO SILENTLY                67130000
+         STD   FR0,OPND1+8                                              67200000
+         B     EPILOG4 ........SKIP                                     67270000
+EPILOG1  OI    ERRFLAG,X'08' IF UNDFLOW MASK IS ON, SET FLAG            67340000
+         SPACE                                                          67410000
+EPILOG2  CR    GR1,GRM                                                  67480000
+         BNH   EPILOG3 ......IF CHAR. IS HIGHER THAN X'7F',             67550000
+         OI    ERRFLAG,X'04' ..OVERFLOW CASE.   SET FLAG FOR THIS       67620000
+         SPACE                                                          67690000
+EPILOG3  NR    GR1,GRM ......CUT DOWN TO NORMAL CHAR. RANGE             67760000
+         LA    GR2,X'FF2'(GR1)                                          67830000
+         NR    GR2,GRM ......FIX UP LOW ORDER CHARACTERISTIC            67900000
+         NI    CHAR1,X'80'                                              67970000
+         IC    GR0,CHAR1 ....SIGN BIT FOR THE ANSWER                    68040000
+         OR    GR1,GR0 ......SIGN AND CHAR. OF HIGH PART ANS            68110000
+         STC   GR1,OPND1                                                68180000
+         OR    GR2,GR0 ......SIGN AND CHAR. OF LOW PART ANS             68250000
+         STC   GR2,OPND1+8                                              68320000
+         SPACE                                                          68390000
+EPILOG4  IC    GRM,CODE+3 ...LOCATE RESULT (1ST OPERAND) REGISTER       68460000
+         SRL   GRM,4                                                    68530000
+         SLL   GRM,2 ........MULTIPLY REG DESIGNATION BY 4              68600000
+         LD    FR0,OPND1 ....OVERLAY SAVE BUFFER OF RESULT REGISTER     68670000
+         STD   FR0,SAVEFR0(GRM) WITH HIGH PART RESULT                   68740000
+EPILOG5  LD    FR0,OPND1+8 ..OVERLAY SAVE BUFFER OF COMPANION RESULT    69020000
+         STD   FR0,SAVEFR2(GRM) REGISTER WITH LOW PART RESULT           69090000
+         SPACE                                                          69160000
+EPILOG6  LD    FR0,SAVEFR0 ..RESTORE ALL FLOATING POINT REGISTERS       69230000
+         LD    FR2,SAVEFR2                                              69300000
+         LD    FR4,SAVEFR4                                              69370000
+         LD    FR6,SAVEFR6                                              69440000
+         LM    GRR,GR8,12(GRS) RESTORE OTHER REGISTERS                  69510000
+         SPM   GRR ............RESTORE PROGRAM MASK                     69580000
+         SR    GRL,GRL                                                  69650000
+         IC    GRL,ERRFLAG ....PICK UP ERRFLAG IN GRL                   69720000
+         ST    GRL,0(GRW) .....SAVE RETURN CODE                         70490000
+         L     GRW,SAVEGRW ....RESTORE REGISTER POINTING TO WORK AREA   70560000
+         LTR   GRL,GRL ........TEST RETURN CODE                         70630000
+         MVI   12(GRS),X'FF' ..RETURN                                   70640000
+         BCR   8,GRR ..........IF RETURN CODE ZERO, TAKE NORMAL RETURN  70700000
+         L     GRL,8(GR1) .....GET LOCATION OF ERROR RETURN             70770000
+         BR    GRL ............TAKE ERROR RETURN                        70840000
+         EJECT                                                          70910000
+DXR      CLI   OPND2+1,X'00' ..DIVIDE SIMULATION                        70920000
+         BNZ   DXR1 ...........IF DIVISOR NE 0, SKIP AND CONTINUE       70930000
+         MVI   ERRFLAG,X'0C' ..IF DIVIDE CHECK, SET FLAG X'0C'          70940000
+         CLI   OPND1+1,X'00' ....OR '10' DEPENDING ON WHETHER THE       70950000
+         BNZ   EPILOG6 ..........DIVIDEND IS NON-ZERO OR ZERO           70960000
+         MVI   ERRFLAG,X'10'                                            70970000
+         B     EPILOG6 ........ABORT THE OPERATION                      84840000
+         SPACE                                                          84910000
+DXR1     EQU   *                                                        84980000
+         LD    FR4,OPND1 ......(A1+A2)/(B1+B2) WITH EXACT TRUNCATION    85750000
+         LD    FR6,OPND1+8                                              85820000
+         LDR   FR0,FR4                                                  85890000
+         DD    FR0,OPND2 ......Q1=A1/B1 APPROX. H.O. 14 DIGITS OF A/B   85960000
+         MD    FR0,DECR .......UNDERESTIMATE Q1 BY Q1*16**-12.          86030000
+         STD   FR0,BUFF1 ........THIS DONE SO THAT Q1 AND Q2+Q3 WILL    86100000
+         MXD   FR0,OPND2 ........HAVE THE SAME SIGN                     86170000
+         SXR   FR4,FR0 ........(A1+A2)-Q1*B1  EXACT                     86240000
+         LD    FR0,BUFF1                                                86310000
+         MXD   FR0,OPND2+8                                              86380000
+         SXR   FR4,FR0 ........(A1+A2)-Q1*(B1+B2)  CALL THIS A3+A4      86450000
+         SPACE                                                          86520000
+         LDR   FR0,FR4                                                  86590000
+         DD    FR0,OPND2 ......Q2=A2/B1  ESTIMATE FOR NEXT 14 DIGIT     86660000
+         STD   FR0,BUFF2                                                86730000
+         MXD   FR0,OPND2                                                86800000
+         SXR   FR4,FR0 ........(A3+A4)-Q2*B1                            86870000
+         LD    FR0,BUFF2                                                86940000
+         MD    FR0,OPND2+8                                              87010000
+         SDR   FR4,FR0 ........(A3+A4)-Q2*(B1+B2)=A-(Q1+Q2)*B SET =A5   87080000
+         SPACE                                                          87150000
+         DD    FR4,OPND2 ......Q3=A5/B1  REL. ACCURACY ABOUT 16**-38    87220000
+         LE    FR0,BUFF1                                                87290000
+         ME    FR0,INCR6 ......CRANK Q3 BY Q1*16**-35, SO THAT          87360000
+         ADR   FR4,FR0 ..........Q1+Q2+Q3 IS NEVER UNDERESTIMATE        87430000
+         LD    FR0,BUFF2                                                87500000
+         SDR   FR2,FR2                                                  87570000
+         AXR   FR4,FR0 ........Q2+Q3                                    87640000
+         LD    FR0,BUFF1                                                87710000
+         AXR   FR4,FR0 ........Q=Q1+Q2+Q3 TRUNCATED                     87780000
+         LTR   GR8,GR8 ........SHOULD WE ADJUST ?                       87850000
+         BNZ   DXR2 ...........NO - BRANCH                              87920000
+         SPACE                                                          87990000
+         STD   FR4,BUFF1 ......THERE IS A FAINT CHANCE THAT Q IS        88060000
+         STD   FR6,BUFF2 ........ROUNDED UP WHERE IT SHOULDN'T          88130000
+         MXD   FR4,OPND2 ......SO WE VERIFY THE EXACTNESS OF TRUNC.     88200000
+         LD    FR0,OPND1 ......CALL Q=Q1+Q2 ANEW                        88270000
+         LD    FR2,OPND1+8                                              88340000
+         SXR   FR0,FR4 ........A-Q1*B1                                  88410000
+         LD    FR4,BUFF1                                                88480000
+         MXD   FR4,OPND2+8                                              88550000
+         SXR   FR0,FR4 ........A-Q1*B1-Q1*B2=A-Q1*B                     88620000
+         LD    FR4,BUFF2                                                88690000
+         MXD   FR4,OPND2                                                88760000
+         SXR   FR0,FR4 ........A-Q1*B-Q2*B1                             88830000
+         LD    FR4,BUFF2                                                88900000
+         MXD   FR4,OPND2+8 ....Q2*B2                                    88970000
+         SXR   FR0,FR4 ........A-Q*B COMPUTED EXACTLY                   89040000
+         LD    FR4,BUFF1 ......RELOAD Q1 AND Q2                         89110000
+         LD    FR6,BUFF2                                                89180000
+         BNM   DXR2 ...........IF Q WAS NOT OVERESTIMATE, OK.  SKIP     89460000
+         SPACE                                                          89530000
+         MVC   BUFF2+1(7),ZERO+1 IF Q WAS OVER-ESTIMATE, PREPARE        89600000
+         LD    FR0,BUFF2 ........DECREMENTER WITH CHAR = CHAR(Q)-14     89670000
+         LE    FR2,INCR6 ........AND FRACTION OF 1 IN THE 15TH DIGIT    89740000
+         SXR   FR4,FR0 ........DECREMENT Q                              89810000
+         SPACE                                                          89880000
+DXR2     STD   FR4,OPND1                                                89950000
+         STD   FR6,OPND1+8                                              90020000
+         B     EPILOGA ........DONE                                     90440000
+         SPACE 2                                                        90510000
+NORM     TM    OPND1+1,X'F0' NORMALIZATION SECTION                      90580000
+         BCR   7,GRR ..........IF OPND1 ALREADY NORMAL, RETURN          90650000
+         LD    FR0,OPND1 ......LOAD OPND1 IN FR0-FR2-FR4                90720000
+         LD    FR2,OPND1+8                                              90790000
+         LD    FR4,OPND1+16                                             90860000
+         AD    FR0,ZERO .......NORMALIZE H.O. PART                      90930000
+         LDR   FR6,FR0                                                  91000000
+         ADR   FR0,FR2 ........NORMAL SUM OF H.O. AND L.O. PART         91070000
+         ADR   FR4,FR0 ........ADD GUARD DIGIT TO COMPLETE H.O. PART    91140000
+         STD   FR4,OPND1 ......STORE IT                                 91210000
+         SDR   FR4,FR0 ........CONTRIBUTION TO H.O. PART BY GUARD DGT   91280000
+         SDR   FR0,FR6 ........CONTRIBUTION TO H.O. PART BY L.O. PART   91350000
+         SDR   FR2,FR0 ........L.O. PART YET TO BE ACCOUNTED FOR        91420000
+         LTDR  FR4,FR4 ........IF GUARD DIGIT ALREADY HAS CONTRIBUTED   91490000
+         BNZ   NORM1 ............TO H.O. SUM, SKIP                      91560000
+         AD    FR2,OPND1+16 ...OTHERWISE ADD GUARD DIGIT TO L.O. SUM    91630000
+         SPACE                                                          91700000
+NORM1    IC    GR1,OPND1 ......PREPARE UNNORMALIZER WITH CHAR 14 LESS   91770000
+         LA    GR1,X'FF2'(GR1) ..THAN THAT OF NORMALIZED H.O. PART      91840000
+         SLL   GR1,24                                                   91910000
+         SR    GR2,GR2                                                  91980000
+         STM   GR1,GR2,OPND1+8                                          92050000
+         AW    FR2,OPND1+8 ....UNNORMALIZE L.O. SUM SO AS TO BE         92120000
+         STD   FR2,OPND1+8 ......ALIGNED WITH H.O. SUM                  92190000
+         BR    GRR ..........DONE                                       92260000
+         SPACE 3                                                        92330000
+STORE1   STD   FR0,OPND1 ......INSTRUCTIONS TO BE EXECUTED TO BRING     92400000
+STORE2   STD   FR0,OPND2 ........IN THE OPERANDS                        92470000
+STORE3   STD   FR0,OPND2+8                                              92540000
+STORE4   STD   FR0,OPND1+8                                              92610000
+         DS    0F                                                       92680000
+INCR6    DC    X'1E100000' ....16**-35                                  92750000
+ZERO     DC    D'0' ..................NORMAL ZERO                       93310000
+DECR     DC    X'40FFFFFFFFFFFF00' ...1-16**-12                         93380000
+         END                                                            94220000

@@ -1,0 +1,2233 @@
+         TITLE 'IEAVEPC- PROGRAM FIRST LEVEL INTERRUPT HANDLER'         00247802
+* /* START OF SPECIFICATIONS ****                                       00297802
+*                                                                       00347802
+*01*  MODULE-NAME = IEAVEPC                                             00397802
+*                                                                       00447802
+*02*     CSECT-NAME = IEAVEPC                                           00497802
+*                                                                       00507802
+*01*  DESCRIPTIVE-NAME = PROGRAM INTERRUPT HANDLER                      00517802
+*                                                                       00519802
+*01*  COPYRIGHT = NONE                                                  00521802
+*                                                                       00523802
+*01*  STATUS = VERSION 1                                                00525802
+*                                                                       00526202
+*01*  FUNCTION = SEE ENTRY POINT PURPOSES BELOW.                        00526302
+*                                                                       00526402
+*02*     OPERATION = THE PROGRAM FLIH WILL RECEIVE CONTROL VIA PROGRAM  00526502
+*        NEW PSW AFTER A PROGRAM TYPE INTERRUPTION HAS OCCURRED. ITS    00529802
+*        MAIN FUNCTION IS TO DETERMINE WHAT TYPE OF PROGRAM             00531802
+*        INTERRUPTION HAS OCCURRED AFTER SAVING STATUS, AND ROUTE       00533802
+*        CONTROL TO THE APPROPRIATE PROCESSOR TO PERFORM THE FUNCTION   00533902
+*        INDICATED.                                                     00534002
+*                                                                       00534102
+*01*   NOTES = SEE ENTRY POINT PURPOSES BELOW.                          00534202
+*                                                                       00534302
+*02*        DEPENDENCIES =                                              00534702
+*                                                                       00534802
+*           GENERAL:                                                    00535102
+*           1. IT IS ASSUMED THAT IF A SUPERVISORY CONTROL FUNCTION WAS 00535502
+*           RUNNING AT THE TIME OF INTERRUPTION, THE PROGRAM RUNNING    00535602
+*           WILL ALWAYS BE DISABLED (EVEN IF JUST FOR I/O OR EXTERNAL)  00536002
+*                                                                       00536102
+*           NIP0:                                                       00536402
+*           1. NIP0 MUST PLACE THE MASTER MEMORY'S C.R.1 IN LCCAMCR1    00536802
+*           AFTER THE MASTER MEMORY SEGMENT TABLE HAS BEEN CREATED.     00536902
+*           2. THERE IS A DEPENDENCY ON NIP0 TO PREALLOCATE AN SRB POOL 00537202
+*           FOR THE PURPOSE OF SUSPENDING SRBS. THE AMOUNT OF CORE THAT 00537602
+*           WILL BE FORMATED BY NIP0 FOR THIS PURPOSE USING BLDCPOOL    00537702
+*           WILL BE 8K WITH THE CELL SIZE BEING 480 BYTES. THIS CAL-    00537802
+*           CULATES TO BE 16 CELLS. THE CPID TO BE USED IN THE          00537902
+*           BLDCPOOL IS C'SRB'X'00'.                                    00538302
+*           3. THE PROGRAM FLIH CODE MUST BE IN V=R STORAGE.            00541002
+*                                                                       00541602
+*           GTF:                                                        00584802
+*           1. GTF IS ENTERED UNCONDITIONALLY ON A NON-RECURSIVE        00585402
+*           PROGRAM INTERRUPT. GTF WILL DECIDE WHETHER MC PROCESSING    00586002
+*           OR INTERRUPTION RECORDING IS TO BE DONE. IN EITHER CASE     00586602
+*           RETURN WILL ALWAYS BE BACK TO THE INTERRUPT HANDLER.        00587202
+*           2. LOCKS MAY NOT BE ASKED FOR.                              00587802
+*           3. DISABLEMENT MUST BE PRESERVED.                           00588402
+*                                                                       00588802
+*           PAGING SUPERVISOR(IEAPIX,RSM):                              00589002
+*           1. THE PAGING SUPERVISOR MUST NOT ENABLE OR ISSUE MC HOOKS  00589602
+*           (ONLY BRANCH HOOKS MAY BE ISSUED) AS A SLIH.                00590202
+*           2. ON ENTRY TO THE SUSPEND ROUTINE(ENTRY IEAVSUSP) THE      00590802
+*           SALLOC LOCK MUST BE HELD.                                   00591402
+*           ON RETURN FROM THE SUSPEND ROUTINE, THE PAGING SUPERVISOR   00592002
+*           MUST KEEP TRACK OF REGISTERS 4,5,6 SO THAT THE RESET        00592602
+*           ROUTINE(IEAVRSET) CAN BE DONE AT SOME LATER POINT IN TIME.  00593202
+*           4. ON ENTRY TO THE RESET ROUTINE IT IS NECESSARY FOR THE    00593802
+*           SALLOC LOCK TO BE HELD AND THE SRB THAT ENTERS RESET MUST   00594402
+*           BE A NON-QUIESCABLE PRIORITY SRB IF A VALUE OF 4 IN REG-    00595002
+*           ISTER 6 WAS INDICATED FROM SUSPEND, IF A VALUE OF 0 WAS     00595602
+*           INDICATED IN REGISTER 6 FROM SUSPEND, THE SRB MUST BE A     00596202
+*           SYSTEM PRIORITY SRB AND MUST OWN THE LOCAL LOCK IN ADDITION 00596802
+*           TO THE SALLOC LOCK. IN EITHER CASE THE ADDRESS SPACE BEING  00597402
+*           SERVICED MUST BE THE ONE THE REST IS BEING DONE FROM.       00598002
+*           REGISTERS 4 AND 5 TO RESET MUST BE THE SAME AS AT EXIT      00598602
+*           FROM SUSPEND.                                               00599202
+*                                                                       00599602
+*           DISPATCHER:                                                 00599802
+*           IN GENERAL:                                                 00600402
+*           1. THE DISPATCHER MUST, WHEN DISPATCHING AN SRB WITH A NON- 00601002
+*           ZERO SRBSAVE FIELD , CHECK THE SSRBMAIN BIT BEFORE          00601602
+*           FREECELLING THE SSRB.  IF THE SSRBMAIN BIT IS ON, THE       00602002
+*           DISPATCHER MUST FREEMAIN THE SSRB AREA.                     00602102
+*                                                                       00604102
+*           IEA0DS ENTRY:                                               00605802
+*           1. THIS ENTRY WILL SAVE ALL STATUS OTHER THAN GENERAL       00606402
+*           REGISTERS AND PSW FOR A LOCALLY LOCKED TCB, WILL CHECK FOR  00607002
+*           THE CMS LOCK AND SET INDICATORS IF NECESSARY, AND WILL      00607602
+*           ZERO ALL NECESSARY LOCK TABLE ENTRIES. THE LOCAL LOCK MUST  00608202
+*           NOT BE TOUCHED SINCE A SUSPEND ID(X'7FF..FF') IS IN THE     00608802
+*           LOCK WORD(ASCBLOCK).                                        00609402
+*                                                                       00609802
+*           SPIE:                                                       00613602
+*           1. SPIE MUST SUPPLY A SPIE CONTROL AREA(SCA). THE LENGTH OF 00614202
+*           THIS AREA IS 4 BYTES FOR A PIE POINTER + THE LENGTH OF AN   00614802
+*           SRB + 16 BYTES FOR PARAMETERS USED BY THE INTERRUPT HAND-   00615402
+*           LER. A POINTER TO THE SCA MUST BE PLACED IN THE TCBPIE      00616002
+*           FIELD. IF A PIE EXISTS THE FIRST 4 BYTES OF THE SCA POINTS  00616602
+*           TO THE PIE.                                                 00617202
+*           2. THE ADDRESS OF SPIE'S RMTR HAS BEEN PLACED IN THE        00617602
+*           SRBRMTR FIELD OF THIS SRB LOCATED WITHIN THE SCA.           00618402
+*                                                                       00620802
+*           RTM:                                                        00621402
+*           1. THE SEGMENT AND TRANSLATION RECURSION BITS MUST BE TURN- 00622002
+*           ED OFF BY RTM IN THE PROGCK AND DATERR ENTRIES AFTER SUC-   00623202
+*           CESSFUL COMPLETION OF ITS PROCESSING.                       00623802
+*           2. ON THE DATERR ENTRY THE ERROR INFORMATION IS IN LCCAPGR1 00624402
+*           (GENERAL REGISTERS) AND ALL OTHER INFO IS IN HARDWARE       00625002
+*           STORED LOW CORE.                                            00625802
+*           3. NORMALLY THE PROGCK ENTRY ERROR INFORMATION IS IN        00626602
+*           LCCAPGR2(GENERAL REGS), LCCAPPSW(FOR PSW), LCCAPINT(ILC +   00627402
+*           INTERRUPT CODE), AND LCCAPVAD(TRANSLATION ADDRESS). HOWEVER 00628002
+*           IF A NON-ZERO COMPLETION CODE WAS SPECIFIED ON THE ENTRY    00628602
+*           THE ERROR INFORMATION IS IN THE SAME AREAS AS FOR DATERR.   00629202
+*           4. ON THE PGIOERR ENTRY FROM THE RESET ROUTINE, RTM IS EX-  00629802
+*           PECTED TO TEST THE RB WAIT COUNT (PASSED IN REG 5) IF       00630402
+*           RESETING AN UNLOCKED TCB, AND IF 0 IGNORE ANY OPERATIONS    00631602
+*           DUE TO THE FACT THAT ABNORMAL TERMINATION IS ALREADY IN     00632202
+*           PROGRESS.                                                   00632802
+*           5. BEFORE THE FREEING OF AN RB(DUE TO AN ABNORMAL TERMINA-  00633402
+*           TION) OR ALLOWING THE RB TO RETRY IN ANY WAY, RTM MUST      00634002
+*           PURGE ANY OUTSTANDING PAGING I/O FOR THE RB SO THAT RESET   00634602
+*           WILL GET CONTROL AND PERFORM ITS CLEAN UP.                  00635802
+*           6. RTM AND EMS/MFA FRRS CAN NOT GIVE UP OR GET LOCKS.       00636402
+*                                                                       00637002
+*           PC FLIH RECURSIONS  -- PTM VS08516 --                       00637303
+*           IN CASE OF RECURSION IN THE FIRST SEGMENT OF THE PROGRAM    00637603
+*           FLIH, THE FOLLOWING RECOVERY ACTIONS WILL BE TAKEN:         00638803
+*           1. IF THE PROBLEM IS CAUSED BY A DAT-TYPE ERROR, MASTER'S   00648403
+*           C.R.1 WILL BE LOADED, AND THE NORMAL DATERR ENTRY WILL      00658403
+*           BE TAKEN TO RTM.  THE REGISTERS AT TIME OF INTERRUPT WILL   00670003
+*           BE STORED IN LCCAPGR1.                                      00670303
+*           2. IF THE PROBLEM IS CAUSED BY THE LCCA POINTERS BEING      00670603
+*           OVERLAID, AN ATTEMPT WILL BE MADE TO RESTORE THEM FROM      00670803
+*           THE LCCAT, AND THE PCCA POINTERS FROM THE PCCAT.            00671003
+*           A FAILURE IN THIS ATTEMPT WILL ALSO RESULT IN THE DATERR    00671203
+*           ENTRY BEING TAKEN TO RTM.  SUCCESSFUL REFRESH OF THESE      00671803
+*           FIELDS WILL RESULT IN A PROGCHK ENTRY TO RTM, WITH A        00672003
+*           COMPLETION CODE OF X'4FC', THE PC FLIH STACK AS CURRENT,    00672203
+*           THE PC FLIH SUPER BIT ON, AND THE INCORRECT VALUES FROM     00672403
+*           LOCATION X'208' - '217' STORED IN THE FIRST FOUR WORDS      00672703
+*           OF LCCAPGR1.                                                00673003
+*                                                                       00673303
+*03*        CHARACTER-CODE-DEPENDENCIES = NONE                          00673603
+*                                                                       00673703
+*02*     RESTRICTIONS = NONE                                            00673803
+*                                                                       00673903
+*02*     REGISTER-CONVENTIONS = SEE EQUATE SECTION OF THE MODULE        00674003
+*                                                                       00674203
+*02*     PATCH-LABEL = NONE(NUCLEUS RESIDENT)                           00674803
+*                                                                       00675403
+*01*  MODULE-TYPE = PROCEDURE                                           00676003
+*                                                                       00676603
+*02*     PROCESSOR = ASSEMBLER                                          00677803
+*                                                                       00678403
+*02*     MODULE-SIZE = REFERENCE ESD LENGTH AT BEGGINNING OF MODULE.    00679603
+*                                                                       00680203
+*02*     ATTRIBUTES = NUCLEUS ,ZERO PROTECT KEY,DISABLE,REFRESHABLE,    00680803
+*        ADDRSPC=REAL,SUPERVISOR MODE                                   00682003
+*                                                                       00682603
+*01*  ENTRY-POINT = IEAQPK00                                            00683203
+*                                                                       00684402
+*02*     PURPOSE = THIS IS THE MAIN ENTRY POINT INTO PROGRAM FLIH, IT   00685003
+*        WILL DECIDE WHAT TYPE OF INTERRUPTION HAS OCCURED AND          00685603
+*        CONSEQUENTLY DECIDE WHAT PROCESSOR SHOULD BE GIVEN CONTROL .   00686803
+*                                                                       00687403
+*02*     LINKAGE = SEE INPUT SECTION BELOW                              00688003
+*                                                                       00689202
+*02*     INPUT =                                                        00689803
+*        INPUT ENVIRONMENT:                                             00690403
+*        STATE-DISABLED FOR I/O,EXTERNAL,DAT,AND PER INTERRUPTS,        00691603
+*        SUPERVISOR                                                     00692203
+*        KEY-0                                                          00692803
+*        LOCKS REQUIRED-NONE                                            00693403
+*        INPUT DATA:                                                    00694603
+*        PROGRAM OLD PSW-LOCATION DECIMAL 40                            00695203
+*        PROGRAM INTERRUPT CODE-LOCATION DECIMAL 142                    00696403
+*        PROGRAM ILC VALUE-LOCATION DECIMAL 140-141                     00697003
+*        TRANSLATION EXCEPTION ADDRESS-LOCATION DECIMAL 144             00697603
+*        ALL FIELDS OF THE CONTROL-BLOCKS BELOW                         00698803
+*        INPUT REGISTERS:                                               00699403
+*        NONE                                                           00700003
+*                                                                       00701202
+*02*     OUTPUT = NONE UNIQUE TO THIS ENTRY                             00701803
+*                                                                       00702403
+*01*  ENTRY-POINT = IEAVPSRB                                            00703603
+*                                                                       00704203
+*02*     PURPOSE = THIS ROUTINE PERFORMS THE PIE/PICA PROCESSING        00704803
+*        NECESSARY TO SATISFY AN ENTRY INTO A SPIE EXIT ROUTINE AFTER A 00706003
+*        PROGRAM CHECK HAS OCCURED FOR AN UNLOCKED, PROBLEM PROGRAM TCB 00706603
+*        ,WITH A SPIE EXIT.                                             00707203
+*                                                                       00708403
+*02*     LINKAGE = SEE INPUT SECTION BELOW                              00709003
+*                                                                       00709403
+*02*     INPUT =                                                        00710103
+*        INPUT ENVIRONMENT:                                             00711403
+*        STATE-ENABLED,SUPERVISOR STATE                                 00712003
+*        KEY-0                                                          00713203
+*        LOCKS REQUIRED-NONE                                            00713803
+*        INPUT DATA:                                                    00714403
+*        SCA(SPIE CONTROL AREA)                                         00715003
+*        TCB BEING SERVICED                                             00716403
+*        RB BEING SERVICED                                              00717103
+*        INPUT REGISTERS:                                               00717803
+*        0=CONTAINS ADDRESS OF SRB                                      00718503
+*        1=CONTAINS ADDRESS OF PARAMETERS                               00719203
+*        14=CONTAINS RETURN ADDRESS                                     00719903
+*        15=CONTAINS ENTRY POINT ADDRESS                                00720603
+*                                                                       00722002
+*02*     OUTPUT = NONE UNIQUE TO THIS ENTRY                             00722703
+*                                                                       00723403
+*01*  ENTRY-POINT = IEAVSUSP                                            00724103
+*                                                                       00724803
+*02*     PURPOSE = THIS ENTRY IS PROVIDED TO THE PAGING SUPERVISOR. IT  00725503
+*        IS ENTERED IF PAGING I/O MUST BE PERFORMED. THIS ENTRY WILL    00726203
+*        SAVE THE NECESSARY STATUS AND PERFORM THE OPERATIONS NECESSARY 00727603
+*        TO SUSPEND AN SRB, LOCKED TCB, OR UNLOCKED TCB.                00728303
+*                                                                       00729003
+*02*     LINKAGE = SEE INPUT SECTION BELOW                              00729703
+*                                                                       00730403
+*02*     INPUT =                                                        00731103
+*        INPUT ENVIRONMENT:                                             00732403
+*        STATE-DISABLED,SUPERVISOR                                      00733003
+*        KEY-0                                                          00733603
+*        LOCKS REQUIRED-SALLOC LOCK                                     00734803
+*        INPUT DATA:                                                    00735403
+*        ALL INFORMATION FROM THE CONTROL-BLOCKS PSA AND LCCA.          00736003
+*        INPUT REGISTERS:                                               00737203
+*        13=SAVE AREA ADDRESS                                           00737803
+*        14=RETURN ADDRESS                                              00738403
+*                                                                       00739603
+*02*     OUTPUT = NONE UNIQUE TO THIS ENTRY                             00740203
+*                                                                       00740803
+*01*  ENTRY-POINT = IEAVRSET                                            00742003
+*                                                                       00742603
+*02*     PURPOSE = THIS ENTRY IS PROVIDED TO THE PAGING SUPERVISOR. IT  00743203
+*        IS ENTERED ON PAGING I/O COMPLETION OR ON AN I/O ERROR OR ON   00744403
+*        THE PURGING OF PAGING I/O. THIS ENTRY WILL CAUSE THE SUSPENDED 00745003
+*        TCB OR SRB TO BE REDISPATCHED. IF AN ERROR IS INDICATED, RTM   00745603
+*        IS ENTERED AND WILL PERFORM THE NECESSARY SET UP.              00746803
+*                                                                       00747403
+*02*     LINKAGE = SEE INPUT SECTION BELOW                              00748003
+*                                                                       00749203
+*02*     INPUT =                                                        00749803
+*        INPUT ENVIRONMENT:                                             00750203
+*        STATE-DISABLED,SUPERVISOR                                      00751603
+*        KEY-0                                                          00752203
+*        LOCKS REQUIRED-LOCAL AND SALLOC LOCKS IF SERVICING AN          00752803
+*                       UNLOCKED TCB.                                   00754003
+*                       SALLOC LOCK ONLY OTHERWISE                      00754603
+*        INPUT DATA:                                                    00755203
+*        NONE                                                           00756403
+*        INPUT REGISTERS:                                               00757003
+*        4=ADDRESS OF TCB OR SRB                                        00757403
+*        5=ADDRESS OF RB OR 0(IF SRB)                                   00758203
+*        6=0(IF NO ERROR)                                               00759003
+*          NON-0(IF ERROR)                                              00760403
+*        13=SAVE AREA ADDRESS                                           00761203
+*        14=RETURN ADDRESS                                              00762003
+*        15=ENTRY POINT ADDRESS                                         00762803
+*                                                                       00763603
+*02*     OUTPUT = NONE UNIQUE TO THIS ENTRY                             00764003
+*                                                                       00764803
+*01*  EXIT-NORMAL = IEA0DS                                              00766003
+*                                                                       00766603
+*02*     CONDITIONS = IF AN SRB HAS BEEN SCHEDULED TO PERFORM PIE/PICA  00767203
+*        PROCESSING, EXIT FROM THE PROGRAM FLIH IS TO THE DISPATCHER.   00768403
+*        OR IF A PAGE EXCEPTION HAS OCCURED AND THE PAGING SUPERVISOR   00769003
+*        HAS INDICATED THAT I/O HAS TO BE DONE AND SUSPENDED THE        00769603
+*        TCB OR SRB, EXIT IS TO THE DISPATCHER                          00770803
+*                                                                       00771403
+*02*     OUTPUT =                                                       00772003
+*        OUTPUT DATA-NONE DIRECTLY                                      00773203
+*        OUTPUT REGISTERS-NONE                                          00773803
+*        OUTPUT ENVIRONMENT-DISABLED,SUPERVISOR STATE,KEY 0,UNLOCKED    00774403
+*                                                                       00775602
+*02*     RETURN-CODES = NONE                                            00776203
+*                                                                       00776803
+*01*  EXIT-NORMAL = RTM(DATERR)                                         00778003
+*                                                                       00778603
+*02*     CONDITIONS = WHEN A TRANSLATION SPECIFICATION HAS OCCURED AND  00779203
+*        CONTROL REGISTER 0 BITS 8-12 ARE VALID FOR TRANSLATION, OR     00780403
+*        SEGMENT EXCEPTION RECURSION HAS OCCURED, RTM IS ENTERED AFTER  00781003
+*        LOADING THE MASTER MEMORY'S CONTROL REGISTER 1(STOR REGISTER)  00781603
+*        TO TERMINATE THE BAD MEMORY.                                   00782803
+*                                                                       00783403
+*02*     OUTPUT =                                                       00784003
+*        OUTPUT DATA-LCCAPDAT BIT ON,MAYBE LCCAPSG1 BIT ON,ALL OTHER    00785203
+*                    INFO IN THE PSA                                    00785803
+*        OUTPUT REGISTERS-NONE                                          00786403
+*        OUTPUT ENVIRONMENT-DISABLED,KEY 0,SUPERVISOR STATE,ANY LOCK    00787603
+*                           MAY BE HELD,IN MASTER MEMORY ADDRESS        00788203
+*                           SPACE                                       00788803
+*                                                                       00790003
+*02*     RETURN-CODES = NONE                                            00790603
+*                                                                       00791203
+*01*  EXIT-NORMAL = RTM(PROGCK)                                         00791803
+*                                                                       00793203
+*02*     CONDITIONS = IF A TRANSLATION SPECIFICATION HAS OCCURED AND    00793803
+*        CONTROL REGISTER 0 BITS 8-12 ARE INVALID FOR TRANSLATION, A    00794503
+*        DEFAULT VALUE FOR C.R.0 IS LOADED AND RTM IS ENTERED TO        00795003
+*        INITIATE RECOVERY TERMINATION. THIS ENTRY IS ALSO USED IF 1) A 00796003
+*        PROGRAM FLIH RECURSION HAS OCCURED, 2) A INTERRUPT OTHER THAN  00796503
+*        AN MC OR PER HAPPENED IN DISABLED CODE, 3) A SEGMENT EXCEPTION 00798003
+*        ,INVALID PAGE EXCEPTION, SSM INSTRUCTION OR ANY PROGRAM CHECK  00798403
+*        HAS OCCURED IN SRB MODE, IN A LOCALLY LOCKED TCB, IN AN        00799003
+*        UNLOCKED TCB IN SUPERVISOR STATE, OR AN UNLOCKED TCB IN        00800003
+*        PROBLEM STATE WITHOUT A SPIE EXIT OR 4) A NON-RECURSIVE        00800703
+*        TRANSLATION SPECIFICATION HAS OCCURRED.                        00802003
+*                                                                       00802603
+*02*     OUTPUT = 4 CASES                                               00803203
+*        CASE 1: PROGRAM FLIH RECURSION                                 00804403
+*        OUTPUT DATA-REGS IN LCCAPGR1 ALL OTHER IN HARDWARE STORED      00805003
+*                    LOCATIONS                                          00805603
+*        OUTPUT REGISTERS-1=NEGATIVE                                    00806803
+*        OUTPUT ENVIRONMENT-DISABLED,KEY 0,SUPERVISOR STATE,ANY         00807403
+*                           LOCK HELD                                   00808003
+*        CASE 2: C.R.0 BAD                                              00809203
+*        OUTPUT DATA-SAME AS CASE 1                                     00809603
+*        OUTPUT REGS-1=COMPLETION CODE X'069'                           00810403
+*        OUTPUT ENVIRONMENT-SAME AS CASE 1                              00811603
+*        CASE 3: TRANSLATION SPECIFICATION OR ADDRESSING EXCEPTION      00812203
+*        ALL OUTPUT AS IN CASE 1 WITH ADDITION LCCAPSG1 BIT OFF         00812803
+*        CASE 4: ALL OTHER REASONS                                      00814003
+*        OUTPUT DATA-REGS IN LCCAPGR2,PSW IN LCCAPPSW, ILC AND          00814603
+*                    INTERRUPT CODE IN LCCAPINT, TRANSLATION ADDRESS    00815203
+*                    IN LCCAPVAD(IF ANY)                                00816403
+*        OUTPUT REGISTERS-NONE                                          00817203
+*        OUTPUT ENVIRONMENT-SAME AS CASE 1                              00817403
+*                                                                       00818802
+*02*     RETURN-CODES = NONE                                            00819403
+*                                                                       00820003
+*01*  EXIT-NORMAL = BACK TO INTERRUPTED PROGRAM                         00821203
+*                                                                       00821803
+*02*     CONDITIONS = IF AN MC OR PER INTERRUPT ALONE WAS THE CAUSE OF  00822203
+*        THE PROGRAM INTERRUPTION, RETURN VIA A LPSW WILL BE BACK TO    00823603
+*        THE INTERRUPTED PROGRAM AFTER THE NECESSARY TRACING HAS BEEN   00824203
+*        PERFORMED. OR IF A PAGE EXCEPTION HAS OCCURED AND THE PAGING   00824803
+*        SUPERVISOR WAS ABLE TO RECLAIM THE PAGE, RETURN VIA A LPSW     00826003
+*        WILL BE BACK TO THE INTERRUPTED PROGRAM.                       00826603
+*                                                                       00827203
+*02*     OUTPUT = ALL STATUS AND INFO AS AT INTERRUPT TIME              00828403
+*                                                                       00828803
+*02*     RETURN-CODES = NONE                                            00829603
+*                                                                       00830803
+*01*  EXIT-NORMAL = SPIE ROUTINE(TO HANDLE PAGE EXCEPTION)              00831403
+*                                                                       00832003
+*02*     CONDITIONS = WHEN A PAGE EXCEPTION HAS OCCURED AND THE         00833203
+*        INTERRUPTED PROGRAM IS NEITHER  IN SRB MODE NOR IN SUPERVISOR  00833803
+*        STATE AND THE TCBPIE17 BIT IS ON INDICATING A SPIE IS IN       00834403
+*        EFFECT TO HANDLE THE PAGE EXCEPTION, A LPSW IS TAKEN TO THE    00835603
+*        SPIE EXIT IF A RECURSIVE PROGRAM INTERRUPTION HAS NOT OCCURED  00836003
+*        IN SETTING UP THE PIE/PICA.                                    00836803
+*                                                                       00837603
+*02*     OUTPUT =                                                       00838603
+*        OUTPUT DATA-PIE IS SET UP, THE RBOPSW IS SET UP, AND THE       00839203
+*                    PROGRAM MASK IS AS INDICATED IN THE PICA.          00839803
+*        OUTPUT REGISTERS-0=TRANSLATION EXCEPTION ADDRESS,              00840603
+*                         1=ADDRESS OF PIE                              00841403
+*                         14=ADDRESS OF RETURN POINT                    00842303
+*                         15=ADDRESS OF SPIE EXIT                       00843203
+*                         ALL OTHERS AS AT INTERRUPT                    00844103
+*        OUTPUT ENVIRONMENT-ENABLED,PROBLEM STATE,NO LOCKS              00845003
+*                                                                       00845803
+*02*     RETURN-CODES = NONE                                            00846603
+*                                                                       00847503
+*01*  EXIT-NORMAL = PAGING SUPERVISOR(RSM)                              00848303
+*                                                                       00849103
+*02*     CONDITIONS = RETURN TO CALLER AFTER RESET REQUEST HAS BEEN     00850003
+*        SATISFIED                                                      00850603
+*                                                                       00851203
+*02*     OUTPUT = NONE TO PAGING SUPERVISOR                             00851803
+*                                                                       00852503
+*02*     RETURN-CODES = NONE                                            00853303
+*                                                                       00854103
+*01*  EXIT-ERROR = SYSTEM TERMINATION ROUTINE (IGFPTERM)                00855003
+*                                                                       00855803
+*02*     CONDITIONS = TRANSLATION SPECIFICATION RECURSION OR SEGMENT    00856603
+*        EXCEPTION RECURSION(SECOND TIME) HAS OCCURED.                  00857503
+*                                                                       00858303
+*02*     OUTPUT =                                                       00859103
+*        OUTPUT DATA- 2 WORD PARAMETER LIST                             00860003
+*        WORD 1 = ADDR WTO BUFFER CONTAINING MESSAGE IEA999W            00860803
+*        WORD 2 = ADDR LOG REC BUFFER CONTAINING WAIT STATE  CODE X'14' 00861603
+*        OUTPUT REGISTERS- REG 1 = ADDR PARAMETER LIST                  00862503
+*        OUTPUT ENVIRONMENT-DISABLED FOR DAT, I/O AND EXT INTERRUPTS    00863303
+*        SUPERVISOR STATE, KEY 0, ANY LOCK HELD                         00864103
+*02*     RETURN-CODES = NONE                                            00865003
+*                                                                       00865303
+*01*  EXIT-ERROR = RTM (DATERR) OR (PROGCHK)                            00865603
+*                                                                       00865903
+*02*     CONDITIONS = RECURSION IN THE TOP SEGMENT OF THE PROGRAM FLIH  00866203
+*        DUE TO:                                                        00866503
+*        1. DAT-TYPE ERRORS REFERENCING THE LCCA ADDRESSES              00866803
+*           IN A USER MEMORY  (DATERR ENTRY)                            00867503
+*        2. THE LCCA ADDRESSES HAVE BEEN OVERLAID IN LOW-CORE.          00867803
+*           (PROGCHK ENTRY)                                             00868103
+*                                                                       00868403
+*02*     OUTPUT=                                                        00868703
+*        CASE 1: USUAL DATERR ENTRY -- MASTER'S C.R.1 HAS BEEN          00869003
+*           LOADED , AND THE REGISTERS AT TIME OF INTERRUPT ARE IN      00869303
+*           LCCAPGR1.                                                   00869603
+*        CASE2: PROGCHK ENTRY -- THE LCCA AND PCCA POINTERS HAVE BEEN   00870003
+*           RESTORED, THE PC FLIH STACK IS CURRENT AND THE SUPER BIT    00870103
+*           HAS BEEN SET.  A COMPLETION CODE OF X'4FC' IS PASSED IN     00870203
+*           REGISTER 1.  THE INCORRECT VALUES OF LOCATIONS              00870303
+*           X'208' - '217' ARE IN THE FIRST FOUR WORDS OF LCCAPGR1.     00870403
+*                                                                       00870503
+*01*  EXTERNAL-REFERENCES = SEE ROUTINES,DATA AREAS,CONTROL-BLOCKS      00870603
+*     BELOW                                                             00870703
+*                                                                       00870803
+*02*     ROUTINES =                                                     00870903
+*        AHLMCIH(GTF HANDLER)                                           00871003
+*        IGFPTERM (SYSTEM TERMINATION FACILITY)                         00871103
+*        IEAVPIX(PAGING SUPERVISOR)                                     00871203
+*        TRPI(TRACE ROUTINE)                                            00872503
+*        IEAVPSRB(PIE/PICA SRB ROUTINE)                                 00873103
+*        IEA0DS(MAIN DISPATCHER ENTRY)                                  00873703
+*        RTM(DATERR)                                                    00874303
+*        RTM(PROGCK)                                                    00875003
+*        STATUS RESET                                                   00875803
+*        RTM(ABTERM)                                                    00876603
+*        SETLOCK (OBTAIN/RELEASE)                                       00877503
+*        GETCELL                                                        00878303
+*        RTM(PGIOERR)                                                   00879103
+*        SCHEDULE                                                       00880003
+*        POST(NO ECB)                                                   00880803
+*                                                                       00881603
+*02*     DATA-AREAS = ALL INCLUDED IN CONTROL-BLOCKS BELOW              00882503
+*                                                                       00883303
+*02*     CONTROL-BLOCKS =                                               00884103
+*        PSA R/W                                                        00885003
+*        PCCA R                                                         00885803
+*        LCCA R/W                                                       00886603
+*        SRB R/W                                                        00887503
+*        SSRB W                                                         00888303
+*        ASCB R/W                                                       00889103
+*        TCB R/W                                                        00890003
+*        CVT R                                                          00890603
+*        SCA R/W                                                        00891203
+*        PIE R/W                                                        00891803
+*        PICA R                                                         00892503
+*        RB R/W                                                         00893303
+*        ASXB R                                                         00894103
+*        IHSA W                                                         00895003
+*        WSAG R                                                         00895803
+*        SSRB R/W                                                       00896603
+*        SCVT R/W                                                       00897503
+*        SDWA W                                                         00898303
+*        PVT R                                                          00899103
+*        PCCAT R                                                        00900003
+*        LCCAT R                                                        00900703
+*                                                                       00901403
+*01*  TABLES = NONE                                                     00902103
+*                                                                       00902803
+*01*  MACROS =                                                          00903503
+*        SCHEDULE                                                       00904203
+*        CALLRTM                                                        00904903
+*        HOOK                                                           00905603
+*        SETLOCK                                                        00906303
+*        SETRP                                                          00907003
+*        GETCELL                                                        00907703
+*                                                                       00908403
+*01*  CHANGE-ACTIVITY = Y0715,Y02751,Y02752,D04015                      00909140
+*                       OZ31350 - GO INTO USER KEY BEFORE               00909340
+*                       REFERENCING PICA                       @ZA31350 00909540
+*                                                                       00909803
+*01*  MESSAGES = NONE                                                   00910503
+*                                                                       00911203
+*01*  ABEND-CODES =                                                     00911903
+*        X'0CX'-CODE DEPENDING ON TYPE OF PROGRAM CHECK                 00912603
+*        X'0FB'-BAD C.R. 0 TRANSLATION EXCEPTION                        00913303
+*        X'028'-INTERNAL ERROR IN PAGING SUPERVISOR                     00914003
+*        X'4FC'-LOW CORE OVERLAY                               @YM08516 00914303
+*                                                                       00914703
+**** END OF SPECIFICATIONS ***/                                         00915403
+         EJECT                                                          00916103
+          SPACE 2                                                       00916803
+*/*IEAVEPC: CHART PROG FLIH */                                          00917503
+*/* HEADER                                                              00918203
+*/*                                                                     00918903
+*/*                                                                     00919603
+*/*                                                                     00920303
+*/*                                                  SECTION 3.1.8.4    00921003
+*/* PROGRAM FLIH                                                        00921703
+*/*                                                  PAGE # */          00922403
+          SPACE 2                                                       00923103
+IEAVEPC  CSECT                                                          00923803
+         MODID BR=NO                                                    00924503
+*********************************************************************** 00925203
+*                                                                     * 00925903
+*                       REGISTER EQUATES                              * 00926603
+*                                                                     * 00927303
+*********************************************************************** 00928003
+TEMPREG  EQU   6                       TEMPORARY SAVE REG               00928703
+COREREG  EQU   0                       GETMAIN REG                      00929403
+XSRBREG  EQU   7                       SRB REG                          00930103
+XPIEREG2 EQU   5                       PIE ADDRESS                      00930803
+XPICAREG EQU   8                       PICA ADDRESS                     00931503
+WORKREG1 EQU   10                      WORK REG                         00932203
+WORKREG3 EQU   11                      WORK REG                         00932903
+WORKREG4 EQU   12                      WORK REG                         00933603
+PARMREG  EQU   1                       PARAMETER REG                    00934303
+R4       EQU   4                       GENERAL REG                      00935003
+R5       EQU   5                       GENERAL REG                      00935703
+R3       EQU   3                       GENERAL REG                      00936403
+R2       EQU   2                  GENERAL REGISTER     @ZA06785         00936540
+R8       EQU   8                  GENERAL REG          @ZA06785         00936640
+R9       EQU   9                  BASE REG FOR IEAVSPER     @ZA06785    00936740
+R7       EQU   7                       GENERAL REG                      00937103
+R13      EQU   13                      GENERAL REG                      00937803
+ASXBREG  EQU   6                       ASXB ADDRESS                     00938503
+IHSAREG  EQU   6                       IHSA ADDRESS                     00939203
+SCHLREG  EQU   6                       SCHEDULE REG                     00939903
+CPIDREG  EQU   0                       CELL POOL ID REG                 00940603
+CVTREG2  EQU   3                       CVT ADDRESS                      00941303
+SRBCRREG EQU   1                       SRB CELL REG                     00942003
+SRBSAVER EQU   8                       SRB SAVE AREA ADDRESS            00942703
+FPR0     EQU   0                       FLOATING POINT REG               00943403
+FPR2     EQU   2                       FLOATING POINT REG               00944103
+FPR4     EQU   4                       FLOATING POINT REG               00950002
+FPR6     EQU   6                       FLOATING POINT REG               01000002
+ERREG    EQU   6                       ERROR CODE REGISTER              01050002
+SRBREG   EQU   5                       SRB ADDRESS                      01100002
+R11      EQU   11                      GENERAL REG                      01150002
+CCABASE  EQU   7                       LCCA ADDRESS                     01200002
+R0       EQU   0                       GENERAL REG                      01250002
+R15      EQU   15                      GENERAL REG                      01300002
+WORKREG  EQU   14                      WORK REG                         01350002
+BASEREG  EQU   9                       BASE REG                         01400002
+CVTREG   EQU   13                      CVT ADDRESS                      01450002
+XPICODE  EQU   6                       PROGRAM CODE REG                 01500002
+SCAREG   EQU   15                      SCA ADDRESS                      01510002
+SCAREG2  EQU   3                       SCA ADDRESS                      01520002
+XTRBASE  EQU   10                      TRACE ENTRY POINT ADDRESS        01550002
+XTRET    EQU   11                      TRACE BR INSTRUCTION ADDRESS     01600002
+EPREG    EQU   15                      ENTRY POINT ADDRESS              01650002
+RETREG   EQU   14                      RETURN ADDRESS                   01700002
+XTCBREG  EQU   4                       TCB ADDRESS                      01750002
+RBPTR    EQU   5                       RB ADDRESS                       01800002
+XPIEREG  EQU   1                       PIE ADDRESS                      01850002
+ASCBREG  EQU   3                       ASCB REG                         01900002
+WORKREG2 EQU   8                       WORK REG                         01950002
+DISPRTN  EQU   6                       DISPATCHER ADDRESS               02000002
+CR0      EQU   0                       CONTROL REG 0                    02050002
+R1       EQU   1                       GENERAL REG                      02100002
+MASTER   EQU   1                       CONTROL REG 1                    02150002
+CR1      EQU   1                       CONTROL REG 1                    02160002
+R12      EQU   12                      GENERAL REG 12                   02170002
+R14      EQU   14                      GENERAL REG                      02200002
+RTCDREG  EQU   15                      RETURN CODE REG                  02250002
+CCABASE2 EQU   15                      LCCA BASE REG                    02300002
+PCCABASE EQU   14                      PCCA BASE REG                    02310002
+XPIPICA  EQU   3                       PICA REG                         02350002
+R10      EQU   10                      GENERAL REG                      02400002
+SAVEREG  EQU   2                       SAVE AREA FOR RETURN ADDRESS     02402002
+ASCBBASE EQU   8                       ASCB ADDR FOR SUSPEND ROUTINE    02404002
+PVTPTR   EQU   3                       PVT ADDR FOR SUSPEND ROUTINE     02406002
+R6       EQU   6                       GENERAL REGISTER 6      @YM08516 02406603
+FOOTMARK EQU   4                       RECURSION FOOT PRINT    @YM08516 02416603
+TEMP0    EQU   2                       EVEN WORK REGISTER      @YM08516 02426603
+TEMP1    EQU   3                       ODD WORK REGISTER       @YM08516 02436603
+*********************************************************************** 02452003
+*                                                                     * 02453003
+*                       CONSTANT EQUATES                              * 02454003
+*                                                                     * 02455003
+*********************************************************************** 02456003
+EXIT     EQU   3                       EXIT SVC                         02500002
+PERCODE  EQU   X'80'                   PER CODE                         02700002
+TRCODE   EQU   X'12'                   TRANSLATION EXCEPT CODE @YM08516 02705003
+PGCODE   EQU   X'11'                   PAGE FAULT CODE                  02710002
+SGCODE   EQU   X'10'                   SEGMENT CODE                     02720002
+ADCODE   EQU   X'05'                   ADDRESS EXCEPT CODE     @YM08516 02725003
+PRCODE   EQU   X'04'                   PROTECTION CHECK CODE            02730002
+CR0MASK  EQU   X'80'                   BIT 8-12 C.R.0 MASK              02740002
+RCDTYPE  EQU   X'81'                   RECORD TYPE OF LOG REC BUFFER    02790002
+L1       EQU   1                       LENGTH VALUE                     03304002
+L2       EQU   2                       LENGTH VALUE            @YM08516 03304203
+L4       EQU   4                       LENGTH VALUE                     03304402
+L6       EQU   6                       LENGTH VALUE                     03304802
+L8       EQU   8                       LENGTH VALUE                     03305202
+L12      EQU   12                      LENGTH VALUE                     03306002
+L60      EQU   60                      LENGTH VALUE                     03306102
+L64      EQU   64                      LENGTH VALUE                     03306402
+L84      EQU   84                      LENGTH VALUE                     03308002
+L256     EQU   256                     LENGTH VALUE                     03308402
+M1       EQU   1                       MASK VALUE                       03310002
+M4       EQU   4                       MASK VALUE              @YM08215 03315002
+M7       EQU   7                       MASK VALUE                       03320002
+M8       EQU   8                       MASK VALUE                       03360002
+M11      EQU   11                      MASK VALUE                       03400002
+M12      EQU   12                      MASK VALUE                       03402002
+M15      EQU   15                      MASK VALUE                       03410002
+ZERO     EQU   0                       DISPLACEMENT VALUE               03460002
+FOUR     EQU   4                       DISPLACEMENT VALUE               03700002
+FIVE     EQU   5                       DISPLACEMENT VALUE               03900002
+EIGHT    EQU   8                       DISPLACEMENT VALUE               03910002
+ELEVEN   EQU   11                      DISPLACEMENT VALUE               03950002
+C0       EQU   0                       DISPLACEMENT VALUE               04000002
+C1       EQU   1                       DISPLACEMENT VALUE               04010002
+C2       EQU   2                       DISPLACEMENT VALUE               04012002
+C3       EQU   3                       DISPLACEMENT VALUE               04014002
+C4       EQU   4                       DISPLACEMENT VALUE               04014402
+C5       EQU   5                       DISPLACEMENT VALUE               04014502
+C6       EQU   6                       DISPLACEMENT VALUE               04014602
+C8       EQU   8                       DISPLACEMENT VALUE               04014702
+C12      EQU   12                      DISPLACEMENT VALUE @ZA06785      04018740
+C16      EQU   16                      DISPLACEMENT VALUE               04024640
+C24      EQU   24                      DISPLACEMENT VALUE               04028640
+C28      EQU   28                      DISPLACEMENT VALUE               04032640
+C36      EQU   36                      DISPLACEMENT VALUE      @YM08516 04036640
+C48      EQU   48                      DISPLACEMENT VALUE               04040640
+C56      EQU   56                      DISPLACEMENT VALUE               04044602
+C60      EQU   60                      DISPLACEMENT VALUE               04044802
+C256     EQU   256                     DISPLACEMENT VALUE               04045202
+CX01     EQU   X'01'                   IMMEDIATE VALUE                  04046402
+CX3F     EQU   X'3F'                   IMMEDIATE VALUE                  04046802
+CX03     EQU   X'03'                   IMMEDIATE VALUE                  04047202
+CXFF     EQU   X'FF'                   IMMEDIATE VALUE                  04047602
+CXFA     EQU   X'FA'                   IMMEDIATE VALUE                  04047702
+CX00     EQU   X'00'                   IMMEDIATE VALUE                  04048002
+CX10     EQU   X'10'                   IMMEDIATE VALUE                  04050402
+CX04     EQU   X'04'                   IMMEDIATE VALUE                  04052802
+CXF8     EQU   X'F8'                   IMMEDIATE VALUE                  04055202
+CXF0     EQU   X'F0'                   IMMEDIATE VALUE                  04057602
+CX0F     EQU   X'0F'                   IMMEDIATE VALUE                  04060002
+CXC0     EQU   X'C0'                   IMMEDIATE VALUE                  04070002
+CX80     EQU   X'80'                   IMMEDIATE VALUE                  04080002
+COMPCOD1 EQU   X'0FB'                  BAD C.R.0 COMP CODE              04352002
+WAITCODE EQU   X'14'                   SYSTEM TERM WAIT STATE CODE      04354002
+PCABCODE EQU   X'4FC'                  PC FLIH FRR ABEND CODE  @YM08516 04355003
+SRBERRCC EQU   X'6FC'                  SRB FRR COMPLETION CODE          04356002
+PIXABEND EQU   X'028'                  ABEND CODE FOR IEAPIX FAILURE    04357002
+         EJECT                                                          04358002
+         USING PSA,0                                                    04360002
+PROGSVC3 SVC   EXIT                    SPECIAL SVC 3 FOR SPIE EXITS-    04450002
+*                                      PLACEMENT IN FRONT OF IEAQPK00   04500002
+         ENTRY IEAPSVC3                                                 04502002
+          SPACE 2                                                       04502102
+*/*IEAQPK00: E IEAQPK00 */                                              04502402
+          SPACE 2                                                       04504002
+         ENTRY IEAQPK00                                                 04510002
+IEAPSVC3 DS    0H                      ENTRY STATEMENT FOR EXIT         04520002
+IEAQPK00 DS    0H                                                       04550002
+          SPACE 2                                                       04560002
+*/* P SAVE TWO REGS IN PSAPIREG */                                      04562003
+          SPACE 2                                                       04570002
+         ST    CCABASE,PSAPIREG        SAVE ONE REGISTER IN PSA         04600002
+         ST    BASEREG,PSAPIR2                                 @YM08516 04600903
+          SPACE 2                                                       04601803
+*/* P ESTABLISH ADDRESSABILITY */                                       04602703
+          SPACE 2                                                       04603603
+         BALR  BASEREG,C0              ESTABLISH                        04604503
+         USING *,BASEREG               ADDRESSABILITY                   04605403
+ADDRESS  DS    0H                                              @YM08516 04605803
+         SPACE 2                                                        04606303
+*/* D (NO,,YES,PSAREF) RECURSION IN FLIH? */                            04607203
+         SPACE 2                                                        04608103
+         TM    PSASUP3,PSAPI2          RECURSION IN FLIH?      @YM08516 04609003
+         BO    PSAREF                  IF SO TRY TO RECOVER    @YM08516 04612003
+         SPACE 2                                                        04615003
+*/* P SET RECURSION2 BIT ON */                                          04620003
+         SPACE 2                                                        04625003
+         OI    PSASUP3,PSAPI2          SET RECURSION BIT ON    @YM08516 04630003
+          SPACE 2                                                       04635003
+*/* P GET LCCA ADDR FROM PSALCCAR */                                    04640003
+          SPACE 2                                                       04645003
+         L     CCABASE,PSALCCAR        GET REAL ADDRESS OF LOGICAL CCA  04650002
+         USING LCCA,CCABASE            ESTABLISH BASE TO LCCA           04700002
+          SPACE 2                                                       04710002
+*/* P SAVE ALL REGS IN LCCAPGR1 */                                      04712002
+          SPACE 2                                                       04720002
+         STM   R0,R15,LCCAPGR1         SAVE ALL REGS IN LCCA AREA       04750002
+         L     WORKREG,PSAPIREG        GET REGISTER SAVED INITIALLY     04800002
+         ST    WORKREG,LCCAPGR1+C28    SAVE REGISTER USED               04850002
+         L     WORKREG,PSAPIR2         GET REGISTER 2 SAVED    @YM08516 04880003
+         ST    WORKREG,LCCAPGR1+C36    SAVE REGISTER USED      @YM08516 04910003
+          SPACE 2                                                       04960002
+*/* P REFRESH CVT ADDR FROM INTERNAL ADCON */                           04962003
+          SPACE 2                                                       04970002
+         L     CVTREG,ADCVT            GET CVT ADDRESS                  05000003
+         ST    CVTREG,FLCCVT           REFRESH CVT POINTER              05050002
+          SPACE 2                                                       05060002
+*/* P TURN OFF PER */                                                   05062002
+          SPACE 2                                                       05070002
+         USING CVT,CVTREG              ESTABLISH BASE TO CVT            05100002
+         LH    XPICODE,FLCPICOD        GET PROGRAM INTRPR CODE          05150002
+         LA    WORKREG,CXFF-PERCODE    GET MASK TO TURN PER OFF         05200002
+         NR    XPICODE,WORKREG         TURN PER OFF IN REG              05250002
+         SPACE 2                                                        05250203
+*/* D (YES,DATON,NO,) PAGE FAULT? */                                    05250403
+         SPACE 2                                                        05250603
+PGFLTST  DS    0H                                                       05250803
+         STC   XPICODE,PSAPIR2         STORE PI CODE           @YM08516 05250903
+         CLI   PSAPIR2,PGCODE          IS INTRPT PAGE FAULT    @YM08516 05251003
+         BE    DATON                   IF SO GO HANDLE         @YM08516 05251503
+          SPACE 2                                                       05252002
+*/*TRANSTST: D (YES,TRANS1,NO,) TRANS SPEC? */                          05252402
+          SPACE 2                                                       05254002
+TRANSTST DC    0H'0'                   TEST LABEL                       05260002
+         CLI   PSAPIR2,TRCODE          IS INTRPT TRANS SPEC             05300003
+         BE    TRANS1                  IF SO GO PROCESS                 05350002
+          SPACE 2                                                       05350402
+*/* D (YES,TRANS3,NO,) ADDRESS EXCEPTION? */                            05350502
+          SPACE 2                                                       05350802
+         CLI   PSAPIR2,ADCODE          IS INTRPT ADDR EXCEPTION         05352003
+         BE    TRANS3                  IF SO CHECK NEXT ACTION          05354002
+          SPACE 2                                                       05356002
+*/*SEGTST: D (NO,DATON,YES,) SEG EXCEPTION? */                          05358002
+          SPACE 2                                                       05358402
+SEGTST   DC    0H'0'                   TEST LABEL                       05360002
+         CLI   PSAPIR2,SGCODE          IS INTRPT SEGMENT EXCEP          05400003
+         BNE   DATON                   IF NOT PROCEED                   05450002
+          SPACE 2                                                       05452002
+*/* D (YES,TRANS2,NO,) SEG RECURSION? */                                05452402
+          SPACE 2                                                       05454002
+         TM    LCCAIHR1,LCCAPSG1       IS THIS A SEGMENT RECURSION      05460002
+         BO    TRANS2                  IF SO TRY TO RECOVER             05500002
+          SPACE 2                                                       05510002
+*/* P SET SEG REC BIT */                                                05512002
+          SPACE 2                                                       05520002
+         OI    LCCAIHR1,LCCAPSG1       SET SEGMENT RECURSION BIT        05550002
+          SPACE 2                                                       05560002
+*/*DATON: P ENABLE PSW FOR DAT */                                       05562002
+          SPACE 2                                                       05570002
+DATON    STOSM LCCAPSMK,CX04           ENABLE FOR DAT                   05600002
+         L     CCABASE,PSALCCAV        GET VIRTUAL ADDRESS OF LCCA      05602002
+          SPACE 2                                                       05604002
+*/*PIERCTST: D (YES,BADPIE,NO,PIRCTST) PIE RECURSION? */                05604402
+          SPACE 2                                                       05606002
+PIERCTST DC    0H'0'                   TEST LABEL                       05610002
+         TM    LCCAIHR1,LCCAPPIE       IS THE PIE RECURSION BIT ON      05650002
+         BO    PIEREC                  IF SO GO PROCESS RECURSION       05700002
+          SPACE 2                                                       05702002
+*/*PIRCTST: D (NO,PROGCONT,YES,) PROGRAM RECURSION? */                  05706002
+          SPACE 2                                                       05708402
+PIRCTST  DC    0H'0'                   TEST LABEL                       05710002
+         TM    PSASUP1,PSAPI           DID A PROGRAM RECURSION OCCUR    05750002
+         BNO   PROGCONT                IF NOT CONTINUE                  05800002
+          SPACE 2                                                       05800402
+*/* P (,ERR3) SET UP -1 COMPLETION CODE */                              05800502
+          SPACE 2                                                       05800802
+         NI    PSASUP3,CXFF-PSAPI2-PSAPSREG                             05801203
+*                                      CLEAR RECURSION 2 BITS  @YM08516 05801603
+         MVC   FLCTRACE,CVTTRCA        REFRESH TRACE HEADER    @YA02352 05801803
+         SR    R1,R1                   ZERO REG 1                       05802002
+         BCTR  R1,C0                   DECREMENT TO MINUS FOR COMPCODE  05804002
+         B     ERR2                    PROCEED TO RTM          @ZA10452 05806040
+          SPACE 2                                                       05808002
+*/*PROGCONT: P STORE THE CLOCK FOR JOB STEP TIMING */                   05808102
+          SPACE 2                                                       05808402
+PROGCONT STCK  PSAPCPSW                STORE CLOCK FOR JOB     @YM08398 05808702
+*                                      STEP TIMING PURPOSES    @YM07640 05808802
+          SPACE 2                                                       05809002
+*/* P SAVE CURRENT FRR STACK POINTER */                                 05809302
+          SPACE 2                                                       05809602
+         L     WORKREG,PSACSTK         GET CURRENT STACK PTR            05810002
+         ST    WORKREG,PSAPSAV         SAVE CURRENT PTR IN SAVE AREA    05820002
+          SPACE 2                                                       05824102
+*/* P MAKE PROG FLIH STACK CURRENT */                                   05824502
+          SPACE 2                                                       05826102
+         L     WORKREG,PSAPSTK         GET PROGRAM FLIH STACK PTR       05830002
+         ST    WORKREG,PSACSTK         SET PROGRAM FLIH STACK PTR       05840002
+          SPACE 2                                                       05842002
+*/* P SET PROGRAM FLIH RECURSION */                                     05844002
+          SPACE 2                                                       05846002
+         OI    PSASUP1,PSAPI           SET PROGRAM FLIH BIT             05850002
+         SPACE 2                                                        05851003
+*/* P CLEAR RECURSION2 BIT */                                           05852003
+         SPACE 2                                                        05853003
+         NI    PSASUP3,CXFF-PSAPI2-PSAPSREG                             05854003
+*                                      CLEAR RECURSION 2 BIT   @YM08516 05855003
+          SPACE 2                                                       05860002
+*/* P MOVE REGS LCCAPGR1 TO LCCAPGR2 */                                 05862002
+          SPACE 2                                                       05870002
+         MVC   LCCAPGR2(L64),LCCAPGR1  MOVE SAVED REGISTERS INTO SAFE   05900002
+*                                      AREA FROM RECURSIONS             05950002
+          SPACE 2                                                       05960002
+*/* P MOVE PSW PIOPSW TO LCCAPPSW */                                    05962002
+          SPACE 2                                                       05970002
+         MVC   LCCAPPSW(L8),FLCPOPSW   MOVE PSW TO SAFE AREA            06000002
+          SPACE 2                                                       06002002
+*/* P MOVE ILC AND INT CODE TO LCCAPINT */                              06002402
+          SPACE 2                                                       06004002
+         L     WORKREG,FLCPIILC-C1     MOVE ILC AND INTERRUPT CODE      06010002
+*                                      INTO REGISTER                    06020002
+         ST    WORKREG,LCCAPINT        SAVE ILC AND INTERRUPT CODE      06200002
+*                                      INTO SAFE AREA                   06250002
+          SPACE 2                                                       06260002
+*/* P MOVE TRANS ADDR TO LCCAPVAD */                                    06262002
+          SPACE 2                                                       06270002
+         L     WORKREG,FLCTEA          GET DAT EXCEPTION ADDRESS        06300002
+         ST    WORKREG,LCCAPVAD        SAVE DAT EXCEPTION ADDRESS       06350002
+*                                      REGISTERS 0,1,15 AS ON ENTRY     06400002
+          SPACE 2                                                       06402002
+*/* D (NO,GTF1,YES,) IS TRACE TO BE DONE? */                            06402402
+          SPACE 2                                                       06404002
+         CLI   CVTTRACE+C1,CXFA        IS TRACE TO BE DONE              06410002
+         BNE   GTF1                    IF NOT DONT TRACE                06420002
+         L     XTRBASE,ATRPI           GET PI TRACE ENTRY ADDRESS       06450002
+         L     WORKREG,CVTTRCA         GET TRACE HEADER        @ZA10452 06460040
+         ST    WORKREG,FLCTRACE        RESTORE TRACE HEADER    @ZA10452 06470040
+          SPACE 2                                                       06500002
+*/*TRACEEP: L TRACE-- VIA BALR 11,10 */                                 06500402
+          SPACE 2                                                       06502002
+TRACEEP  DC    0H'0'                   TEST LABEL                       06510002
+         BALR  XTRET,XTRBASE           GO TO TRACE                      06550002
+          SPACE 2                                                       06560002
+*/*GTF1: L GTF-- HANDLE MC OR TRACE INTERRUPT */                        06570002
+          SPACE 2                                                       06580002
+GTF1     HOOK  EID=IEAPINT,TYPE=BP     GO HANDLE MC OR TRACE INTERRUPT  06600002
+          SPACE 2                                                       06702002
+*/*MCPERTST: D (YES,GOBACK,NO,) WAS INTERRUPT ONLY PER/MC? */           06702402
+          SPACE 2                                                       06704002
+MCPERTST DC    0H'0'                   TEST LABEL                       06710002
+         TM    LCCAPINT+C3,CX3F        WAS THERE AN INTERRUPT OTHER     06750002
+*                                      THAN MC OR PER ONLY              06800002
+         BZ    GOBACK                  IF NOT RETURN TO INTERRUPTED     06850002
+*                                      PROGRAM                          06900002
+          SPACE 2                                                       06950002
+*/* P CLEAR PER BIT IN LCCAPINT */                                      06960002
+          SPACE 2                                                       07000002
+         NI    LCCAPINT+C3,CXFF-PERCODE CLEAR PER IN INTERRUPT CODE     07160002
+          SPACE 2                                                       07162002
+*/*DISTST1: D (YES,ERR1,NO,) PSW DISABLED? */                           07162402
+          SPACE 2                                                       07164002
+DISTST1  DC    0H'0'                   TEST LABEL                       07170002
+         TM    LCCAPPSW,CX03           WAS PSW DISABLED                 07200002
+         BC    M12,ERR1                IF SO PROCEED TO RECOVERY        07250002
+          SPACE 2                                                       07254002
+*/*PGTST: D (YES,PAGEPR,NO,) PAGE FAULT? */                             07254402
+          SPACE 2                                                       07256002
+PGTST    DC    0H'0'                   TEST LABEL                       07260002
+         CLI   LCCAPINT+C3,PGCODE      IS INTERRUPT A PAGE FAULT        07300002
+         BE    PAGEPR                  IF SO PROCESS                    07350002
+          SPACE 2                                                       07610002
+*/*PROGCK: D (YES,ERR1,NO,) SRB MODE? */                                07612002
+          SPACE 2                                                       07620002
+PROGCK   DS    0H                                                       07650002
+         TM    LCCADSF2,LCCASRBM       IS PROGRAM IN SRB MODE           07700002
+         BO    ERR1                    IF SO PROCEED TO RECOVERY        07750002
+          SPACE 2                                                       07752002
+*/*LTST1: L (YES,ERR1,NO,) SETLOCK-- ANY LOCKS HELD? */                 07752402
+          SPACE 2                                                       07754002
+LTST1    DC    0H'0'                   TEST LABEL                       07760002
+         SETLOCK TEST,TYPE=ALL,BRANCH=(HELD,ERR1),REGS=(WORKREG)        07762002
+*                                      ANY LOCKS HELD?                  07764002
+          SPACE 2                                                       07902002
+*/*TCBERR1: P GET TCB ADDR FROM PSATOLD */                              07902402
+          SPACE 2                                                       07904002
+TCBERR1  DC    0H'0'                   TEST LABEL                       07910002
+         L     XTCBREG,PSATOLD         GET CURRENT TCB ADDRESS          07950002
+         USING TCB,XTCBREG                                              08000002
+          SPACE 2                                                       08010002
+*/* P MOVE LCCAPGR2 REGS TO TCBGRS */                                   08012002
+          SPACE 2                                                       08020002
+         MVC   TCBGRS(L64),LCCAPGR2    MOVE REGS TO TCB SAVE AREA       08050002
+          SPACE 2                                                       08060002
+*/* P GET RB ADDR FROM TCBRBP */                                        08062002
+          SPACE 2                                                       08070002
+         L     RBPTR,TCBRBP            GET RB ADDRESS                   08100002
+         USING RBSECT,RBPTR                                             08150002
+          SPACE 2                                                       08160002
+*/* P MOVE LCCAPPSW TO RBOPSW */                                        08162002
+          SPACE 2                                                       08170002
+         MVC   RBOPSW(L8),LCCAPPSW     MOVE PSW TO RB SAVE AREA         08200002
+          SPACE 2                                                       08202002
+*/*SPSTTST2: D (YES,ERR1,NO,) SUPV STATE? */                            08202402
+          SPACE 2                                                       08204002
+SPSTTST2 DC    0H'0'                   TEST LABEL                       08210002
+         TM    LCCAPPSW+C1,CX01        IS PROGRAM IN SUPERVISOR STATE   08250002
+         BZ    ERR1                    IF SO PROCEED TO RECOVERY        08300002
+         L     SCAREG,TCBPIE           GET PIE ADDRESS                  08350002
+         LA    SCAREG,C0(SCAREG)       CLEAR ANY STATUS BITS IN REG     08400002
+          SPACE 2                                                       08402002
+*/*PIE2TST1: D (NO,ERR1,YES,) IS THERE A PIE? */                        08402402
+          SPACE 2                                                       08404002
+PIE2TST1 DC    0H'0'                   TEST LABEL                       08410002
+         LTR   SCAREG,SCAREG           IS THERE A PIE                   08450002
+         BZ    ERR1                    IF NOT PROCEED TO RECOVERY       08500002
+          SPACE 2                                                       08500402
+         USING SCA,SCAREG                                               08510002
+         L     XPIEREG,SCAPIE          GET ADDRESS OF PIE               08550002
+         LA    XPIEREG,C0(XPIEREG)     CLEAR ANY HIGH ORDER BITS        08600002
+          SPACE 2                                                       08602002
+*/*PIE2TST2: D (YES,ERR1,NO,) IS PIE ADDR ZER0? */                      08602402
+          SPACE 2                                                       08604002
+PIE2TST2 DC    0H'0'                   TEST LABEL                       08610002
+         LTR   XPIEREG,XPIEREG         IS PIE EXISTENT                  08650002
+         BZ    ERR1                    IF NOT PROCEED TO RECOVERY       08700002
+          SPACE 2                                                       08700402
+*/* D (NO,SCAINIT,YES,) IS INTERRUPT PAGE FAULT OR SEG EXCEP? */        08702002
+          SPACE 2                                                       08704002
+         TM    LCCAPINT+C3,CX10        IS INTERRUPT PAGE OR SEG CODE    08710002
+         BZ    SCAINIT                 IF NOT DONT CONVERT              08720002
+          SPACE 2                                                       08722002
+*/* P RESET INTERRUPT CODE TO X'04' AND ZERO ILC VALUE */               08722402
+          SPACE 2                                                       08724002
+         MVI   LCCAPINT+C3,PRCODE      RESET TO PROTECTION              08730002
+         MVI   LCCAPINT+C1,CX00        RESET ILC TO ZERO                08740002
+          SPACE 2                                                       08742002
+*/*SCAINIT: P CLEAR SEG REC BIT */                                      08744002
+          SPACE 2                                                       08746002
+SCAINIT  LA    XPIEREG,SCASRB          GET ADDRESS OF PIE/PICA SRB      08750002
+         NI    LCCAIHR1,CXFF-LCCAPSG1  CLEAR SEG. REC. BIT IF ON        08800002
+          SPACE 2                                                       08810002
+*/* P GET ASCB ADDR FROM PSAAOLD */                                     08812002
+          SPACE 2                                                       08820002
+         L     ASCBREG,PSAAOLD         GET ASCB ADDRESS                 08850002
+         USING ASCB,ASCBREG                                             08860002
+         USING SRBSECT,XPIEREG                                          08900002
+          SPACE 2                                                       08910002
+*/* P PUT ASCB ADDR IN SRBASCB */                                       08912002
+          SPACE 2                                                       08920002
+         ST    ASCBREG,SRBASCB         PLACE ASCB ADDRESS IN SRB        08950002
+          SPACE 2                                                       08960002
+*/* P GET ASCBASID AND PUT IN SRBPASID */                               08962002
+          SPACE 2                                                       08970002
+         LH    WORKREG,ASCBASID        GET ASID VALUE FOR MEMORY        09000002
+         STH   WORKREG,SRBPASID        PLACE ASID VALUE IN SRB          09050002
+          SPACE 2                                                       09060002
+*/* P PUT TCB ADDR IN SRBPTCB */                                        09062002
+          SPACE 2                                                       09070002
+         ST    XTCBREG,SRBPTCB         PLACE TCB ADDRESS IN SRB         09100002
+          SPACE 2                                                       09110002
+*/* P PUT SRB ROUTINE ADDR IEAVPSRB IN SRBEP AND INDICATE SYSTEM        09120002
+*/*PRIORITY */                                                          09125002
+          SPACE 2                                                       09130002
+         LA    WORKREG,IEAVPSRB        GET ROUTINE ENTRY POINT          09150002
+         ST    WORKREG,SRBEP           PLACE ROUTINE ENTRY POINT IN SRB 09200002
+         MVI   SRBPRIOR,CX00           INDICATE SYSTEM LEVEL SRB        09410002
+          SPACE 2                                                       09420002
+*/* P GET ADDR OF SRBEND AND PUT IN SRBPARM */                          09422002
+          SPACE 2                                                       09430002
+         LA    WORKREG,SCAPARMS        GET ADDRESS OF PARMS             09450002
+         ST    WORKREG,SRBPARM         STORE ADDRESS OF PARMS IN SRB    09500002
+          SPACE 2                                                       09510002
+*/* P PUT RB ADDR IN AT END OF SRB(PARM) */                             09512002
+          SPACE 2                                                       09520002
+         ST    RBPTR,SCAPARMS          STORE RB ADDRESS IN SRB          09550002
+          SPACE 2                                                       09560002
+*/* P PUT ILC AND INT CODE AFTER RB ADDR */                             09562002
+          SPACE 2                                                       09570002
+         L     WORKREG,LCCAPINT        GET ILC + INT. CODE VALUES       09600002
+         ST    WORKREG,SCAPARMS+C4     STORE ILC AND INT CODE IN SRB    09650002
+         MVC   SCAPARMS+C8(L8),LCCAPPSW MOVE PSW TO PARMS FIELD         09660002
+          SPACE 2                                                       09670002
+*/* P SET TCB NON-DISP TCBPIEND=1 TCBDNSSP=1 */                         09672002
+          SPACE 2                                                       09680002
+         OI    TCBNDSP1,TCBPIEND       SET NON-DISP BIT FOR PIE/PICA    09700002
+*                                      PROCESSING                       09750002
+         OI    TCBFLGS5,TCBPNDSP       SET NON-DISP SUMMARY BIT         09800002
+         L     WORKREG,ASCBTCBS        LOAD VALUE OF READY TCBS         09850002
+          SPACE 2                                                       09860002
+*/*DECTCBS: P DECREMENT COUNT OF READY TCBS VIA CS IN ASCBTCBS */       09862002
+          SPACE 2                                                       09870002
+DECTCBS  LR    WORKREG2,WORKREG        TRANSFER VALUE TO REG            09900002
+         BCTR  WORKREG2,C0             DECREMENT COUNT                  09950002
+CSINS1   DC    0H'0'                   TEST LABEL                       09960002
+         CS    WORKREG,WORKREG2,ASCBTCBS REPLACE OLD WITH NEW           10000002
+         BC    M4,DECTCBS              IF UNEQUAL TRY AGAIN    @YM08215 10050002
+*                                      XPIEREG=1                        10100002
+         DROP  XPIEREG                                                  10110002
+         DROP  SCAREG                                                   10120002
+          SPACE 2                                                       10120102
+*/*SCHED: L SCHEDULE-- SRB TO DO PIE/PICA PROCESS */                    10122002
+          SPACE 2                                                       10130002
+SCHED    SCHEDULE SRB=(1)              SCHEDULE SRB FOR PIE/PICA PROCES 10150002
+          SPACE 2                                                       10160002
+*/*DISPRET: P MOVE CLOCK AND CLEAR PROGRAM FLIH BIT */                  10162002
+          SPACE 2                                                       10170002
+DISPRET  L     DISPRTN,AIEA0DS         GET DISPATCHER ENTRY ADDRESS     10200002
+         L     WORKREG2,PSATOLD        HAS J.S.T. BEEN DONE?   @YM08398 10202002
+         LTR   WORKREG2,WORKREG2       IF TOLD=0 IT HAS, SO    @YM08398 10204002
+         BZ    CLRPBIT                 BYPASS MOVING CLOCK     @YM08398 10206002
+         MVC   LCCAITOD,PSAPCPSW       MOVE CLOCK VALUE FOR JOB STEP    10210002
+*                                      TIMING CALCULATIONS     @YM08398 10230002
+CLRPBIT  NI    PSASUP1,CXFF-PSAPI      CLEAR PROGRAM FLIH BIT           10250002
+          SPACE 2                                                       10252002
+*/*TCBXIT: R EXIT TO DISPATCHER */                                      10252402
+          SPACE 2                                                       10254002
+TCBXIT   DC    0H'0'                   TEST LABEL                       10260002
+         BR    DISPRTN                 BRANCH TO DISPATCHER             10300002
+          SPACE 2                                                       10310002
+*/*TRANS1: D (YES,LOADWAIT,NO,) TRANS RECURSION? */                     10312002
+          SPACE 2                                                       10320002
+TRANS1   TM    LCCAIHR1,LCCAPDAT       IS THIS A TRANSLATION RECURSION  10350002
+*                                      MEANING MASTER MEMORY IS BAD     10400002
+         BO    LOADWAIT                IF SO LOAD WAIT STATE            10450002
+          SPACE 2                                                       10452002
+*/*STCTL1: P GET C.R.0 VALUE IN LCCACR0 */                              10452402
+          SPACE 2                                                       10454002
+STCTL1   DC    0H'0'                   TEST LABEL                       10460002
+         ENTRY IEADSS01                                                 10470002
+IEADSS01 STCTL CR0,CR0,LCCACR0         STORE C.R.0 FOR CHECKING         10500002
+         NI    LCCACR0+C1,CXF8         TURN OFF BITS 13-15 FOR A        10550002
+*                                      COMPARE                          10600002
+          SPACE 2                                                       10602002
+*/*DATBITS: D (YES,MASCHECK,NO,) IS CR 0  OK? */                        10602402
+          SPACE 2                                                       10604002
+DATBITS  DC    0H'0'                   TEST LABEL                       10610002
+         CLI   LCCACR0+C1,CR0MASK      ARE DAT BITS IN CR0 OK           10650002
+         BE    MASCHECK                IF SO CHECK NEXT ACTION          10700002
+          SPACE 2                                                       10700102
+*/*LCTL1: P (,DATENON) LOAD DEFAULT VALUE */                            10703302
+          SPACE 2                                                       10708002
+LCTL1    DC    0H'0'                   TEST LABEL                       10711202
+         LCTL  CR0,CR0,DFLCR0          LOAD DEFAULT CR0 VALUE           10714402
+         LA    R1,COMPCOD1             GET UNIQUE COMP CODE             10717602
+         B     DATENON                                                  10720802
+          SPACE 2                                                       10722802
+*/*TRANS3: D (YES,LOADWAIT,NO,) TRANSLATION RECURSION? */               10722902
+          SPACE 2                                                       10723202
+TRANS3   TM    LCCAIHR1,LCCAPDAT       IS THIS A TRANSLATION RECURSION  10724002
+*                                      MEANING MASTER MEMORY IS BAD     10727202
+         BO    LOADWAIT                IF SO LOAD WAIT STATE            10736802
+          SPACE 2                                                       10738802
+*/*MASCHECK: D (YES,MASMEM,NO,) IS THIS MASTER MEMORY? */               10739202
+          SPACE 2                                                       10740002
+MASCHECK TM    LCCAIHR1,LCCAPSG1       IS MASTER BIT ON                 10743202
+         BO    MASMEM                  IF SO SWITCH TO MASTER           10746402
+*                                      MEMORY                           10749602
+          SPACE 2                                                       10751602
+*/* P SET SEG RECURSION BIT */                                          10751702
+          SPACE 2                                                       10752002
+         OI    LCCAIHR1,LCCAPSG1       SET MASTER BIT                   10752802
+         NI    PSASUP3,CXFF-PSAPI2-PSAPSREG                             10753803
+*                                      CLEAR RECURSION 2 BITS  @YM08516 10754803
+         SR    R1,R1                   ZERO REG 1                       10756002
+         BCTR  R1,0                    DECREMENT REG 1 TO MINUS 1       10806002
+          SPACE 2                                                       10816002
+*/*DATENON: P ENABLE PSW FOR DAT */                                     10826002
+          SPACE 2                                                       10836002
+DATENON  STOSM LCCAPSMK,CX04           ENABLE DAT                       10850002
+         L     CCABASE,PSALCCAV        GET VIRTUAL ADDRESS OF LCCA      10852002
+          SPACE 2                                                       10854002
+*/* D (NO,GTF2,YES,) IS TRACE TO BE DONE? */                            10854402
+          SPACE 2                                                       10856002
+ERR2     CLI   CVTTRACE+C1,CXFA        IS TRACE TO BE DONE   @ZA10452   10860040
+         BNE   GTF2                    IF NOT DONT TRACE                10870002
+          SPACE 2                                                       10875002
+*/* P GET CVTTRACE VALUE AND TRPIEP */                                  10877002
+          SPACE 2                                                       10880002
+         MVC   FLCTRACE,CVTTRCA        REFRESH TRACE HEADER    @YA02352 10882003
+         LR    WORKREG,R1              SAVE REG 1 VALUE(COMPCODE)       10885002
+         L     R1,LCCAPGR1+C4          GET ORIGINAL REG 1 VAL FOR TRACE 10890002
+         L     XTRBASE,ATRPI           GET PI TRACE ENTRY ADDRESS       10900002
+          SPACE 2                                                       10952002
+*/*TRACEEP2: L EP=CVTTRACE--  BALR 11,10 */                             10952402
+          SPACE 2                                                       10954002
+TRACEEP2 DC    0H'0'                   TEST LABEL                       10960002
+         BALR  XTRET,XTRBASE           GO TO TRACE                      11000002
+         LR    R1,WORKREG              RESTORE COMPCODE VALUE           11010002
+          SPACE 2                                                       11020002
+*/*GTF2: L (,ERR3) GTF-- RECORD INTERRUPT */                            11030002
+          SPACE 2                                                       11040002
+GTF2     HOOK  EID=IEATINT,TYPE=BP     GO TRACE TRANSLATION ERROR       11050002
+          SPACE 2                                                       11260002
+*/*ERR3: L () CALL RTM-- TYPE=PROGCK SPECIAL E.P. NO RETURN */          11262002
+          SPACE 2                                                       11270002
+ERR3     CALLRTM TYPE=PROGCK,COMPCOD=(R1) GO TO RTM                     11300002
+          SPACE 2                                                       11350002
+*/*TRANS2: D (YES,LOADWAIT,NO,) TRANSLATION RECURSION? */               11352002
+          SPACE 2                                                       11360002
+TRANS2   DS    0H                                                       11400002
+         TM    LCCAIHR1,LCCAPDAT       IS THIS A TRANSLATION RECURSION  11402002
+         BO    LOADWAIT                IF SO LOAD WAIT STATE            11404002
+          SPACE 2                                                       11406002
+*/*MASMEM: P SET TRANSLATION RECURSION BIT */                           11406402
+          SPACE 2                                                       11408002
+MASMEM   OI    LCCAIHR1,LCCAPDAT       SET TRANSLATION RECURSION BIT    11450002
+         NI    PSASUP3,CXFF-PSAPI2-PSAPSREG                             11450603
+*                                      CLEAR RECURSION 2 BITS  @YM08516 11451203
+          SPACE 2                                                       11452002
+*/*LCTL2: P LOAD MASTER C.R.1 FROM LCCAMCR1 */                          11452402
+          SPACE 2                                                       11454002
+LCTL2    DC    0H'0'                   TEST LABEL                       11460002
+         LCTL  MASTER,MASTER,LCCAMCR1  LOAD MASTER MEMORY STOR REG      11500002
+          SPACE 2                                                       11502002
+*/*DATENON2: P ENABLE PSW FOR DAT AND ZERO LCCAITOD */                  11502402
+          SPACE 2                                                       11504002
+DATENON2 DC    0H'0'                   TEST LABEL                       11510002
+         XC    LCCAITOD,LCCAITOD       ZERO LCCAITOD FOR J.S.T.@YM08398 11551002
+         STOSM LCCAPSMK,CX04           ENABLE DAT              @YM30128 11551503
+          SPACE 2                                                       11552002
+*/* D (NO,GTF3,YES,) IS TRACE TO BE DONE? */                            11552402
+          SPACE 2                                                       11554002
+         CLI   CVTTRACE+C1,CXFA        IS TRACE TO BE DONE              11560002
+         BNE   GTF3                    IF NOT DONT TRACE                11570002
+          SPACE 2                                                       11580002
+*/* P GET CVTTRACE VALUE AND TRPI EP */                                 11582002
+          SPACE 2                                                       11590002
+         MVC   FLCTRACE,CVTTRCA        REFRESH TRACE HEADER    @YA02352 11595003
+         L     XTRBASE,ATRPI           GET PI TRACE ENTRY ADDRESS       11600002
+          SPACE 2                                                       11652002
+*/*TRACEEP3: L EP=CVTTRACE-- BALR 11,10 */                              11656002
+          SPACE 2                                                       11658002
+TRACEEP3 DC    0H'0'                   TEST LABEL                       11660002
+         BALR  XTRET,XTRBASE           GO TO TRACE                      11700002
+          SPACE 2                                                       11710002
+*/*GTF3: L GTF-- RECORD INTERRUPT */                                    11720002
+          SPACE 2                                                       11730002
+GTF3     HOOK  EID=IEATINT,TYPE=BP     GO TRACE TRANSLATION ERROR       11750002
+          SPACE 2                                                       11852002
+*/*DATERREP: L () CALL RTM-- TYPE=DATERR NO RETURN */                   11852402
+          SPACE 2                                                       11854002
+DATERREP DC    0H'0'                   TEST LABEL                       11860002
+         CALLRTM TYPE=DATERR           GO TO RTM                        11900002
+         EJECT                                                          11910003
+*/*PSAREF: P TRY TO RECOVER LOW CORE OVERLAY */                         11910203
+         SPACE 2                                                        11910403
+PSAREF   DS    0H                                              @YM08516 11910603
+         SPACE 2                                                        11910703
+*/* D (YES,RECURS1,NO,) RECURSIVE ENTRY? */                             11910803
+         SPACE 2                                                        11912803
+         TM    PSASUP3,PSAPSREG        CHECK RECURSION FLAG    @YM08516 11914803
+         BO    RECURS1                 WILL SWITCH TO MASTER   @YM08516 11916803
+         SPACE 2                                                        11920003
+*/* P SET RECURSION FLAG */                                             11921003
+         SPACE 2                                                        11922003
+         OI    PSASUP3,PSAPSREG   SET RECURSION FLAG ON        @YM08516 11924003
+         SPACE 2                                                        11925403
+*/* P REFRESH CVT FROM V-CON */                                         11925803
+         SPACE 2                                                        11926203
+         L     CVTREG,ADCVT       REFRESH CVT PTR              @YM08516 11926603
+         ST    CVTREG,FLCCVT                                   @YM08516 11927603
+         SPACE 2                                                        11928603
+*/*CPUPAREF: P REFRESH PSACPUPA */                                      11930003
+         SPACE 2                                                        11930303
+CPUPAREF DS    0H                                              @YM08516 11930703
+         L     TEMP1,CVTCSD       OBTAIN CSD ADDRESS           @YM08516 11931503
+         LRA   TEMP1,CSDFLAGS-CSD(TEMP1)                       @YM08516 11932103
+*                                 OBTAIN ADDRESS OF FLAG FIELD @YM08516 11932403
+         BNZ   DATERR             CSDFLAGS ADDRESS IS NOT TRANSLATABLE  11932703
+         TM    C0(TEMP1),CSDMP    CHECK IF ON MP               @YM08516 11933003
+         BZ    UPCONFIG           ON UP                        @YM08516 11933303
+         STAP  PSACPUPA           STORE CPU PHYSICAL ADDRESS   @YM08516 11933603
+         B     LCCATCHK           CONTINUE VERIFYING LCCAT     @YM08516 11933903
+UPCONFIG DS    0H                                              @YM08516 11934203
+         XC    PSACPUPA(L2),PSACPUPA                                    11934503
+*                                 CPU PHYSICAL ADDRESS = 0     @YM08516 11934803
+         SPACE 2                                                        11934903
+*/*LCCATCHK: P (NE 0,DATERR,EQ 0,) LRA ON CVTLCCAT */                   11935003
+         SPACE 2                                                        11936303
+LCCATCHK DS    0H                                                       11936603
+         LH    TEMP1,PSACPUPA     OBTAIN PHYSICAL CPU ADDRESS  @YM08516 11938603
+         SLL   TEMP1,C2           MULTIPLY BY 4                @YM08516 11941403
+         L     TEMP0,CVTLCCAT     OBTAIN ADDRESS OF LCCAVT     @YM08516 11942903
+         AR    TEMP0,TEMP1        ADDRESS LCCAT(PA)            @YM08516 11943903
+         SPACE 2                                                        11945303
+*/* P (NE 0,DATERR,EQ 0,) LRA ON LCCAT(CPUPA) */                        11946803
+         SPACE 2                                                        11948003
+         LRA   TEMP1,0(TEMP0)     CHECK LCCAT(PA) **VIRTUAL**  @YM08516 11949603
+         BNZ   DATERR             LCCAT(PA) NOT TRANSLATABLE   @YM08516 11950603
+         L     TEMP0,0(TEMP1)          GET LCCA VIRT ADDR      @YM08516 11951603
+         LRA   TEMP1,0(TEMP0)          CHECK LCCAV             @YM08516 11952603
+         BNZ   DATERR                  LCCAV NOT TRANSLATABLE  @YM08516 11953603
+         SPACE 2                                                        11954603
+*/*LCCACHK: D (NO,DATERR,YES,) LCCAR--> 'LCCA' ? */                     11955603
+         SPACE 2                                                        11958803
+LCCACHK  DS    0H                                                       11959803
+         CLC   LCCAEBC(L4),0(TEMP1)                                     11960203
+*                                 CHECK FIRST WORD IS 'LCCA'   @YM08516 11961203
+         BNE   DATERR                                                   11962803
+         SPACE 2                                                        11963803
+*/* P REFRESH PSALCCAV AND PSALCCAR */                                  11966003
+         SPACE 2                                                        11967003
+         LM    R0,R1,PSALCCAV          GET OLD LCCA VALUES     @YM08516 11968003
+         STM   R0,R1,LCCAPGR1-LCCA(TEMP1)                               11969003
+*                                      SAVE IN LCCAPGR1        @YM08516 11971003
+         ST    TEMP0,PSALCCAV     REFRESH PSALCCAV             @YM08516 11973103
+         ST    TEMP1,PSALCCAR     REFERSH PSALCCAR             @YM08516 11974103
+         SPACE 2                                                        11975103
+*/* P REFRESH PSAPCCAV AND PSAPCCAR FROM PCCAT */                       11976103
+         SPACE 2                                                        11977303
+         LH    TEMP1,PSACPUPA    OBTAIN PHYSICAL CPU ADDRESS   @ZA03845 11978840
+         SLL   TEMP1,C2           MULTIPLY BY 4                @YM08516 11980003
+         L     TEMP0,CVTPCCAT          GET PCCAT ADDRESS       @YM08516 11981003
+         AR    TEMP0,TEMP1                                     @YM08516 11982003
+         LRA   TEMP1,0(TEMP0)                                  @YM08516 11983003
+         BNZ   DATERR                                          @YM08516 11984003
+         L     TEMP0,0(TEMP1)          CHECK PCCAT(PA)         @YM08516 11985003
+         LRA   TEMP1,0(TEMP0)          CHECK PCCAV             @YM08516 11987503
+         BNZ   DATERR                  PCCAV NOT TRANSLATABLE  @YM08516 11989503
+         LM    R0,R1,PSAPCCAV          GET OLD PCCA VALUES     @YM08516 11990503
+         ST    TEMP0,PSAPCCAV                                  @YM08516 11992503
+         ST    TEMP1,PSAPCCAR                                  @YM08516 11996503
+         SPACE 2                                                        11997503
+*/* P (,ERR3) SET UP TO GO TO RTM WITH X'4FC' CODE */                   11998503
+         SPACE 2                                                        11999503
+         STOSM PSAPIR2,CX04            ENABLE DAT              @YM08516 12001703
+         L     CCABASE,PSALCCAV        ADDRESS LCCA            @YM08516 12002003
+         STM   R0,R1,LCCAPGR1+C8       SAVE OLD PCCA VALUES    @YM08516 12004003
+*                                           IN LCCAPGR1        @YM08516 12005003
+         MVC   PSAPSAV,PSACSTK         SAVE CURRENT STACK      @YM08516 12006003
+         MVC   PSACSTK,PSAPSTK         PROGRAM FLIH STACK      @YM08516 12007003
+         OI    PSASUP1,PSAPI           TURN ON SUPER FLAG      @YM08516 12008003
+         NI    PSASUP3,CXFF-PSAPI2-PSAPSREG                             12010003
+*                                      TURN OFF RECURS 2 BITS  @YM08516 12011003
+         LA    R1,PCABCODE             SET COND CODE=X'4FC'    @YM08516 12012003
+         B     ERR2                    GO TO RTM               @ZA10452 12013040
+         SPACE 2                                                        12014003
+*/*RECURS1: P  LCTL MASTER'S C.R.1 */                                   12015003
+         SPACE 2                                                        12016003
+RECURS1  DS    0H                                              @YM08516 12017003
+         LCTL  MASTER,MASTER,PSASTOR  SWITCH TO MASTER'S C.R.1 @YM08516 12018003
+         SPACE 2                                                        12019003
+*/*DATERR: P SET UP FOR DATERR */                                       12020003
+         SPACE 2                                                        12021003
+DATERR   DS    0H                                                       12022003
+         L     CCABASE,PSALCCAR   SET UP FOR DAT ERROR         @YM08516 12023003
+         OI    LCCAIHR1,LCCAPSG1                               @YM08516 12024003
+         SPACE 2                                                        12025003
+*/* P (,MASMEM ) TERMINATE MEMORY */                                    12026003
+         SPACE 2                                                        12027003
+         B     MASMEM              CONTINUE FLIH PROCESSING    @YM08516 12028003
+         EJECT                                                          12029003
+*/*LOADWAIT: P SET UP LOGOUT AREA FOR SYSTEM TERMINATION */             12038103
+         SPACE 2                                                        12039103
+LOADWAIT DS    0H                      SET UP FOR SYSTEM TERMINATION    12041103
+         USING PCCA,PCCABASE                                            12042103
+         L     PCCABASE,PSAPCCAR       ESTABLISH BASE TO PSA FROM PSA   12043103
+         L     PARMREG,PCCALRBR        GET ADDRESS OF LOG REC BUFFER    12044103
+         DROP  PCCABASE                                                 12045103
+         SPACE 2                                                        12046103
+*/* P MOVE WTO MESSAGE IEA999W INTO LOG OUT AREA */                     12048103
+         SPACE 2                                                        12049003
+         USING LOGOUT,PARMREG                                           12050003
+         MVC   LOGWTOM(L60),MSG999W    MOVE MESSAGE INTO WTO AREA       12052003
+         LA    WORKREG,LOGWTOM         PARM 1 = ADDR OF WTO MESSAGE     12053003
+         ST    WORKREG,LOGWTOA                                          12054003
+         SPACE 2                                                        12055003
+*/* P MOVE PERTINENT INFO INTO LOG REC BUFFER */                        12056003
+         SPACE 2                                                        12058003
+         LA    WORKREG,LOGLRB          PARM 2 = ADDR OF LOG REC BUFFER  12059003
+         ST    WORKREG,LOGLRBA                                          12060003
+         XC    LOGLHDR,LOGLHDR         CLEAR LRB HEADER                 12061003
+         MVI   LOGLRCDT,RCDTYPE        PUT RECORD TYPE IN HEADER        12062003
+         LA    WORKREG,LOGLRBSZ        SIZE OF LRB IN HEADER            12064003
+         ST    WORKREG,LOGLSIZE                                         12065003
+         SPACE 2                                                        12066003
+*/* P LOAD WAIT STATE CODE = X'14' INTO LOG REC HEADER */               12067003
+         SPACE 2                                                        12068003
+         LA    WORKREG,WAITCODE        WAIT-STATE CODE FOR SYSTEM TERM  12070003
+         ST    WORKREG,LOGLCODE                                         12071003
+         MVC   LOGLGPR(L64),LCCAPGR1   REGISTERS AT TIME OF INTERRUPT   12072003
+         STCTL CR0,CR1,LOGLCR0         CONTROL REGS 0 AND 1             12073003
+         MVC   LOGLOPSW,FLCPOPSW       PC FLIH OLD PSW                  12074003
+         MVC   LOGLILC(C4),PSAEPPSW    ILC AND INTERRUPT CODE           12076003
+         MVC   LOGLTNEW(C16),PSATNEW   TNEW,TOLD,ANEW AND AOLD          12077003
+         SPACE 2                                                        12078003
+*/* L () IGFPTERM-- GO TO SYSTEM TERMINATION ROUTINE */                 12079003
+         SPACE 2                                                        12080003
+         L     R15,SYSTERM             GET ADDR OF SYSTEM TERM. RTN     12082003
+         BR    R15                                                      12083003
+         EJECT                                                          12084003
+*/*ERR1: P CLEAR PROGRAM FLIH BIT */                                    12085003
+         SPACE 2                                                        12086003
+ERR1     NI    PSASUP1,CXFF-PSAPI      CLEAR PROGRAM FLIH BIT           12087003
+         SPACE 2                                                        12088003
+*/* P RESTORE FRR STACK TO OLD CURRENT */                               12089003
+         SPACE 2                                                        12090003
+         L     WORKREG,PSAPSAV         GET SAVED STACK PTR              12091003
+         ST    WORKREG,PSACSTK         MAKE SAVE PTR CURRENT            12092003
+          SPACE 2                                                       12093003
+*/*ERR: L () CALLRTM-- TYPE=PROGCK NO RETURN */                         12094003
+         SPACE 2                                                        12095003
+ERR      CALLRTM TYPE=PROGCK           PROCEED TO RECOVERY              12096003
+PIEREC   DS    0H                                                       12100002
+          SPACE 2                                                       12110002
+*/*BADPIE: P CLEAR SUPER SPIE RECUR BIT AND SEGMENT RECUR               12112003
+*/*BIT */                                                               12114002
+          SPACE 2                                                       12120002
+BADPIE   NI    LCCAIHR1,CXFF-LCCAPPIE-LCCAPSG1  CLEAR PIE RECURSION     12150002
+*                                      AND SEGMENT REC BITS             12160002
+         NI    PSASUP3,CXFF-PSAPI2-PSAPSREG                             12170003
+*                                      CLEAR RECURSION 2 BITS  @YM08516 12180003
+         B     PGSUPER                 GO TO PAGING SUPERVISOR          12200002
+          SPACE 2                                                       12210002
+*/*PAGEPR: D (YES,PGSUPER,NO,SPSTTST1) SRB MODE? */                     12220002
+          SPACE 2                                                       12230002
+PAGEPR   DS    0H                                                       12250002
+SRBTST1  DC    0H'0'                   TEST LABEL                       12260002
+         TM    LCCADSF2,LCCASRBM       IS PROGRAM IN SRB MODE           12300002
+         BZ    SPSTTST1                IF NOT, CONTINUE CHECKING        12308002
+         B     PGSUPER                 IF SO PROCEED TO PAGING SUPV.    12350002
+          SPACE 2                                                       12352002
+*/*SPSTTST1: D (YES,PGSUPER,NO,) SUPV STATE? */                         12352402
+          SPACE 2                                                       12354002
+SPSTTST1 DC    0H'0'                   TEST LABEL                       12360002
+         TM    LCCAPPSW+C1,CX01        IS PROGRAM IN SUPV. STATE        12400002
+         BZ    PGSUPER                 IF SO PROCEED TO PAGING SUPV.    12450002
+          SPACE 2                                                       12460002
+*/* P GET TCB ADDR FROM PSATOLD */                                      12462002
+          SPACE 2                                                       12470002
+         L     XTCBREG,PSATOLD         GET TCB ADDRESS                  12500002
+         USING TCB,XTCBREG                                              12550002
+          SPACE 2                                                       12552002
+*/*SUPSPCK: D (YES,SUPSPIE,NO,) EXTENDED PICA? */                       12552440
+          SPACE 2                                                       12554002
+SUPSPCK  DC    0H'0'                   TEST LABEL                       12560002
+         TM    TCBFLGS6,TCBPIE17       IS THERE AN EXTENDED PICA        12600002
+         BO    SUPSPIE                 IF SO GO HANDLE SPIE @ZA11376    12650040
+          SPACE 2                                                       12652002
+*/*PGSUPER: L IEAPIX-- RETURN REG14 */                                  12694002
+          SPACE 2                                                       12696002
+PGSUPER  L     R15,AIEAPIX             GET ADDRESS OF PAGING SUPV.      12700002
+PGSPEP   DC    0H'0'                   TEST LABEL                       12710002
+         BALR  R14,R15                 BR TO IEAPIX                     12750002
+          SPACE 2                                                       12760002
+*/*IEAVEPXR: P REESTABLISH ADDRESSABILITY */                            12762002
+          SPACE 2                                                       12770002
+         ENTRY IEAVEPXR                                                 12780002
+IEAVEPXR DS    0H                      RETURN FROM IEAPIX               12790002
+         USING *,R14                                                    12800002
+         L     BASEREG,AADDRESS        GET ORIGINAL ADDRESSABILITY ADD. 12850002
+         DROP  R14                     REESTABLISH                      12900002
+         USING ADDRESS,BASEREG         ADDRESSABILITY                   12950002
+          SPACE 2                                                       12960002
+*/* P RELOAD LCCA FROM PSALCCAV */                                      12962002
+          SPACE 2                                                       12970002
+         L     CCABASE,PSALCCAV        RELOAD LCCA ADDRESS              13000002
+          SPACE 2                                                       13002002
+*/*SUSPTST: D (YES,DISPRET,NO,) WAS USER SUSPENDED? */                  13002402
+          SPACE 2                                                       13004002
+SUSPTST  DC    0H'0'                   TEST LABEL                       13010002
+         LTR   RTCDREG,RTCDREG         WAS PROGRAM SUSPENDED            13050002
+         BZ    DISPRET                 IF SO EXIT TO DISPATCHER         13100002
+          SPACE 2                                                       13152002
+*/*RCTST: D (=4,GOBACK,=8,PROGCK,=12,PIXABD) CHECK RETURN CODE FROM     13152402
+*/*IEAPIX */                                                            13153202
+          SPACE 2                                                       13154002
+RCTST    DC    0H'0'                   TEST LABEL                       13156002
+         LA    WORKREG,EIGHT           LOAD COMPARE VALUE               13158002
+         CR    RTCDREG,WORKREG         CHECK RETURN CODE FROM IEAPIX    13200002
+         BL    GOBACK                  RC = 4: PAGE WAS RECLAIMED       13205002
+         BE    PROGCK                  RC = 8: INVALID PAGING EXCEPTION 13210002
+         BH    PIXABD                  RC =12: ERROR IN PIX PROCESSING  13215002
+          SPACE 2                                                       13300002
+*/*GOBACK: P MOVE LCCAPPSW TO PIOPSW */                                 13310002
+          SPACE 2                                                       13350002
+GOBACK   MVC   PSAPCPSW(L8),LCCAPPSW   MOVE BACK TO PROGRAM OLD         13650002
+*                                      PSW TO ALLOW FOR LPSW            13700002
+          SPACE 2                                                       13710002
+*/* P LOAD ALL REGS FROM LCCAPGR2 */                                    13712002
+          SPACE 2                                                       13720002
+         LM    R0,R15,LCCAPGR2         RESTORE ALL REGS                 13750002
+          SPACE 2                                                       13760002
+*/* P CLEAR PROGRAM FLIH BIT AND RESTORE STACK */                       13762002
+          SPACE 2                                                       13770002
+         NI    PSASUP1,CXFF-PSAPI      CLEAR PROGRAM BIT                13800002
+         MVC   PSACSTK(4),PSAPSAV      RESTORE SAVED STACK PTR          13802002
+          SPACE 2                                                       13802102
+*/*RCRTN: R EXIT VIA LPSW ON PIOPSW */                                  13802402
+          SPACE 2                                                       13804002
+RCRTN    DC    0H'0'                   TEST LABEL                       13810002
+         LPSW  PSAPCPSW                RETURN TO INTERRUPTED PROGRAM    13850002
+          SPACE 2                                                       13900002
+*/*PIXABD: P LOAD ALL REGS FROM LCCAPGR2 */                             13960002
+          SPACE 2                                                       14020002
+PIXABD   DS    0H                      IF RC >8, ABEND                  14080002
+         LM    R0,R15,LCCAPGR2         RESTORE ALL REGS                 14140002
+          SPACE 2                                                       14200002
+*/* P CLEAR PROGRAM FLIH BIT AND RESTORE THE STACK */                   14250002
+          SPACE 2                                                       14300002
+         NI    PSASUP1,CXFF-PSAPI      CLEAR PROGRAM BIT                14400002
+         MVC   PSACSTK(4),PSAPSAV      RESTORE SAVED STACK PTR          14450002
+         SPACE 2                                                        14500002
+*/* L () ABEND-- ABEND THE TASK WITH CODE X'028' */                     14550002
+         SPACE 2                                                        14600002
+         LA    PARMREG,PIXABEND        PUT PIX ABEND CODE IN REG 1      14650002
+         ABEND (1),DUMP,,SYSTEM        ABEND THE TASK                   14700002
+          SPACE 2                                                       14810002
+*/*SUPSPIE: P GET PIE ADDRESS FROM THE TCB */                           14812002
+          SPACE 2                                                       14820002
+SUPSPIE  L     SCAREG,TCBPIE           GET PTR TO PIE ADDRESS           14900002
+         LA    SCAREG,C0(SCAREG)       CLEAR ANY STAUS BITS IN REG      14950002
+          SPACE 2                                                       14952002
+*/*PIETST1: D (YES,PGSUPER,NO,) IS TCBPIE = 0? */                       14952402
+          SPACE 2                                                       14954002
+PIETST1  DC    0H'0'                   TEST LABEL                       14960002
+         LTR   SCAREG,SCAREG           IS PTR TO PIE ADDRESS ZERO       15000002
+         BZ    PGSUPER                 IF SO PROCEED TO HANDLE PAGE     15050002
+*                                      FAULT                            15100002
+         USING SCA,SCAREG                                               15110002
+         L     XPIEREG,SCAPIE          GET PIE ADDRESS                  15150002
+         LA    XPIEREG,C0(XPIEREG)     CLEAR ANY STATUS BITS IN REG     15200002
+          SPACE 2                                                       15202002
+*/*PIETST2: D (YES,PGSUPER,NO,) IS PIE ADDR ZERO? */                    15204002
+          SPACE 2                                                       15206002
+PIETST2  DC    0H'0'                   TEST LABEL                       15210002
+         LTR   XPIEREG,XPIEREG         IS PIE ADDRESS 0                 15250002
+         BZ    PGSUPER                 IF SO PROCEED TO HANDLE PAGE     15300002
+*                                      FAULT                            15350002
+*        FROM  HERE SUSEPTABLE TO PAGE FAULTS                           15400002
+         SPACE 2                                                        15402002
+*/* P SET PIE RECURSION BIT LCCAPPIE = 1 */                             15402402
+         SPACE 2                                                        15404002
+         OI    LCCAIHR1,LCCAPPIE       SET PIE RECURSION BIT            15410002
+         USING PIE,XPIEREG                                              15450002
+         L     XPIPICA,PIEPICA         GET PICA ADDRESS FROM PIE        15500002
+          SPACE 2                                                       15502002
+*/*PIETST3: D (YES,BADPIE,NO,) IS PICA 0 OR PIE BUSY? */                15504002
+          SPACE 2                                                       15506002
+PIETST3  DC    0H'0'                   TEST LABEL                       15510002
+         LTR   XPIPICA,XPIPICA         IS PIE BUSY OR NO PICA           15550002
+         BNP   BADPIE                  IF SO PROCEED TO HANDLE PAGE     15600002
+*                                      FAULT                            15650002
+         USING PICA,XPIPICA                                             15700002
+          SPACE 2                                                       15702002
+*/*PIETST4: D (NO,BADPIE,YES,) IS PICA EXTENDED? */                     15702402
+          SPACE 2                                                       15704002
+PIETST4  DC    0H'0'                   TEST LABEL                       15710002
+         TM    PICITMK1,PICAEXT        IS PICA EXTENDED                 15750002
+         BNO   BADPIE                  IF NOT PROCEED TO HANDLE PAGE    15800002
+*                                      FAULT                            15850002
+          SPACE 2                                                       15852002
+*/*PIETST5: D (NO,BADPIE,YES,) CAN PAGE FAULT BE HANDLED? */            15854002
+          SPACE 2                                                       15856002
+PIETST5  DC    0H'0'                   TEST LABEL                       15860002
+         TM    PICITMK3,PICACD17       CAN PAGE FAULT BE HANDLED        15900002
+         BNO   BADPIE                  IF NOT PROCEED TO HANDLE PAGE    15950002
+*                                      FAULT                            16000002
+          SPACE 2                                                       16002002
+*/* P SET PROTECT KEY = TCB KEY */                                      16002402
+          SPACE 2                                                       16004002
+         IC    WORKREG,TCBPKF          GET TCB PROTECT KEY              16010002
+         SPKA  0(WORKREG)              SET PROTECT KEY TO USER KEY      16020002
+          SPACE 2                                                       16030002
+*/* P MOVE USER REGS 14-2 TO PIEGR14- PIEGR2 */                         16032002
+          SPACE 2                                                       16040002
+         MVC   PIEGR14(L8),LCCAPGR2+C56 MOVE REGS 14 AND 15 TO PIE      16050002
+         MVC   PIEGR0(L12),LCCAPGR2    MOVE REGS 0-2 TO PIE             16100002
+          SPACE 2                                                       16102002
+*/* P BUILD BC MODE PSW AND PVT IN PIEPSW */                            16102402
+          SPACE 2                                                       16104002
+         MVC   PIEPSW(L8),LCCAPPSW     MOVE EC MODE PSW TO PIEPSW       16110002
+         LH    WORKREG,LCCAPINT+C2     GET INTERRUPT CODE               16150002
+         STH   WORKREG,PIEPSW+C2       STORE INTERRUPT CODE             16200002
+         IC    R10,LCCAPPSW+C2         GET C.C. AND PROC. MASK          16250002
+         IC    WORKREG,LCCAPINT+C1     GET ILC CODE                     16300002
+         SLL   WORKREG,FIVE            MOVE ILC TO HIGH ORDER BITS      16350002
+         OR    R10,WORKREG             PUT TOGETHER ILC+CC+ PROG MASK   16400002
+         STC   R10,PIEPSW+C4           STORE IN PIE PSW                 16450002
+          SPACE 2                                                       16460002
+*/* P GET PICAEXIT FROM PICA */                                         16462002
+          SPACE 2                                                       16470002
+         L     R15,PICAEXIT            GET ADDRESS OF USER EXIT         16500002
+         LA    R15,C0(R15)             CLEAR HIGH ORDER BYTE            16550002
+          SPACE 2                                                       16552002
+*/* P GET PICAPRMK VALUE FROM PICA */                                   16552402
+          SPACE 2                                                       16554002
+         IC    WORKREG,PICAPRMK        GET PROG MASK IN PICA            16560002
+          SPACE 2                                                       16562002
+*/* P SET PIE BUSY BIT PIENOPI = 1 */                                   16562402
+          SPACE 2                                                       16564002
+         OI    PIEPICA,PIENOPI         SET PIE BUSY BIT THIS MUST BE    16570002
+*                                      DONE LAST IN PIE/PICA PROCESS    16580002
+*                                      FOR EXTENDED PICA DUE TO POSS-   16590002
+*                                      IBLE RECURSION                   16592002
+*        THIS COMPLETES SUSEPTABILITY TO PAGE FAULTS, CAN NOW UPDATE    16594002
+*        REGISTER SAVE AREA                                             16596002
+         DROP  XPIEREG                                                  16596402
+         DROP  XPIPICA                                                  16596802
+         DROP  SCAREG                                                   16596902
+         SPKA  ZERO                    RESET PROTECT KEY TO ZERO        16597202
+          SPACE 2                                                       16617302
+*/* P CLEAR SUPER SPIE REC BIT */                                       16622302
+          SPACE 2                                                       16627302
+         NI    LCCAIHR1,CXFF-LCCAPPIE  CLEAR PIE RECURSION BIT          16632302
+         ST    R15,LCCAPGR2+C60        PUT USER EXIT ADDRESS IN SAVE    16637302
+*                                      AREA                             16650002
+          SPACE 2                                                       16660002
+*/* P PUT PICAEXIT IN LCCAPGR2 (REG15) AND RIGHT SIDE OF LCCAPPSW */    16662002
+          SPACE 2                                                       16670002
+         ST    R15,LCCAPPSW+C4         PUT EXIT ADDRESS IN PSW          16700002
+          SPACE 2                                                       16704002
+*/* P PUT PROG MASK OF PICAPRMK IN LCCAPPSW */                          16704402
+          SPACE 2                                                       16706002
+         STC   WORKREG,LCCAPPSW+C2     PUT PICA MASK INTO PSW           16710002
+         NI    LCCAPPSW+C2,CX3F        CLEAR HIGH BITS OF PROG MASK BYTE16720002
+                                       OF PSW                           16730002
+          SPACE 2                                                       16740002
+*/* P PUT TCBPKF IN LCCAPPSW FOR SPIE EXIT */                           16740240
+    SPACE 2                                                             16740440
+* SPIE EXIT RECEIVES CONTROL IN TCB KEY SINCE SPIES ARE    @ZA11376     16740640
+*       TASK RELATED                                       @ZA11376     16740840
+    SPACE 2                                                             16741040
+        MVZ   LCCAPPSW+C1(L1),TCBPKF   PUT TCB KEY IN PSW     @ZA11376  16741440
+    SPACE 2                                                             16741640
+*/* P POINT REG 14 TO SVC 3 IN FRONT OF PROG FLIH */                    16741840
+          SPACE 2                                                       16742002
+         L     WORKREG,ASVC3           GET RETURN ADDRESS FOR EXIT      16750002
+         ST    WORKREG,LCCAPGR2+C56    PUT RETURN ADDRESS IN SAVE ADDA  16800002
+          SPACE 2                                                       16850002
+*/* P PUT PIE ADDR IN REG 1 OF LCCAPGR2 */                              16860002
+          SPACE 2                                                       16900002
+         ST    XPIEREG,LCCAPGR2+C4     PUT PIE ADDRESS IN SAVE AREA R1  16950002
+          SPACE 2                                                       16960002
+*/* P PUT VIRT ADDR IN REG 0 OF LCCAPGR2 */                             16962002
+          SPACE 2                                                       16970002
+         L     WORKREG,LCCAPVAD        GET VIRTUAL ADDRESS ADDRESS      17000002
+         ST    WORKREG,LCCAPGR2        PUT VIRTUAL ADDRESS ADDRESS IN   17050002
+*                                      REG 0                            17100002
+          SPACE 2                                                       17410002
+*/* P MOVE LCCAPPSW TO PIOPSW */                                        17412002
+          SPACE 2                                                       17420002
+         MVC   PSAPCPSW(L8),LCCAPPSW   MOVE SAVED PSW TO PI OLD TO      17450002
+*                                      DO LPSW                          17460002
+          SPACE 2                                                       17560002
+*/* P LOAD ALL REGS FROM LCCAPGR2 */                                    17562002
+          SPACE 2                                                       17570002
+         LM    R0,R15,LCCAPGR2         GET ALL REGS                     17600002
+          SPACE 2                                                       17610002
+*/* P CLEAR PROGRAM FLIH BIT */                                         17612002
+          SPACE 2                                                       17620002
+         NI    PSASUP1,CXFF-PSAPI      CLEAR PROGRAM FLIH BIT           17650002
+         MVC   PSACSTK(4),PSAPSAV      RESTORE SAVED STACK PTR          17652002
+          SPACE 2                                                       17652102
+*/*SUPSPXIT: R EXIT VIA LPSW ON PIOPSW */                               17652402
+          SPACE 2                                                       17654002
+SUPSPXIT DC    0H'0'                   TEST LABEL                       17660002
+         LPSW  PSAPCPSW                GO DIRECTLY TO USER EXIT         17700002
+         DROP  CCABASE                                                  17710002
+         DROP  RBPTR                                                    17730002
+         EJECT                                                          17735002
+*********************************************************************** 17740002
+*                                                                     * 17742002
+*                    CONSTANTS & STORAGE                              * 17744002
+*                                                                     * 17746002
+*********************************************************************** 17748002
+         EXTRN IEACVT                                                   17750002
+ADCVT    DC    A(IEACVT)               ADDRESS OF CVT                   17800002
+         EXTRN TRPI                                                     17850002
+ATRPI    DC    A(TRPI)                 PI TRACE ENTRY POINT             17900002
+IEACON1  DC    V(AHLMCIH)              GTF ENTRY POINT                  17950002
+         EXTRN IEA0DS                                                   18000002
+AIEA0DS  DC    A(IEA0DS)               DISPATCHER MAIN ENTRY POINT      18050002
+         EXTRN IEAVPIX                                                  18060002
+AIEAPIX  DC    A(IEAVPIX)              PAGING SUPERVISOR ENTRY POINT    18100002
+AADDRESS DC    A(ADDRESS)              ADDRESS TO REESTABLISH ADD.      18350002
+CLEARBIT DS    0F                                                       18350402
+         DC    X'000000F0'             MASK USED TO TURN OFF BITS       18350802
+DISAWAIT DS    0D                      WAIT STATE PSW WITH WAIT STATE   18352002
+         DC    XL8'000E000000000014'   CODE OF 14                       18360002
+DFLCR0   DC    X'C080EC40'             DEFAULT CR 0 FOR TRANSLATION     18400002
+         EXTRN IGFPTERM                                                 18512002
+SYSTERM  DC    V(IGFPTERM)             ADDR SYSTEM TERM RTN             18514002
+LCCAEBC  DC    CL4'LCCA'               EBCDIC FOR LCCA         @YM08516 18515003
+MSG999W  WTO   'IEA999W ADDRESS TRANSLATION ERROR IN MASTER MEMORY  ', *18516002
+               ROUTCDE=(2),DESC=(1),MF=L                                18518002
+          TITLE 'IEAVEPC- SRB ROUTINE (IEAVPSRB)'                       18520002
+*/*IEAVPSRB: E IEAVPSRB */                                              18522002
+          SPACE 2                                                       18530002
+         ENTRY IEAVPSRB                                                 18550002
+IEAVPSRB DS    0H                                                       18600002
+          SPACE 2                                                       18602002
+*/* P ESTABLISH ADDRESSABILITY */                                       18602402
+          SPACE 2                                                       18604002
+         BALR  BASEREG,C0              ESTABLISH                        18610002
+         USING *,BASEREG               ADDRESSABILITY                   18620002
+         LR   TEMPREG,RETREG           SAVE RETURN REGISTER    @YM30620 18710003
+          SPACE 2                                                       18810002
+*/*OBTAINLL: L SETLOCK-- OBTAIN LOCAL UNCOND */                         18812002
+          SPACE 2                                                       18820002
+OBTAINLL SETLOCK OBTAIN,TYPE=LOCAL,MODE=UNCOND,RELATED=('LOCK IS OBTAIN*18850002
+               ED TO PREVENT IRB TO BE QUEUED FOR TCBS IN THIS ASCB',IE*18860002
+               AVEPC(EXIT1))           GET LOCAL LOCK                   18870002
+          SPACE 2                                                       18880003
+*/* L SETFRR--  SET UP RECOVERY */                                      18880303
+          SPACE 2                                                       18880603
+         SETFRR A,FRRAD=ASRBERR,PARMAD=(2),WRKREGS=(3,4) SETUP RECOVERY 18880903
+          SPACE 2                                                       18881503
+*/* D (NO,EXIT1,YES,) IS TCB NON-DISP? */                               18882002
+          SPACE 2                                                       18890002
+         LR    XSRBREG,R0              GET SRB ADDRESS                  18900002
+         USING SRBSECT,XSRBREG                                          18950002
+         L     XTCBREG,SRBPTCB         GET TCB ADDRESS                  19000002
+         ST    XTCBREG,C0(,R2)         PASS TCB ADDRESS TO FRR @ZA06785 19020040
+         USING TCB,XTCBREG                                              19050002
+         TM    TCBNDSP1,TCBPIEND       IS TCB STILL NON-DISP            19060002
+         BNO   EXIT1                   IF NOT EXIT                      19070002
+          SPACE 2                                                       19080002
+*/* P GET PIE ADDR AND PICA ADDR */                                     19082002
+          SPACE 2                                                       19090002
+         L     SCAREG2,TCBPIE          GET ADDRESS OF PIE ADDRESS       19100002
+         USING SCA,SCAREG2                                              19110002
+         L     XPIEREG2,SCAPIE         GET PIE ADDRESS                  19150002
+         SPACE 2                                               @ZA31350 19410040
+*/* P SET PROTECT KEY = TCB'S KEY  */                                   19417040
+         SPACE 2                                               @ZA31350 19424040
+         IC    WORKREG,TCBPKF          GET TCB PROTECT KEY     @ZA31350 19431040
+         SPKA  0(WORKREG)              SET PROTECT KEY TO USER @ZA31350 19438040
+         SPACE 2                                               @ZA31350 19445040
+         USING PIE,XPIEREG2                                             19445340
+         L     XPICAREG,PIEPICA        GET PICA ADDRESS FROM PIE        19445640
+         SPACE 2                                               @ZA31350 19445940
+*/* P SET PROTECT KEY = 0  */                                           19446240
+         SPACE 2                                               @ZA31350 19446540
+         SPKA  ZERO                    SET PROTECT KEY TO 0    @ZA31350 19446840
+          SPACE 2                                                       19447140
+*/* D (YES,TERMINAT,NO,) IS PIE BUSY OR PICA=0? */                      19447440
+          SPACE 2                                                       19447740
+         LTR   XPICAREG,XPICAREG       IS PIE BUSY OR PICA ADDRESS = 0  19448040
+         BNP   TERMINAT                IF EITHER ABTERM TCB             19448340
+         SPACE 2                                               @ZA31350 19448640
+*/* P SET PROTECT KEY = TCB'S KEY  */                                   19448940
+         SPACE 2                                               @ZA31350 19449240
+         SPKA  0(WORKREG)              SET PROTECT KEY TO USER @ZA31350 19449540
+         SPACE 2                                               @ZA31350 19449840
+*/* P GET INTERRUPT MASK FROM PICA  */                                  19452040
+         SPACE 2                                               @ZA31350 19459040
+         USING PICA,XPICAREG                                            19466040
+         L     R0,PICAITMK             GET INTRPT MASK FROM PICA        19473040
+         SPACE 2                                               @ZA31350 19480040
+*/* P SET PROTECT KEY = 0  */                                           19487040
+         SPACE 2                                               @ZA31350 19494040
+         SPKA  ZERO                    RESET PROTECT KEY TO 0  @ZA31350 19501040
+          SPACE 2                                                       19508040
+*/* D (NO,TERMINAT,YES,) CAN INTERRUPT BE HANDLED? */                   19515040
+          SPACE 2                                                       19522040
+         LH    WORKREG1,SCAPARMS+C6    GET INTRPT CODE FROM SRB         19550002
+         SLL   R0,C0(WORKREG1)         SHIFT TO ALIGN INTRPT MASK BIT   19600002
+*                                      FOR THIS INTERRUPT IN HIGHER     19650002
+*                                      ORDER BIT                        19700002
+         LTR   R0,R0                   CAN INTERRUPT BE HANDLED         19750002
+         BNM   TERMINAT                IF NOT ABTERM TCB                19800002
+          SPACE 2                                                       19810002
+*/* D (YES,REGSFND,NO,) IS THIS THE TOP RB? */                          19812002
+          SPACE 2                                                       19820002
+         L     WORKREG1,TCBRBP         GET ADDRESS OF TOP RB            19850002
+         LA    WORKREG3,TCBGRS         GET ADDRESS OF REG.SAVE AREA     19900002
+         C     WORKREG1,SCAPARMS       IS TOP RB THE ONE BEING SER-     19950002
+*                                      VICED                            20000002
+         BE    REGSFND                 IF SO CONTINUE PROCESS           20050002
+          SPACE 2                                                       20060002
+*/* P CHAIN DOWN RB UNTIL RB BEING SERVICED IS FOUND */                 20062002
+          SPACE 2                                                       20070002
+         USING RBSECT,WORKREG1                                          20100002
+NEXTRB   LA    WORKREG3,RBGRSAVE       GET ADDRESS OF REG SAVE AREA     20150002
+         L     WORKREG1,RBLINK         GET NEXT RB ADDRESS              20200002
+         C     WORKREG1,SCAPARMS       IS NEXT RB THE ONE BEING SER-    20250002
+*                                      VICED                            20300002
+         BNE   NEXTRB                  IF NO TRY AGAIN                  20350002
+          SPACE 2                                                       20352002
+*/*REGSFND: P SET PROTECT KEY = TCB'S KEY */                            20352402
+          SPACE 2                                                       20354002
+REGSFND  EQU   *                                               @ZA31350 20360040
+         SPKA  0(WORKREG)              SET PROTECT KEY TO USERS         20370002
+          SPACE 2                                                       20380002
+*/* P MOVE REGS 0,1,2,14 & 15 TO PIE */                                 20392002
+          SPACE 2                                                       20394002
+         MVC   PIEGR14(L8),C56(WORKREG3) MOVE REGS 14 AND 15 TO PIE     20400002
+         MVC   PIEGR0(L12),C0(WORKREG3) MOVE REGS 0-2 TO PIE            20450002
+          SPACE 2                                                       20452002
+*/* P CONSTRUCT PSW IN PIE */                                           20452402
+          SPACE 2                                                       20454002
+         MVC   PIEPSW(L8),SCAPARMS+C8  MOVE PSW AT INTERRUPT TO PIEPSW  20460002
+         LH    WORKREG4,SCAPARMS+C6    GET INTERRUPT CODE               20500002
+         STH   WORKREG4,PIEPSW+C2      STORE INTERRUPT CODE             20550002
+         IC    WORKREG4,RBOPSW+C2      GET C.C. AND PROR MASK           20600002
+         IC    WORKREG,SCAPARMS+C5     GET ILC CODE                     20650002
+         SLL   WORKREG,FIVE            MOVE ILC TO HIGH ORDER BITS      20700002
+         OR    WORKREG4,WORKREG        PUT TOGETHER ILC+CC+PROG MASK    20750002
+         STC   WORKREG4,PIEPSW+C4      STORE IN PIE PSW                 20800002
+          SPACE 2                                                       20802002
+*/* P SET PIE BUSY BIT */                                               20802402
+          SPACE 2                                                       20804002
+         OI    PIEPICA,PIENOPI         SET PIE BUSY BIT                 20810002
+         SPACE 2                                                        20810440
+*/* P GET ADDRESS OF USER EXIT FROM PICA  */                            20810840
+         SPACE 2                                                        20811240
+         L     WORKREG4,PICAEXIT       GET ADDRESS OF USER EXIT         20811640
+          SPACE 2                                                       20812002
+*/* P SET PROTECT KEY = 0 */                                            20812402
+          SPACE 2                                                       20814002
+         SPKA  ZERO                    RESET PROTECT KEY TO ZERO        20820002
+          SPACE 2                                                       20830002
+*/* P STORE USER EXIT ADDR AND RETURN ADDR IN SAVE AREA */              20832002
+          SPACE 2                                                       20840002
+         LA    WORKREG4,C0(WORKREG4)   CLEAR HIGH ORDER BYTE            20900002
+         ST    WORKREG4,C60(WORKREG3)  PUT USER EXIT ADDRESS IN SAVE    20950002
+*                                      AREA                             21000002
+         ST    WORKREG4,RBOPSW+C4      PUT EXIT ADDRESS IN PSW          21050002
+         SPACE 2                                                        21055040
+*/* P PUT TCBPKF IN RBOPSW FOR SPIE EXIT ROUTINE */                     21060040
+         SPACE 2                                                        21065040
+* SPIE EXIT RECEIVES CONTROL IN TCBKEY SINCE SPIES ARE TASK @ZA11376    21070040
+*        RELATED                                            @ZA11376    21075040
+         SPACE 2                                                        21080040
+         MVZ   RBOPSW+C1(L1),TCBPKF    PUT KEY IN RB FOR SPIE @ZA11376  21090040
+         L     WORKREG4,ASVC3          GET RETURN ADDRESS FOR EXIT      21100002
+         ST    WORKREG4,C56(WORKREG3)  PUT RETURN ADDRESS IN SAVE AREA  21150002
+         SPACE 2                                                        21250040
+*/* P SET PROTECT KEY = TCB'S KEY  */                                   21250540
+         SPACE 2                                                        21251040
+         IC    WORKREG4,TCBPKF         GET TCB PROTECT KEY     @ZA31350 21251540
+         SPKA  0(WORKREG4)             SET PROTECT KEY TO USER @ZA31350 21252040
+         SPACE 2                                                        21252540
+*/* P GET PROGRAM MASK FROM PICA  */                                    21253040
+         SPACE 2                                                        21253540
+         IC    WORKREG4,PICAPRMK       GET PICA PROGRAM MASK   @ZA31350 21254040
+         SPACE 2                                                        21254540
+*/* P SET PROTECT KEY = 0  */                                           21255040
+         SPACE 2                                                        21255540
+         SPKA  ZERO                    RESET PROTECT KEY TO 0  @ZA31350 21256040
+         SPACE 2                                                        21256540
+*/* P PUT PROGRAM MASK IN RBOPSW FOR SPIE EXIT ROUTINE  */              21257040
+         SPACE 2                                                        21257540
+         STC   WORKREG4,RBOPSW+C2      STORE PROG MASK IN RB   @ZA31350 21258040
+         NI    RBOPSW+C2,CX3F          CLEAR PROG MASK                  21260002
+          SPACE 2                                                       21270002
+*/* P (,EXIT2) SAVE PIE ADDRESS */                                      21272002
+          SPACE 2                                                       21280002
+         ST    XPIEREG2,C4(WORKREG3)   PUT PIE ADDRESS IN SAVE AREA R1  21300002
+         B     EXIT2                   BRANCH TO EXIT                   21400002
+          SPACE 2                                                       21430002
+*/*TERMINAT: P SET UP COMPLETION CODE */                                21432002
+          SPACE 2                                                       21440002
+TERMINAT LH    WORKREG1,C6(PARMREG)    GET COMPLETION CODE              21450002
+         LA    WORKREG1,CXC0(WORKREG1) PUT 'C' IN FRONT OF COMP CODE    21460002
+          SPACE 2                                                       21470002
+*/* L (,EXIT1) CALL RTM-- ABTERM */                                     21472002
+          SPACE 2                                                       21480002
+         CALLRTM TYPE=ABTERM,COMPCOD=(WORKREG1),TCB=(XTCBREG)           21500002
+         B     EXIT1                   BRANCH TO EXIT                   21550002
+          SPACE 2                                                       21560002
+*/*EXIT2:  P SET TCB  DISPATCHABLE */                                   21562002
+          SPACE 2                                                       21570002
+EXIT2    LA    R0,ELEVEN               INDICATE SECONDARY NON-DISP      21600002
+         LR    R1,XTCBREG              GET TCB ADDRESS FOR STATUS       21650002
+         O     R1,HIGHON               SET HIGH ORDER BIT ON-RESET      21700002
+         L     CVTREG,FLCCVT           GET CVT ADDRESS                  21850002
+         USING CVT,CVTREG                                               21900002
+         L     CVTREG,CVTABEND         GET SECONDARY CVT ADDRESS        21910002
+         USING SCVTSECT,CVTREG                                          21920002
+         L     EPREG,SCVTSTAT          GET ENTRY POINT ADD. OF STATUS   21950002
+         LA    R13,TCBPIEND            PUT NON-DISP BIT IN REG          21960002
+         SLL   R13,C16                 MOVE BIT INTO RIGHT POSITION     21970002
+         BALR  RETREG,EPREG                                             22000002
+         SPACE 2                                                        22070002
+*/*EXIT1: L SETFRR-- REMOVE RECOVERY */                                 22072003
+         SPACE 2                                                        22080002
+EXIT1    SETFRR D,WRKREGS=(3,4)        CLEAR FRR ELEMENT                22100003
+         DROP  XSRBREG                                                  22110002
+         DROP  WORKREG1                                                 22120002
+          SPACE 2                                                       22121003
+*/* L SETLOCK-- RELEASE LOCAL */                                        22122003
+          SPACE 2                                                       22123003
+         SETLOCK RELEASE,TYPE=LOCAL,RELATED=('PROCESS ON RB CHAIN IS CO*22124003
+               MPLETE',IEAVEPC(OBTAINLL)) CLEAR LOCAL LOCK              22125003
+          SPACE 2                                                       22130002
+*/* R EXIT */                                                           22132002
+          SPACE 2                                                       22140002
+         BR    TEMPREG                 EXIT                             22150002
+*********************************************************************** 22152002
+*                                                                     * 22154002
+*                     CONSTANTS & STORAGE                             * 22156002
+*                                                                     * 22158002
+*********************************************************************** 22158402
+ASVC3    DC    A(PROGSVC3)             SVC 3 INSTRUCTION ADDRESS        22160002
+HIGHON   DC    X'80000000'             HIGH BIT ON IN WORD              22200002
+ASRBERR  DC    A(SRBERR)          ADDRESS OF SRB ERROR FRR              22202002
+         TITLE 'IEAVEPC- SRB ERROR FRR'                                 22202402
+         SPACE 2                                                        22204002
+*/*SRBERR: E ENTRY SRB FRR */                                           22204402
+*/* P GET CURRENT TCB ADDRESS (R4=TCB@) */                              22204540
+*/* S IEAVSPER: PROCESS SPIE ERROR */                                   22204640
+*/* L SETRP-- CHANGE COMP CODE RELEASE LOCAL LOCK */                    22204802
+*/* P NOTE: CONTINUE WITH ABEND AND PERCOLATE TO NEXT LEVEL OF RECOVERY 22205202
+*/* */                                                                  22205302
+*/* R RETURN */                                                         22205702
+         SPACE 2                                                        22206002
+SRBERR   DC    0H'0'                                                    22210002
+*                                 **********SRB ERROR FRR**********     22214002
+*                                 GO PROCESS PIE/PICA ERROR @ZA06785    22215040
+*                                      CHANGE COMPLETION CODE           22216002
+*                                      RELEASE LOCAL LOCK               22216402
+*                                      CONTINUE WITH ABEND              22218002
+*                                      PERCOLATE TO NEXT RECOVERY LEVEL 22218402
+         USING *,R15                   ESTABLISH BASE         @ZA06785  22221440
+         USING SDWA,R1                 ESTABLISH SDWA         @ZA06785  22224440
+         LR    R5,R14                  SAVE RETURN ADDRESS              22228440
+         L     R4,SDWAPARM             GET PARMLIST ADDRESS @ZA06785    22228740
+         L     R4,C0(,R4)              GET CURRENT TCB ADDRESS @ZA06785 22229040
+         LA    R9,IEAVSPER             GET SPIE ERR RTN ADDR @ZA06785   22229340
+         BALR  R11,R9                  GO TO SPIE ERR RTN  @ZA06785     22229740
+         SETRP DUMP=YES,RC=0,COMPCOD=(SRBERRCC,SYSTEM),FRELOCK=(LOCAL)  22230540
+         LR    R14,R5                  RESTORE RETURN ADDRESS           22230840
+         BR    R14                     RETURN TO CALLER                 22238802
+         EJECT                                                          22238940
+*/*IEAVSPER: E ENTRY SPIE ERROR RTN */                                  22239040
+*/* D (NO,PIEBAD,YES,) SCA ADDRESS ERROR */                             22239140
+*/* P PUT BAD SCA IN SDWA */                                            22239240
+*/*RECORD: L SETRP  RECORD ERROR */                                     22239340
+*/* R RETURN TO CALLER */                                               22239440
+*/*PIEBAD: P (,RECORD) PUT BAD PIE IN SDWA */                           22239540
+          SPACE 2                                                       22239640
+*        IEAVSPER IS GIVEN CONTROL WHENEVER PROGRAM FLIH OR @ZA06785    22239740
+*        PROGRAM MANAGER DETECTS AN INVALID PIE OR PICA. THIS @ZA06785  22239840
+*        ROUTINE WILL RECORD THE CONTENTS OF THE SCAPIE FIELD @ZA06785  22239940
+*        IN THE FIRST TWELVE BYTES OF VARIABLE RECORDING AREA @ZA06785  22240040
+*        IN THE SDWA AFTER A LABEL "SCAPIE= ". IF THE TCBPIE  @ZA06785  22240140
+*        FIELD IS FOUND TO BE INVALID IT WILL BE RECORDED     @ZA06785  22240240
+*        FOLLOWING THE LABEL "TCBPIE= "                       @ZA06785  22240340
+*                                                                       22240440
+*       INPUT: R1= ADDRESS OF SDWA                           @ZA06785   22240540
+*              R4= ADDRESS OF TCB                            @ZA06785   22240640
+*              R9= ENTRY POINT ADDRESS                       @ZA06785   22240740
+*              R11= RETURN ADDRESS                           @ZA06785   22240840
+*                                                                       22240940
+*        REGISTERS DESTROYED: 2,3,8,12                       @ZA06785   22241040
+         SPACE 2                                                        22241140
+IEAVSPER DS  0H                                              @ZA06785   22241240
+         ENTRY IEAVSPER                                      @ZA06785   22241840
+         USING *,R9                   ESTABLISH BASE         @ZA06785   22242040
+         USING SDWA,R1                ADDRESSABILITY TO SDWA @ZA06785   22242240
+         USING SCA,R3                 ADDRESSABILITY TO SCA  @ZA06785   22242440
+         SR    R2,R2                  CLEAR WORK REGISTER    @ZA06785   22242640
+         SR    R8,R8                  DITTO                  @ZA06785   22242840
+         IC    R8,SDWAURAL            GET LENGTH OF USED VRA @ZA06785   22243040
+         LA    R12,C12(R8)            ADD LENGTH OF NEW RECORD @ZA06785 22243240
+         STC   R12,SDWAURAL           UPDATE FIELD IN SDWA    @ZA06785  22243440
+         OI    SDWADPVA,SDWAHEX       INDICATE DUMP IN HEX    @ZA06785  22243640
+         LA    R12,SDWAVRA(R8) GET ADDRESS OF NEXT RECORD    @ZA06785   22243840
+CHKSCA   LRA   R3,TCBPIE-TCB(R4)  Q.SCA ADDRESS TRANS ERROR  @ZA06785   22243940
+         BZ    PIEBAD             A. NO ERRORS               @ZA06785   22244040
+         MVC   ZERO(L8,R12),VRAHDR1   PUT HEADER IN VRA      @ZA06785   22244140
+         MVC   C8(L4,R12),TCBPIE-TCB(R4) PUT BAD SCA IN VRA  @ZA06785   22244240
+         ST    R2,TCBPIE-TCB(R4)      ZERO SCA POINTER       @ZA06785   22244340
+RECORD SETRP RECORD=YES,COMPCOD=(SPIERR,SYSTEM) RECORD ERROR @ZA06785   22245040
+         BR    R11                    RETURN TO CALLER        @ZA06785  22245240
+PIEBAD   EQU   *                                              @ZA06785  22245340
+         L     R3,TCBPIE-TCB(R4)      GET SCA ADDRESS         @ZA06785  22245440
+         MVC   ZERO(L8,R12),VRAHDR2   PUT HEADER IN VRA       @ZA06785  22245540
+         MVC   C8(L4,R12),SCAPIE      PUT PIE ADDRESS IN VRA  @ZA06785  22245640
+         ST    R2,SCAPIE              CUT PIE CHAIN           @ZA06785  22245740
+         B     RECORD                 GO RECORD ERROR         @ZA06785  22245840
+       EJECT                                                            22246640
+********************************************************************    22246840
+*                                                                  *    22247040
+*                      CONSTANTS AND STORAGE            @ZA06785   *    22247240
+*                                                                  *    22247440
+********************************************************************    22247640
+       SPACE 2                                                          22247840
+VRAHDR1 DC    CL8'TCBPIE= '    BAD SCA HEADER             @ZA06785      22248040
+VRAHDR2 DC    CL8'SCAPIE= '    BAD PIE HEADER             @ZA06785      22248240
+SPIERR  EQU   X'6FC'           SPIE ERROR CODE            @ZA06785      22248440
+        EJECT                                                           22248640
+         TITLE 'IEAVEPC- SUSPEND ROUTINE (IEAVSUSP)'                    22248802
+         ENTRY IEAVSUSP                                                 22250002
+          SPACE 2                                                       22260002
+*/*IEAVSUSP: E IEAVSUSP */                                              22262002
+          SPACE 2                                                       22270002
+IEAVSUSP DS    0H                                                       22300002
+          SPACE 2                                                       22350002
+*/* P SAVE REGS IN SPECIAL GLOBAL LOCK AREA FOR SUSPEND/RESET */        22352002
+          SPACE 2                                                       22360002
+         STM   R0,R15,C0(R13)          SAVE ALL REGISTERS               22400002
+          SPACE 2                                                       22410002
+*/* P ESTABLISH ADDRESSABILITY */                                       22412002
+          SPACE 2                                                       22420002
+         BALR  BASEREG,C0              ESTABLISH                        22450002
+         USING *,BASEREG               ADDRESSABILITY                   22500002
+          SPACE 2                                                       22510002
+*/* P GET LCCA ADDRESS */                                               22512002
+          SPACE 2                                                       22520002
+         L     CCABASE,PSALCCAV        GET LCCA ADDRESS                 22550002
+         USING LCCA,CCABASE                                             22600002
+          SPACE 2                                                       22602002
+*/* P GET ASCB ADDR FROM PSAOLD */                                      22604002
+          SPACE 2                                                       22606002
+         L     ASCBBASE,PSAAOLD        GET CURRENT ASCB ADDRESS         22608002
+         USING ASCB,ASCBBASE                                            22608402
+          SPACE 2                                                       22610002
+*/* D (YES,SRBPRSS,NO,) SRB MODE? */                                    22612002
+          SPACE 2                                                       22620002
+         TM    LCCADSF2,LCCASRBM       IS SRB MODE INDICATED            22650002
+         BO    SRBPRSS                 IF SO GO PROCESS                 22700002
+          SPACE 2                                                       22710002
+*/* P GET TCB ADDR FROM PSATOLD */                                      22712002
+          SPACE 2                                                       22720002
+         L     XTCBREG,PSATOLD         GET CURRENT TCB ADDRESS          22750002
+         USING TCB,XTCBREG                                              22800002
+          SPACE 2                                                       22810002
+*/* P GET RB ADDR FROM TCBRBP */                                        22812002
+          SPACE 2                                                       22820002
+         L     RBPTR,TCBRBP            GET RB ADDRESS                   22850002
+          SPACE 2                                                       22852002
+*/* P GET PAGE FAULT ADDR FROM LCCAPVAD AND STORE IN RB */              22852402
+          SPACE 2                                                       22854002
+         LA    WORKREG3,RBSECT-RBRTRAN GET OFFSET IN PREFIX             22860002
+         SR    RBPTR,WORKREG3          GET TO RBRTRAN LABEL             22870002
+         L     WORKREG1,LCCAPVAD       GET PAGE FAULT ADDRESS           22950002
+         ST    WORKREG1,C0(RBPTR)      PUT ADDRESS IN RBRTRAN           23000002
+         AR    RBPTR,WORKREG3          GET ADDRESS OF RB BACK           23002002
+         USING RBSECT,RBPTR                                             23010002
+          SPACE 2                                                       23050402
+*/* L (NO,NOLOCAL,YES,) SETLOCK-- IS LOCAL LOCK HELD? */                23050802
+          SPACE 2                                                       23051202
+         SETLOCK TEST,TYPE=LOCAL,BRANCH=(NOTHELD,NOLOCAL)               23051602
+*                                      IS LOCAL LOCK HELD?              23051702
+          SPACE 2                                                       23250002
+*/* P GET ASXB ADDRESS FROM ASCBASXB */                                 23260002
+          SPACE 2                                                       23300002
+         L     ASXBREG,ASCBASXB         GET ASXB ADDRESS                23450002
+         USING ASXB,ASXBREG                                             23500002
+          SPACE 2                                                       23510002
+*/* P GET IHSA ADDR FROM ASXBIHSA */                                    23512002
+          SPACE 2                                                       23520002
+         L     IHSAREG,ASXBIHSA        GET IHSA ADDRESS                 23550002
+         USING IHSA,IHSAREG                                             23600002
+          SPACE 2                                                       23610002
+*/* P MOVE REGS FROM LCCAPGRL TO IHSAGPRS */                            23612002
+          SPACE 2                                                       23620002
+         MVC   IHSAGPRS(L64),LCCAPGR2  MOVE REGS SAVE AT PAGE FAULT     23650002
+*                                      TIME INTO IHSA SAVE AREA         23700002
+          SPACE 2                                                       23710002
+*/* P MOVE PSW FROM LCCAPPSW TO IHSACPSW AND MOVE CLOCK TO LCCAITOD */  23712002
+          SPACE 2                                                       23720002
+         MVC   IHSACPSW(L8),LCCAPPSW   MOVE PSW SAVE AT PAGE FAULT      23750002
+*                                      TIME INTO IHSA SAVE AREA         23800002
+         MVC   LCCAITOD,PSAPCPSW       MOVE CLOCK FOR J.S.T.   @YM08398 23810002
+         DROP  IHSAREG                                                  23820002
+          SPACE 2                                                       23830002
+*/* P SET LOCAL LOCK HELD BIT IN TCB */                                 23832002
+          SPACE 2                                                       23840002
+         OI    TCBFBYT1,TCBLLH         SET LOCAL LOCK HELD BIT          23850002
+          SPACE 2                                                       23860002
+*/* P (,SUSPEND) PUT 4 IN REG 6 TO INDICATE NON-QUIESCE SRB TO RUN */   23862002
+          SPACE 2                                                       23870002
+         LA    SCHLREG,FOUR            INDICATE NON-QUIESCABLE SRB      23900002
+*                                      TO BE SCHEDULED TO DO PAGE I/O   23950002
+         SR    R1,R1                   CLEAR REG 1 FOR SUSPEND ROUTINE  23960002
+         B     SUSPEND                 GO SET UP FOR COMMON SUSPEND RTN 23970002
+          SPACE 2                                                       24010002
+*/*NOLOCAL: P MOVE REGS FROM LCCAPGR2 TO TCBGRS */                      24012002
+          SPACE 2                                                       24020002
+NOLOCAL  MVC   TCBGRS(L64),LCCAPGR2    MOVE REGS TO TCB                 24050002
+          SPACE 2                                                       24060002
+*/* P MOVE PSW FROM LCCAPPSW TO RBOPSW */                               24062002
+          SPACE 2                                                       24070002
+         MVC   RBOPSW(L8),LCCAPPSW     MOVE PSW TO RB                   24100002
+         SR    WORKREG1,WORKREG1       ZERO REG                         24150002
+          SPACE 2                                                       24160002
+*/* P INCREMENT RB WAIT COUNT */                                        24162002
+          SPACE 2                                                       24170002
+         IC    WORKREG1,RBWCF          GET WAIT COUNT                   24200002
+         LA    WORKREG1,C1(WORKREG1)   ADD ONE TO COUNT                 24250002
+         STC   WORKREG1,RBWCF          PUT WAIT COUNT BACK              24300002
+          SPACE 2                                                       24310002
+*/* P ZERO REG 6 TO INDICATE SYSTEM LEVEL SRB TO RUN */                 24312002
+          SPACE 2                                                       24320002
+         SR    SCHLREG,SCHLREG         INDICATE QUIESCABLE SRB TO BE    24350002
+*                                      SCHEDULED TO DO  PAGE I/O        24400002
+         L     WORKREG,ASCBTCBS        LOAD VALUE OF READY TCBS         24450002
+          SPACE 2                                                       24460002
+*/*DECTCBS2: P (,EXIT3) DECREMENT COUNT OF READY TCBS */                24462002
+          SPACE 2                                                       24470002
+DECTCBS2 LR    WORKREG3,WORKREG        TRANSFER VALUE                   24500002
+         BCTR  WORKREG3,C0             DECREMENT COUNT                  24550002
+         CS    WORKREG,WORKREG3,ASCBTCBS REPLACE OLD WITH NEW           24600002
+         BC    M4,DECTCBS2             IF UNEQUAL,TRY AGAIN    @YM08215 24650002
+         LTR   WORKREG3,WORKREG3      NUMBER READY TCBS=0? @ZD04015     24658040
+         BNZ   EXIT3                NO,BRANCH TO EXIT    @ZD04015       24666040
+         LH    WORKREG3,ASCBSWCT     GET WAIT COUNT       @ZD04015      24674040
+         LA    WORKREG3,1(WORKREG3)       INCREMENT COUNT  @ZD04015     24680040
+         STH   WORKREG3,ASCBSWCT         SAVE NEW WAIT COUNT  @ZD04015  24686040
+         B     EXIT3                   BRANCH TO EXIT                   24700002
+          SPACE 2                                                       24738002
+*/*SRBPRSS: P GET CPID VALUE SRB00 IN REG 0 */                          24742002
+          SPACE 2                                                       24746002
+SRBPRSS  L     CPIDREG,IDFIELD         GET GETCELL CELL POOL ID         24750002
+          SPACE 2                                                       24760002
+*/* L GETCELL-- GET SRB-SAVE AREA CELL */                               24762002
+          SPACE 2                                                       24770002
+         GETCELL CPID=(CPIDREG),BRANCH=YES,SAVE=NO GET SRB CELL         24800002
+          SPACE 2                                                       24802002
+*/* D (YES,CELLSOK,NO,) CELL OBTAINED OK? */                            24804002
+          SPACE 2                                                       24806002
+         LTR   RTCDREG,RTCDREG         WAS CELL OBTAINED                24810002
+         BZ    CELLSOK                 IF SO GO PROCESS                 24860002
+          SPACE 2                                                       24860102
+*/* P SET UP ADDRESSABILITY TO THE PVT */                               24862002
+          SPACE 2                                                       24870002
+         USING PVT,PVTPTR                                      @YM07664 24910002
+         L     CVTREG2,FLCCVT      GET THE ADDRESS OF THE CVT  @YM07664 24911002
+*                                  GET THE ADDRESS OF THE PVT  @YM07664 24912002
+         L     PVTPTR,CVTPVTP-CVTMAP(0,3)                      @YM07664 24913002
+         SPACE 2                                                        24914002
+*/* D (NO,SUSPABD,YES,) IS THE PVTSSRB AVAILABLE? */                    24915002
+         SPACE 2                                                        24916002
+         TM    PVTFLAG1,PVTSIT     CHECK IF PVTSSRB REPLENISH INDICATOR 24917002
+*                                  IS ON, MEANING NO SSRB AVAILABLE     24918002
+         BO    SUSPABD             NO AVAILABLE SSRB -- ABEND  @YM07664 24919002
+          SPACE 2                                                       24920002
+*/* P USE THE SSRB CHAINED OUT OF THE PVT TO STORE STATUS */            25010002
+          SPACE 2                                                       25100002
+         OI    PVTFLAG1,PVTSIT     SET PVTSSRB REPLENISH FLAG  @YM07664 25190002
+         L     SRBCRREG,PVTSSRB    USE PVTSSRB TO STORE STATUS @YM07664 25250002
+         DROP  PVTPTR                                                   25310002
+          SPACE 2                                                       25370002
+*/* P SET FREEMAIN INDICATOR IN THE SSRB */                             25460002
+          SPACE 2                                                       25550002
+         USING SRBSECT,SRBCRREG                                         25640002
+         LA    R15,SSRBMAIN            SET BIT IN SSRB SO THAT FREEMAIN 25730002
+*                                      IS DONE RATHER THAN FREECELL     25820002
+          SPACE 2                                                       25920002
+*/*CELLSOK: P STORE PAGE FAULT ADDRESS INTO SSRB AND SET MODE OF        25922002
+*/*RELEASE */                                                           25926002
+          SPACE 2                                                       25930002
+CELLSOK  STC   R15,SSRBFLG1            INDICATE HOW AREA IS TO BE FREED 25980002
+         L     WORKREG1,LCCAPVAD       GET PAGE FAULT ADDRESS           26002002
+         ST    WORKREG1,SSRBTRAN       PUT ADDRESS IN SSRB              26004002
+          SPACE 2                                                       26460002
+*/* P MOVE LCCAPGR2 TO SRBGPRS */                                       26470002
+          SPACE 2                                                       26510002
+         MVC   SSRBGPRS(L64),LCCAPGR2  MOVE REGS TO SRB SAVE AREA       26550002
+          SPACE 2                                                       26560002
+*/* P MOVE LCCAPSW TO SRBCPSW */                                        26562002
+          SPACE 2                                                       26570002
+         MVC   SSRBCPSW(L8),LCCAPPSW   MOVE PSW TO SRB SAVE AREA        26600002
+          SPACE 2                                                       26650002
+*/* P ZERO REG 5 TO INDICATE SRB */                                     26700002
+*/* P REG 4 = PTR(SRB CELL) */                                          26750002
+          SPACE 2                                                       26800002
+         LR    R4,SRBCRREG             SET UP PARM REG 4                26850002
+         SR    R5,R5                   ZERO PARM REG 5                  26900002
+         SPACE 2                                                        26912002
+*/* P INDICATE UNLOCKED SRB IN REG 6 */                                 26912402
+         SPACE 2                                                        26914002
+         LA    SCHLREG,EIGHT           INDICATE UNLOCKED SRB SUSPENDED  26920002
+          SPACE 2                                                       26920102
+*/* L (NO,SUSPEND,YES,) SETLOCK-- IS LOCAL LOCK HELD? */                26922002
+          SPACE 2                                                       26930002
+         SETLOCK TEST,TYPE=LOCAL,BRANCH=(NOTHELD,SUSPEND)               26940002
+*                                      LOCAL LOCK HELD?                 26942002
+         SPACE 2                                                        27060002
+*/* P INDICATE LOCAL LOCK HELD IN REG 6 */                              27062002
+         SPACE 2                                                        27070002
+         LA    SCHLREG,FOUR            INDICATE LOCAL LOCK IS HELD      27100002
+         SPACE 2                                                        27150002
+*/*SUSPEND: P REG 12 = ADDR COMMON SUSPEND RTN REG 15 = RETURN ADDR */  27160002
+*/* L IEAVSPCR-- SUSPEND AND STATUS SAVE */                             27170002
+         SPACE 2                                                        27200002
+SUSPEND  L     R12,ASPCR               GET ADDRESS COMMON SUSPEND RTN   27250002
+         BALR  R15,R12                 COMMON RTN PERFORMS SUSPEND      27300002
+          SPACE 2                                                       27806002
+*/*EXIT3: P RESTORE ALL REGS EXCEPT PARMS 4,5,6 */                      27806402
+          SPACE 2                                                       27808002
+EXIT3    DS    0H                                                       27810002
+         LM    R0,R3,C0(R13)           RESTORE                          27850002
+         LM    R7,R15,C28(R13)         REGISTEGS                        27900002
+         DROP  SRBCRREG                                                 27910002
+         DROP  ASCBBASE                                                 27942002
+         DROP  CCABASE                                                  27944002
+          SPACE 2                                                       27946002
+*/* R RETURN VIA BR 14 */                                               27946402
+          SPACE 2                                                       27948002
+         BR    RETREG                  RETURN TO CALLER                 27950002
+         SPACE 4                                                        27950102
+*/*SUSPABD: L () ABEND-- ABEND THE TASK WITH CODE X'028' */             27950202
+         SPACE 2                                                        27950302
+SUSPABD  LA    PARMREG,PIXABEND    PUT PIX ABEND CODE IN REG 1 @YM07664 27950402
+         ABEND (1),DUMP,,SYSTEM                                @YM07664 27951402
+*********************************************************************** 27952402
+*                                                                     * 27953402
+*                      CONSTANTS & STORAGE                            * 27954402
+*                                                                     * 27960002
+*********************************************************************** 27962002
+         DS    0F                      ALIGN TO FCELL POOL ID TO FWORD  27964002
+IDFIELD  DS    0CL4                    CELL POOL ID                     27966002
+         DC    C'SRB'                  SRB SAVE AREA CELL POOL ID       27970002
+         DC    X'00'                   SRB SAVE AREA CELL POOL ID       27980002
+         EXTRN IEAVSPCR                                                 28002002
+ASPCR    DC    V(IEAVSPCR)             COMMON SUSPEND ROUTINE           28004002
+         TITLE 'IEAVEPC- RESET ROUTINE (IEAVRSET)'                      28010002
+         ENTRY IEAVRSET                                                 28050002
+          SPACE 2                                                       28060002
+*/*IEAVRSET: E IEAVRSET */                                              28062002
+          SPACE 2                                                       28070002
+IEAVRSET DS    0H                                                       28100002
+          SPACE 2                                                       28150002
+*/* P SAVE REGS IN SPECIAL GLOBAL LOCK AREA FOR SUSPEND/RESET */        28152002
+          SPACE 2                                                       28160002
+         STM   R0,R15,C0(R13)          SAVE ALL REGS                    28200002
+          SPACE 2                                                       28210002
+*/* P ESTABLISH ADDRESSABILITY */                                       28212002
+          SPACE 2                                                       28220002
+         BALR  BASEREG,C0              ESTABLISH                        28250002
+         USING *,BASEREG               ADDRESSABILITY                   28300002
+          SPACE 2                                                       28310002
+*/* D (NO,NOERR,YES,) ERROR DETECTED? */                                28312002
+          SPACE 2                                                       28320002
+         LTR   ERREG,ERREG             WAS ERROR DETECTED IN I/O PROC.  28350002
+         BZ    NOERR                   CONTINUE NORMALLY                28400002
+          SPACE 2                                                       28402002
+*/* L CALLRTM-- TYPE= PGIOERR */                                        28402402
+          SPACE 2                                                       28404002
+         LR    WORKREG1,R13            SAVE SAVE AREA VALUE             28410002
+         L     R13,FLCCVT              GET CVT ADDRESS                  28420002
+         L     R13,CVTSPSA-CVT(R13)    GET SAVE AREA VECTOR TABLE ADD   28430002
+         L     R13,WSAGPGIO-WSAG(R13)  GET PGIOERR SAVE AREA ADD        28440002
+         CALLRTM TYPE=PGIOERR          LET RTM HANDLE ERROR             28450002
+         LR    R13,WORKREG1            RESTORE SAVE AREA POINTER        28460002
+          SPACE 2                                                       28470002
+*/*NOERR: D (YES,SCHSRB,NO,) SRB MODE? */                               28472002
+          SPACE 2                                                       28480002
+NOERR    LTR   SRBREG,SRBREG           WAS SRB SUSPENDED                28500002
+         BZ    SCHSRB                  IF SO GO SCHEDULE                28550002
+          SPACE 2                                                       28560002
+*/* P GET TCB ADDRESS FROM REG 4 */                                     28562002
+          SPACE 2                                                       28570002
+         USING TCB,XTCBREG                                              28600002
+          SPACE 2                                                       28610002
+*/* D (NO,NOLLH,YES,) WAS LOCAL LOCK HELD? */                           28612002
+          SPACE 2                                                       28620002
+         TM    TCBFBYT1,TCBLLH         WAS TCB LOCALLY LOCKED           28650002
+         BZ    NOLLH                   IF NOT PROCEED TO POST           28700002
+          SPACE 2                                                       28710002
+*/* P CLEAR TCBLLH */                                                   28712002
+          SPACE 2                                                       28720002
+         NI    TCBFBYT1,CXFF-TCBLLH    CLEAR LOCAL LOCK HELD BIT        28750002
+          SPACE 2                                                       28800002
+*/* P (,REXIT) CHANGE SUSPEND ID TO INTERRUPT ID */                     28802002
+          SPACE 2                                                       28804002
+         L     ASCBREG,PSAAOLD         GET ASCB ADDRESS                 28806002
+         USING ASCB,ASCBREG                                             28810002
+         OI    ASCBLOCK,CX80           SET HIGH ORDER BIT OF LOCAL LOCK 28850002
+*                                      WHICH IS NOW INTERRUPT ID        28900002
+         B     REXIT                   EXIT                             28950002
+          SPACE 2                                                       28952002
+*/*NOLLH: P GET RB ADDR FROM REG 5 */                                   28952402
+          SPACE 2                                                       28954002
+NOLLH    DS    0H                                                       28960002
+         USING RBSECT,RBPTR                                             29000002
+          SPACE 2                                                       29010002
+*/* D (YES,REXIT,NO,) WAIT COUNT = 0? */                                29012002
+          SPACE 2                                                       29020002
+         CLI   RBWCF,CX00              IS WAIT COUNT ZERO               29050002
+         BE    REXIT                   IF SO,THEN FINISHED              29100002
+          SPACE 2                                                       29110002
+*/* L (,REXIT) POST-- W/O ECB FOR RB */                                 29112002
+          SPACE 2                                                       29120002
+         LR    R10,RBPTR               PUT RB ADDRESS IN REG FOR POST   29150002
+         SR    R11,R11                 ZERO REG 11 FOR POST NO ECB      29200002
+         L     EPREG,APOST             GET POST ENTRY POINT             29250002
+         LR    R1,R13                  SAVE REG 13 VALUE                29300002
+         BALR  RETREG,EPREG            GO TO POST NO-ECB                29350002
+         LR    R13,R1                  RESTORE SAVE AREA ADDRESS        29400002
+         B     REXIT                   GET OUT                          29450002
+          SPACE 2                                                       29460002
+*/*SCHSRB: L SCHEDULE-- SRB=(REG 4) LOCAL SPL PRIOR=NONQ */             29462002
+          SPACE 2                                                       29470002
+SCHSRB   SCHEDULE SRB=(R4)             SCHEDULE SRB SAVE CELL           29500002
+          SPACE 2                                                       29502002
+*/*REXIT: P RESTORE ALL SAVED REGISTERS */                              29504002
+          SPACE 2                                                       29506002
+REXIT    DS    0H                                                       29510002
+         LM    R0,R15,C0(R13)          RESTORE ALL REGISTERS            29550002
+          SPACE 2                                                       29560002
+*/* R RETURN VIA BR 14 */                                               29562002
+          SPACE 2                                                       29570002
+         BR    RETREG                  RETURN TO CALLER                 29600002
+          SPACE 2                                                       29660002
+*/* FOOTING                                                             29662002
+*/*                                                                     29664002
+*/*  */                                                                 29666002
+*/*IEAVEPC: END PC FLIH */                                              29668002
+          SPACE 2                                                       29670002
+*********************************************************************** 29672002
+*                                                                     * 29674002
+*                       CONSTANTS & STORAGE                           * 29676002
+*                                                                     * 29678002
+*********************************************************************** 29678402
+          EXTRN IEA0PT01                                                29680002
+APOST    DC    A(IEA0PT01)             POST ENTRY ADDRESS               29700002
+         TITLE 'IEAVEPC- PSA MAPPING'                                   29702002
+         IHAPSA                                                         29710002
+         TITLE 'IEAVEPC- LCCA DSECT MAPPING'                            29712002
+         IHALCCA                                                        29720002
+         TITLE 'IEAVEPC- ASCB DSECT MAPPING'                            29722002
+         IHAASCB                                                        29730002
+         TITLE 'IEAVEPC- ASXB DSECT MAPPING'                            29732002
+         IHAASXB                                                        29740002
+         TITLE 'IEAVEPC- IHSA DSECT MAPPING'                            29740402
+         IHAIHSA                                                        29742002
+         TITLE 'IEAVEPC- SSRB DSECT MAPPING'                            29742402
+         IHASSRB                                                        29744002
+         TITLE 'IEAVEPC- RB DSECT MAPPING'                              29744802
+         IKJRB                                                          29746002
+         TITLE 'IEAVEPC- TCB DSECT MAPPING'                             29746402
+         IKJTCB                                                         29748002
+         TITLE 'IEAVEPC- SCA DSECT MAPPING'                             29748102
+         IHASCA                                                         29748402
+         TITLE 'IEAVEPC- PIE DSECT MAPPING'                             29748702
+         IHAPIE                                                         29748802
+         TITLE 'IEAVEPC- PICA DSECT MAPPING'                            29748902
+         IHAPICA                                                        29749202
+         TITLE 'IEAVEPC- FRRS DSECT MAPPING'                            29749602
+         IHAFRRS                                                        29749702
+         TITLE 'IEAVEPC- WSAVT DSECT MAPPING'                           29749802
+         IHAWSAVT DSECT=YES,CLASS=GLOBAL                                29749902
+         TITLE 'IEAVEPC- CVT DSECT MAPPING'                             29753102
+         CVT   DSECT=YES,PREFIX=NO,LIST=YES                             29756602
+         TITLE 'IEAVEPC- SCVT DSECT MAPPING'                            29759902
+         IHASCVT LIST=YES                                               29799902
+         TITLE 'IEAVEPC- SDWA DSECT MAPPING'                            29800002
+         IHASDWA                                                        29800302
+         TITLE 'IEAVEPC- PCCA DSECT MAPPING'                            29800702
+         IHAPCCA                                                        29801902
+         TITLE 'IEAVEPC - PVT DSECT MAPPING'                            29802502
+         IHAPVT                                                         29803102
+         TITLE 'IEAVEPC - CSD DSECT MAPPING'                            29803303
+         IHACSD                                                         29803503
+         TITLE 'IEAVEPC- LOGOUT DSECT MAPPING'                          29803902
+LOGOUT   DSECT MAPPING OF LOG OUT AREA FOR SYS TERM                     29809902
+LOGWTOA  DS    A                  ADDRESS WTO MESSAGE                   29819902
+LOGLRBA  DS    A                  ADDRESS LOG REC BUFFER                29829902
+LOGWTOM  DS    CL60               WTO MESSAGE                           29839902
+         DS    0F                 ALLIGN TO FULL WORD BDRY              29841902
+LOGLRB   DS    0CL132             LOG REC BUFFER                        29843902
+LOGLHDR  DS    0CL32              LOG REC BUFFER HEADER                 29845902
+LOGLRCDT DS    CL1                RECORD TYPE                           29847902
+LOGLRES  DS    CL23               RESERVED BYTES FOR HEADER             29848302
+LOGLSIZE DS    F                  SIZE OF LOG REC BUFFER                29848702
+LOGLCODE DS    F                  WAIT-STATE CODE FOR SYSTEM TERMINAT'N 29849102
+LOGLGPR  DS    CL64               GENERAL REGS AT TIME OF INTERRUPT     29849602
+LOGLCR0  DS    F                  CONTROL REG 0                         29849702
+LOGLCR1  DS    F                  CONTROL REG 1                         29849802
+LOGLILC  DS    CL1                INSTR LENGTH COUNTER                  29909802
+LOGLINT  DS    CL1                INTERRUPT CODE                        29919802
+LOGLOPSW DS    D                  PROG FLIH OLD PSW                     29921802
+LOGLTNEW DS    A                  T-NEW                                 29929802
+LOGLTOLD DS    A                  T-OLD                                 29939802
+LOGLANEW DS    A                  A-NEW                                 29941802
+LOGLAOLD DS    A                  A-OLD                                 29943802
+LOGEND   EQU   *                  END OF LOG OUT AREA                   29945802
+LOGLRBSZ EQU   LOGEND-LOGLRB      SIZE OF LOG REC PORTION               29947802
+LOGSIZE  EQU   LOGEND-LOGOUT      SIZE OF ENTIRE LOG OUT AREA           29948202
+         END                                                            29949802

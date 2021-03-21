@@ -1,0 +1,750 @@
+         TITLE 'IGG019G9 - APPENDAGES,READ K,KU,WRITE K,WITH WRT CHK'   00020020
+IGG019G9 CSECT                                                          00040000
+*          RELEASE OS/VS2-02 DELETIONS                                  00043002
+*          RELEASE 19 DELETIONS                                         00052000
+*2161043800                                                      A29939 00053019
+*          RELEASE 20 DELETIONS                                         00055000
+*0569074800-075000                                               A34619 00056020
+*0569000200,015800,021000,021200,021400,021800,022000,022200,    S20201 00056220
+*0569022600,022800,023000,023200,023400,023600,023800,024400,    S20201 00056420
+*0569044800,045000-046000,046200-048800,049000,050820,063700,    S20201 00056620
+*0569065400-065600,066000,066400,067200,067600,069600,069800,    S20201 00056820
+*0569070000,084400-088000,091800-093000,093440-093480,106600,    S20201 00057020
+*0569106800-107600,107800-110600,110800-123800,126400,126450-    S20201 00057220
+*0569143800                                                      S20201 00057420
+*          RELEASE 21 DELETIONS                                         00058000
+*1201                                                            A33533 00059021
+*XXXX                                                            A49403 00059400
+*1201                                                            A51109 00059800
+*1201017800                                                      A50670 00060200
+*          CHANGES SINCE VS2-3.7                                      * 00060437
+*A020000-020090,C020120                                        @ZA26522 00060637
+*                                                                       00061002
+*STATUS CHANGE LEVEL 009                                                00073002
+* FUNCTION/OPERATION' APPENDAGE ROUTINES FOR BISAM WHEN READ AND UPDATE 00080000
+*        IS USED WITHOUT WRITE KN AND WHEN WRITE VALIDITY CHECKING IS   00100000
+*        REQUESTED.                                                     00120000
+*                                                                       00140000
+*        ABEND - IF CP4 ENDS WITH AN ABNORMAL END BECAUSE OF FILE PRO-  00160000
+*                 TECTION, THIS IS A SIGNAL THAT THE DESIRED RECORD IS  00180000
+*                 IN AN OVERFLOW CHAIN. THEREFORE, CP6 IS INITIALIZED   00200000
+*                 TO SEARCH THE OVERFLOW CHAIN AND AN EXCP RETURN IS    00220000
+*                 MADE TO IOS.                                          00240000
+*                IF ABEND OCCURED WHILE TRYING TO READ BACK A RECORD    00260000
+*                 AFTER WRITING IT SUCCESSFULLY, AND 10 ATTEMPTS HAVE   00280000
+*                 NOT BEEN MADE TO WRITE THIS RECORD, REINITIALIZE THE  00300000
+*                 CP AND MAKE AN EXCP RETURN TO IOS                     00320000
+*                IF THE ABEND WAS CAUSED BECAUSE OF A REAL ERROR, THE   00340000
+*                 ERROR CODE IS INSERTED IN THE DECB AND AN             00360000
+*                 ASYNCHRONOUS ROUTINE IS SCHEDULED.                    00380000
+*        CEND - TEST TO SEE IF CP REALLY ENDED WITHOUT ERROR.  IF SO,   00400000
+*                 AND IF A MASTER INDEX HAS JUST BEEN SUCCESSFULLY      00420000
+*                 SEARCHED, REINITIALIZE TO SEARCH THE NEXT LOWER INDEX 00440000
+*                 AND MAKE AN EXCP RETURN TO IOS.                       00460000
+*               IF CP5 COMPLETED WITHOUT ERROR FOR A WRITE COMMAND,     00480000
+*                 REINITIALIZE THE CP TO ATTEMPT TO RE-READ THE RECORD  00500000
+*                 AND MAKE AN EXCP RETURN TO IOS.                       00520000
+*               FOR ANY COMPLETION IN ERROR, SET THE EXCEPTION CODE IN  00540000
+*                 THE DECB.                                             00560000
+*               FOR ANY COMPLETION IN ERROR, OR FOR ANY COMPLETION      00580000
+*                 WITHOUT ERROR NOT MENTIONED ABOVE, SCHEDULE AN        00600000
+*                 ASYNCHRONOUS ROUTINE TO CONTINUE PROCESSING.          00620000
+* ENTRY POINTS'                                                         00640000
+*        ENTRY POINT               FUNCTION                             00660000
+*        -----------               --------                             00680000
+*        APPCEND                   CEND                                 00700000
+*        APPABEND                  ABEND                                00720000
+* INPUT - N/A                                                           00740000
+* OUTPUT - N/A                                                          00760000
+* EXTERNAL ROUTINES - N/A                                               00780000
+* EXITS  1. RETURN TO IOS VIA THE APPENDAGE RETURN VECTOR TABLE POINTED 00800000
+*            TO BY REGISTER 14.  SEE THE DSECT LABELED IHAAPPRV FOR THE 00820000
+*            FORMAT OF THIS TABLE AND THE USE OF EACH EXIT.             00840000
+*        2. SCHEDULE AN ASYNCHRONOUS ROUTINE - BRANCH VIA THE EXIT      00860000
+*            EFFECTOR ADDRESS IN THE COMMUNICATION VECTOR TABLE.        00880000
+* TABLES/WORK AREAS ' DECB, DCB, IOB AND EXTENTION, DCB WA (DCW), DEB,  00900000
+*        COMMUNICATION VECTOR TABLE.                                    00920000
+*        SEE DSECTS AT END OF MODULE FOR FORMAT AND DESCRIPTIONS.       00940000
+* ATTRIBUTES' REENTRANT. DISABLED.                                      00960000
+* NOTES - NONE                                                          00980000
+* GENERAL REGISTERS ARE USED AS FOLLOWS BY THE CEND AND ABEND ROUTINES  01000000
+R0       EQU   0                   *    -----                           01020000
+R1       EQU   1                   *    12* ADDRESS                     01040000
+R2       EQU   2                   *    IOB                             01060000
+R3       EQU   3                   *    DEB                             01080000
+R4       EQU   4                   *    DCB                             01100000
+BASEXXXX EQU   5                        BASE REG FOR CLEANUP     Y02072 01112002
+R6       EQU   6                   *    -----                           01140000
+R7       EQU   7                   *    UCB                             01160000
+SAVEXXXX EQU   8                        SAVE AREA FOR CLEANUP    Y02072 01170002
+R9       EQU   9                   #    WORK REGISTER                   01200000
+R10      EQU   10                       CHANNEL PROGRAM                 01220000
+R11      EQU   11                       DECB                            01240000
+R12      EQU   12                       WORK REGISTER                   01260000
+R13      EQU   13                       WORK REGISTER                   01280000
+R14      EQU   14                       IOS RETURN VECTOR TABLE         01300000
+R15      EQU   15                       BASE REGISTER                   01320000
+*        * MEANS THIS REGISTER IS SET UP UPON ENTRY AND MAY NOT BE      01340000
+*            DESTROYED BECAUSE OF THE NEEDS OF IOS                      01360000
+*        #     MEANS THIS REGISTER MAY BE CHANGED, BUT UPON RETURN MUST 01380000
+*            BE IN THE FORM 000X BECAUSE OF THE NEEDS OF IOS            01400000
+*                                                                       01420000
+         USING APPRET,R15                                               01440000
+         USING IHADECB,R11                                              01480000
+         USING IHAIOB,R2                                                01500000
+         USING IHADEB,R3                                                01520000
+         USING IHADCB,R4                                                01540000
+         USING RQE,R1                   RQE ADDRESSABILITY       Y02072 01550402
+         SPACE 2                                                        01550802
+REEXCP   EQU   8                        REEXCP RETURN TO IOS     Y02072 01552002
+SKIPX    EQU   4                        SKIP RETURN TO IOS       Y02072 01554002
+BYPASS   EQU   12                       BYPASS RETURN TO IOS     Y02072 01556002
+FMVIOL   EQU   X'04'                    FILE MASK VIOLATION      Y02072 01556402
+NOTSEEK  EQU   8                        CC - SEEK TEST SENSE B0  Y02072 01558002
+SEEKCHK  EQU   X'01'                    SEEK CHECK INDICATOR     Y02072 01558402
+PERRMASK EQU   X'20'          IF B2 OF IOBECBAD IS OFF, PERM ERR        01560000
+BYP      EQU   12                       RETURN TO IOS/BYPASS      15924 01565016
+EXCP     EQU   8                        RETURN TO IOS/EXCP        15924 01570016
+NORMAL   EQU   0                        RETURN TO IOS/NORMAL      15924 01575016
+ABENTRY  EQU   X'01'                    ABEND ENTRY INDICATOR    A50670 01575400
+DATACHK  EQU   X'08'                    DATA CHECK IOB SENSE     A50670 01575800
+ASYN00   EQU   X'00'                    ASYN CODE 0              S20201 01576020
+NORECFND EQU   X'08'                    NO RECORD FOUND SENSE BIT 19323 01577018
+K1       EQU   1                        1                               01577101
+K4       EQU   4                        4                               01577201
+K5       EQU   5                        5                               01577301
+K7       EQU   7                        7                               01581101
+MIS      EQU   PERRMASK                 MASTER IDX SRCH MASK            01583101
+CCOFF    EQU   X'BF'                    TURN OFF CC MASK                01585101
+BLOCKED  EQU   X'10'                    BLOCKED REC TEST         S20201 01585801
+NOTOVFLO EQU   X'FD'                    TO INDICATE NOT OVERFLOW S20201 01589601
+ONE      EQU   1                        1                        S20201 01593401
+THREE    EQU   3                        3                        S20201 01597201
+FIVE     EQU   5                        5                        S20201 01601001
+SEVEN    EQU   7                        7                        S20201 01604801
+TEN      EQU   10                       10                       S20201 01608601
+READKU   EQU   X'20'                    READ KEY FOR UPDATE     SA65011 01610602
+*                        APPENDAGE VECTOR TABLE                         01612401
+APP      EQU   *                                                        01616201
+*              OFFSETS USED BY OPEN                                     01620000
+         DC    A(APPCEND-APP)           CEND                            01640000
+         DC    A(APPABEND-APP)          ABEND                           01660000
+*                                                                       01680000
+APPRET   EQU   *                                                        01700000
+APPCEND  NI    IOBINDCT,X'FE'           NORMAL CHANNEL END              01720000
+         B     SETREGS                                                  01740000
+*                                                                       01760000
+APPABEND EQU   *                                                 A50670 01770000
+         USING APPABEND,R15                                             01772000
+*                                                                A50670 01780000
+*        IF THIS IS A CORRECTABLE DATA CHECK FROM AN RPS         A50670 01790000
+*        DEVICE THEN RETURN TO IOS FOR ERP HANDLING              A50670 01792000
+*                                                                A50670 01794000
+         TM    IOBECBAD,PERRMASK        PERMANENT ERROR          A50670 01796000
+         BZ    NOCDACK                  YES CONTINUE AS USUAL    A50670 01798000
+         TM    IOBSENS1,FMVIOL          WAS IT A SEEK CHECK      Y02072 01808002
+         BCR   NOTSEEK,R14              NO - RETURN TO ERPS      Y02072 01810002
+         SPACE 3                                                        01812002
+NOCDACK  EQU   *                                                 A50670 01812600
+         OI    IOBINDCT,ABENTRY         INDICATE ABEND ENTRY     A50670 01813000
+SETREGS  EQU   *                                                        01813300
+         L     R15,DEBAPPAD             SET BASE OF THIS MODULE         01820000
+         L     R15,12(0,R15)             FROM APPENDAGE LIST            01840000
+         USING APPRET,R15                                               01850000
+*                                                                       01850402
+*   SAVE IOS REGISTERS AND SET UP ADDRESSABILITY TO RETURN TO SPECIAL   01852002
+*   CLEANUP ROUTINE.                                                    01854002
+*                                                                       01854402
+         STM   R14,R12,0(R13)           SAVE REGISTERS           Y02072 01856002
+         LR    SAVEXXXX,R13             SAVE SAVE AREA PTR       Y02072 01858002
+         LA    R14,IOSRETS              RETURN TO RETURN TO IOS  Y02072 01858402
+         LR    BASEXXXX,R14             BASE REG FOR RETURN      Y02072 01858802
+         SPACE 2                                                        01858902
+         MODESET KEYADDR=RQEPRT,WORKREG=13 ACQUIRE USER KEY      Y02072 01859202
+         SPACE 3                                                        01859602
+         L     R10,IOBCCWAD             INITIALIZE REGISTERS            01860000
+         LA    R10,0(R10)               CLEAR HIGH ORDER BYTE    A49403 01862000
+         MVC   IOBECBAD+1(3),IOBBCHAD+1 RESTORE ECB              A33533 01870021
+         L     R11,IOBECBAD                                             01880000
+         L     R12,IOBCSW               R12= LAST CCW EXECUTED + 8      01900000
+         LA    R12,0(0,R12)                                             01920000
+*                                                                       01940000
+         SR    R9,R9                    BRANCH PER APPENDAGE CODE       01960000
+         IC    R9,IOBAPP                 TIMES 4                        01980000
+         CH    R9,SIX                   IS APP CODE GT 6?      @ZA26522 02000037
+         BNH   CODEOK                   IF NO-GO AROUND PRGCHK @ZA26522 02003037
+         DC    H'0'                     PRGCHK FOR BAD IOBAPP  @ZA26522 02006037
+SIX      DC    X'0006'                  MAX VALUE FOR IOBAPP   @ZA26522 02009037
+CODEOK   SLL   R9,2                                            @ZA26522 02012037
+         TM    IOBINDCT,X'01'           IF ENTRY WAS ABNORMAL END       02020000
+         BO    APPABENT(R9)              USE CORRECT BRANCH TABLE.      02040000
+         B     APPCENDT(R9)             USE NORMAL BRANCH TABLE.        02060000
+*                                                                       02080000
+APPCENDT B     APPABA2                  CODE O                   S20201 02100020
+         B     APPABA2                  CODE 1                   S20201 02120020
+         B     APPADB2                  CODE 2                   S20201 02140020
+         B     APPAAB2                  CODE 3                          02160000
+         B     APPCEND                  CODE 4 INVALID           S20201 02180000
+         B     APPACA2                  CODE 5                   S20201 02200020
+         B     APPCEND                  CODE 6 INVALID           S20201 02220000
+*                                                                       02240000
+APPABENT B     APPABD2                  CODE O                   S20201 02260020
+         B     APPABD2                  CODE 1                   S20201 02280020
+         B     APPAIB2                  CODE 2                   S20201 02300020
+         B     APPAAA2                  CODE 3                   S20201 02320020
+         B     APPABENT                 CODE 4 INVALID           S20201 02340020
+         B     APPACE2                  CODE 5                   S20201 02360020
+         B     APPABENT                 CODE 6 INVALID           S20201 02380020
+*                                                                       02400000
+         EJECT                                                          02410002
+*   SPECIAL IOS RETURN CLEANUP ROUTINE INTERCEPTS ALL RETURNS TO        02412002
+*   IOS AND RESTORES REGISTERS AND SETS PROTECTION KEY TO 0.            02414002
+         SPACE 2                                                 Y02072 02416002
+IOSRETS  EQU   *                        RETURN POINT             Y02072 02418002
+         USING *,BASEXXXX               ADDRESSABILITY           Y02072 02418402
+         B     NORMRET                  NORMAL RETURN            Y02072 02418802
+         B     SKIPRET                  SKIP POST RETURN         Y02072 02419202
+         B     REEXCPRT                 REEXCP RETURN            Y02072 02419602
+         SPACE 2                                                        02419702
+BYPASRET EQU   *                        BYPASS POST RETURN       Y02072 02419802
+         BAL   R12,IOSRETX              RESTORE REGS AND KEY     Y02072 02419902
+         LA    R14,BYPASS(R14)          SCHEDULE ASYNCH ROUTINE  Y02072 02426602
+         L     R13,CVTPTR               CVT ADDRESSABILITY       Y02072 02428602
+         USING CVT,R13                  *                        Y02072 02429002
+         L     R13,CVTEXEF              ASYNCH SCHED ROUTINE     Y02072 02430602
+         DROP  R13                      *                        Y02072 02431002
+         BR    R13                      GO TO ROUTINE            Y02072 02432602
+         SPACE 2                                                        02433002
+REEXCPRT EQU   *                        REEXCP RETURN            Y02072 02433102
+         BAL   R12,IOSRETX              RESTORE REGS AND KEY     Y02072 02433202
+         B     REEXCP(R14)              RETURN - REEXCP          Y02072 02439902
+         SPACE 2                                                        02441902
+SKIPRET  EQU   *                        RETURN - SKIP            Y02072 02443902
+         BAL   R12,IOSRETX              RESTORE REGS AND KEY     Y02072 02445902
+         B     SKIPX(R14)               RETURN - SKIP            Y02072 02446302
+         SPACE 2                                                        02446402
+NORMRET  EQU   *                        RETURN - NORMAL          Y02072 02446502
+         BAL   R12,IOSRETX              RESTORE REGS AND KEY     Y02072 02453202
+         BR    R14                      RETURN                   Y02072 02455202
+         SPACE 2                                                        02457202
+IOSRETX  EQU   *                        RESTORE REGS AND KEY     Y02072 02459202
+         MODESET KEYADDR=KEY0,WORKREG=13   SET KEY = 0           Y02072 02459602
+         SPACE 2                                                        02459702
+         LM    R14,R11,0(SAVEXXXX)      RESTORE REGISTERS        Y02072 02459802
+         BR    R12                      RETURN                   Y02072 02459902
+         DROP  BASEXXXX                 RESET ADDRESSABILITY     Y02072 02460002
+         SPACE 2                                                 Y02072 02466502
+KEY0     DC    H'0'                     KEY 0                    Y02072 02468502
+         EJECT                                                   Y02072 02470502
+APPHCA14 DC    A(CA14-IHACP47+8)                                        02473602
+APPHCA21 DC    A(CA20-IHACP47+8)        OFFSET OF CA20           S20201 02480202
+APPHCA23 DC    A(CA23-IHACP47+8)                                        02486802
+APPHCA24 DC    A(CA24-IHACP47+8)                                        02493402
+APPHCA31 DC    A(CA31-IHACP47+8)                                        02500000
+APPCA31B DC    A(CA31B-IHACP47+8)       OFFSET OF CA31B          S20201 02510020
+APPHCA36 DC    A(CA36-IHACP47+8)                                        02520000
+APPHCA43 DC    A(CA43-IHACP47+8)                                        02540000
+APHCA43C DC    A(CA43C-IHACP47+8)                                       02560000
+APPHCA10 DC    A(CA10-IHACP47+8)        CA10 OFFSET                     02572001
+*                                                                       02574002
+*        CHANNEL END APP CODE 3 (CP2) CHART AA                          02580000
+         USING CP2,R10                                                  02600000
+APPAAB2  L     R13,DCBWKPT2             R13  ADDR DCB WA                02620000
+         USING IHADCW,R13                                               02640000
+         CLI   DCWNLSD,X'01'            BRANCH IF NLSD NOT 1, I.E.      02660000
+         BH    APPAEB2                   IF CP1 IS BEING USED           02680000
+         LA    R13,C35+8                TEST, STOP AT C35               02700000
+         CLR   R12,R13                                                  02720000
+         BNE   APPAAB3                  NO   B3                         02740000
+         TM    C37,X'20'                YES  DUMMY OR INACTIVE TEST     02760000
+         BO    APPAAC3                  YES  C3                         02780000
+         MVC   IOBDADAD,C36             NO   C36 TO IOBDADAD            02800000
+         MVI   IOBASYN,X'03'         E2      ASYNC CD SET=3 (G CP1,2)   02820000
+         B     APPABSAR                                                 02840000
+APPAAC3  TM    C37,X'08'                TEST DUMMY CHAINED              02860000
+         BO    APPAAD3                  YES  D3                         02880000
+         IC    R12,C37                  NO   TEST NLEV PER F = DCBNLEV  02900000
+         NI    C37,X'07'                                                02920000
+         CLC   DCBNLEV,C37                                              02940000
+         STC   R12,C37                                                  02960000
+         BNE   APPAAB3                  NO   B3                         02980000
+         OI    DECBEXC1,X'80'        C5 YES  DECB EXCEP SET=NO RCD FND  03000000
+APPAAD4  MVI   IOBASYN,X'07'         D4      ASYNC CD SET=7 (NG CP1,2)  03020000
+         B     APPABSAR                      SAR                        03040000
+APPAAD3  MVC   IOBDADAD,C36             C36 TO IOBDADAD                 03060000
+         B     APPRVXCP                      EXCP RETURN TO IOS         03080000
+APPAAB3  OI    DECBEXC1,X'04'        B3      DECB EXCEP SET=UNREACHABLE 03100000
+         B     APPAAD4                       D4                         03120000
+*                                                                       03130002
+*        ABNORMAL END APP CODE 3 (CP2) CHART AA                         03140000
+*                                                                       03160000
+APPAAA2  L     R13,DCBWKPT2            R13  ADDR DCB WA                 03180000
+         CLI   DCWNLSD,X'01'            BRANCH IF NLSD NOT 1, I.E.      03200000
+         BNE   APPAEJ2                    IF CP1 IS BEING USED          03220000
+APPAAA3  TM    IOBECBAD,PERRMASK        TEST PERM ERR                   03240000
+         BO    APPRVNOR                 NO,NORMAL RTRN TO IOS     15924 03260016
+         B     APPAAB3                  YES BRANCH TO INDICATE UNRCHBLE 03280000
+         DROP  R13                                                      03300000
+*                                                                       03320000
+*              CHART AE                 END CP1                         03340000
+*              CHANNEL END                                              03360000
+         USING CP1,R10                                                  03380000
+APPAEB2  EQU   *                                                        03400000
+         LA    R13,C6+8                 TEST FINAL CCW EQUAL C6         03420000
+         CLR   R12,R13                                                  03440000
+         BE    APPAEC2                  BRANCH IF YES                   03460000
+         LA    R13,C16+8                TEST EQUAL C16                  03480000
+         CLR   R12,R13                                                  03500000
+         BE    APPAEC4                  BRANCH IF YES                   03520000
+         B     APPAAB3                  ERROR IF NO                     03540000
+*              INTERRUPT AT C6                                          03560000
+APPAEC2  EQU   *                        *                               03580001
+*                                                                       03590002
+         TM    C6+K5,CC                 WAS C6 CHAINED                  03592001
+         BZ    APPAOS1                  NO, CONTINUE                    03594001
+         NI    C6+K5,CCOFF              TURN OFF INDICATOR              03596001
+         OI    C6+K4,CC                 RECHAIN C6                      03598001
+         CLI   C10,SEEKHH               C10 SET TO DO SEEK HEAD         03598401
+         BNE   APPAOSJ2                 NO, FILE PROTECT                03598801
+         LA    R13,C10A                 RESET IOBSTART TO               03599201
+         ST    R13,IOBSTART-K1          RESTART AT C10A                 03599601
+         B     APPAEG2                  RESCHEDULE CP1                  03599701
+APPAOS1  EQU   *                        *                               03599801
+*                                                                       03599902
+         TM    C9+K7,MIS                END MASTER INDEX SEARCH.        03606601
+         BO    APPAEC3                  BRANCH IF YES                   03613301
+         TM    C9+7,X'04'               IF LEVEL OF INDEX IS 3          03620000
+         BO    APPAEG2                   SET CC IN CP1 TO CHAIN TO      03640000
+         OI    C6+4,X'40'                SEARCH CYLINDER INDEX          03660000
+APPAEG2  MVC   IOBDADAD,C8+7            ADDR NEXT SRCH ADDR IN IOB      03680000
+         B     APPRVXCP                 RETURN TO EXCP                  03700000
+*                                                                       03710002
+*              DUMMY OR INACTIVE                                        03720000
+*                                                                       03730002
+APPAEC3  TM    C9+7,X'08'               TEST DUMMY ENTRY CHAINED        03740000
+         BO    APPAEG2                  BRANCH IF YES                   03760000
+         IC    R12,C9+7                 COMPARE LEVEL OF INDEX READ TO  03780000
+         SLL   R12,29                    DCB INDEX LEVEL                03800000
+         IC    R13,DCBNLEV                                              03820000
+         SLL   R13,29                                                   03840000
+         CLR   R12,R13                                                  03860000
+         BNE   APPAAB3                  BRANCH IF NOT EQUAL             03880000
+         OI    DECBEXC1,X'80'           SET NO REC FND IN EXCEPTION CD  03900000
+         B     APPAAD4                                                  03920000
+*                                                                       03930002
+*              END OF CYLINDER SEARCH                                   03940000
+*                                                                       03950002
+APPAEC4  TM    C18,X'20'                TEST DUMMY OR INACTIVE          03960000
+         BO    APPAEC5             BRANCH IF YES                        03980000
+         MVC   IOBDADAD,C17                  ADDR NEXT SRCH IN IOB      04000000
+         MVI   IOBASYN,X'03'       SET ASYNC CODE                       04020000
+         B     APPABSAR                 SCHEDULE ASYNCH RTN             04040000
+APPAEC5  TM    C18,X'08'                IF DUMMY ENTRY NOT CHAINED,     04060000
+         BZ    APPAAB3                   BRANCH TO INDICATE UNRCHBLE    04080000
+         MVC   IOBDADAD,C17             OTHERWISE, RESTART CHAN PROG    04100000
+         LA    R12,C11                   WITH NEW SRCH ADDRESS          04120000
+         ST    R12,IOBSTART-1                                           04140000
+         B     APPRVXCP                 RETURN TO IOS                   04160000
+*                                                                       04170002
+*              ABNORMAL END                                             04180000
+*                                                                       04190002
+APPAEJ2  TM    IOBSENSE+1,X'04'        FILE PROTECT               25000 04200018
+         BZ    APPAAA3                  BRANCH IF NO.                   04220000
+         LA    R13,C10+8                TEST, STOP AT C10               04240000
+         CLR   R12,R13                  BRANCH TO INDICATE UNREACHABLE  04260000
+         BNE   APPAAB3                   IF NO.                         04280000
+*                                                                       04282002
+APPAOSJ2 EQU   *                        *                               04284001
+*                                                                       04286002
+         TM    C9+7,X'20'              IF DUMMY OR INACTIVE       25000 04290018
+*                                       RECORD                    25000 04300018
+         BO    APPAEC3                   BRANCH TO SAME PROCEDURE AS    04320000
+         LA    R12,C11                   CHANNEL END                    04340000
+         ST    R12,IOBSTART-1           OTHERWISE, RESTART AT C11       04360000
+         B     APPAEG2                                                  04400000
+*                                                                       04420000
+*        CHANNEL END APP CODE O,1 (CP4,5) CHART AB                      04440000
+         USING CP4,R10                                                  04460000
+APPABA2  EQU   *                                                 S20201 04480020
+*                                                                       04530002
+         L     R12,IOBCSW               CP STOP ADDR                    04540001
+         LA    R12,0(R12)               CLEAR HI ORDER BYTE             04542001
+         SR    R12,R10                  DID CHAN PROG                   04544001
+*                                                                       04544102
+         CL    R12,APPHCA23             STOP AT CCW CA23        SA65011 04544402
+         BNE   NOTCA23                  BRANCH IF NO            SA65011 04544802
+         TM    DECBTYP2,READKU          READ K FOR UPDATE       SA65011 04545202
+         BZ    NOTCA23                  BRANCH IF NO            SA65011 04545602
+         CLI   CA24,RDSECT              CA24 READ SECTOR CCW    SA65011 04545902
+         BE    APPABF3                  BR IF YES - SET UNREACH SA65011 04549202
+*                                       BLK, ASYN CODE OF 4     SA65011 04551202
+NOTCA23  EQU   *                        CONTINUE - CP OK        SA65011 04553202
+         CL    R12,APPHCA10             STOP AT CA10                    04553502
+         BNE   APPAOSA2                 NO                              04556802
+         TM    CA10+K5,CC               WAS CA10 COMMAND CHAINED        04560102
+         BZ    APPAOSA2                 NO                              04563402
+         OI    CA10+K4,CC               TURN CC BACK ON                 04566702
+         NI    CA10+K5,CCOFF            TURN INDICATOR OFF              04570002
+         CLI   CA14,SEEKHH              CA14 SEEK HEAD                  04573302
+         BNE   APPAOS21                 NO, FILE PROTECT                04576602
+         MVC   IOBDADAD,CA12+K7         RESET IOBSEEK                   04579902
+         LA    R12,CA16A                RESET IOBSTART TO               04583201
+         ST    R12,IOBSTART-K1          START AT CA16A                  04593201
+         B     APPRVXCP                 GO DO AN EXCP                   04603201
+APPAOSA2 EQU   *                        *                               04613201
+*                                                                       04615202
+         NI    DECBEXC1,NOTOVFLO        SET NOT OFLO             S20201 04616701
+         MVC   IOBDADAD+FIVE(THREE),CA25+FIVE SET IN CASE RD KU  S20201 04650020
+APPABB3  MVI   IOBASYN,ASYN00           ASYNC CD SET (G CP4,5,6) S20201 04750020
+APPABSAR B     BYP(R14)                 SCHEDULE ASYNCH ROUTINE  Y02072 04920002
+         SPACE 2                                                        04970002
+*        ABNORMAL END APP CODE 0,1 (CP4,5) CHART AB                     05020000
+*                                                                       05040000
+APPABD2  EQU   *                                                  19374 05047000
+         TM    IOBSENSE+1,X'04'         FILE PROTECT?             19374 05054000
+         BO    APPABD21                 YES--BRANCH               19374 05061000
+         TM    IOBECBAD,PERRMASK        PERMANENT ERROR?          19374 05068000
+         BZ    APPABD3                  YES--BRANCH               19374 05075000
+         B     APPAHD2                  ELSE, RETRY CHAN PGM     S20201 05082020
+APPABD21 EQU   *                        FILE PROTECT              19374 05089000
+         SR    R12,R10                  YES, STOP AT CA14               05100000
+         CL    R12,APPHCA14                                             05120000
+         BNE   APPABF3                  NO   F3                         05140000
+*                                                                       05150002
+APPAOS21 EQU   *                        *                               05152001
+*                                                                       05154002
+         TM    CA13+7,X'20'        F2 YES  DUMMY OR INAC TEST           05160000
+         BO    APPABF1                  YES  F1                         05180000
+         MVC   IOBDADAD,CA12+7     G2 NO   CA12+7 TO IOBDADAD           05200000
+         MVC   CA34+7(8),CA12+7    H2   CA14+7 TO CA34+7                05220000
+         LA    R12,IOBDADAD+3      G1   ADIOBDADAD(CCHH)TO CA26         05240000
+         ST    R12,CA26                                                 05260000
+         MVI   CA26,X'31'                                               05280000
+         MVC   CA28+1(3),DECBKEY+1 H1   DECBKEY+1 TO CA28 AD            05300000
+         CLI   IOBAPP,X'00'          J1      READ OR WRITE{             05320000
+         BE    APPABJ2                  READ J2                         05340000
+         LA    R12,CA40            K1 WRITE CA30 TIC TO CA40            05360000
+         STH   R12,CA30+2                                               05380000
+         SRL   R12,16                                                   05400000
+         STC   R12,CA30+1                                               05420000
+         L     R12,DECBAREA        K2   AREA+6 TO CA40 AD               05440000
+         LA    R12,6(R12)                                               05460000
+         ST    R12,CA40                                                 05480000
+         MVI   CA40,X'06'                                               05500000
+         MVC   CA43+1(3),CA40+1    K3   AREA+6 TO CA43 AD               05520000
+          LA   R13,CA43+6               LENGTH+10 TO CA43 CNT           05540000
+APPABK2  MVI   CA28,SKEQ                SCH EQ FOR WRITE         S20201 05550020
+APPABK4  TM    DECBTYP1,X'02'                DECBLGTH SPECIFIED{        05560000
+         BZ    APPABK4A                 YES  K4A                        05580000
+         LH    R12,DCBLRECL             NO   USE DCBLRECL               05600000
+         B     APPABK4B                                                 05620000
+APPABK4A LH    R12,DECBLGTH             DECB LENGTH OVERRIDING          05640000
+APPABK4B LA    R12,10(R12)                                              05660000
+         STH   R12,0(R13)                                               05680000
+         MVC   CA43C+6(2),CA43+6        SET COUNT IN CA43C              05700000
+APPABK5  MVI   IOBAPP,X'05'          K5      APPEN CD SET=5             05720000
+         LA    R12,CA26            J5   AD CA26 TO IOBSTART             05740000
+         ST    R12,IOBSTART-1                                           05760000
+         MVI   IOBFLAG1,X'42'        H5 RESTORE IOB FLAGS AND ERR CTR   05780000
+         MVI   IOBFLAG2,X'00'            CC AND UNRELATED FLAGS ON      05800000
+         MVI   IOBCSW,X'00'              OTHERS OFF                     05820000
+         XC    IOBERRCT,IOBERRCT                                        05840000
+         MVI   IOBCOUNT,X'0A'           INITIALIZE ERR CTR FOR 10 TRIES 05860000
+APPRVXCP EQU   *                                                        05880000
+         SR    R12,R12             G5   TEST OFLO SAME VOLUMN           05900000
+         IC    R12,IOBDADAD                                             05920000
+         SLL   R12,4                                                    05940000
+         LA    R12,32(R3,R12)           POSITION TO THE NEW EXTENT      05960000
+         MVC   IOBDADAD+1(2),4(R12)     MOVE BB TO IOB SEEK             05980000
+         L     R12,0(0,R12)             LOAD NEW UCB ADDRESS            06000000
+         LA    R7,0(R7)                                                 06020000
+         LA    R12,0(R12)                                               06040000
+         CLR   R7,R12                                                   06060000
+         BE    EXCPRTRN                 IF SAME UCB,              15924 06070016
+*                                       EXCP RETURN TO IOS        15924 06080016
+         MVI   IOBASYN,X'01'         G4 NO   ASYNC CD SET=1 (EXCP)      06100000
+         B     APPABSAR                      SAR                        06120000
+EXCPRTRN XC    IOBFLAG2(3),IOBFLAG2     CLEAR FLAG2,SENSE BYTES   15924 06123016
+         XC    IOBCSW(9),IOBCSW         CLEAR FLAG3,CSW,AND SIOCC 15924 06126016
+         XC    IOBERRCT(2),IOBERRCT     CLEAR ERROR COUNT         15924 06129016
+         NI    IOBFLAG1,X'C2'           RESET FLAG1               15924 06132016
+         B     EXCP(R14)                EXCP RETURN TO IOS        15924 06135016
+APPABJ2  LA    R12,CA31              J2 CA30 TIC TO CA31                06140000
+         STH   R12,CA30+2                                               06160000
+         SRL   R12,16                                                   06180000
+         STC   R12,CA30+1                                               06200000
+         L      R12,DECBAREA                 AREA+6 TO CA31 ADDRESS     06220000
+         LA    R12,6(R12)                                               06240000
+         ST    R12,CA31                                                 06260000
+         MVI   CA31,X'06'                                               06280000
+         LA    R13,CA31+6                    LENGTH+10 TO CA31 COUNT    06300000
+         SR    R12,R12                                           S20201 06302020
+         AH    R12,DCBRKP               RKP=0                    S20201 06304020
+         BNZ   APPABJ4                  BIF NOT = 0              S20201 06306020
+         TM    DCBRECFM,BLOCKED          RECFM=BLOCKED           S20201 06308020
+         BZ    APPABK2                  BIF NOT BLOCKED          S20201 06310020
+APPABJ4  MVI   CA28,SKEQHI             SCH EQHI FOR (READ AND    S20201 06312020
+*                                       RKP NE 0                 S20201 06314020
+*                                       OR (READ AND RKP=0 AND BLKD)    06316020
+         B     APPABK4                       K4                         06320000
+APPABF1  CLI   DCBNLEV,X'00'         F1      DCBNLEV=0{                 06340000
+         BE    APPABD5                  YES  D5                         06360000
+APPABF3  OI    DECBEXC1,X'04'        F3 NO   DECB EXCEP SET=UNREACHABLE 06380000
+APPABG3  MVI   IOBASYN,X'04'         G3      ASYNC CD SET=4(NG CP4,5,6) 06400000
+         B     APPABSAR                      SAR                        06420000
+APPABD3  EQU   *                                                        06450016
+         SR    R12,R10                                           S20201 06460020
+         TM    IOBSENSE+1,X'08'         NO RECORD FOUND           16072 06480016
+         BZ    APPABB1                  NO--BRANCH                16072 06500016
+         CL    R12,APPHCA21                                             06580000
+         BNE   APPAHH2                  BNE MEANS NOT CA20       S20201 06600020
+         CLI   CA21,X'69'          D4,C4 READ FORMAT BLOCKED TEST       06620000
+         BE    APPABF3                  YES  F3                  S20201 06640020
+APPABD5  OI    DECBEXC1,X'80'        D5 NO   DECB EXCEP SET=NO RCD FND  06660000
+         B     APPABG3                       G3                         06680000
+APPABB1  EQU   *                        STOP AT CA23                    06700000
+         CL    R12,APPHCA23                                             06740000
+         BNE   APPAHH2                  NO   F3                  S20201 06780020
+APPABD1  OI    DECBEXC1,X'08'        D1 YES  DECB EXCEP SET=UNCOR IO ER 06820000
+         B     APPABG3                       G3                         06840000
+*                                                                       06860000
+*        CHANNEL END APP CODE 5 (CP6) CHART AC                          06880000
+         USING CP4,R10                                                  06900000
+APPACA2  EQU   *                        STOP AT CA31                    06920000
+         SR    R12,R10                                                  06940000
+         CL    R12,APPHCA31             NON-RPS HALT.            S20201 06950020
+         BE    APPACA6                  BE MEANS YES             S20201 06953020
+         CL    R12,APPCA31B             RPS HALT.                S20201 06956020
+         BNE   APPACA3                  BIF NO HALT HERE.        S20201 06959020
+         B     APPACA6A                 COMPARE KEYS            SA65011 06961002
+*                                                                       06961402
+APPACA6  TM    DECBTYP2,READKU          READ KEY FOR UPDATE     SA65011 06961802
+         BZ    APPACA6A                 BRANCH IF NO            SA65011 06961902
+         TM    CA31+4,CC                CA31 COMMAND CHAINED    SA65011 06964902
+         BO    APPABF3                  BR IF YES - SET UNREACH SA65011 06966902
+*                                       BLK, ASYN CODE OF 4     SA65011 06968902
+APPACA6A CLI   CA28,SKEQHI              SEARCH HI USED.         SA65011 06969002
+         BNE   APPACA8                  BIF NOT                  S20201 06972002
+*                                                                       06975002
+*        COMPARE KEYS. IF THE RECORD'S KEY IS HIGHER, TERMINATE         06978002
+*        THE SEARCH OF THE OVERFLOW CHAIN.                              06981002
+*                                                                       06984002
+         IC    R9,CA28+SEVEN            GET KEY LENGTH.          S20201 06987002
+         BCTR  R9,R0                                             S20201 06990002
+         L     R12,CA28                 GET KEY ADDR.            S20201 06993002
+         L     R13,CA31                 GET DATA ADDR.           S20201 06996002
+         AH    R13,DCBRKP               FIND THE KEY IN THE      S20201 06999002
+*                                       RECORD.                  S20201 07002002
+         LA    R13,TEN(R13)             KEY FOUND.               S20201 07005002
+         EX    R9,COMPARE               CHECK FOR MATCH.         S20201 07008002
+         BNE   APPACG3                  BIF NO MATCH.            S20201 07011002
+APPACA8  EQU   *                                                 S20201 07014002
+         CLC   CA34+7(8),CA12+SEVEN     FIRXT RECORD IN CHAIN   OY00310 07017002
+         BE    APPACB3                  YES  B3                         07020000
+         L     R12,DCBRORG3             NO   ADD 1 TO DCBRORG3          07040000
+         LA    R12,1(R12)                                               07060000
+         ST    R12,DCBRORG3                                             07080000
+         TM    DECBTYP2,X'20'           B2  TEST READ FOR UPDATE        07100000
+         BZ    APPACB3                  NO   B3                         07120000
+         MVC    IOBDADAD,CA34+7         YES  IOBDADAD SET FOR WRITEBACK 07140000
+APPACB3  OI    DECBEXC1,X'02'        B3      DECB EXCEP SET=OFLO RCD    07160000
+         MVI   IOBASYN,X'00'         B4      ASYNC CD SET=0 (G CP4,5,6) 07180000
+         B     APPABSAR                      SAR                        07200000
+APPACA3  CL    R12,APHCA43C          A3 TEST - STOP AT CA43C            07220000
+         BNE   APPACF4                  NO   F4                         07240000
+         B     APPACB3                  YES  B3                         07260000
+*                                                                       07280000
+*        ABNORMAL END APP CODE 5 (CP6) CHART AC                         07300000
+*                                                                       07320000
+APPACE2  EQU   *                                                  19374 07327000
+         TM    IOBSENSE+1,X'04'         FILE PROTECT?             19374 07334000
+         BO    APPACE21                 YES--BRANCH               19374 07341000
+         TM    IOBECBAD,PERRMASK        PERMANENT ERROR?          19374 07348000
+         BZ    APPAGH3                  YES--BRANCH               19374 07355000
+         B     APPAGG2                  NO--BRANCH                19374 07362000
+APPACE21 EQU   *                                                  19374 07369000
+         SR    R12,R10                  STOP AT CA36                    07380000
+         CL    R12,APPHCA36                                             07400000
+         BNE   APPACF4                  NO   F4                         07420000
+*                                                                       07430002
+         CLI   CA36,SEEKHH              CA36 SET TO SEEK HEAD           07432001
+         BNE   APPAOSE2                 NO                              07434001
+         TM    IOBECBAD,PERRMASK        PERMANENT ERROR                 07436001
+         BZ    APPACE3                  YES, BRANCH                     07438001
+         MVC   IOBDADAD,CA34+K7         RESET IOBSEEK                   07438401
+         B     APPRVXCP                 GO DO AN EXCP                   07438801
+APPAOSE2 EQU   *                        *                               07439201
+*                                                                       07439602
+         TM    CA35+7,X'08'        G2 YES  END OR CHAINED TEST          07440000
+         BZ    APPACG3                  END  G3                         07460000
+         MVI   IOBASYN,X'01'         J2      ASYNC CD SET=1 (EXCP)      07520000
+         MVI   IOBFLAG1,X'42'        J3 RESTORE IOB FLAGS AND ERR CTR   07540000
+         MVI   IOBFLAG2,X'00'            CC AND UNRELATED FLAGS ON      07560000
+         MVI   IOBCSW,X'00'              OTHERS OFF                     07580000
+         XC    IOBERRCT,IOBERRCT                                        07600000
+         MVC   IOBDADAD,CA34+7          SET SEEK SEARCH ADDRESS         07620000
+         B     APPABSAR                      SAR                        07640000
+APPACE3  EQU   *                                                        07670013
+         SR    R12,R10                  STOP AT CA31 OR CA43            07700000
+         CL    R12,APPHCA31                                             07720000
+         BE    APPACE5                  YES  E5                         07740000
+         CL    R12,APPHCA43                                             07760000
+         BE    APPACE5                  YES  E5                         07780000
+APPACF4  OI    DECBEXC1,X'04'        F4 NO   DECB EXCEP SET=UNREACHABLE 07800000
+APPACG4  MVI   IOBASYN,X'04'         G4      ASYNC CD SET=4(NG CP4,5,6) 07820000
+         B     APPABSAR                      SAR                        07840000
+APPACG3  OI    DECBEXC1,X'80'        G3      DECB EXCEP SET=NO RCD FND  07860000
+         B     APPACG4                       G4                         07880000
+APPACE5  TM    IOBSENSE,X'08'        E5      DATA CHK{                  07900000
+         BZ    APPACF4                  NO   F4                         07920000
+APPACF5  OI    DECBEXC1,X'08'        F5 YES  DECB EXCP SET UNCOR IO ERR 07940000
+         B     APPACG4                       G4                         07960000
+*                                                                       07970002
+*              CHART AD       CHANNEL END + NORMAL END CP7              07980000
+*              CHANNEL END                                              08000000
+*                                                                       08010002
+         USING CP7,R10                                                  08020000
+APPADB2  LA    R13,CA46C+8              STOP AT CA46C TEST              08040000
+         CLR   R12,R13                                                  08060000
+         BNE   APPADB3                                                  08080000
+         MVI   IOBASYN,X'02'            IF SO, SET ASYN CODE AND BRANCH 08100000
+         B     APPABSAR                 SCHEDULE ASYN ROUTINE           08120000
+APPADB3  OI    DECBEXC1,X'04'           IF NOT, INDICATE UNREACHABLE IN 08140000
+APPADB4  MVI   IOBASYN,X'06'             DECB AND SET ASYNCH CODE       08160000
+         B     APPABSAR                 SCHEDULE ASYNCH ROUTINE         08180000
+*                                                                       08182002
+*     CHART AI  ABNORMAL END, CODE 2, CP7, WRITE CHECK                  08190013
+*                                                                       08192002
+APPAIB2  EQU   *                                                        08200013
+         TM    IOBECBAD,PERRMASK        CHECK FOR PERM ERROR            08210013
+         BC    1,APPRVNOR               ERROR NOT PERM, NORMAL RETURN   08220013
+         TM    IOBSENSE,X'08'           DATACHECK                       08230013
+         BZ    APPADG4                  NO- TEST FOR RETRY        19323 08240018
+         LA    R13,CA46+8               IF STOP AT CA46 AND CAUSE IS    08260000
+*                                        NOT DATA CHECK, OR IF STOP     08280000
+*                                        NOT AT CA46,                   08300000
+         CLR   R13,R12                   GO TO APPADB3                  08320000
+         BE    APPADG3                  YES - I/O ERROR                 08330013
+         LA    R13,CA46C+8              CHECK FOR STOP                  08340013
+         CLR   R12,R13                  AT CA46C                        08350013
+         BNE   APPADB3                  BR IF NOT CA46C                 08360013
+APPADG3  OI    DECBEXC1,X'08'           DATA CHECK, SET IO UNCORRTABLE  08400000
+         B     APPADB4                   ERROR BIT IN DECB              08420000
+APPADG4  EQU   *                                                  19323 08421018
+         TM    IOBSENSE+1,NORECFND      NO RECORD FOUND           19323 08422018
+         BZ    APPADB3                 FALSE-INDICATE UNREACHABLE 19323 08423018
+         LA    R13,CA46A+8                                        19323 08424018
+         CLR   R13,R12                  STOP AT CA46A             19323 08425018
+         BNE   APPADB3                  NO- INDICATE UNREACHABLE  19323 08426018
+         CLI   IOBCOUNT,X'0A'           FIRST TIME THROUGH        19323 08427018
+         BL    APPADB3                  NO- INDICATE UNREACHABLE  19323 08428018
+         MVI   IOBCOUNT,X'00'           INDICATE RETRY            19323 08429018
+         B     APPRVXCP                 RETRY CHANNEL PROGRAM     19323 08430018
+*                                                                       08480002
+*              CHART AG  ABNORMAL END, NOT FILE PROT CHK                08820000
+*                                                                       08822002
+         USING CP4,R10                                           S20201 08825020
+APPAGG2  EQU   *                                                        08830013
+         TM    IOBSENSE,X'08'           CHECK FOR DATA CHECK            08860013
+         BZ    APPRVNOR                 NORMAL RETURN                   08870013
+         LA    R13,CA43C+8                                              08880000
+         CLR   R12,R13                                                  08900000
+         BNE   APPRVNOR                 NORMAL RETURN                   08990013
+         MVC IOBDADAD,CA34+7                                            09080000
+         LA    R12,CA41                                                 09100000
+         ST    R12,IOBSTART-1                                           09120000
+         B     APPRVNOR                 NORMAL RETURN                   09126013
+APPAGH3  EQU   *                                                        09132013
+         TM    IOBSENSE,X'08'           CHECK FOR DATA CHECK            09138013
+         BZ    APPACE3                  NOT DATA CHECK, BRANCH          09144013
+         LA    R13,CA43C+8              CHECKFOR STOP                   09150013
+         CLR   R12,R13                  AT CA43C                        09156013
+         BNE   APPACE3                  BRANCK IF NO                    09162013
+         B     APPACF5                  BR TO INDIC UNCORR I/O ERROR    09168013
+*                                                                       09218002
+*              ABNORMAL END                                             09320000
+*                                                                       09330002
+APPAHD2  EQU   *                        STOP AT CA24C, DATA CHECK       09340000
+         TM    IOBSENSE,X'08'           CHECK FOR DATA CHECK            09352013
+         BZ    APPRVNOR                 NOT DATA CK, NORMAL RETURN      09356013
+         LA    R13,CA24C+8                                              09360000
+         CLR   R12,R13                                                  09380000
+         BNE   APPRVNOR                 BRANCH IF NO                    09470013
+         LA    R13,CA24D                 START ADDRESS = CA24D          09560000
+         ST    R13,IOBSTART-1                                           09580000
+         MVC   IOBDADAD+3(5),CA25+3     RESET IOBSEEK           SA62417 09582002
+         B     APPRVNOR                 NORMAL RETURN                   09590013
+APPAHH2  EQU   *                                                        09600013
+         AR    R12,R10                  RESTORE CHAN PGM ADDR    S20201 09605020
+         TM    IOBSENSE,X'08'           CHECK FOR DATA CHECK            09610013
+         BZ    APPABF3                  NOT DATA CHECK, BRANCH          09620013
+         LA    R13,CA24C+8              PERM AND DATA CHECK--WAS        09630013
+         CLR   R12,R13                  STOR AT CA24C                   09640013
+         BE    APPABD1                  YES, BRANCH                     09650013
+         LA    R13,CA24F+8              IF PERMANENT, WAS STOP AT       09680000
+         CLR   R12,R13                   CA24F                          09700000
+         BNE   APPABF3                  BRANCH IF NO                    09720000
+         B     APPABD1                  BRANCH IF YESS                  09760013
+APPRVNOR BR    R14                      NORMAL RETURN TO IOS      15924 09780016
+COMPARE  CLC   0(ONE,R12),0(R13)                                 S20201 09790020
+*              CHART AI  ABNORMAL END, CODE 2, CP7, WRITE CHECK         09800000
+*                                                                       10080000
+CVTPTR   EQU   16                       ADDR COMMUNICATION VECTOR TABLE 10100000
+*                                                                       10120000
+MODID    DC    C'IGG019G9'              MODULE NAME            @ZA26522 10120537
+DATE     DC    CL8'&SYSDATE'            FIX DATE               @ZA26522 10121037
+FIX      DC    C' OZ26522'              LATEST FIX             @ZA26522 10121537
+PATCH    DC    XL((*-IGG019G9)/20)'00'  ZEROED PATCH AREA        Y02072 10122002
+*                                                                       10124002
+         EJECT                                                          10130002
+RQE      IECDRQE ,                      RQE                      Y02072 10132002
+         EJECT                                                          10134002
+*                                                                       10140000
+*              DATA EVENT CONTROL BLOCK                                 10160000
+IHADECB  DSECT                                                          10180000
+         DS    0F                                                       10200000
+DECBECB  DS    CL4                      EVENT CONTROL BLOCK (ECB)       10220000
+DECBTYP1 DS    BL1                      TYPE B6 - 1 IF LENGTH IS S      10240000
+*                                            B7 - 1 IF AREA IS S        10260000
+DECBTYP2 DS    BL1                           B0 - 1 IF READ K           10280000
+*                                            B1 - 1 IF READ KX          10300000
+*                                            B2 - 1 IF READ KU          10320000
+*                                            B4 - 1 IF WRITE K          10340000
+*                                            B5 - 1 IF WRITE KN         10360000
+DECBLGTH DS    CL2                      LENGTH OF BLOCK                 10380000
+DECBDCBA DS    A                        POINTER TO DCB                  10400000
+DECBAREA DS    A                        ADDRESS OF AREA                 10420000
+DECBLOGR DS    A                        POINTER TO LOGICAL RECORD       10440000
+DECBKEY  DS    A                        POINTER TO KEY                  10460000
+DECBEXC1 DS    BL1                      EXCPTN CD B0-RECORD NOT FOUND   10480000
+*                                                 B1-RECORD LGTH CHK    10500000
+*                                                 B3-INVALID REQUEST    10520000
+*                                                 B4-UNCORRECTABLE IO   10540000
+*                                                 B5-UNREACHABLE BLOCK  10560000
+*                                                 B6-OVERFLOW RECORD    10580000
+*                                                 B7-DUPLICATE REC      10600000
+DECBEXC2 DS    BL1                                B7-READ KU            10620000
+         SPACE 4                                                        10630002
+         DCBD  DSORG=(IS)                                               10640000
+         SPACE 4                                                        10650002
+IHAIOB   IGGIOBD                                                        10660020
+         SPACE 4                                                        10710002
+IHADCW   IGGBISAM                                                       10720020
+         SPACE 4                                                        10770002
+IHADEB   IGGDEBD                                                        10820020
+IHABUF   DSECT                DYNAMIC BUFFERING VECTOR TABLE            12400000
+BUFFREED DS    A                       FREEDBUF ENTRANCE                12420000
+BUFSIO   DS    A                       APPENDAGE ENTRANCE               12440000
+BUFASYN  DS    A                       ASYNCHRONOUS ENTRANCE            12460000
+CVT      DS    0F             COMMUNICATION VECTOR TABLE                12580002
+         DS    A                                                        12600000
+CVTEXEF  DS    A                                                        12620000
+         SPACE 2                                                        12622002
+CP1     DSECT                                                           12624020
+         IGGCP1                                                         12628020
+         SPACE 2                                                        12630002
+CP2      DS    0D                                                S20201 12632020
+         IGGCP2                                                         12636020
+         SPACE 2                                                        12638002
+IHACP47  IGGCP47  OPTCD=W                                        S20201 12640020
+         END                                                            14400000

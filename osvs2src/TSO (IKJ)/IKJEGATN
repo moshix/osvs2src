@@ -1,0 +1,616 @@
+ATN      TITLE 'IKJEGATN - ATTENTION EXIT ROUTINE FOR TSO/TEST'         00100002
+IKJEGATN CSECT                                                          00200002
+         EJECT                                                          00300002
+*********************************************************************** 00400002
+*                                                                     * 00500002
+* STATUS --                                                           * 00600002
+*                                                                     * 00700002
+*    CHANGE LEVEL 00, VERSION NO.02, OS/VS2, 03/14/73                 * 00800002
+*                                                                     * 00900002
+* FUNCTION --                                                         * 01000002
+*                                                                     * 01100002
+*    THIS ROUTINE PROCESSES AN ATTENTION INTERRUPT FOR THE TEST       * 01200002
+*    COMMAND PROCESSOR.  WHEN THE OPERATING SYSTEM DETERMINES THAT    * 01300002
+*    THE TERMINAL USER HAS HIT THE TERMINAL ATTENTION KEY TO CAUSE    * 01400002
+*    AN INTERRUPT IN TEST, IT SCHEDULES THIS ROUTINE ASYNCHRONOUSLY.  * 01500002
+*                                                                     * 01600002
+*    AFTER RECEIVING CONTROL FROM THE OPERATING SYSTEM, IKJEGATN      * 01700002
+*    DETERMINES IF THE TERMINAL USER HAS ENTERED ANY INPUT IN         * 01800002
+*    RESPONSE TO THE TEST MODE MESSAGE.  IF THE INPUT BUFFER          * 01900002
+*    LENGTH IS ZERO, CONTROL IS RETURNED TO THE OPERATING SYSTEM      * 02000002
+*    WITH A RETURN CODE OF ZERO.                                      * 02100002
+*                                                                     * 02200002
+*    WHEN THE TERMINAL USER HAS ENTERED SOMETHING IN RESPONSE TO      * 02300002
+*    THE TEST MODE MESSAGE, THE PUTGET SERVICE ROUTINE IS INVOKED     * 02400002
+*    TO PUT ALL ENQUEUED SECOND LEVEL MESSAGES TO THE TERMINAL        * 02500002
+*    USER, AND TO ACQUIRE THE INPUT HE PREVIOUSLY ENTERED.  ALSO,     * 02600002
+*    THE SUBCOMMAND CHAIN POINTER (SUBCHAIN) IS ZEROED AND THE        * 02700002
+*    CURRENT INPUT BUFFER, IF ANY, IS FREED.  THE NEW INPUT           * 02800002
+*    BUFFER ACQUIRED BY PUTGET IS PLACED IN TCOMTAB (INBUF).          * 02900002
+*                                                                     * 03000002
+*    IF TEST HAS BEEN RUNNING FROM AN IN-CORE PROCEDURE, THE LIST     * 03100002
+*    DESCRIPTOR FOR THAT PROCEDURE IS DELETED FROM THE INPUT          * 03200002
+*    STACK AND INPUT IS REDIRECTED TO THE TERMINAL.  THE INPUT        * 03300002
+*    QUEUES ARE ALSO CLEARED TO ENSURE THAT THE NEXT INPUT RECEIVED   * 03400002
+*    FROM THE TERMINAL USER WILL BE SYNCHRONIZED WITH TEST            * 03500002
+*    PROCESSING.                                                      * 03600002
+*                                                                     * 03700002
+*    ADDITIONAL PROCESSING IS PERFORMED DEPENDING ON WHICH OF THE     * 03800002
+*    FOLLOWING SITUATIONS EXISTS -- (1) IS THE USER PROGRAM           * 03900002
+*    PROCESSING, (2) IS HELP PROCESSING, OR (3) IS TEST PROCESSING.   * 04000002
+*        (1)   WHEN THE USER PROGRAM IS PROCESSING, IT IS SET         * 04100002
+*              SET NON-DISPATCHABLE AND A BREAKPOINT IS INSERTED      * 04200002
+*              IN THE PROGRAM.                                        * 04300002
+*        (2)   IF HELP WAS PROCESSING, IT IS SET NON-DISPATCHABLE.    * 04400002
+*        (3)   IF TEST WAS PROCESSING, AND IN (1) AND (2) ABOVE,      * 04500002
+*              THE ATTENTION ECB IS POSTED COMPLETE WITH A X'48'      * 04600002
+*              COMPLETION CODE.                                       * 04700002
+*    IN ALL CASES, CONTROL IS RETURNED TO THE OPERATING SYSTEM        * 04800002
+*    WITH A RETURN CODE OF ZERO.                                      * 04900002
+*                                                                     * 05000002
+* ENTRY POINTS --                                                     * 05100002
+*                                                                     * 05200002
+*         IKJEGATN - ADDRESS OF THE ATTENTION EXIT ROUTINE.           * 05300002
+*                                                                     * 05400002
+* INPUT --                                                            * 05500002
+*                                                                     * 05600002
+*    REGISTER 1 POINTS TO A THREE WORD PARAMETER LIST OF THE          * 05700002
+*    FOLLOWING FORMAT --                                              * 05800002
+*                                                                     * 05900002
+*              ..........................................             * 06000002
+*              .                                        .             * 06100002
+*        +0    .  ADDRESS OF THE TAIE                   .             * 06200002
+*              ..........................................             * 06300002
+*              .                                        .             * 06400002
+*        +4    .  ADDRESS OF THE INPUT BUFFER           .             * 06500002
+*              ..........................................             * 06600002
+*              .                                        .             * 06700002
+*        +8    .  ADDRESS OF TCOMTAB                    .             * 06800002
+*              ..........................................             * 06900002
+*                                                                     * 07000002
+* OUTPUT --                                                           * 07100002
+*                                                                     * 07200002
+*    REGISTER 15 ALWAYS CONTAINS A RETURN CODE OF ZERO (0).           * 07300002
+*                                                                     * 07400002
+* EXTERNAL REFERENCES --                                              * 07500002
+*                                                                     * 07600002
+*         PUTGET   - OBTAINS INPUT FROM TERMINAL.                     * 07700002
+*         STACK    - RESETS INPUT STACK.                              * 07800002
+*                                                                     * 07900002
+*    MACROS USED --                                                   * 08000002
+*                                                                     * 08100002
+*         ESTAE    - INTERCEPT ABENDS.                                * 08150002
+*         FREEMAIN - FREE INPUT BUFFERS.                              * 08200002
+*         IKJECT   - ECT MAPPING MACRO.                               * 08300002
+*         IKJEGS9G - INTERFACE TO SVC 097.                            * 08400002
+*         IKJPGPB  - PUTGET PARAMETER BLOCK MAPPING MACRO.            * 08500002
+*         IKJRB    - RB MAPPING MACRO.                                * 08600002
+*         IKJSTPL  - STACK PARAMETER LIST MAPPING MACRO.              * 08700002
+*         IKJTAIE  - TAIE MAPPING MACRO.                              * 08800002
+*         IKJTCB   - TCB MAPPING MACRO.                               * 08900002
+*         IKJTPL   - TPL MAPPING MACRO.                               * 09000002
+*         POST     - INDICATE ATTENTION INTERRUPT PROCESSED.          * 09100002
+*         PUTGET   - INVOKE PUTGET SERVICE ROUTINE.                   * 09200002
+*         RETURN   - RESTORE REGISTERS UPON EXIT.                     * 09300002
+*         SAVE     - SAVE REGISTERS UPON ENTRY.                       * 09400002
+*         STACK    - INVOKE STACK SERVICE ROUTINE.                    * 09500002
+*         STATUS   - SET SUBTASKS NONDISPATCHABLE.                    * 09600002
+*   ***** TCLEARQ  - FLUSH TERMINAL INPUT QUEUES.**NOT ISSUED @ZA15714* 09650000
+*         TCOMTAB  - TEST COMMUNICATION AREA MAPPING MACRO.           * 09800002
+*                                                                     * 09900002
+* EXITS, NORMAL --                                                    * 10000002
+*                                                                     * 10100002
+*    RETURN VIA A BRANCH TO THE ADDRESS SPECIFIED IN REGISTER 14.     * 10200002
+*                                                                     * 10300002
+* EXITS, ERROR --                                                     * 10400002
+*                                                                     * 10500002
+*    NONE.                                                            * 10600002
+*                                                                     * 10700002
+* TABLES/WORK AREAS --                                                * 10800002
+*                                                                     * 10900002
+*    THE FOLLOWING FIELDS IN TCOMTAB ARE UPDATED --                   * 11000002
+*         INBUF                                                       * 11100002
+*         SUBCHAIN                                                    * 11200002
+*         TSTGOWCF                                                    * 11300002
+*                                                                     * 11400002
+* ATTRIBUTES --                                                       * 11500002
+*                                                                     * 11600002
+*    REFRESHABLE, ENABLED, NON-PRIVILEGED.                            * 11700002
+*                                                                     * 11800002
+* CHARACTER CODE DEPENDENCY --                                        * 11900002
+*                                                                     * 12000002
+*    THIS CSECT HAS NO CHARACTER CODE DEPENDENCIES.                   * 12100002
+*                                                                     * 12200002
+* NOTES --                                                            * 12300002
+*                                                                     * 12400002
+*    NONE.                                                            * 12500002
+* CHANGE ACTIVITY --                                                  * 12520000
+*                                                                     * 12540000
+*    APAR 0Z15714 - DO NOT ISSUE TCLEARQ AFTER ATTN HIT. MUST @ZA15714* 12560000
+*                   SUPPORT STACK OR COMD. CHAINING.          @ZA15714* 12580000
+*                                                                     * 12600002
+*********************************************************************** 12700002
+         EJECT                                                          12800002
+*********************************************************************** 12900002
+*                                                                     * 13000002
+*        GENERAL REGISTER EQUATES                                     * 13100002
+*                                                                     * 13200002
+*********************************************************************** 13300002
+ZERO     EQU   0              PARAMETER REGISTER                        13400002
+PARMREG1 EQU   1              PARAMETER REGISTER                        13500002
+WORKE    EQU   2              EVEN WORK REGISTER                        13600002
+WORKO    EQU   3              ODD WORK REGISTER                         13700002
+REG4     EQU   4              WORK REGISTERS                            13800002
+REG5     EQU   5              *                                         13900002
+REG6     EQU   6              *                                         14000002
+REG7     EQU   7              *                                         14100002
+REG8     EQU   8              ADDRESSABILITY TO WORK SPACE              14200002
+TCOMADDR EQU   9              ADDRESS OF TCOMTAB                        14300002
+REG10    EQU   10             WORK REGISTER                             14400002
+REG11    EQU   11             WORK REGISTER                             14500002
+BASEREG  EQU   12             BASE REGISTER                             14600002
+SAVEREG  EQU   13             SAVE AREA ADDRESS REGISTER                14700002
+RETREG   EQU   14             ADDRESS OF RETURN POINT                   14800002
+ADDREG   EQU   15             ADDRESS REGISTER                          14900002
+RETCODE  EQU   15             RETURN CODE REGISTER                      15000002
+ENTRYREG EQU   15             ENTRY POINT ADDRESS.                      15100002
+         EJECT                                                          15200002
+         SAVE  (14,12),,*     SAVE REGISTERS                            15300002
+         LR    BASEREG,ENTRYREG GET ENTRY POINT ADDRESS.                15400002
+         USING IKJEGATN,BASEREG ESTABLISH ADDRESSABILITY                15500002
+         USING ATNPARMS,PARMREG1 ESTABLISH ADDRESSABILITY TO            15600002
+*                             INPUT PARAMETERS                          15700002
+         L     TCOMADDR,ATNPTUSR GET POINTER TO TCOMTAB                 15800002
+         USING TCOMTAB,TCOMADDR ESTABLISH ADDRESSABILITY                15900002
+         L     REG8,WORKAREA  GET POINTER TO WORK AREA                  16000002
+         USING TSTCWORK,REG8  ESTABLISH ADDRESSABILITY TO IT            16100002
+         LA    REG8,CWORKATN  R8=ADDRESS OF ATTENTION'S WORK            16200002
+*                             AREA                                      16300002
+         DROP  REG8                                                     16400002
+         USING ATNWKARA,REG8  ESTABLISH ADDRESSABILITY TO               16500002
+*                             WORK AREA                                 16600002
+         XC    ATNWKARA(ATNLEN),ATNWKARA ZERO WORK AREA                 16700002
+         ST    SAVEREG,FOUR(,REG8)  SAVE ADDR OF CALLER'S SAVE AREA     16800002
+         ST    REG8,EIGHT(,SAVEREG) STORE ATTN'S SAVE AREA POINTER      16900002
+*                             IN CALLER'S SAVE AREA                     17000002
+         LR    SAVEREG,REG8   R13=ATTN'S SAVE AREA POINTER              17100002
+*                             AND WORK AREA POINTER                     17200002
+         DROP  REG8                                                     17300002
+         SPACE 2                                                        17400002
+         LR    REG6,PARMREG1  SAVE REG 1 OVER ESTAE CALL                17410002
+         USING ATNWKARA,SAVEREG  ADDRESSABILITY TO ATN WORK AREA        17450002
+         L     WORKO,TSTSTAE  ADDRESS OF ESTAE EXIT ROUTINE             17460002
+         ESTAE (WORKO),PARAM=LISTESTA,RECORD=YES,MF=(E,ATNESTAE)        17470002
+         SR    REG4,REG4      ZERO POST CODE.                           17500002
+         LR    PARMREG1,REG6  RESTORE REG 1                             17550002
+         L     REG5,ATNPTAIE  R5=POINTER TO TAIE                        17700002
+         DROP  PARMREG1                                                 17800002
+         USING TAIE,REG5      ESTABLISH ADDRESSABILITY TO THE           17900002
+*                             TAIE                                      18000002
+         CLI   TAIETGET,ZERO  CHECK FOR NO TERMINAL INPUT               18100002
+         BZ    ATN03010       YES, RETURN                               18200002
+         DROP  REG5                                                     18300002
+         SPACE 2                                                        18400002
+         XC    SUBCHAIN(L'SUBCHAIN),SUBCHAIN CLEAR SUBCHAIN FIELD       18500002
+         L     REG5,TSTECT    R5=ADDRESS OF ECT                         18600002
+         USING ECT,REG5       ESTABLISH ADDRESSABILITY TO IT            18700002
+         OI    ECTMSGF,ONBIT  INDICATE SECOND LEVEL MESSAGES            18800002
+*                             TO BE CLEARED                             18900002
+         DROP  REG5                                                     19000002
+         MVC   ATNPGPB(ATNPTGTL),ATNPTGT INITIALIZE PARAM BLOCK.        19100002
+         MVC   ATNIOPL(TSTCPECB-TSTUPT+L'TSTCPECB),TSTUPT SET UP        19200002
+*                             UPT, ECT, AND ECB POINTERS.               19300002
+         PUTGET PARM=ATNPGPB, ADDRESS OF PUTGET PARAMETER BLOCK        *19400002
+               MF=(E,ATNIOPL) EXECUTE FORM OF MACRO.                    19500002
+         SPACE 2                                                        19600002
+         LTR   RETCODE,RETCODE TEST RETURN CODE.                        19700002
+         BZ    ATN01010       IF ZERO, BRANCH TO CONTINUE.              19800002
+         LA    RETREG,EIGHT   CREATE CONSTANT 8.                        19900002
+         CR    RETCODE,RETREG CHECK IF AN ATTENTION OCCURRED.           20000002
+         BE    ATN01030       IF ATTENTION, BRANCH TO CLEAN-UP.         20100002
+         LA    REG4,ATNPG(,RETCODE) PUTGET ERROR CODE.                  20200002
+         B     ATN01090       BRANCH TO POST AND CLEAN-UP.              20300002
+         SPACE 2                                                        20400002
+ATN01010 EQU   *                                                        20500002
+         L     REG5,ATNPGPB+(PGPBIBUF-PGPB) INPUT BUFFER ADDRESS        20600002
+         OC    INBUF(L'INBUF),INBUF MUST INBUF BE FREED                 20700002
+         BZ    ATN01030       NO, INSERT NEW BUFFER ADDR                20800002
+         L     PARMREG1,INBUF R1=ADDR OF CORE TO BE FREED               20900002
+         LH    ZERO,ZERO(,PARMREG1) R0=LENGTH OF CORE TO BE FREED       21000002
+         O     ZERO,SUBPOOL1  INDICATE SUBPOOL NUMBER.                  21100002
+         FREEMAIN R,LV=(0),A=(1) FREE LAST INPUT BUFFER.                21200002
+         SPACE 2                                                        21300002
+ATN01030 EQU   *                                                        21400002
+         ST    REG5,INBUF     SAVE BUFFER ADDR IN TCOMTAB               21500002
+         LH    REG5,ZERO(,REG5) GET LENGTH OF INPUT LINE.               21600002
+         LA    WORKO,FOUR     CREATE CONSTANT FOUR.                     21700002
+         CR    REG5,WORKO     CHECK FOR NULL LINE INPUT.                21800002
+         BE    ATN03010       IF NULL LINE, RETURN.                     21900002
+         TM    TSTFLGS4,TSTA  Q.RUNNING FROM TERMINAL                   22000002
+         BO    ATN01050       YES.DONT FLUSH THE STACK.                 22100002
+         MVC   ATNSTCKL(ATNSTLEN),ATNSTCK MOVE L FORM OF STACK MACRO    22200002
+*                             TO WORK AREA                              22300002
+         STACK PARM=ATNSTCKL, ADDRESS OF STACK PARAMETER BLOCK         *22400002
+               MF=(E,ATNIOPL) EXECUTE FORM OF MACRO.                    22500002
+         SPACE 2                                                        22600002
+         LTR   RETCODE,RETCODE TEST RETURN CODE.                        22700002
+         BZ    ATN01050       IF ZERO, BRANCH TO CONTINUE.              22800002
+         LA    REG4,ATNST(,RETCODE) STACK ERROR CODE.                   22900002
+         B     ATN01090       BRANCH TO POST AND CLEAN-UP.              23000002
+         SPACE 2                                                        23100002
+ATN01050 EQU   *                                                        23200002
+*        TCLEARQ IS DELETED.....                               @ZA15714 23250000
+         SPACE 2                                                        23900002
+ATN01070 EQU   *                                                        24000002
+         TM    TSTFLGS3,TSTHELP WAS HELP RUNNING                        24100002
+         BO    ATN02010       YES. STOP IT                              24200002
+         L     REG5,ECBTST    R5=ADDRESS OF TEST'S ECB                  24300002
+         TM    ZERO(REG5),WAITBIT IS TEST WAITING                       24400002
+         BO    ATN02030       YES, PP MODE - SET BREAKPOINT             24500002
+         SPACE 2                                                        24600002
+ATN01090 EQU   *                                                        24700002
+         L     PARMREG1,ECBTMPA GET ADDR OF ATTENTION ECB               24800002
+         TM    ZERO(PARMREG1),ATNSET HAS ATTENTION BEEN SET             24900002
+         BO    ATN03010       YES, RETURN TO SYSTEM                     25000002
+         O     REG4,POSTCODE  R0=POST CODE                              25100002
+         POST  (1),(REG4)     POST THE ATTENTION ECB                    25200002
+         B     ATN03010       RETURN TO SYSTEM                          25300002
+         SPACE 2                                                        25400002
+ATN02010 EQU   *                                                        25500002
+         STATUS STOP,TCB=TSTHTCB STOP HELP SUBTASK.                     25600002
+****                                                                    25700002
+****     RETURN CODE CHECK IGNORED -- EITHER TCB WAS STOPPED            25800002
+****     SUCCESSFULLY OR TCB WAS NOT A SUBTASK OF TSO/TEST.             25900002
+****                                                                    26000002
+         B     ATN01090       CONTINUE.                                 26100002
+         SPACE 2                                                        26200002
+ATN02030 EQU   *                                                        26300002
+         OC    TSTGO(L'TSTGO),TSTGO HAS A BREAKPOINT BEEN SET           26400002
+         BNZ   ATN03010       YES, RETURN                               26500002
+         STATUS STOP          STOP ALL SUBTASKS                         26600002
+****                                                                    26700002
+****     RETURN CODE CHECK IGNORED -- EITHER TCB WAS STOPPED            26800002
+****     SUCCESSFULLY OR TCB WAS NOT A SUBTASK OF TSO/TEST.             26900002
+****                                                                    27000002
+         L     WORKE,TPLPTR   OBTAIN ADDRESS OF TPL.                    27100002
+         USING TPL,WORKE      ADDRESSABILITY TO TPL.                    27200002
+         L     WORKE,TPLCTCB  OBTAIN ADDRESS OF TEST'S DAUGHTER TCB     27300002
+         DROP  WORKE                                                    27400002
+         USING TCB,WORKE      ADDRESSABILITY TO TCB.                    27500002
+         L     WORKO,TCBRBP   GET POINTER TO RB QUEUE                   27600002
+         USING RBSECT,WORKO   ADDRESSABILITY TO RB.                     27700002
+         SPACE 2                                                        27800002
+ATN02050 EQU   *                                                        27900002
+         TM    RBSTAB1,RBFTSIRB IS RB A PRB OR AN IRB                   28000002
+         BZ    ATN02090       YES, CHECK FOR PROBLEM                    28100002
+*                             PROGRAM STATE                             28200002
+         SPACE 2                                                        28300002
+ATN02070 EQU   *                                                        28400002
+         L     WORKO,RBLINK   GET ADDR OF NEXT RB                       28500002
+         B     ATN02050       CHECK FOR PRB OR IRB                      28600002
+         SPACE 2                                                        28700002
+ATN02090 EQU   *                                                        28800002
+         TM    RBOPSW+1,PSWPBIT IS PROGRAM STATE BIT ON                 28900002
+         BZ    ATN02070       NO, TRY NEXT RB                           29000002
+         TM    RBOPSW+1,PSWKEY IS THE KEY ZERO                          29100002
+         BZ    ATN02070       NO, TRY NEXT RB                           29200002
+         MVC   TSTGOPSW(L'TSTGOPSW),RBOPSW+4 MOVE IC TO TSTGO           29300002
+         MVC   TSTGOWCF(L'TSTGOWCF),RBWCF MOVE WAIT COUNT TO TSTGO      29400002
+         SPACE 2                                                        29500002
+         IKJEGS9G WCF,TCBADDR=(WORKO),MF=(E,ATNSVC) TURN OFF WAIT      *29600002
+                              ON IN ACTIVE IRB OR PRB.                  29700002
+         SPACE 2                                                        29800002
+         IKJEGS9G OPSW,TCBADDR=(WORKO),VALUE=TSTSVC,MF=(E,ATNSVC)      *29900002
+                              CHANGE RESUME ADDRESS.                    30000002
+         SPACE 2                                                        30100002
+         STATUS START,TCB=(WORKE) START TEST'S DAUGHTER TASK            30200002
+****                                                                    30300002
+****     RETURN CODE CHECK IGNORED -- EITHER TCB WAS STOPPED            30400002
+****     SUCCESSFULLY OR TCB WAS NOT A SUBTASK OF TSO/TEST.             30500002
+****                                                                    30600002
+         SPACE 2                                                        30700002
+ATN03010 EQU   *                                                        30800002
+         ESTAE 0              REMOVE ESTAE REQUEST                      30850002
+ATN03020 EQU   *                                                        30860002
+         NI    TSTFLGS4,HEXFF-TSTRERTN  SHUT OFF RETRY FLAG             30870002
+         XR    RETCODE,RETCODE SET RETURN CODE TO ZERO                  30900002
+         L     SAVEREG,FOUR(,SAVEREG) RESTORE ADDR OF CALLER'S SAVE     31000002
+*                             AREA                                      31100002
+         RETURN (14,12),,RC=(15) RESTORE REGISTERS AND RETURN           31200002
+         EJECT                                                          31300002
+*********************************************************************** 31400002
+*                                                                     * 31500002
+*        CONSTANTS, EQUATES, AND OTHER AREAS.                         * 31600002
+*                                                                     * 31700002
+*********************************************************************** 31800002
+ATNSTCK  STACK DELETE=ALL,    RESET THE INPUT STACK                    *31900002
+               MF=L           LIST FORM OF MACRO                        32000002
+ATNSTLEN EQU   *-ATNSTCK      LENGTH OF MACRO                           32100002
+ATNPTGT  PUTGET OUTPUT=(IKJEGMMD,SINGLE,ATTN), MODE MESSAGE ADDRESS    *32200002
+               TERMPUT=(EDIT,WAIT,NOHOLD,NOBREAK), OUTPUT OPTIONS      *32300002
+               TERMGET=(EDIT,WAIT), INPUT OPTIONS                      *32400002
+               MF=L           LIST FORM OF MACRO                        32500002
+ATNPTGTL EQU   *-ATNPTGT      PARAMETER BLOCK LENGTH.                   32600002
+         DS    0F             ALIGN ON WORD BOUNDARY.                   32700002
+SUBPOOL1 DC    X'01000000'    SPECIFIES SUBPOOL 1                       32800002
+POSTCODE DC    X'08000000'    POST CODE FOR ATTENTION ECB               32900002
+CONSTANT DC    50C'Z'         ZAP AREA                                  32950002
+ONE      EQU   1              NUMBER 1                                  33000002
+FOUR     EQU   4              NUMBER 4                                  33100002
+EIGHT    EQU   8              NUMBER 8                                  33200002
+TWELVE   EQU   12             NUMBER 12                                 33300002
+RETRY    EQU   0              SIGNIFIES NO RETRY ROUTINE                33350002
+L1       EQU   1              LENGTH 1                                  33400002
+L3       EQU   3              LENGTH 3                                  33500002
+ONBIT    EQU   X'80'          HIGH ORDER BIT ON                         33600002
+PSWPBIT  EQU   X'01'          SIGNIFIES P BIT ON IN PSW                 33700002
+PSWKEY   EQU   X'F0'          BIT SETTING TO TEST FOR KEY               33800002
+*                             ZERO                                      33900002
+WAITBIT  EQU   X'80'          ECB WAITING                               34000002
+ATNSET   EQU   X'40'          ATTENTION BIT                             34100002
+ATNPG    EQU   X'000100'      PUTGET ERROR CODE.                        34200002
+ATNST    EQU   X'000200'      STACK ERROR CODE.                         34300002
+ATNTQ    EQU   X'000400'      TCLEARQ ERROR CODE.                       34400002
+HEXFF    EQU   X'FF'          HEX FF                                    34450002
+LISTESTA IKJEGSPL MODNM=IKJEGATN,ABNTB=ABENDTB,RTRY=RETRY,             *34460002
+               TNM=ATTENTION  ESTAE PARAMETER LIST                      34470002
+         SPACE 1                                                        34480002
+ABENDTB  DS    0F             ABEND TABLE FOR IKJEGSTA                  34490002
+         DC    X'FF'          END OF TABLE FLAG                         34492002
+         TITLE 'IKJEGATM - MESSAGE CONTROL SECTION FOR IKJEGATN'        34500002
+IKJEGATM CSECT                                                          34600002
+         ENTRY IKJEGMMD       OUTPUT LINE DESCRIPTOR FOR MESSAGE.       34700002
+         ENTRY IKJEGMMG                                                 34800002
+         ENTRY IKJEGMMT                                                 34900002
+IKJEGMMD DC    A(1)           INDICATE ONE SEGMENT.                     35000002
+         DC    A(IKJEGMMG)    ADDRESS OF MODE MESSAGE.                  35100002
+IKJEGMMG DC    AL2(ATMMODEX-IKJEGMMG) LENGTH OF MODE MESSAGE.           35200002
+         DC    AL2(0)         OFFSET TO MODE MESSAGE.                   35300002
+         DC    C' '           LEADING BLANK FOR PUTGET.                 35400002
+IKJEGMMT DC    CL4'TEST'      TEST MODE MESSAGE.                        35500002
+ATMMODEX EQU   *              END OF MESSAGE.                           35600002
+         EJECT                                                          35700002
+         IKJPGPB                                                        35800002
+         EJECT                                                          35900002
+         TCOMTAB                                                        36000002
+         EJECT                                                          36100002
+         IKJTPL                                                         36200002
+         EJECT                                                          36300002
+         IKJECT                                                         36400002
+         EJECT                                                          36500002
+         IKJSTPL                                                        36600002
+         EJECT                                                          36700002
+*********************************************************************** 36800002
+*                                                                     * 36900002
+*        THIS DSECT DESCRIBES THE WORKAREA USED BY IKJEGATN.          * 37000002
+*                                                                     * 37100002
+*********************************************************************** 37200002
+ATNWKARA DSECT                ATTENTION'S WORK AREA                     37300002
+ATNSVARA DS    18F            SAVE AREA                                 37400002
+ATNIOPL  DS    4F             IO SERVICE ROUTINE PARAMETER LIST         37500002
+ATNSTCKL DS    2F             STACK PARAMETER LIST                      37600002
+         ORG   ATNSTCKL       REUSE WORKAREA                            37650002
+ATNESTAE DS    4F             PARAMETER LIST FOR ESTAE                  37660002
+         ORG   ATNSTCKL       REUSE WORKAREA                            37700002
+ATNPGPB  DS    4F             PUTGET PARAMETER BLOCK                    37800002
+         ORG   ATNSTCKL       REUSE WORKAREA                            37900002
+ATNSVC   DS    3F             PARAMETER LIST FOR BREAKPOINT SVC         38000002
+ATNLEN   EQU   *-ATNWKARA     WORK AREA LENGTH                          38100002
+         EJECT                                                          38200002
+         IKJTAIE                                                        38300002
+         EJECT                                                          38400002
+         IKJRB                                                          38500002
+         EJECT                                                          38600002
+         IKJTCB                                                         38700002
+         EJECT                                                          38800002
+**********************************************************************  38900002
+*                                                                     * 39000002
+*        THIS DSECT DESCRIBES THE INPUT PARAMETER LIST TO IKJEGATN    * 39100002
+*                                                                     * 39200002
+**********************************************************************  39300002
+ATNPARMS DSECT                DSECT FOR INPUT PARAMETERS                39400002
+ATNPTAIE DS    A              ADDR OF TAIE                              39500002
+ATNPTIPT DS    A              ADDR OF INPUT BUFFER                      39600002
+ATNPTUSR DS    A              USER INFORMATION - ADDRESS                39700002
+*                             OF TCOMTAB                                39800002
+         TITLE 'IKJEGBLD - ADDRESS STRING CONSTRUCTION SERVICE ROUTINE' 39900002
+* REGISTER EQUATES                                                      40000002
+R0       EQU   0              REGISTER 0                                40100002
+R1       EQU   1              REGISTER 1                                40200002
+R2       EQU   2              REGISTER 2                                40300002
+R3       EQU   3              REGISTER 3                                40400002
+R4       EQU   4              REGISTER 4                                40500002
+R5       EQU   5              REGISTER 5                                40600002
+R6       EQU   6              REGISTER 6                                40700002
+R7       EQU   7              REGISTER 7                                40800002
+R8       EQU   8              REGISTER 8                                40900002
+R9       EQU   9              REGISTER 9                                41000002
+R10      EQU   10             REGISTER 10                               41100002
+R11      EQU   11             REGISTER 11                               41200002
+R12      EQU   12             REGISTER 12                               41300002
+R13      EQU   13             REGISTER 13                               41400002
+R14      EQU   14             REGISTER 14                               41500002
+R15      EQU   15             REGISTER 15                               41600002
+         SPACE                                                          41700002
+* OTHER EQUATES                                                         41800002
+REGSYM   EQU   C'R'           GENERAL REGISTER SYMBOL                   41900002
+DECSYM   EQU   C'N'           SYMBOL FOR DECIMAL VALUE                  42000002
+REGD     EQU   C'D'           SYMBOL FOR DOUBLE PRECISION FLOATING      42100002
+*                                POINT REGISTER                         42200002
+REGE     EQU   C'E'           SYMBOL FOR SINGLE PRECISION FLOATING      42300002
+*                                POINT REGISTER                         42400002
+DOUBLE   EQU   X'10'          FLAG FOR DOUBLE PRECISION                 42500002
+SINGLE   EQU   X'08'          FLAG FOR SINGLE PRECISION                 42600002
+DECVAL   EQU   X'04'          DECIMAL EXPRESSION VALUE                  42700002
+PERCENT  EQU   C'%'           PERCENT SIGN                              42800002
+EXPFLGS5 EQU   8              OFFSET INTO EXPRESSION PDE FOR FLAGS      42900002
+NINE     EQU   9              NUMBER 9                                  43000002
+TEN      EQU   10             NUMBER 10                                 43100002
+THIRTEEN EQU   13             NUMBER 13                                 43200002
+TWENTY8  EQU   28             NUMBER 28                                 43300002
+MAXLEN   EQU   100            MAXIMUM LENGTH OF STRING                  43400002
+ADDRLEN  EQU   26             MAXIMUM LENGTH OF STRING FOR MSG          43500002
+         SPACE                                                          43600002
+IKJEGBLD CSECT                THIS CSECT BUILDS AN ADDRESS STRING TO A  43700002
+* MAXIMUM LENGTH OF 100 BYTES.  AS INPUT IT REQUIRES A POINTER TO THE   43800002
+* ADDRESS PDE IN REGISTER ZERO AND A POINTER IN REGISTER ONE TO THE     43900002
+* AREA IN WHICH THE STRING IS TO BE BUILT.  AT EXIT REGISTER ZERO WILL  44000002
+* CONTAIN THE NUMBER OF BYTES CONSTRUCTED AND REGISTER ONE WILL CONTAIN 44100002
+* A POINTER TO THE BYTE FOLLOWING THE LAST ONE IN THE ADDRESS STRING.   44200002
+* IF ON INPUT REGISTER 1 IS NEGATIVE IT WILL BE KNOWN THAT THE MAXIMUM  44300002
+* LENGTH ALLOWED FOR THE STRING IS 26 BYTES                             44400002
+         SPACE                                                          44500002
+         SAVE  (14,12),,IKJEGBLD SAVE CALLER'S REGISTERS                44600002
+         LR    R12,R15        ESTABLISH ADDRESSABILITY FOR THIS         44700002
+         USING IKJEGBLD,R12      CSECT                                  44800002
+         LR    R10,R0         R10=POINTER TO ADDRESS PDE                44900002
+         USING IKJPARMA,R10   ESTABLISH PDE ADDRESSABILITY              45000002
+         LTR   R1,R1          IS THE MAXIMUM STRING LENGTH 26 BYTES     45100002
+         BNM   RESET          NO, SET MAXIMUM TO 100                    45200002
+         LCR   R1,R1          LOAD COMPLEMENT OF REGISTER ONE           45250002
+         LA    R9,ADDRLEN     SET MAXIMUM TO 26                         45300002
+CLEAR    EQU   *              CLEAR ACCUMULATOR                         45400002
+         SR    R4,R4          CLEAR BYTE ACCUMULATOR                    45500002
+         TM    PDEFLG1,LDNAMFLG Q.IS LOAD NAME SPECIFIED.               45600002
+         BO    LOADYES        YES, PICK UP EVERYTHING.                  45700002
+         TM    PDEFLG2,CTNAMFLG Q.IS ENTRYNAME PRESENT.                 45800002
+         BO    CSECTYES       YES, PICK UP ENTRY-ADDRESS.               45900002
+         B     ADDRONLY       NO, PICK UP ADDR ONLY.                    46000002
+         SPACE                                                          46100002
+RESET    EQU   *              SET MAXIMUM LENGTH TO 100                 46200002
+         LA    R9,MAXLEN      SET MAXIMUM TO 100                        46400002
+         B     CLEAR          BEGIN BUILDING ADDRESS STRING             46500002
+LOADYES  EQU   *              LOADNAME GIVEN                            46600002
+         L     R7,PDELDNAM    R7=ADDR OF LOAD NAME.                     46700002
+         LH    R6,PDELEN1     R6=LOAD NAME LENGTH.                      46800002
+         BAL   R11,ADMOVE     MOVE LOAD NAME AND BUMP ACCUMULATORS.     46900002
+         SPACE                                                          47000002
+CSECTYES EQU   *              CSECTNAME GIVEN                           47100002
+         L     R7,PDECTNAM    R7=ADDR OF CSECT NAME.                    47200002
+         LH    R6,PDELEN2     R6=CSECT NAME LENGTH.                     47300002
+         BCTR  R7,ZERO        PICK UP PRECEDING PERIOD.                 47400002
+         LA    R6,ONE(R6)     *                                         47500002
+         TM    PDEFLG3,AFLG   Q.ANY ADDRESS.                            47600002
+         BZ    MOVE           NO, MOVE CSECT NAME.                      47700002
+         LA    R6,ONE(R6)     YES, PICK UP TRAILING PERIOD.             47800002
+         SPACE                                                          47900002
+MOVE     EQU   *              SAVE CSECT NAME                           48000002
+         BAL   R11,ADMOVE     MOVE CSECT NAME & ETC.                    48100002
+         SPACE                                                          48200002
+ADDRONLY EQU   *              CHECK FOR ADDRESS STRING                  48300002
+         TM    PDEFLG3,AFLG   Q.ANY ADDR.                               48400002
+         BZ    GOBACK         NO, RETURN TO CALLER                      48500002
+         L     R7,PDEADRPT    R7=ADDR OF ADDRESS.                       48600002
+         LA    R5,PDEADRPT    R5=ADDR OF POINTER TO ADDRESS             48700002
+         LH    R6,PDELEN3     R6=ADDRESS STRING LENGTH.                 48800002
+         TM    PDEFLG4,ABSCOMPL Q.IS IT ABSOLUTE                        48900002
+         BM    RELCHK         NO, CHECK FOR RELATIVE.                   49000002
+         B     BUMP           YES, PICK UP PERIOD.                      49100002
+         SPACE                                                          49200002
+RELCHK   EQU   *              TEST FOR RELATIVE ADDRESS                 49300002
+         TM    PDEFLG4,RELADDR Q.IS IT A RELATIVE.                      49400002
+         BZ    NEITHER        NO, MOVE STRING.                          49500002
+         BCTR  R7,ZERO        YES, PICK UP PLUS SIGN.                   49600002
+         SPACE                                                          49700002
+BUMP     EQU   *              INCREMENT LENGTH COUNTER                  49800002
+         LA    R6,ONE(R6)     BUMP FOR PUNCTUATION.                     49900002
+         SPACE                                                          50000002
+NEITHER  EQU   *              ADDR IS NEITHER ABSOLUTE NOR RELATIVE     50100002
+         BAL   R11,ADMOVE     MOVE ADDRESS STRING & ETC.                50200002
+         TM    PDEFLG4,GENR   IS ADDRESS GENERAL REGISTER TYPE          50300002
+         BZ    TRYD           NO, TRY FLOATING POINT REGISTER           50400002
+         MVI   ZERO(R1),REGSYM MOVE IN REGISTER SYMBOL                  50500002
+         SPACE                                                          50600002
+BUMPIT   EQU   *              BUMP POINTER AND ACCUMULATOR              50700002
+         LA    R1,ONE(R1)     BUMP THE SAVE AREA POINTER                50800002
+         LA    R4,ONE(R4)     BUMP THE ACCUMULATOR                      50900002
+         SPACE                                                          51000002
+GOIND    EQU   *              HANDLE PERCENT SIGNS                      51100002
+         BAL   R11,INDIRECT   WHISTLE THROUGH PERCENT SIGNS.            51200002
+         SPACE                                                          51300002
+ADDRLOOP EQU   *              HANDLE ADDRESS EXPRESSION                 51400002
+         OC    THIRTEEN(L3,R5),THIRTEEN(R5) IS THERE AN                 51500002
+*                                EXPRESSION PDE                         51600002
+         BZ    GOBACK         NO, RETURN TO CALLER                      51700002
+         MVC   ZERO(L1,R1),NINE(R5) MOVE SIGN                           51800002
+         L     R5,TWELVE(R5)  R5=ADDR OF NEXT EXPRESSION PDE            51900002
+         L     R7,ZERO(R5)    R7=ADDR OF EXPRESSION STRING.             52000002
+         LH    R6,FOUR(R5)    R6=EXPRESSION LENGTH.                     52100002
+         LA    R1,ONE(R1)     BUMP SAVE POINTER.                        52200002
+         LA    R4,ONE(R4)     BUMP THE ACCUMULATOR.                     52300002
+         BAL   R11,ADMOVE     MOVE EXPRESSION.                          52400002
+         TM    EXPFLGS5(R5),DECVAL IS VALUE DECIMAL                     52500002
+         BZ    TRYIND         NO, CHECK FOR PERCENT SIGNS               52600002
+         MVI   ZERO(R1),DECSYM MOVE IN SYMBOL FOR DECIMAL               52700002
+         LA    R1,ONE(R1)     BUMP SAVE POINTER                         52800002
+         LA    R4,ONE(R4)     BUMP THE ACCUMULATOR                      52900002
+         SPACE                                                          53000002
+TRYIND   EQU   *              HANDLE PERCENT SIGNS                      53100002
+         BAL   R11,INDIRECT   ZING THROUGH PERCENT SIGNS.               53200002
+         B     ADDRLOOP       CHECK FOR MORE EXPRESSIONS.               53300002
+         SPACE                                                          53400002
+ADMOVE   EQU   *              SAVE PORTION OF ADDRESS                   53500002
+         LR    R8,R4          R8=TOTAL LENGTH SO FAR                    53600002
+         AR    R8,R6          R8=POSSIBLE LENGTH                        53700002
+         CR    R8,R9          WILL LENGTH BE TOO GREAT                  53800002
+         BH    DECR           YES, DECREMENT COUNT FOR MOVE             53900002
+         AR    R4,R6          BUMP THE ACCUMULATOR.                     54000002
+         LTR   R6,R6          DONT DECREMENT IF SIX ZERO                54050002
+         BZ    GOBACK         IF ZERO, LET'S GET OUT OF HERE            54060002
+         BCTR  R6,ZERO        DECREMENT R6 FOR EXECUTE.                 54100002
+         EX    R6,STRMVC      MOVE THE STRING.                          54200002
+         LA    R1,ONE(R6,R1)  BUMP THE SAVE AREA POINTER.               54300002
+         CR    R8,R9          IS LENGTH EQUAL TO MAXIMUM                54400002
+         BE    GOBACK         YES, RETURN TO CALLER                     54500002
+         BR    R11            NO, KEEP GOING                            54600002
+         SPACE                                                          54700002
+STRMVC   MVC   ZERO(ONE,R1),ZERO(R7) MOVE STRING EXECUTED MVC.          54800002
+         SPACE                                                          54900002
+INDIRECT EQU   *              CHECK FOR INDIRECT ADDRESS                55000002
+         LH    R14,TEN(R5)    R14=INDIRECT COUNT.                       55100002
+         LTR   R14,R14        Q.ANY COUNT SPECIFIED.                    55200002
+         BCR   EIGHT,R11      NO, RETURN TO CALLER.                     55300002
+         SPACE                                                          55400002
+PCLOOP   EQU   *              SAVE PERCENT SIGN                         55500002
+         LR    R8,R4          R8=ACCUMULATED LENGTH COUNT               55600002
+         LA    R8,ONE(R8)     BUMP TEST ACCUMULATOR                     55700002
+         CR    R8,R9          IS COUNT GREATER THAN MAXIMUM             55800002
+         BH    GOBACK         YES, RETURN TO CALLER                     55900002
+         MVI   ZERO(R1),PERCENT MOVE IN A PERCENT SIGN.                 56000002
+         SPACE                                                          56100002
+         LA    R1,ONE(R1)     BUMP SAVE AREA POINTER.                   56200002
+         LA    R4,ONE(R4)     BUMP ACCUMULATOR.                         56300002
+         BCT   R14,PCLOOP     MOVE 'EM ALL.                             56400002
+         CR    R8,R9          IS COUNT EQUAL TO MAXIMUM                 56500002
+         BE    GOBACK         YES, ALL THROUGH                          56600002
+         BR    R11            NO, KEEP GOING                            56700002
+         SPACE                                                          56800002
+DECR     EQU   *              DECREMENT COUNT FOR MOVE                  56900002
+         BCTR  R6,ZERO        SUBTRACT ONE                              57000002
+         B     ADMOVE         TRY AGAIN                                 57100002
+         SPACE                                                          57200002
+GOBACK   EQU   *              STRING IS BUILT                           57300002
+         LR    R0,R4          R0=TOTAL LENGTH OF STRING BUILT           57400002
+         LM    R14,R15,TWELVE(R13) RESTORE R14-R15                      57500002
+         LM    R2,R12,TWENTY8(R13) RESTORE R2-R12                       57600002
+         BR    R14            RETURN TO CALLER                          57700002
+         SPACE                                                          57800002
+TRYD     EQU   *              IS ADDRESS DOUBLE PRECISION FLOATING      57900002
+*                                POINT REGISTER                         58000002
+         TM    PDEFLG4,DOUBLE IS FLAG ON                                58100002
+         BZ    TRYE           NO, TRY SINGLE PRECISION                  58200002
+         MVI   ZERO(R1),REGD  MOVE IN REGISTER SYMBOL                   58300002
+         B     BUMPIT         BRANCH TO BUMP COUNTER                    58400002
+         SPACE                                                          58500002
+TRYE     EQU   *              IS ADDRESS SINGLE PRECISION FLOATING      58600002
+*                                POINT REGISTER                         58700002
+         TM    PDEFLG4,SINGLE IS FLAG ON                                58800002
+         BZ    GOIND          NO, CHECK FOR PERCENT SIGNS               58900002
+         MVI   ZERO(R1),REGE  MOVE IN REGISTER SYMBOL                   59000002
+         B     BUMPIT         BRANCH TO BUMP COUNTER                    59100002
+         SPACE                                                          59200002
+         SPACE                                                          59300002
+         TSTCWORK             DSECT FOR WORK AREA                       59400002
+         SPACE                                                          59500002
+         IKJPARMA             DSECT FOR ADDRESS PDE                     59600002
+         END                                                            59700002

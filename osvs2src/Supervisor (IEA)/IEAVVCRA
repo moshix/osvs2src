@@ -1,0 +1,464 @@
+         TITLE 'IEAVVCRA -- CONSOLE ATTENTION INTERRUPT HANDLER' Y02752 00050002
+*********************************************************************** 00054002
+*MODULE NAME= IEAVVCRA                                                  00058002
+*                                                                       00062002
+*DESCRIPTIVE NAME= CONSOLE ATTENTION PROCESSOR                          00066002
+*                                                                       00070002
+*COPYRIGHT= N/A                                                         00074002
+*                                                                       00078002
+*STATUS= OS/VS2 MVS 3033 PROCESSOR SUPPORT(SCP)                @G51APSS 00080051
+*                                                                       00086002
+*FUNCTION= RECEIVES CONTROL WHEN A CONSOLE ATTENTION IS DETECTED BY IOS 00090002
+*          TO FLAG THE APPROPIATE CONSOLE AND POST COMM TASK.           00100002
+*                                                                       00105002
+*  OPERATION= THIS MODULE RECEIVES CONTROL FROM IOS POST STATUS WHEN    00110002
+*             IOS  HAS RECEIVED AN ATTENTION FROM ONE OF THE SYSTEM     00115002
+*             CONSOLES. CONTROL IS UNDER AN SRB IN SUPERVISOR STATE     00120002
+*             AND KEY WITH THE LOCAL LOCK HELD. THE ROUTINE FIRST       00125002
+*             SAVES THE REGISTERS IN THE LOCAL LOCK SAVE AREA, THEN     00130002
+*             OBTAINS THE CMS LOCK. INFORMATION ABOUT THE INTERRUPT     00135002
+*             IS PASSED IN AN IOSB POINTED TO BY REGISTER 1 AT ENTRY.   00140002
+*             THE UCB ADDRESS IS RETRIEVED FROM THE IOSB AND A          00145002
+*             SEARCH IS MADE THRU THE UCME'S TO FIND ONE WITH THE SAME  00150002
+*             UCB ADDRESS.                                              00155002
+*                                                                       00160002
+*             IF ONE IS FOUND, A CHECK IS MADE TO SEE IF AN ERP         00165002
+*             IS IN CONTROL (IOSERR IN IOSFLA OF THE IOSB) AND          00170002
+*             IF THE CORRESPONDING CONSOLE IS A CARD READER. IF         00175002
+*             BOTH THESE CONDITIONS HOLD, THE ATTENTION IS IGNORED.     00180002
+*             OTHERWISE, THE CONSOLE IS TESTED TO SEE THAT IT           00185002
+*             SUPPORTS ATTENTIONS. IF NOT THEN THE ATTENTION   @G51APSS 00187051
+*             IS IGNORED. OTHERWISE A CHECK IS MADE TO SEE IF  @G51APSS 00190051
+*             A NO-CONSOLES CONDITION EXISTS. IF NOT THEN THE  @G51APSS 00190851
+*             DEVICE IS CHECKED TO SEE IF IT IS ACTIVE AND     @G51APSS 00191651
+*             DOESN'T HAVE CLOSE PENDING ON. IF SO THEN THE    @G51APSS 00192451
+*             UCME IS MARKED WITH ATTENTION PENDING(UCMAF).    @G51APSS 00193251
+*             IF A UNIT CHECK OCCURED WITH AN ATTENTION THEN   @G51APSS 00240651
+*             THE SENSE BYTES IN THE IOSB(IOSSNS) ARE COPIED   @G51APSS 00240851
+*             INTO THE UCB(UCBSNS). COMMTASK IS THEN POSTED.   @G51APSS 00241051
+*                                                              @G51APSS 00242151
+*             IF THE DEVICE DID NOT SUPPORT ATTENTIONS OR IT   @G51APSS 00242451
+*             WAS NOT ACTIVE OR CLOSE PENDING WAS ON THEN THE  @G51APSS 00242751
+*             SEARCH FOR A MATCHING UCB ADDRESS CONTINUES.     @G51APSS 00243051
+*                                                              @G51APSS 00243151
+*             IF A NO-CONSOLES CONDITON DID EXIST (UCMSYSE=1)  @G51APSS 00243251
+*             AND A MASTER CONSOLE CANDIDATE WAS NOT CHOSEN    @G51APSS 00243351
+*             (UCMFATCN=0) THEN THIS DEVICE IS MADE TO APPEAR  @G51APSS 00243651
+*             AS IF A VARY CONSOLE WAS ISSUED FOR IT.          @G51APSS 00243951
+*                1 ATTENTION PENDING IS SET OFF    (UCMAF)     @G51APSS 00244251
+*                2 OPEN PENDING IS SET ON          (UCMTA)     @G51APSS 00244551
+*                3 DEVICE ACTIVE IS SET ON         (UCMUF)     @G51APSS 00244851
+*                4 CLOSE PENDING IS SET OFF        (UCMCF)     @G51APSS 00245151
+*                5 CHANGING STATUS OUT OF CONSOLE              @G51APSS 00245451
+*                  STATE IS SET OFF                (UCBDADI)   @G51APSS 00245751
+*                6 STATUS CHANGING TO OFFLINE                  @G51APSS 00246051
+*                  IS SET OFF                      (UCBCHGS)   @G51APSS 00246351
+*                7 OFFLINE BY VARY IS SET OFF      (UCBVORSN)  @G51APSS 00246651
+*                8 DEVICE ONLINE IS SET ON         (UCBONLI)   @G51APSS 00246951
+*                9 ACTIVE CONSOLE IS SET ON        (UCBSYSR)   @G51APSS 00247251
+*             IF THE DEVICE IS A COMPOSITE THEN BOTH THE       @G51APSS 00247551
+*             INPUT AND OUTPUT HALFS ARE MARKED. THE DEVICES   @G51APSS 00247851
+*             UCME ADDRESS OR THE INPUT HALFS UCME ADDRESS     @G51APSS 00248151
+*             IS SAVED IN THE UCM(UCMFATCN).                   @G51APSS 00249751
+*                                                              @G51APSS 00250251
+*             IF A NO-CONSOLES CONDITION DOES EXIST AND A      @G51APSS 00250751
+*             CANDIDATE HAS ALREADY BEEN CHOSEN THEN THE       @G51APSS 00251251
+*             ATTENTION IS IGNORED.                            @G51APSS 00251751
+*                                                              @G51APSS 00252251
+*             COMMTASKS ATTENTION ECB IS NOT POSTED IF A       @G51APSS 00252351
+*             NO-CONSOLES CONDITION EXISTS.                    @G51APSS 00252451
+*                                                                       00252551
+*NOTES                                                                  00252751
+*  DEPENDENCIES= LOCAL LOCK MUST BE HELD AT ENTRY                       00253251
+*                                                                       00254551
+*    CHARACTER-CODE DEPENDENCIES= NONE                                  00255002
+*                                                                       00260002
+*  RESTRICTIONS= MUST BE GIVEN CONTROL IN THE MASTER SCHEDULERS         00265002
+*                ADDRESS SPACE (SAME ADDRESS SPACE AS COMM TASK).       00270002
+*                                                                       00275002
+*  REGISTER-CONVENTIONS= REG EQUATES                                    00280002
+*                                                                       00285002
+*  PATCH-LABEL= N/A                                                     00290002
+*                                                                       00295002
+*MODULE TYPE= PROCEDURE                                                 00300002
+*                                                                       00305002
+*  PROCESSOR= ASSEM                                                     00310002
+*                                                                       00315002
+*  MODULE SIZE= X'206' BYTES                                   @G51APSS 00317051
+*                                                                       00325002
+*  ATTRIBUTES= REENTRANT, NUCLEUS, SUPERVISOR STATE, KEY ZERO           00330002
+*                                                                       00335002
+*ENTRY POINT= IEEBA1                                                    00340002
+*                                                                       00345002
+*  CONDITIONS= LOCAL LOCK HELD, KEY ZERO, SUPERVISOR STATE, MASTER      00350002
+*              SCHEDULER ADDRESS SPACE, UNDER THE IOS POST STATUS SRB   00355002
+*                                                                       00360002
+*  PURPOSE= ONLY ENTRY POINT, ENTERED TO NOTIFY COMM TASK OF AN         00365002
+*           INTERRUPT FROM A CONSOLE DEVICE.                            00370002
+*                                                                       00375002
+*  LINKAGE= BRANCHED TO (BALR 14,15) FROM IOS POST STATUS               00380002
+*                                                                       00385002
+*  INPUT= REG1     ADDRESS OF IOSB                                      00390002
+*         REG13    ADDRESS OF LOCAL LOCK SAVE AREA                      00395002
+*         REG14    RETURN ADDRESS                                       00400002
+*         REG15    ENTRY POINT ADDRESS                                  00405002
+*                                                                       00410002
+*  REGISTERS SAVED= 0 THRU 15                                           00415002
+*                                                                       00420002
+*  REGISTER USAGE= SEE 'REG EQUATES' BELOW                              00425002
+*                                                                       00430002
+*  REGISTERS RESTORED= 0 THRU 15                                        00435002
+*                                                                       00440002
+*EXIT - NORMAL= BR 14    RETRUN TO CALLER                               00445002
+*                                                                       00450002
+*  CONDITIONS= SAME AS AT ENTRY                                         00455002
+*                                                                       00460002
+*  OUTPUT= IF A NO-CONSOLES CONDITION EXISTS THEN              @G51APSS 00462051
+*            1) UCMFATCN CONTAINS THE ADDRESS OF THE UCME      @G51APSS 00462751
+*               OF THE DEVICE WHICH WAS CHOSEN TO BECOME THE   @G51APSS 00463451
+*               NEW MASTER CONSOLE                             @G51APSS 00464151
+*            2) THE UCM ENTRY FOR THE CONSOLE THAT RECEIVED    @G51APSS 00465051
+*               THE INTERRUPT HAS THE FOLLOWING FIELDS SET:    @G51APSS 00468051
+*                 UCMAF = 0       UCMCF = 0                    @G51APSS 00475051
+*                 UCMTA = 1       UCMFATCN = ADDRESS OF UCME   @G51APSS 00480051
+*                 UCMUF = 1                                    @G51APSS 00485051
+*            3) THE CORESPONDING UCB HAS THE FOLLOWING FIELDS  @G51APSS 00485351
+*               SET:                                           @G51APSS 00485651
+*                 UCBONLI = 1     UCBDADI = 0                  @G51APSS 00485951
+*                 UCBSYSR = 1     UCBCHGS = 0                  @G51APSS 00486251
+*                                 UCBVORSN= 0                  @G51APSS 00486551
+*                                                              @G51APSS 00486851
+*          OTHERWISE                                           @G51APSS 00487151
+*            1) THE UCM ENTRY FOR THE CONSOLE THAT RECEIVED    @G51APSS 00487451
+*               THE INTERRUPT HAS FIELD UCMAF SET TO 1.        @G51APSS 00487751
+*            2) UCMAECB IS POSTED TO WAKE UP COMM TASK.        @G51APSS 00488051
+*                                                                       00488351
+*  RETURN CODES=NONE                                                    00490002
+*                                                                       00495002
+*EXIT - ERROR= NONE                                                     00500002
+*                                                                       00505002
+*EXTERNAL REFERENCES= AS FOLLOWS:                                       00510002
+*                                                                       00515002
+*  ROUTINES= POST, BRANCH ENTRY, TO DO LOCAL POST OF UCMAECB            00520002
+*            SETLOCK, TO OBTAIN AND FREE THE CMS LOCK                   00525002
+*                                                                       00530002
+*  DATA AREAS= UCM                                                      00535002
+*              IOSB                                                     00540002
+*              UCB                                             @G51APSS 00542051
+*              FRR                                             @ZA16899 00543051
+*                                                                       00545002
+*  CONTROL BLOCKS= UCM   U,M                                            00550002
+*                  IOSB  U                                              00555002
+*                  UCB   U,M                                   @G51APSS 00557051
+*                                                                       00560002
+*TABLES= NONE                                                           00565002
+*                                                                       00570002
+*MACROS= SETLOCK                                                        00575002
+*                                                                       00580002
+*  SERIALIZATION= LOCAL LOCK, HELD AT ENTRY, NEVER RELEASED             00585002
+*.                CMS LOCK, OBTAINED AT ENTRY, FREED AT EXIT            00590002
+*                                                                       00595002
+*CHANGE ACTIVITY= ZA16889,G51APSS                              @G51APSS 00597051
+*                                                                       00604002
+*MESSAGES= NONE                                                         00608002
+*                                                                       00612002
+*ABEND CODES= NONE                                                      00616002
+*                                                                       00620002
+*********************************************************************** 00624002
+         EJECT                                                          00628002
+IEAVVCRA CSECT                                                          00632002
+* A (GETFRR)   APPROX. 033680 ADDITIONAL                       @ZA16889 00633051
+* A (FREEFRR)  APPROX. 048350    RECOVERY                      @ZA16889 00633751
+* A (VCRACLUP) APPROX. 049640       CODE                       @ZA16889 00634451
+IEEBA1   EQU   *                   SYSTEM ENTRY POINT NAME              00636002
+         ENTRY IEEBA1                                                   00640002
+         SPACE 1                                                 Y02893 00650002
+*        REGISTER  EQUATES                                              01000001
+R0       EQU   0                   *                                    01050001
+R1       EQU   1                   ADDRESS OF THE IOSB           Y02146 01100002
+R2       EQU   2                   CVT BASE REG                  Y02893 01150002
+R4       EQU   4                   WORK REGISTER               @ZA16889 01155051
+R5       EQU   5                   FOR SAVING RC FROM SETLOCK    Y02751 01160002
+R6       EQU   6                   PROGRAM BASE REG              Y02893 01170002
+R7       EQU   7                   UCB ADDRESS FROM IOSB         Y02146 01200002
+R8       EQU   8                   BASE REG FOR UCM BASE         Y02893 01250002
+R9       EQU   9                   SAVES ENTRY CONTENTS REG 13   Y02146 01260002
+R10      EQU   10                  BASE REG FOR UCM PREFIX     @G51APSS 01280051
+R11      EQU   11                  WORK REG AND SETLOCK, POST    Y02893 01350002
+R12      EQU   12                  WORK REG AND SETLOCK, POST    Y02893 01400002
+R13      EQU   13                  WORK REG AND SETLOCK, POST    Y02893 01450002
+R14      EQU   14                  LINKAGE REGISTER, RETURN ADDR Y02893 01500002
+R15      EQU   15                  LINKAGE REGISTER, ENTRY ADDR  Y02893 01550002
+*              GENERAL EQUATES                                          01600001
+ZERO     EQU   0                   CONSTANT OF ZERO                     01650001
+C2       EQU   2                   LENGTH OF 2                          01700001
+C3       EQU   3                   CONSTANT OF 3                        01750001
+C4       EQU   4                   CONSTANT OF 4                YM05671 02870002
+C12      EQU   12                  CONSTANT OF 12              @ZA16889 02872051
+CFF      EQU   X'FF'               'AND' MASK                  @G51APSS 02875051
+UNCHK    EQU   X'02'               UNIT CHECK STATUS            YM05671 02880002
+         EJECT                                                          02900002
+*********************************************************************** 02920051
+*  REG 1 CONTAINS ADDRESS OF IOSB AT ENTRY, USE IT FOR IOSB BASE Y02146 02950002
+*********************************************************************** 02970051
+         SPACE 1                                                 Y02146 03000002
+         USING IOSB,R1                                           Y02146 03050002
+         USING UCB,R7              ADDRESSABILITY FOR UCB       YM05671 03070002
+         SPACE 1                                                 102146 03100002
+         STM   R0,R15,ZERO(R13)    SAVE REGS IN LOCAL LOCK SAVE  Y02146 03150002
+         LR    R6,R15              SETUP R6 AS PROGRAM BASE REG  Y02893 03200002
+         USING IEEBA1,R6           BASE IEAVVCRA                 Y02893 03250002
+         SPACE 1                                                 Y02893 03300002
+         MODID ,                                                 Y02893 03310002
+         SPACE 1                                                 Y02893 03320002
+         L     R2,CVTPTR           GET BASE FOR CVT              Y02893 03330002
+         USING CVT,R2              BASE THE CVT DSECT            Y02893 03340002
+         SPACE 1                                                 Y02893 03342002
+         L     R8,CVTCUCB          GET PTR TO UCM BASE           Y02893 03344002
+         USING UCM,R8              BASE THE UCM BASE SECTION     Y02893 03346002
+         SPACE 1                                                 Y02893 03348002
+         LR    R9,R13              SAVE LOCAL LOCKS' SAVE ADDR   Y02146 03348402
+         SPACE 1                                                 Y02751 03348802
+*********************************************************************** 03349051
+*  GET THE CMS LOCK TO SERIALIZE ON THE UCM RESOURCE.            Y02751 03349202
+*********************************************************************** 03349451
+         SPACE 1                                                 Y02751 03349602
+GETCMS   SETLOCK OBTAIN,TYPE=CMS,MODE=UNCOND,                    Y02751*03349702
+               RELATED=(UCM,IEAVVCRA(FREECMS))                   Y02751 03349802
+         SPACE 1                                                 Y02751 03349902
+         LR    R5,R13              SAVE RETURN CODE OF SETLOCK   Y02751 03366602
+         EJECT                                                 @ZA16889 03367351
+*********************************************************************** 03368051
+*        SET UP FRR FOR PROTECTION WHILE HOLDING THE CMS LOCK  @ZA16889 03368751
+*********************************************************************** 03369451
+         SPACE 1                                               @ZA16889 03370151
+         L     R11,UCMFRRAD-UCM(R8) GET PTR TO RECOVERY RTN    @ZA16889 03370851
+         USING PSA,R0                                          @ZA16889 03371551
+GETFRR   SETFRR A,FRRAD=(R11),PARMAD=(R13),WRKREGS=(R12,R13)   @ZA16889 03372251
+         LR    R4,R13              SAVE ADDR OF PARMLIST       @ZA16889 03372951
+         USING PARMLIST,R4         ADDRESSABILITY FOR PARMLIST @ZA16889 03373651
+         MVC   PARMID,VCRAID       MOVE ID TO PARMLIST         @ZA16889 03374351
+         LA    R13,VCRACLUP        GET ADDR OF CLEANUP RTN     @ZA16889 03375051
+         ST    R13,PARMCLAD        MOVE CLEANUP ADDR TO LIST   @ZA16889 03375751
+         L     R7,IOSUCB           GET UCB ADDR OF DEVICE        Y02146 03376602
+         EJECT                                                          03383302
+*********************************************************************** 03391351
+* INITIALIZATION IS COMPLETED. DO REQUIRED PROCESSING.                  03400001
+*********************************************************************** 03420051
+         LM    R11,R13,UCMVEA           LOAD PTR TO UCM LIST, SIZE OF   03450001
+*                                       AN ENTRY, AND ADDR OF LAST      03500001
+*                                       ENTRY IN UCM LIST               03550001
+         USING UCMLIST,R11         BASE THE UCME                 Y02893 03560002
+UCMLOOP  CL    R7,UCMUCB                COMPARE UCB ADDRESSES (IOS-UCM) 03600001
+         BE    TESTERP                  IF EQUAL, BRANCH                03650001
+NXTENTRY BXLE  R11,R12,UCMLOOP          WILL NEVER FALL THRU     A30203 03700001
+         B     SAFE                     BUT IF IT DOES, HANDLE IT       03750001
+         SPACE 1                                                 Y02146 03760002
+*********************************************************************** 03780051
+**  SEE IF ERP HAS CONTROL                                              03800002
+*********************************************************************** 03820051
+TESTERP  TM    IOSFLA,IOSERR       IS ERP IN CONTROL ?           Y02146 03850002
+         BZ    SETFLAG             NO, GO SET THE FLAG                  03890002
+*  IF ERP IS IN CONTROL, CHECK FOR THE READER                           03930002
+         CLC   UCMNAME+C3(C2),RDRNAME  F0F2 IN UCMNAME SIGNIFIES THE    03970002
+*                                      2540 PROCESSOR HAD CONTROL       04010002
+         BE    SAFE                IF A RDR, DO NOT TURN ON ATN FLG     04050002
+         SPACE 1                                                 Y02146 04142002
+SETFLAG  EQU   *                                                        04150001
+         TM    UCMATR,UCMIF        DOES DEVICE SUPPORT ATTENTIONS?     X04170051
+                                                               @G51APSS 04200051
+         BNO   NXTENTRY            NO, CONTINUE SCAN.            A30203 04300001
+*********************************************************************** 04300651
+*        SEE IF A NO-CONSOLES CONDITION EXISTS                 @G51APSS 04301251
+*********************************************************************** 04301851
+         SPACE 1                                               @G51APSS 04302451
+         LA    R15,C4              OFFSET OF UCM PREFIX PTR    @G51APSS 04303051
+         LR    R10,R8              ADDR OF UCM BASE            @G51APSS 04303551
+         SR    R10,R15             ADDR OF UCM PREFIX PTR      @G51APSS 04304051
+         L     R10,0(R10)          ADDR OF UCM PREFIX          @G51APSS 04304551
+         USING UCMPRFX,R10         BASE THE UCM PREFIX         @G51APSS 04305051
+         TM    UCMSFLG1,UCMSYSE    DOES A NO-CONSOLES CONDITION EXIST? X04305551
+                                                               @G51APSS 04306651
+         BO    NOCON               YES, BRANCH                 @G51APSS 04307251
+         DROP  R10                 FREE BASE OF UCM PREFIX     @G51APSS 04307551
+         TM    UCMATR,UCMUF        IS THE DEVICE ACTIVE?       @G51APSS 04307951
+         BNO   NXTENTRY            NO, CONTINUE SCAN           @G51APSS 04308651
+         TM    UCMSTS,UCMCF        IS CLOSE PENDING ON CONSOLE   Y02752 04310002
+         BO    NXTENTRY            IF  SO, CONTINUE SCAN         Y02752 04320002
+         OI    UCMSTS,UCMAF        YES, SET ATTENTION PENDING FLAG.     04350001
+         TM    UCMDISP1,UCMDISPC   IS THIS A GRAPHIC DEVICE?    YM05671 04357002
+         BNO   POSTCT              IF NO, CONTINUE PROCESSING   YM05671 04364002
+         TM    IOSTSA,UNCHK        UNIT CHECK WITH ATTENTION    YM05671 04366002
+         BZ    POSTCT              NO, DON'T MOVE SENSE BYTE    YM05671 04368002
+* THE FOLLOWING MOVE WILL GET THE TWO BYTES OF SENSE DATA       YM05671 04371002
+* FROM FIELD 'IOSSNS' AND THE FIRST TWO BYTES FROM 'IOSATTSN'.  YM05671 04378002
+*                                                               YM05671 04385002
+         MVC   UCBSNS(C4),IOSSNS   MOVE SENSE DATA TO UCB       YM05671 04392002
+         EJECT                                                 @G51APSS 04396051
+*********************************************************************** 04400051
+*        POST THE ATTENTION ECB AFTER SETTING UP THE           @G51APSS 04450051
+*        REQUIRED REGS                                         @G51APSS 04460051
+*********************************************************************** 04505051
+         SPACE 1                                                        04510051
+POSTCT   EQU   *                                                        04515051
+         SR    R10,R10             COMPLETION CODE OF ZERO     @G51APSS 04540051
+         LA    R11,UCMAECB         ECB ADDRESS                          04600001
+         L     R15,CVT0PT01        LOAD ENTRY POINT OF POST    @G51APSS 04620051
+         SR    R12,R12             NO ERRET ADDR FOR LOCAL POST  Y02752 04650002
+         SR    R13,R13             NO ASCB ADDR FOR LOCAL POST   Y02752 04660002
+         SPACE 1                                                 Y02752 04670002
+         BALR  R14,R15             BRANCH TO POST SERVICE ROUTINE       04750001
+         SPACE 1                                                 Y02752 04810002
+SAFE     DS    0H                                                Y02752 04830002
+FREEFRR  SETFRR D,WRKREGS=(R12,R13) RELEASE FRR                @ZA16889 04835051
+         LTR   R5,R5               TEST SETLOCK RETURN CODE      Y02751 04840002
+         BNZ   DONTFREE            IF RC NONZERO, LOCK WAS HELD  Y02751 04840402
+*                                  AT ENTRY TO MODULE, DON'T     Y02751 04840802
+*                                  FREE THE CMS LOCK.            Y02751 04841202
+         SPACE 1                                                 Y02751 04841602
+FREECMS  SETLOCK RELEASE,TYPE=CMS,                               Y02751*04841702
+               RELATED=(UCM,IEAVVCRA(GETCMS))                    Y02751 04841802
+         SPACE 1                                                 Y02752 04842002
+DONTFREE DS    0H                  FOR SKIPPING FREEING CMS LOCK Y02751 04844002
+         LM    R0,R15,ZERO(R9)     RESTORE CALLERS REGS          Y02146 04846002
+         BR    R14                 RETURN TO IOS                   0773 04850001
+         EJECT                                                 @G51APSS 04870051
+*********************************************************************** 04900051
+*        A NO-CONSOLES CONDITION EXISTS                        @G51APSS 04902051
+*        CHECK TO SEE IF A CANDIDATE HAS ALREADY BEEN CHOSEN   @G51APSS 04904051
+*********************************************************************** 04906051
+         SPACE 1                                               @G51APSS 04908051
+NOCON    EQU   *                                               @G51APSS 04910051
+         L     R13,UCMBFEXT        ADDR OF UCM FIXED EXTENSION BASE    X04912051
+                                                               @G51APSS 04914051
+         USING UCMFEXTA,R13        BASE THE UCM FIXED EXTENSION BASE   X04916051
+                                                               @G51APSS 04918051
+         L     R12,UCMFATCN        ADDR OF CANDIDATES UCME     @G51APSS 04920051
+         LTR   R12,R12             CANDIDATE CHOSEN YET?       @G51APSS 04922051
+         BNZ   SAFE                YES, IGNORE ATTN            @G51APSS 04924051
+         ST    R11,UCMFATCN        SAVE CANDIDATES UCME ADDR   @G51APSS 04926051
+         DROP  R13                 FREE BASE OF UCM FIXED EXTENSION    X04928051
+                                   BASE                        @G51APSS 04930051
+         SPACE 1                                               @G51APSS 04932051
+*********************************************************************** 04934051
+*        THIS DEVICE IS THE CANDIDATE. MARK IT AS IF A         @G51APSS 04936051
+*        VARY CONSOLE WAS ISSUED FOR IT                        @G51APSS 04938051
+*          1) ATTENTION PENDING(UCMAF) SET OFF                 @G51APSS 04940051
+*          2) OPEN PENDING(UCMTA) SET ON                       @G51APSS 04942051
+*          3) DEVICE IS ACTIVE(UCMUF) SET ON                   @G51APSS 04944051
+*          4) CLOSE PENDING(UCMCF) SET OFF                     @G51APSS 04950051
+*          5) DEVICE IS ONLINE(UCBONLI) SET ON                 @G51APSS 04950151
+*          6) DEVICE IS AN ACTIVE CONSOLE(UCBSYSR) IS SET ON   @G51APSS 04950251
+*          7) CHANGING STATUS OUT OF CONSOLE STATE(UCBDADI)    @G51APSS 04950351
+*             IS SET OFF                                       @G51APSS 04950451
+*          8) STATUS CHANGING TO OFFLINE(UCBCHGS) IS SET OFF   @G51APSS 04950551
+*          9) OFFLINE BY VARY(UCBVORSN) SET OFF                @G51APSS 04950651
+*********************************************************************** 04950751
+         SPACE 1                                               @G51APSS 04950851
+         SR    R12,R12             USED IF CANDIDATE IS A COMPOSITE    X04950951
+                                                               @G51APSS 04951051
+MARKDEV  EQU   *                                               @G51APSS 04951151
+         OI    UCMSTS,UCMTA        MARK OPEN PENDING           @G51APSS 04951251
+         OI    UCMATR,UCMUF        MARK DEVICE ACTIVE          @G51APSS 04951751
+         NI    UCMSTS,CFF-UCMCF-UCMAF TURN OFF CLOSE+ATTN PENDING      X04952051
+                                                               @G51APSS 04952151
+         SPACE 2                                               @G51APSS 04952251
+*********************************************************************** 04952351
+*        THE FOLLOWING INSTRUCTION WILL BE PROTECTED BY THE    @G51APSS 04952451
+*        COMPARE-AND-SWAP INSTRUCTION.                         @G51APSS 04952651
+*                                                              @G51APSS 04952751
+*        OI    UCBSTAT,UCBONLI+UCBSYSR                         @G51APSS 04952851
+*                                                              @G51APSS 04953151
+*********************************************************************** 04953251
+         SPACE 1                                               @G51APSS 04953351
+         OIL   UCBSTAT,UCBONLI+UCBSYSR,REF=UCBOB,WREGS=(R15,R14,R13)   X04954051
+                                   TURN ON DEVICE IS ONLINE AND A      X04954151
+                                   CONSOLE                     @G51APSS 04954351
+         SPACE 2                                               @G51APSS 04954451
+*********************************************************************** 04954651
+*        THE FOLLOWING INSTRUCTION WILL BE PROTECTED BY THE    @G51APSS 04954751
+*        COMPARE-AND-SWAP INSTRUCTION.                         @G51APSS 04954951
+*                                                              @G51APSS 04955051
+*        NI    UCBSTAT,CFF-UCBCHGS-UCBDADI                     @G51APSS 04955251
+*                                                              @G51APSS 04955351
+*********************************************************************** 04955551
+         SPACE 1                                               @G51APSS 04955651
+         NIL   UCBSTAT,CFF-UCBCHGS-UCBDADI,REF=UCBOB,                  X04955851
+               WREGS=(R15,R14,R13) TURN OFF CHANGING TO OFFLINE AND    X04955951
+                                   GOING OUT OF CONSOLE STATUS @G51APSS 04956151
+         SPACE 2                                               @G51APSS 04956251
+*********************************************************************** 04956451
+*        THE FOLLOWING INSTRUCTION WILL BE PROTECTED BY THE    @G51APSS 04956551
+*        COMPARE-AND-SWAP INSTRUCTION.                         @G51APSS 04956751
+*                                                              @G51APSS 04956851
+*        NI    UCBWGT,CFF-UCBVORSN                             @G51APSS 04957051
+*                                                              @G51APSS 04957251
+*********************************************************************** 04957351
+         SPACE 1                                               @G51APSS 04957451
+         NIL   UCBWGT,CFF-UCBVORSN,REF=UCBOB,WREGS=(R15,R14,R13)       X04957651
+                                   TURN OFF OFFLINE BY VARY    @G51APSS 04958351
+         SPACE 2                                               @G51APSS 04958651
+*********************************************************************** 04958851
+*        CHECK TO SEE IF CANDIDATE IS A COMPOSITE              @G51APSS 04961251
+*********************************************************************** 04961351
+         SPACE 1                                               @G51APSS 04961551
+         L     R14,UCMCOMPC        ADDR OF COMPOSITE CONSOLE   @G51APSS 04961651
+         LTR   R14,R14             IS CANDIDATE A COMPOSITE?   @G51APSS 04961851
+         BZ    SAFE                NO, CONTINUE                @G51APSS 04961951
+         LTR   R12,R12             YES, WAS OUTPUT HALF MARKED?        X04962151
+                                                               @G51APSS 04962251
+         BNZ   RESTUCB             YES, RESTORE REGS           @G51APSS 04962451
+         LR    R12,R7              SAVE INPUT HALF'S UCB ADDR  @G51APSS 04962551
+         LR    R11,R14             BASE UCME ON OUTPUT HALF    @G51APSS 04962651
+         L     R7,UCMUCB           OUTPUT HALF'S UCB ADDR      @G51APSS 04962951
+         B     MARKDEV             GO MARK OUTPUT HALF         @G51APSS 04963051
+RESTUCB  EQU   *                                               @G51APSS 04963151
+         LR    R11,R14             RESTORE PTR TO INPUT HALF'S UCME    X04963251
+                                                               @G51APSS 04963351
+         LR    R7,R12              RESTORE PTR TO INPUT HALF'S UCB     X04963451
+                                                               @G51APSS 04963551
+         B     SAFE                CONTINUE                    @G51APSS 04963751
+         EJECT                                                 @ZA16889 04963951
+*********************************************************************** 04964051
+*        THE FOLLOWING CODE WILL BE BRANCHED TO FROM THE       @ZA16889 04964151
+*        RECOVERY ROUTINE - IEAVMFRR. THIS CODE WILL FREE THE  @ZA16889 04964251
+*        CMS LOCK AND RETURN TO THE RECOVERY ROUTINE.          @ZA16889 04964351
+*********************************************************************** 04964551
+         SPACE 1                                               @ZA16889 04964651
+VCRACLUP EQU   *                                               @ZA16889 04964751
+         USING *,R15               ADDRESSABILITY FRR ENTRY    @ZA16889 04965051
+         STM   R14,R12,C12(R13)    SAVE CALLERS REGS           @ZA16889 04965151
+         LR    R9,R13              SAVE SAVEAREA PTR           @ZA16889 04965251
+         SPACE 1                                               @ZA16889 04965351
+RFREFRR  SETFRR D,WRKREGS=(R12,R13) RELEASE FRR                @ZA16889 04965751
+         SPACE 1                                               @ZA16889 04965851
+         SETLOCK RELEASE,TYPE=CMS,                             @ZA16889X04965951
+               RELATED=(UCM,IEAVVCRA(GETCMS))                  @ZA16889 04966051
+         SPACE 1                                               @ZA16889 04966351
+         LR    R13,R9              RESTORE SAVEAREA PTR        @ZA16889 04967051
+         LM    R14,R12,C12(R13)    RESTORE CALLERS REGS        @ZA16889 04967351
+         BR    R14                 RETURN TO RECOVERY ROUTINE  @ZA16889 04968051
+         EJECT                                                 @G51APSS 04968251
+*********************************************************************** 04968451
+*        CONSTANTS                                             @G51APSS 04969051
+*********************************************************************** 04970051
+         SPACE 1                                               @G51APSS 04971051
+         DS    0F                                              @G51APSS 04972051
+VCRAID   DC    CL4'VCRA'           IDENTIFIER FOR ATTN RTN     @ZA16889 04975051
+RDRNAME  DC    X'F0F2'             TO CHECK FOR THE 2540 PROCESSOR      04976051
+         TITLE 'IEAVVCRA..AOS/2..FRR DSECT'                    @ZA16889 04977051
+         IHAFRRS                                               @ZA16889 04978051
+         TITLE 'IEAVVCRA..AOS/2..FRR USER''S PARM LIST'        @ZA16889 04979051
+         IHACTM FTPT                                           @ZA16889 04980051
+         TITLE 'IEAVVCRA..AOS/2..UCB DSECT'                    @G51APSS 04981051
+UCB      DSECT                                                          04982051
+         IEFUCBOB LIST=YES                                              04999051
+         TITLE 'IEAVVCRA..AOS/2..CVT DSECT'                             05000001
+         CVT   DSECT=YES                                                05050001
+         TITLE 'IEAVVCRA..AOS/2..IOSB DSECT'                            05100002
+         IECDIOSB                                                       05150002
+         TITLE 'IEAVVCRA..AOS/2..UCM DSECT'                             05200001
+         IEECUCM  FORMAT=NEW                                            05250001
+         TITLE 'IEAVVCRA..AOS/2..PSA DSECT'                      Y02751 05260002
+         IHAPSA                                                         05270002
+         END                                                            05300001

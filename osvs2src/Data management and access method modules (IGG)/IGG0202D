@@ -1,0 +1,523 @@
+         TITLE 'IGG0202D - COMMON ISAM CLOSE'                           00020000
+IGG0202D CSECT                                                          00021002
+*                                                                       00022002
+*********************************************************************** 00023002
+*                                                                     * 00024002
+* MODULE-NAME = IGG0202D                                              * 00025002
+*                                                                     * 00026002
+* DESCRIPTIVE-NAME = ISAM CLOSE, COMMON TO ALL MODES                  * 00027002
+*                                                                     * 00028002
+* COPYRIGHT = NONE                                                    * 00029002
+*                                                                     * 00030002
+* STATUS = RELEASE OS/VS2-02, LEVEL 0                                 * 00031002
+*                                                                     * 00032002
+* FUNCTION = XCTL TO NEXT CLOSE EXECUTOR IF DCB OPENED FOR GET        * 00033002
+*            WITHOUT PUTX, OR READ WITHOUT WRITE; OR IF ABEND ISSUED  * 00034002
+*            CLOSE FOR A LOAD MODE DATA SET.  OTHERWISE, GET CORE     * 00035002
+*            FROM SUBPOOL 230, AND EXECUTE CP CLOSECCW1 TO READ F2    * 00036002
+*            DSCB INTO CORE.  FOR LOAD MODE, FREE CHANNEL PROGRAM     * 00037002
+*            CORE, WORK AREA CORE, AND TRACK INDEX SAVE AREA (TISA)   * 00038002
+*            IF FULL TRACK INDEX WRITE (FTIW) SPECIFIED.  FOR INITIAL * 00038202
+*            LOAD, SET BIT 2 OF DCBST.  FOR BISAM, SCAN, AND LOAD     * 00039002
+*            MODE--IF NOT A NULL RESUME LOAD--ACQUIRE LOCAL LOCK,     * 00040002
+*            VALIDATE DCB ADDRESS, CHANGE TO KEY 0, AND MERGE         * 00041002
+*            APPROPRIATE DCB FIELDS INTO THE F2 DSCB.  THEN RELEASE   * 00041202
+*            LOCK, RETURN TO DATA MANAGEMENT KEY, AND EXECUTE CP      * 00041402
+*            CLOSECCW2 TO WRITE F2 DSCB BACK INTO VTOC.  FINALLY,     * 00041602
+*            FREE CORE GOTTEN FOR F2 DSCB.                            * 00041802
+*                                                                     * 00042002
+* NOTES = SEE BELOW                                                   * 00043002
+*                                                                     * 00044002
+*    DEPENDENCIES = NONE                                              * 00045002
+*                                                                     * 00046002
+*    RESTRICTIONS = NONE                                              * 00047002
+*                                                                     * 00048002
+*    REGISTER-CONVENTIONS = SEE REGISTER EQUATES.                     * 00049002
+*                                                                     * 00050002
+*    PATCH-LABEL = PATCH, A DC STATEMENT.                             * 00051002
+*                                                                     * 00052002
+* MODULE-TYPE = CLOSE EXECUTOR                                        * 00053002
+*                                                                     * 00054002
+*    PROCESSOR = ASSEMXF-370R                                         * 00055002
+*                                                                     * 00056002
+*    MODULE-SIZE = 990 DECIMAL BYTES                                  * 00057002
+*                                                                     * 00058002
+*    ATTRIBUTES = PRIVILEGED, REENTRANT                               * 00059002
+*                                                                     * 00060002
+* ENTRY-POINT = IGG0202D                                              * 00061002
+*                                                                     * 00062002
+*    PURPOSE = SEE FUNCTION                                           * 00063002
+*                                                                     * 00064002
+*    LINKAGE = RECEIVES CONTROL FROM IFG0200W IF ABEND IS IN CONTROL  * 00065002
+*              FOR A LOAD MODE DATA SET, OTHERWISE FROM AN ISAM CLOSE * 00065202
+*              EXECUTOR:  IGG0202M FOR LOAD MODE, IGG02029 FOR SCAN,  * 00066002
+*              OR IGG0202A FOR BISAM.  RECEIVES CONTROL IN STORAGE    * 00067002
+*              PROTECT KEY 5 AND PRIVILEGED STATE.                    * 00067202
+*                                                                     * 00068002
+* INPUT = REGISTERS ESTABLISHED UPON ENTRY ARE                        * 00069002
+*         REG 5 (RPAR) POINTS TO THE DCB COPY PARAMETER LIST          * 00070002
+*         REG 6 (RWTG) POINTS TO THE O/C/EOV WHERE-TO-GO TABLE        * 00071002
+*         REG 7 (RPARC) POINTS TO THE CURRENT ENTRY IN THE DCB COPY   * 00072002
+*               PARAMETER LIST                                        * 00073002
+*         REG 8 (RWTGC) POINTS TO THE CURRENT ENTRY IN THE WTG TABLE  * 00074002
+*                                                                     * 00075002
+* OUTPUT = REGISTERS 5 THROUGH 8 WILL BE IN THE SAME CONDITION AS     * 00076002
+*          UPON ENTRY TO THIS MODULE                                  * 00077002
+*                                                                     * 00078002
+* EXIT-NORMAL = XCTL IN STORAGE PROTECT KEY 5 TO COMMON CLOSE.        * 00079002
+*                                                                     * 00080002
+* EXIT-ERROR = ABEND CODES:                                           * 00081002
+*              03A - I/O ERROR WHILE READING OR WRITING F2 DSCB       * 00082002
+*                                                                     * 00086002
+* EXTERNAL-REFERENCES = SEE BELOW                                     * 00087002
+*                                                                     * 00088002
+*    ROUTINES = DCB VALIDITY-CHECK ROUTINE                            * 00089002
+*                                                                     * 00091002
+*    DATA-AREAS = AREAS REFERENCED ARE:                               * 00092002
+*                 FORCORE - CLOSE WORK AREA                           * 00093002
+*                 ISLCOMON - ISAM LOAD MODE WORK AREA                 * 00094002
+*                 IHAPSA - LOW CORE ADDRESSABILITY                    * 00094202
+*                                                                     * 00095002
+*    CONTROL-BLOCKS = DCB, DCB COPY, DEB, DSCB, CVT, TCB, AND IOB     * 00096002
+*                                                                     * 00097002
+* TABLES = NONE                                                       * 00098002
+*                                                                     * 00099002
+* MACROS = MODESET, GETMAIN, FREEMAIN, EXCP, WAIT, SETLOCK, ABEND,    * 00100002
+*          AND XCTL                                                   * 00100202
+*                                                                     * 00101002
+* CHANGE-ACTIVITY = AS FOLLOWS:                                       * 00102002
+*                                                                     * 00103002
+*         RELEASE OS/VS2-02 DELETIONS                                 * 00103202
+*                                                               YM01385 00104002
+*         CHANGES SINCE VS2-3.7                                         00154037
+*A017100,A018894-018944                                        @ZA31639 00204037
+*                                                                     * 00513002
+*********************************************************************** 00513202
+         EJECT                                                          00513402
+ISLCOMON IGGLOAD                                                 Y02072 00513602
+         SPACE 4                                                        00514002
+CVT      DSECT                                                   Y02072 00516002
+         CVT                                                     Y02072 00518002
+F2DSECT  DSECT                                                          00520000
+         DS    0D                                                       00540000
+F2K1     DS    CL1                      02                              00560000
+F2K2     DS    CL7                      DCBFTMI2                        00580000
+F2K3     DS    CL5                      DCBLEMI2                        00600000
+F2K4     DS    CL7                      DCBFTMI3                        00620000
+F2K5     DS    CL5                      DCBLEMI3                        00640000
+F2D0A    DS    CL1                      DCBOVDEV                 O19113 00646019
+         DS    CL10                                              O19113 00652019
+F2D0     DS    CL8                      DCBMSWA                   P4701 00660000
+F2D1     DS    CL1                      ID                              00680000
+F2D2     DS    CL1                      DCBNLEV                         00700000
+F2D3     DS    CL1                      DCBNTM                          00720000
+F2D4     DS    CL3                      DCBFIRSH                        00740000
+F2D5     DS    CL2                      DCBLDT                          00760000
+F2D6     DS    CL1                      DCBCYLOF                        00780000
+F2D7     DS    CL1                      DCBHIRCM                        00800000
+F2D8     DS    CL1                      DCBHIRPD                        00820000
+F2D9     DS    CL1                      DCBHIROV                        00840000
+F2D10    DS    CL1                      DCBHIRSH                        00860000
+F2D11    DS    CL1                      DCBHIRTI                 O19113 00870019
+F2D11A   DS    CL1                      DCBHIIOV                 O19113 00880019
+F2D12    DS    CL2                      DCBTDC                          00900000
+F2D13    DS    CL3                      DCBRORG3                        00920000
+F2D14    DS    CL2                      DCBNCRHI                        00940000
+F2D15    DS    CL1                      DCBNTHI                         00960000
+F2D16    DS    CL4                      DCBNREC                         00980000
+F2D17    DS    CL1                      DCBST                           01000000
+F2D18    DS    CL7                      DCBFTCI                         01020000
+F2D19    DS    CL7                      DCBFTMI1                        01040000
+F2D20    DS    CL7                      DCBFTHI                         01060000
+F2D21    DS    CL8                      DCBLPDA                         01080000
+F2D22    DS    CL5                      DCBLETI                         01100000
+F2D23    DS    CL5                      DCBLECI                         01120000
+F2D24    DS    CL5                      DCBLEMI1                        01140000
+F2D25    DS    CL8                      DCBLIOV                         01160000
+F2D26    DS    CL2                      DCBNBOV                         01180000
+F2D27    DS    CL2                      DCBRORG2                        01200000
+F2D28    DS    CL2                      DCBNOREC                        01220000
+F2D29    DS    CL2                      DCBRORG1                        01240000
+F2K6     DS    CL3                      ISLNIRT                   P4701 01250000
+FORCORE  DSECT                                                          01260000
+         IECDSECT                                                       01280000
+         DCBD  DSORG=(IS)                                               01300000
+IHATCB   DSECT                                                    20852 01304000
+         USING IHATCB,R10                                         20852 01308000
+         ORG   IHATCB+29                                          20852 01312000
+TCBFLAGS DS    CL1                      FLAG BYTE 2               20852 01316000
+         SPACE 4                                                        01318002
+         IHAPSA                                                  Y02072 01318402
+         EJECT                                                          01318802
+IGG0202D CSECT                                                          01320000
+RE       EQU   0                        WORK REGISTER                   01340000
+RF       EQU   1                        WORK REGISTER                   01360000
+RDCB     EQU   2                        DCB BASE REGISTER               01380000
+RBASE    EQU   3                        BASE REGISTER                   01400000
+RCORE    EQU   4                        IECDSECT BASE REGISTER          01420000
+RPAR     EQU   5                        PARAMETER LIST REGISTER         01440000
+RWTG     EQU   6                        ADDRESS OF WHERE TO GO TABLE    01460000
+RPARC    EQU   7                        CURRENT ENTRY IN PAR TBL        01480000
+RWTGC    EQU   8                        CURRENT ENTRY IN WTG TABLE      01500000
+R9       EQU   9                        WORK REGISTER                   01520000
+R10      EQU   10                       WORK REGISTER                   01540000
+RA       EQU   11                       WORK REGISTER                   01560000
+RB       EQU   12                       WORK REGISTER                   01580000
+RC       EQU   13                       WORK REGISTER                   01600000
+RD       EQU   14                       WORK REGISTER                   01620000
+R15      EQU   15                       WORK REGISTER                   01640000
+RJ       EQU   15                       WORK REGISTER                   01660000
+RDSCB2   EQU   9                        PTR TO DSCB FORMAT 2            01680000
+SP230    EQU   230                      SUBPOOL TO READ F2 INTO  Y02072 01682002
+DCWOPCLS EQU   40                       OFFSET TO DCWOPCLS IN BISAM WA  01690018
+HGH3BYT  EQU   X'0E'                    ST 3 HIGH ORDER BYTES    Y02072 01700002
+OPNCMPLT EQU   X'08'                                           @ZA31639 01710037
+*                                                                       01737020
+*   DCBST - BIT LOCATIONS.                                              01739020
+*                                                                       01741020
+EOCST    EQU   X'10'                    DATA SET ENDS ON THE     A39157 01743020
+*                                       * LAST RECORD OF A CYL.         01745020
+EOTST    EQU   X'02'                    D.S. END AT END OF TRACK A39157 01747020
+EOBST    EQU   X'01'                    D.S. END AT END OF BLOCK A39157 01749020
+*                                                                       01751020
+         EJECT                                                          01753020
+         BALR  RBASE,0                  ESTABLISH ADDRESSABILITY        01760000
+         USING *,RBASE                                                  01780000
+         USING FORCORE,RCORE                                            01800000
+         L     RCORE,4(RWTGC)           INITIALIZE BASE OF WORK AREA    01820000
+         LA    RCORE,0(RCORE)                                           01840000
+         USING IHADCB,RDCB                                              01860000
+         L     RDCB,0(RPARC)            INITIALIZE BASE OF DCB    22544 01861018
+         L     R10,CVTPTR               C(R10) = A(CVT)           20852 01866000
+         L     R10,0(R10)               C(R10) = A(TCB POINTER)   20852 01868000
+         L     R10,4(R10)               C(R10) = A(TCB)           20852 01868220
+*                                                                       01868420
+* IF THIS DCB IS FOR A GET WITHOUT PUTX OR A READ WITHOUT WRITE, THEN   01868620
+* THE FORMAT 2 DSCB SHOULD NOT BE UPDATED AS NONE OF THE ATTRIBUTES     01868820
+* OF THE DATA SET WILL HAVE CHANGED.                                    01869020
+*                                                                       01869220
+         TM    DCBMACRF,X'60'           IS IT FOR READ OR GET    A31990 01869420
+         BZ    CONTINUE                 NO - FORMAT 2 MUST BE    A31990 01869620
+*                                       *    UPDATED.                   01869820
+         TM    DCBMACRF+1,X'60'         IS IS A PUT OR WRITE     A31990 01870020
+         BZ    EXIT                     NO - FORMAT2 SHOULD NOT  A31990 01870220
+*                                       *    BE UPDATED.                01870420
+CONTINUE EQU   *                        YES - FORMAT 2 MUST BE   A31990 01870620
+*                                       *     UPDATED                   01870820
+         TM    TCBFLAGS,X'80'           DID ABEND ISSUE CLOSE     22544 01871018
+         BZ    RDFMT2                   NO, READ FORMAT 2 DSCB    22544 01872018
+         TM    DCBMACRF+1,X'18'         LOAD MODE                 22544 01873018
+         BNZ   EXIT                     YES, DON'T CLOSE LOAD     22544 01874018
+RDFMT2   EQU   *                                                  22544 01888418
+         TM    DCBMACRF+1,X'18'         LOAD MODE?             @ZA31639 01889437
+         BNZ   GETSPC                   YES-GO AROUND          @ZA31639 01890437
+         TM    DCBST,OPNCMPLT           WAS OPEN COMPLETE?     @ZA31639 01891437
+         BNO   EXIT                     NO-BR TO EXIT MODULE   @ZA31639 01892437
+         NI    DCBST,X'F7'              TURN OFF OPEN COMPLETE @ZA31639 01893437
+GETSPC   EQU   *                                               @ZA31639 01894437
+         GETMAIN R,LV=DSCBSIZE,SP=SP230 GET FORMAT 2 SPACE       Y02072 01900002
+DSCBSIZE EQU   140                      FORMAT 2 SIZE                   01906002
+*                                                                       01912002
+*   GET CORE FOR DSCB FORMAT 2                                          01920000
+*   INITIALIZE CHANNEL PROGRAM TO READ DSCB FORMAT 2                    01940000
+*                                                                       01960000
+         LA    RDSCB2,0(RF)             RDSCB2 = ADDRESS OF FORMAT 2    01980000
+         LM    RA,RD,CLOSECCW           FILL IN CCWS 1 AND 2            02000000
+         ALR   RA,RCORE                 COMPLETE ADDRESS                02020000
+         ALR   RC,RCORE                 COMPLETE ADDRESS                02040000
+         STM   RA,RD,DXCCW1             INITIALIZE DXCCWS 1 AND 2       02060000
+         LM    RA,RB,CLOSECCW+16        FILL IN CCW 3                   02080000
+         ALR   RA,RDSCB2                ADD BASE OF DSCB FORMAT 2       02100000
+         STM   RA,RB,DXCCW3             SET UP CCW IN OPEN WK AREA      02120000
+         MVI   DXDAADDR,0               ZERO M OF MBBCCHHR              02140000
+         MVC   DXDEBUCB,DXUCBADR        INSERT UCB ADDRESS      YM01385 02160002
+         MVC   DXDAADDR+3(L'DSCBNEXT),DSCBNEXT   F2 CCHHR        Y02072 02180002
+         SR    RE,RE                    COMPLETE DEB EXTENT             02200000
+         STH   RE,DXDEBSCC              SET START CCHH = 0000           02220000
+         STH   RE,DXDEBSHH                                              02240000
+         BCTR  RE,0                     RE = F'S                        02260000
+         STH   RE,DXDEBECC              SET END CCHH = FFFF             02280000
+         STH   RE,DXDEBEHH                                              02300000
+         L     RF,DCBDEBAD                                              02320000
+         LA    RE,36                    GET ADDR OF DEB PREFIX          02340000
+         SR    RF,RE                                                    02360000
+         MVC   DXDEBUCB+4(2),21(RF)     MOVE BB TO PHONY DEB            02380000
+         MVC   DXDAADDR+1(2),21(RF)      AND TO IOBSEEK                 02400000
+*                                                                       02420000
+         EXCP  DXIOB                    EXECUTE READ KEY AND DATA       02440000
+         WAIT  1,ECB=DXECB                                              02460000
+         TM    IOBECBPT,X'20'           TEST FOR PERMANENT I/O ERROR    02480000
+         BO    TESTMODE                 BRANCH = NO ERROR               02500000
+ABEND3A  EQU   *                        PERMANENT ERROR WHILE UPDATING  02520002
+*                                       THE FORMAT 2 DSCB = 03A         02540002
+         ABEND X'03A',DUMP,,SYSTEM      SYSTEM 03A ABEND         Y02072 02560002
+*                                                                       02580000
+*                                                                       02600000
+TESTMODE EQU   *                                                        02620000
+         USING F2DSECT,RDSCB2                                           02640000
+         CLI   F2D1,X'F2'               WAS DSCB READ A FMT.2      MC1A 02646018
+         BNE   ABEND3A                  IF NOT, ABEND              MC1A 02652018
+         TM    DCBMACRF+1,X'18'         TEST IF QISAM LOAD MODE         02660000
+         BZ    TESTSCAN                 BRANCH = NOT  LOAD MODE         02680000
+*                                                                       02690002
+*    IT IS LOAD MODE                                                    02700000
+*   FREE CORE USED BY LOAD MODE FOR ITS CHANNEL PROGRAMS                02720000
+*                                                                       02720402
+         L     RB,DCBDEBAD              GET PTR TO DEB           A33513 02722020
+         TM    8(RB),X'80'              TEST DEBOFLGS FOR DISP   A33513 02724020
+         BO    MODNEW                   BR IF NEW/MOD            A33513 02726020
+         XC    1(43,RDSCB2),1(RDSCB2)   ZERO ALL FORMAT 2 FIELDS A33513 02728020
+         XC    45(90,RDSCB2),45(RDSCB2) EXCEPT HEX CODE,         A33513 02730020
+*                                       DS2FMTID, AND DS2PTRDS          02732020
+MODNEW   EQU   *                                                 A33513 02734020
+*                                                                       02734402
+         MODESET  KEYADDR=DXUKEY,WORKREG=12  CHANGE TO USER KEY  Y02072 02736002
+*                                                                       02738002
+         L     RB,DCBWKPT1              RB = ADR OF LOAD WORK AREA      02740000
+         USING ISLCOMON,RB              LOAD MODE WORK AREA      Y02072 02780002
+         IC    RA,ISLHIRT               HIGHEST R IN TRK INDEX   Y02072 02790002
+         L     RD,ISLNIRT               HHR OF DUMMY TI ENTRY    Y02072 02790402
+         L     RF,ISLVPTR4              LOAD CHANNEL PGM ADDR    Y02072 02790802
+         L     RE,ISLVPTR9              SIZE OF CHANNEL PGM      Y02072 02791202
+*                                                                       02791302
+         MODESET  EXTKEY=DATAMGT        CHANGE TO DATA MGT KEY   Y02072 02791602
+*                                                                       02795102
+         STC   RA,F2D11                 TRK INDEX HIGH R         Y02072 02799002
+         STCM  RD,HGH3BYT,F2K6          DUMMY TRK INDEX HHR      Y02072 02802502
+         SPACE 2                                                 M0947  02806002
+*   FREE LOAD MODE CHANNEL PROGRAM AREA, ALLOW FOR RPS PREFIX CP18.     02809502
+         SPACE 1                                                 M0947  02813002
+         LA    RA,250                   USE SUBPOOL 250                 02816502
+         SLL   RA,24                                                    02820000
+         SH    RF,HWEIGHT               ALLOW FOR RPS PREFIX     A52413 02870000
+         OR    RE,RA                                                    02880000
+         FREEMAIN R,LV=(0),A=(1)                                        02900000
+*                                                                       02901019
+         MODESET  KEYADDR=DXUKEY,WORKREG=1   CHANGE TO USER KEY  Y02072 02901402
+*                                                                       02902019
+         TM    680(RB),X'C0'            SUCCESSFUL GETMAIN FOR   O19110 02903019
+*                                       FULL TRACK INDEX WRITE          02904019
+         BNO   FREECORE                 NO BR TO CONTINUE        O19110 02905019
+*                                                                       02906019
+*              FREE CORE USED BY FULL TRACK INDEX WRITE OPTION          02907019
+*                                                                       02908019
+         L     RF,680(RB)               C(RF)=A(TISA)            O19110 02909019
+         LA    RF,0(RF)                 ZERO HIGH ORDER BYTE     O19110 02910019
+         L     RE,16(RF)                C(RE)=SIZE OF TISA       O19110 02911019
+         OR    RE,RA                    COMBINE SIZE & SUBPOOL   O19110 02912019
+         FREEMAIN R,LV=(0),A=(1)                                 O19110 02913019
+*                                                                       02914019
+*                                                                       02915019
+*   FREE CORE USED BY LOAD MODE AS A WORK AREA                          02920000
+FREECORE EQU   *                                                 O19110 02930019
+         L     RE,672(RB)               C(RE)= WORK AREA SIZE     20852 02940000
+         OR    RE,RA                                                    02960000
+         LR    RF,RB                    RF = ADR OF LOAD WORK AREA      02980000
+         FREEMAIN R,LV=(0),A=(1)                                        03000000
+         L     RDCB,DXUDCBAD            USERS DCB ADDRESS        Y02072 03002002
+         NC    DCBNREC,DCBNREC          TEST FOR NULL DATA SET   M0170  03003021
+         BZ    MERGELD                  BRANCH IF IT IS          M0170  03006021
+         CLC   DCBNREC,F2D16            WAS IT NULL RESUME LOAD  M0170  03009021
+         BE    FREEDSCB                 YES, BRANCH              M0170  03012021
+MERGELD  EQU   *                                                 M0170  03015021
+*                                                                       03015402
+         MODESET  EXTKEY=DATAMGT        CHANGE TO DATA MGT KEY   Y02072 03017002
+*                                                                       03017402
+         BAL   R15,GETLOCK              ACQUIRE LOCK AND         Y02072 03019002
+*                                       VALIDATE ADDRESS OF USERS DCB   03019802
+         MVC   F2K2(24),DCBFTMI2        MOVE SPECIFIED LOAD MODE FIELDS 03020000
+         MVC   F2D2,DCBNLEV              FROM DCB TO DSCB FORMAT 2      03040000
+         MVC   F2D3,DCBNTM                                              03060000
+         MVC   F2D4,DCBFIRSH                                            03080000
+         MVC   F2D5,DCBLDT                                              03100000
+         MVC   F2D6,DCBCYLOF                                            03120000
+         MVC   F2D7(4),DCBHIRCM                                         03140000
+         MVC   F2D14,DCBNCRHI                                           03160000
+         MVC   F2D18,DCBFTCI                                            03180000
+         MVC   F2D19,DCBFTMI1                                           03200000
+         MVC   F2D20,DCBFTHI                                            03220000
+         MVC   F2D0,DCBMSWA             SAVE LAST PRIME DATA TRK  P4701 03235000
+LIKELOAD EQU   *                        MOVE FIELDS COMMON TO LOAD AND  03240000
+         MVC   F2D16,DCBNREC             BISAM FROM DCB TO DSCB FORMAT2 03260000
+         MVC   F2D21(13),DCBLPDA                                        03280000
+         MVC   F2D23,DCBLECI                                            03300000
+         MVC   F2D24,DCBLEMI1                                           03320000
+         MVC   F2D25,DCBLIOV                                            03340000
+         MVC   F2D26,DCBNBOV                                            03360000
+         MVC   F2D27,DCBRORG2                                           03380000
+         MVC   F2D11A,DCBHIIOV                                   O19113 03390019
+         MVC   F2D0A(1),DCBOVDEV                                 O19113 03400019
+*   CORRECT DCBST SWITCHES THAT MAY HAVE CHANGED                        03410020
+         NI    F2D17,X'FF'-EOTST-EOBST  RESET SWITCHES           A39157 03420020
+         OI    DCBST,X'20'              SET STATUS TO RESUME LOAD P4701 03440000
+         OC    F2D17(1),DCBST                                     P4701 03470000
+         NI    F2D17,X'FF'-EOCST        RESET EOC SW FOR RSLOAD  A39157 03490020
+         B     RITEBACK                                                 03520000
+TESTSCAN EQU   *                                                        03540000
+         L     RDCB,DXUDCBAD            USERS DCB ADDRESS        Y02072 03550002
+         BAL   R15,GETLOCK              ACQUIRE LOCK AND         Y02072 03552002
+*                                       VALIDATE USER DCB ADDRESS       03554002
+         TM    DCBMACRF,X'40'           TEST IF SCAN                    03560000
+         BO    ITISSCAN                 BRANCH = SCAM                   03580000
+* IT IS BISAM                                                           03600000
+         MVC   F2K3,DCBLEMI2            MOVE FIELDS UNIQUE TO BISAM     03620000
+         MVC   F2K5,DCBLEMI3             FROM DCB TO DSCB FORMAT 2      03640000
+         MVC   F2D12,DCBTDC                                             03660000
+         MVC   F2D13(3),DCBRORG3+1                                      03680000
+         MVC   F2D28,DCBNOREC                                           03700000
+         MVC   F2D29,DCBRORG1                                           03720000
+         B     LIKELOAD                                                 03740000
+ITISSCAN EQU   *                                                        03760000
+         MVC   F2D12,DCBTDC             MOVE FIELD FOR SCAN FROM DCB    03780000
+*                                        TO DSCB FORMAT 2               03800000
+         B     RITEBACK                 WRITE DSCB               Y02072 03810002
+*                                                                       03810402
+*                                                                       03810802
+GETLOCK  EQU   *                        ROUTINE ACQUIRES LOCAL   Y02072 03812002
+*                                       LOCK, FREED AT RITEBACK         03814002
+*                                       OR VLDCKERR                     03816002
+         STM   RDCB,R15,DXCCW5          SAVE REGISTERS 2-15      Y02072 03818002
+*                                                                       03818102
+         MODESET KEYADDR=KEY0,WORKREG=13  CHANGE TO KEY ZERO     Y02072 03818402
+*                                                                       03818502
+*    ACQUIRE THE LOCAL LOCK.  IT WILL BE RELEASED FOLLOWING THE         03818602
+*    MERGING OF THE FIELDS FROM THE DCB TO THE DSCB IF THE DCB          03818702
+*    ADDRESS IS VALID, OR FOLLOWING THE RETURN FROM THE VALIDATE        03818902
+*    ROUTINE IF THE ADDRESS IS INVALID.                                 03819302
+*                                                                       03819402
+GLCL     SETLOCK  OBTAIN,TYPE=LOCAL,MODE=UNCOND,   OBTAIN THE    Y02072*03819602
+               RELATED=(DCB,IGG0202D)   LOCAL LOCK               Y02072 03819702
+*                                                                       03821202
+         LA    RF,0(,RDCB)              VALID CHK BEGIN ADDR     Y02072 03825002
+         LA    RDCB,DCBWKPT6-IHADCB(RDCB)  END OF ADDR RANGE     Y02072 03826502
+         LR    RPAR,RCORE               SAVE CLOSE WA ADDRESS    Y02072 03828002
+         SR    RCORE,RCORE              USE CURR TCB FOR TEST    Y02072 03829502
+         L     R15,CVTPTR               ADDRESS OF CVT           Y02072 03831002
+         USING CVT,R15                  CVT ADDRESSABILITY       Y02072 03832502
+         L     R15,CVT0VL01             ADDR OF VALID CHK RTN    Y02072 03834002
+         DROP  R15                      END USING ON CVT         Y02072 03835502
+*                                                                       03835902
+         BALR  RD,R15                   BR TO VALIDATE ROUTINE   Y02072 03837002
+*                                                                       03837402
+         BNZ   VLDCKERR                 BR IF TEST NOT SUCC      Y02072 03838502
+         LR    RCORE,RPAR               RESTORE WA ADDRESS       Y02072 03840002
+         LM    RDCB,R15,DXCCW5          RESTORE REGISTERS 2-15   Y02072 03840802
+         BR    R15                      RETURN                   Y02072 03842802
+*                                                                       03843202
+VLDCKERR EQU   *                        FREES LOCK WHEN VALID    Y02072 03844802
+*                                       CHK NOT SUCCESSFUL              03845202
+*                                                                       03845302
+*    RELEASE THE LOCAL LOCK ACQUIRED AT STATEMENT GLCL.                 03845402
+*                                                                       03845502
+FLCL1    SETLOCK  RELEASE,TYPE=LOCAL,   FREE THE                 Y02072*03845602
+               RELATED=(DCB,IGG0202D)   LOCAL LOCK               Y02072 03846402
+*                                                                       03846502
+         MODESET  EXTKEY=DATAMGT        CHANGE TO DATA MGT KEY   Y02072 03846802
+*                                                                       03846902
+         LR    RCORE,RPAR               RESTORE WA ADDRESS       Y02072 03847202
+         LM    RDCB,R15,DXCCW5          RESTORE REGS 2-15        Y02072 03847602
+         B     FREEDSCB                 FREE DSCB CORE           Y02072 03847702
+*                                                                       03847802
+RITEBACK EQU   *                                                        03848002
+*                                                                       03850002
+*    RELEASE THE LOCAL LOCK ACQUIRED AT STATEMENT GLCL.                 03850402
+*                                                                       03850502
+         SETLOCK  RELEASE,TYPE=LOCAL,   RELEASE LOCAL LOCK       Y02072*03850602
+               RELATED=(DCB,IGG0202D)   ACQUIRED AT GETLOCK      Y02072 03855502
+*                                                                       03857502
+         MODESET  EXTKEY=DATAMGT        CHANGE TO DATA MGT KEY   Y02072 03860402
+*                                                                       03862402
+         LM    RDCB,R15,DXCCW5          RESTORE REGS 2 THRU 15   Y02072 03865302
+         LM    RA,RB,DXCCW3             MOVE CCW3 (READ KD) TO          03870202
+         STM   RA,RB,DXCCW6              CCS6 BUT SUPPRESS DATA TRANS   03875102
+         MVI   DXCCW6+4,X'10'           CCW6 = READ KEY AND DATA        03880000
+         LM    RA,RB,CLOSECCW+24        FILL IN CCW 3                   03900000
+         ALR   RA,RDSCB2                ADD BASE OF DSCB                03920000
+         STM   RA,RB,DXCCW3             CCW3 = WRITE KEY AND DATA       03940000
+         LM    RA,RD,DXCCW1             USING SEARCH = ID AND TIC OF    03960000
+         SR    R10,R10                   CCW1 AND 2 SET UP CCW4 AND 5   03980000
+         LA    R10,24                    TO SEARCH = ID AND TIC         04000000
+         ALR   RC,R10                                                   04020000
+         STM   RA,RD,DXCCW4                                             04040000
+         EXCP  DXIOB                                                    04060000
+         WAIT  1,ECB=DXECB                                              04080000
+         TM    IOBECBPT,X'20'           TEST FOR PERMANENT I/O ERROR    04100000
+         BC    12,ABEND3A               BRANCH = PERMANENT ERROR        04120000
+*   FREE AREA USED FOR DSCB FORMAT 2                                    04140000
+FREEDSCB EQU   *                                                 M0170  04150021
+*                                                                       04152002
+         MODESET  EXTKEY=DATAMGT        SET DATA MGT KEY         Y02072 04154002
+*                                                                       04156002
+         LA    RF,0(RDSCB2)             RF = ADDRESS OF DSCB            04160000
+         FREEMAIN R,LV=DSCBSIZE,SP=SP230,A=(1) FREE FMT 2 SPACE  Y02072 04180002
+*                                                                       04180102
+EXIT     EQU   *                                                  20852 04180400
+*                                                                       04180502
+         MODESET  KEYADDR=DXUKEY,WORKREG=1   CHANGE TO USER KEY  Y02072 04180802
+*                                                                       04181202
+* THE FOLLOWING TWO INSTRUCTIONS RESTORE DCBESETL, DCBLRAN, DCBLWKN,    04182000
+* DCBRELSE, DCBPUTX, DCBRELX AND DCBFREED TO THEIR PRE-OPEN CONDITION   04184000
+*                                                                       04184402
+         L     RDCB,DXUDCBAD            ENSURE USER DCB ADDR     Y02072 04184802
+         MVC   DCBESETL,ONE             PUT CONSTANT ONE IN FIRST       04186000
+*                                       ADDRESS FIELD            A51472 04188000
+         MVC   DCBLRAN(24),DCBESETL     PROPAGATE TO REST        A51472 04188400
+*                                                                       04190402
+         MODESET  EXTKEY=DATAMGT        CHANGE TO DATA MGT KEY   Y02072 04198402
+*                                                                       04198802
+         MVC   0(L'CLOSE,RWTGC),CLOSE   RETURN TO COMMON CLOSE   Y02072 04200002
+RELOOP   LA    RWTGC,8(RWTGC)           INCREMENT WTG CURNT ENTRY       04220000
+         LA    RPARC,4(RPARC)           INCREMENT DCB CURNT ENTRY       04240000
+         CLC   0(2,RWTGC),THISLOAD                                      04260000
+         BCR   8,RBASE                  BRANCH=BEGINNING OF THIS MODULE 04280000
+         CLC   0(1,RWTGC),ENDCLOSE     TEST FOR END OF WTG TABLE        04300000
+         BC    7,RELOOP                 BRANCH=NOT AT END               04320000
+ATEND    LR    RPARC,RPAR               INITIALIZE RPARC                04340000
+         LA    RWTGC,32(RWTG)           INITIALIZE RWTGC                04360000
+ZCHECK   CLI   0(RWTGC),X'00'           TEST FOR ENTRY = 0              04380000
+         BC    7,TCTLRTN                BRANCH = NOT ZERO               04400000
+ITSZERO  LA    RWTGC,8(RWTGC)                                           04420000
+         LA    RPARC,4(RPARC)                                           04440000
+         B     ZCHECK                                                   04460000
+TCTLRTN  EQU   *                                                        04480000
+         MVC   6(2,RWTG),0(RWTGC)       MOVE ID                         04500000
+*                                                                       04520002
+         LA    RJ,DXCCW12                                               04540000
+         XCTL  EPLOC=(RWTG),DCB=0,SF=(E,(15)) XCTL TO CLOSE      Y02072 04560002
+         EJECT                                                          04570002
+CLOSECCW DS    0D                                                       04580000
+* CCW1 - SEARCH EQUAL ID                                                04600000
+         DC    X'31'                    SEARCH                          04620000
+         DC    AL3(3+DXDAADDR-DXLBL)    ADDRESS OF IOB + 35             04640000
+         DC    X'6000'                  CC                              04660000
+         DC    X'0005'                  LENGTH                          04680000
+* CCW2 - TIC TO CCW1                                                    04700000
+         DC    X'08'                    TIC                             04720000
+         DC    AL3(DXCCW1-DXLBL)        ADDRESS OF DXCCW1               04740000
+         DC    F'0'                                                     04760000
+*CCW3  - READ KEY AND DATA                                              04780000
+         DC    X'0E'                                                    04800000
+         DC    AL3(DXDSCB-DXLBL)        ADDRESS                         04820000
+         DC    X'0000'                  NO CC                           04840000
+         DC    X'008C'                  LENGTH = 140                    04860000
+* CCW3A - WRITE KEY AND DATA                                            04880000
+         DC    X'0D'                                                    04900000
+         DC    AL3(DXDSCB-DXLBL)        ADDRESS                         04920000
+         DC    X'4000'                  CC                              04940000
+         DC    X'008C'                  LENGTH = 140                    04960000
+* CCW4 - SEARCH EQUAL ID,  USE DXCCW1                                   04980000
+* CCW5 - TIC TO CCW4,  USE DXCCW2                                       05000000
+* CCW6 - READ KEY AND DATA AND SUPPRESS DATA TRANSFER, USE CCW3         05020000
+*                                                                       05040000
+HWEIGHT  DC    H'8'                     HALFWORD CONSTANT        M0947  05070021
+KEY0     EQU   HWEIGHT                  STORAGE PROTECT KEY ZERO Y02072 05072002
+THISLOAD DC    C'2D'                                                    05080000
+ENDCLOSE DC    C'00'                                                    05100000
+CLOSE    DC    X'0000'                  ZERO CURR ENTRY IN WTG   Y02072 05102002
+ONE      DC    F'1'                                                     05110000
+*                                                                       05112002
+*                                                                       05114002
+PATCH    DC    XL50'00'                 ZEROED PATCH AREA        Y02072 05116002
+*                                                                       05118002
+*                                                                       05118402
+         END                                                            05260000

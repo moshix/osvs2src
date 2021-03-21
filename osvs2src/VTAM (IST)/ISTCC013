@@ -1,0 +1,1270 @@
+         TITLE 'OS/VS LOADER TO BRING IN CDS, PLINK AND ROOT MODULES   *00001000
+                        '                                               00002000
+ISTCC013 CSECT ,                                                   0001 00003000
+@MAINENT DS    0H                                                  0001 00004000
+         USING *,@15                                               0001 00005000
+         B     @PROLOG                                             0001 00006000
+         DC    AL1(16)                                             0001 00007000
+         DC    C'ISTCC013  75.184'                                 0001 00008000
+         DROP  @15                                                      00009000
+@PROLOG  ST    @14,12(,@13)                                        0001 00010000
+         STM   @02,@12,28(@13)                                     0001 00011000
+         BALR  @11,0                                               0001 00012000
+@PSTART  DS    0H                                                  0001 00013000
+         USING @PSTART,@11                                         0001 00014000
+*********************************************************************** 00015000
+*                                                                     * 00016000
+* STATUS: CHANGE LEVEL 000     SUPPORT CODE: X02008                   * 00017000
+*                                                                     * 00018000
+* FUNCTION:                                                           * 00019000
+*           1. CALCULATES THE SIZE OF THE MODULE (OLT AND PLINK).     * 00020000
+*              IF IT IS NOT A CDS LOAD, IT WILL PASS THE SIZE BACK    * 00021000
+*              TO THE CALLER. IF IT IS A CDS LOAD, IT WILL LOAD THE   * 00022000
+*              REQUESTED NUMBER OF BYTES INTO CORE.                   * 00023000
+*                                                                     * 00024000
+*           2. LOADS THE REQUESTED OLT, PLINK OR CDS INFORMATION      * 00025000
+*              AND RETURNS THE STARTING ADDRESS OF THE LOADED MODULE  * 00026000
+*              TO THE CALLER.                                         * 00027000
+*                                                                     * 00028000
+* ENTRY POINTS: ISTCC013                                              * 00029000
+*                                                                     * 00030000
+* INPUT: UPON ENTRY TO THIS MODULE REGISTER 1 POINTS TO A LIST WITH   * 00031000
+*        THE FOLLOWING PARAMETERS:                                    * 00032000
+*                   DS    C  INDICATORS FOR TRANSIENT MANAGER         * 00033000
+*                   DS    C  MACRO LEVEL                              * 00034000
+*                   DS    2C IDENTITY OF MACRO EXPANSION              * 00035000
+*                   DS    F  POINTER TO PARAMETER LIST                * 00036000
+*        THIS PARAMETER LIST HAS THE FOLLOWING FORMAT:                * 00037000
+*                   DS    8C MODULE NAME                              * 00038000
+*                   DS    F  POINTER TO WHERE MODULE SHOULD BE LOADED * 00039000
+*                   DS    C  FLAGS                                    * 00040000
+*                   DS    C  RESERVED FOR FUTURE USE                  * 00041000
+*                   DS    H  CDS MODULE COUNT                         * 00042000
+*                                                                     * 00043000
+* OUTPUT:  REGISTER 0 WILL CONTAIN MODULE SIZE(FOR COMPUTE REQUEST)   * 00044000
+*          REGISTER 1 WILL CONTAIN STARTING ADDRESS OF LOADED MODULE. * 00045000
+*          REGISTER 15 WILL CONTAIN RETURN CODES:                     * 00046000
+*                   X'00'   LOAD SUCCESSFUL/COMPUTE SUCCESSFUL        * 00047000
+*                   X'04'   NO END CARD                               * 00048000
+*                   X'08'   READ ERROR                                * 00049000
+*                   X'0C'   MODULE NOT FOUND                          * 00050000
+*                   X'10'   REP CARD ERROR                            * 00051000
+*                   X'14'   LOAD CALLED BEFORE COMPUTE                * 00052000
+*                   X'18'   ORDER ERROR                               * 00053000
+*                                                                     * 00054000
+*          THE FOLLOWING MESSAGES ARE OUTPUTTED:                      * 00055000
+*                                                                     * 00056000
+*                 1.    202I  -  THIS MESSAGE WILL INFORM THE USER    * 00057000
+*                                THAT AN INVALID REP CARD EXISTS FOR  * 00058000
+*                                THE SPECIFIED TEST SECTION.          * 00059000
+*                 2.    203I  -  THIS MESSAGE TELLS THE USER THAT AN  * 00060000
+*                                END OF FILE INDICATION OCCURED       * 00061000
+*                                UNEXPECTANTLY. DATASET MAY HAVE BEEN * 00062000
+*                                CREATED INCORRECTLY.                 * 00063000
+*                 3.    205I  -  THIS MESSAGE TELLS THE USER THAT AN  * 00064000
+*                                I/O ERROR OCCURED DURING THE LOADING * 00065000
+*                                OF THE TEST SECTION.                 * 00066000
+*                 4.    901I  -  THIS MESSAGE TELLS THE USER THAT THE * 00067000
+*                                DD CARD NAMED XXXXXXXX COULD NOT BE  * 00068000
+*                                OPENED, THEREFORE THE DATASET IS NOT * 00069000
+*                                ACCESSIBLE.                          * 00070000
+*                 5.    911I  -  THIS MESSAGE TELLS THE USER THAT AN  * 00071000
+*                                INVALID OR UNRECOGNIZEABLE CONTROL   * 00072000
+*                                CARD HAS BEEN DETECTED. DATASET MAY  * 00073000
+*                                HAVE BEEN CREATED INCORRECTLY.       * 00074000
+*                                                                     * 00075000
+* EXTERNAL ROUTINES:                                                  * 00076000
+*                                                                     * 00077000
+*          THIS MODULE WILL ISSUE THE FOLLOWING SYSTEM MACROS:        * 00078000
+*                                                                     * 00079000
+*                 1. OPEN   TO INITIATE PROCESSING OF REQUIRED DATASET* 00080000
+*                 2. CLOSE  TO COMPLETE PROCESSING OF DATA SETS       * 00081000
+*                 3. FIND   TO DETERMINE IF A MODULE EXISTS           * 00082000
+*                 4. POINT  TO FIND THE RECORD THAT MUST BE READ      * 00083000
+*                 5. READ   TO GET THE CONTROL CARDS & MODULE TEXT    * 00084000
+*                            INTO CORE                                * 00085000
+*                 6. CHECK  TO WAIT FOR COMPLETION OF READ REQUEST    * 00086000
+*                 7. NOTE   TO KEEP TRACK OF THE LAST RECORD READ     * 00087000
+*                 8. DCB    TO DEFINE THE OLT LIB DCB                 * 00088000
+*                                                                     * 00089000
+* NORMAL EXITS:                                                       * 00090000
+*          TO CALLER WITH RETURN CODE EQUAL TO ZERO.                  * 00091000
+*                                                                     * 00092000
+* ERROR EXITS:                                                        * 00093000
+*          TO CALLER WITH RETURN CODE NOT EQUAL TO ZERO               * 00094000
+*                                                                     * 00095000
+* TABLES/WORKAREAS:                                                   * 00096000
+*          PATCH12 - PATCH AREA                                       * 00097000
+*          SAVEAREA- SAVE AREA                                        * 00098000
+*          BUFFER  - READ IN BUFFER FOR CONTROL RECORDS(IE ESD, ETC)  * 00099000
+*          RLCOREAD- REAL CORE ADDRESS OF MODULE                      * 00100000
+*          ASSEMAD - ASSEMBLED ADDRESS OF MODULE(RELATIVE TO ZERO)    * 00101000
+*          B28WORK - WORK AREA                                        * 00102000
+*          WORK    - WORK AREA                                        * 00103000
+*          RELFT   - RELOCATION FACTOR FOR RLD DATA ITEMS             * 00104000
+*          RDBUFAD - ADDRESS/POINTER TO READ IN AREA                  * 00105000
+*          RDLNGTH - LENGTH OF READ                                   * 00106000
+*          RETCODE - RETURN CODE SAVE AREA (DEBUG AID)                * 00107000
+*          TTRZ    - TTRZ FOR READ ROUTINE                            * 00108000
+*          SIZEAREA- AREA USED TO STORE MODULE SIZE                   * 00109000
+*          OLTDCB  - DCB FOR OLT LIBRARY                              * 00110000
+*          CHARTBL - TABLE USED TO VALIDATE REP DATA                  * 00111000
+*          LDSWITCH- INTERNAL FLAG BYTE                               * 00112000
+*             BIT 0- COMPUTE HAS BEEN DONE FOR REQUESTED MODULE       * 00113000
+*             BIT 1- THIS IS A TRUNCATED(CDS) LOAD REQUEST            * 00114000
+*             BIT 2- TXTHDR & TXT INFORMATION MUST BE PROCESSED       * 00115000
+*             BIT 3- COMPUTE HAS BEEN STARTED                         * 00116000
+*             BIT 4- FLAG USED TO INDICATE WHICH BYTE OF REP DATA     * 00117000
+*                    BEING CONVERTED                                  * 00118000
+*             BIT 5- I/O ERROR OCCURED ON LOAD                        * 00119000
+*             BIT 6- UNUSED AT PRESENT TIME                           * 00120000
+*             BIT 7- UNUSED AT PRESENT TIME                           * 00121000
+*                                                                     * 00122000
+*********************************************************************** 00123000
+*   SVECC013(2)=SAVPTR;             /* STORE CALLERS SAVEAREA ADDR   */ 00124000
+         ST    SAVPTR,SVECC013+4(,WAPTR)                           0029 00125000
+*   BACKSAVE(3)=ADDR(SVECC013);     /* STORE ADDR OF MY SAVEAREA     */ 00126000
+         LA    @12,SVECC013(,WAPTR)                                0030 00127000
+         ST    @12,BACKSAVE+8(,SAVPTR)                             0030 00128000
+*   SAVPTR=ADDR(SVECC013);          /* POINT TO MY SAVEAREA TO CALL  */ 00129000
+         LR    SAVPTR,@12                                          0031 00130000
+*   GEN CODE SETS(EXITPTR,RCGEN,R1) REFS(MRT202,MRT203,MRT205,MRT901,   00131000
+*       MRT911,C13C0091,LDRETMSG,MRT899) FLOWS(LDRETMSG,C13C0091); 0032 00132000
+*                               EQUATES                               * 00133000
+*********************************************************************** 00134000
+*********************************************************************** 00135000
+*                              REGISTERS                              * 00136000
+*********************************************************************** 00137000
+R0       EQU   0                       REGISTER 0                       00138000
+*********************************************************************** 00139000
+*                     ONE CARD REMOVED SO IT COULD BE DCL IN PLS      * 00140000
+*********************************************************************** 00141000
+R2       EQU   2                       REGISTER 2                       00142000
+R3       EQU   3                       REGISTER 3                       00143000
+R4       EQU   4                       REGISTER 4                       00144000
+R5       EQU   5                       REGISTER 5                       00145000
+R6       EQU   6                       REGISTER 6                       00146000
+R7       EQU   7                       REGISTER 7                       00147000
+R8       EQU   8                       REGISTER 8                       00148000
+R9       EQU   9                       REGISTER 9                       00149000
+R10      EQU   10                      REGISTER 10                      00150000
+R11      EQU   11                      BASE REGISTER                    00151000
+R12      EQU   12                      REGISTER 12                      00152000
+R13      EQU   13                      REGISTER 13                      00153000
+R14      EQU   14                      REGISTER 14                      00154000
+R15      EQU   15                      REGISTER 15                      00155000
+DEBREG   EQU   1                   POINTER TO THE DEB FOR AUTH CHECK    00156000
+REPPTR   EQU   1                       POINTER TO WHERE REP STARTS      00157000
+PLISTREG EQU   3                       PARAMETER LIST POINTER           00158000
+FROMADDR EQU   5                       FROM ADDRESS FOR CONVERT         00159000
+TOADDR   EQU   6                       TO ADDRESS FOR CONVERT           00160000
+LNGTHREG EQU   6                       LENGTH OF READ                   00161000
+COUNT    EQU   7                       COUNT FOR CONVERSION ROUTINE     00162000
+DATAPTR  EQU   8                       POINTER TO RLD DATA FIELD        00163000
+CHAR     EQU   8                       CHARACTER TO BE MATCHED          00164000
+NAMEPTR  EQU   8                       POINTER TO MODULE NAME           00165000
+RLDBTCNT EQU   9                       NO OF 4 BYTE AREAS IN RLD CARD   00166000
+DCBPTR   EQU   9                       POINTER TO NEEDED DCB            00167000
+REPBYTE  EQU   9                       CHARACTER TO BE CONVERTED        00168000
+TXTBTCNT EQU   9                       TXT BYTE COUNT                   00169000
+ESDBTCNT EQU   9                       ESD BYTE COUNT                   00170000
+AREAPTR  EQU   10                      POINTER TO READ BUFFER           00171000
+TTRZPTR  EQU   10                      POINTER TO TTRZ FOR READ         00172000
+INDEX    EQU   10                      INDEX REGISTER                   00173000
+*********************************************************************** 00174000
+*                       INTERNAL FLAG EQUATES                         * 00175000
+*********************************************************************** 00176000
+CPTSW    EQU   X'80'                   COMPUTE DONE                     00177000
+TRNCL    EQU   X'40'                   TRUNCATED LOAD                   00178000
+TWOREADS EQU   X'20'                   TWO READS REQUESTED              00179000
+CMPTSTRT EQU   X'10'                   COMPUTE HAS BEEN STARTED         00180000
+IOERROR  EQU   X'04'                   I/O ERROR FLAG                   00181000
+*********************************************************************** 00182000
+*                       PARAMETER LIST EQUATES                        * 00183000
+*********************************************************************** 00184000
+PLNK     EQU   X'80'                   PLINK REQUESTED                  00185000
+CMPTE    EQU   X'40'                   COMPUTE REQUESTED                00186000
+CDS      EQU   X'20'                   CDS LOAD                         00187000
+SYMBOLIC EQU   X'08'                   SYMBOLIC CDS                     00188000
+NAME     EQU   0                       MODULE NAME DISPLACEMENT         00189000
+AD       EQU   8                       REAL CORE ADDRESS DISPLACEMENT   00190000
+FLAG     EQU   12                      FLAG FIELD DISPLACEMENT          00191000
+TCNT     EQU   14                      TRUNCATED COUNT DISPLACEMENT     00192000
+*********************************************************************** 00193000
+*                       MISCELLANEOUS EQUATES                         * 00194000
+*********************************************************************** 00195000
+TWICE    EQU   2                       MULTIPLY BY FOUR                 00196000
+D0       EQU   0                       DISPLACEMENT ZERO                00197000
+SAMEPTR  EQU   1                       SAME ESD ID                      00198000
+D1       EQU   1                       DISPLACEMENT ONE                 00199000
+D4       EQU   4                       DISPLACEMENT FOUR                00200000
+D44      EQU   44                  DEB DISPLACEMENT                     00201000
+L3       EQU   3                       LENGTH THREE                     00202000
+TMFLG    EQU   X'01'                   TRANSIENT MANAGER FLAG           00203000
+OFLGS    EQU   X'10'                   OPEN FLAG                        00204000
+ZEROONE  EQU   X'01'                   HEX 01                           00205000
+HIHALF   EQU   240                     HIGH HALF OF A BYTE              00206000
+ALL      EQU   255                     WHOLE BYTE                       00207000
+NEW      EQU   X'10'                   NEW OLT                          00208000
+OLD      EQU   X'20'                   OLD OLT                          00209000
+TYTST    EQU   X'04'                   ESD TYPE                         00210000
+FIRST    EQU   X'F7'                   FIRST BYTE OF DATA FLAG          00211000
+SECOND   EQU   X'08'                   SECOND BYTE OF DATA FLAG         00212000
+RLDFLG   EQU   X'02'                   POS OR NEG RELOCATION            00213000
+MSG202   EQU   100                      DISPLACEMENT TO MSG IFD202I     00214000
+MSG203   EQU   104                      DISPLACEMENT TO MSG IFD203I     00215000
+MSG205   EQU   108                      DISPLACEMENT TO MSG IFD205I     00216000
+MSG911   EQU   112                     DISPLACEMENT TO MSG IFD911I      00217000
+MSG901   EQU   116                      DISPLACEMENT TO MSG IFD901I     00218000
+         EJECT                                                          00219000
+*********************************************************************** 00220000
+*                             INITIALIZE                              * 00221000
+*********************************************************************** 00222000
+         L     PLISTREG,4(R1)          PUT POINTER TO PARAMETER LIST   C00223000
+                                       IN REG 3                         00224000
+         MVC   RLCOREAD(4),AD(PLISTREG) GET REAL CORE ADDRESS OF WHERE C00225000
+                                       MODULE SHOULD BE LOADED          00226000
+         NI    LDSWITCH,CPTSW          TURN OFF ALL INTERNAL FLAGS     C00227000
+                                       EXCEPT FOR COMPUTE               00228000
+         TM    FLAG(PLISTREG),CMPTE    IS THIS A COMPUTE REQUEST        00229000
+         BNO   LDTXT006                NO, GO TO CODE THAT WILL LOAD   C00230000
+                                       AND RELOCATE THE MODULE          00231000
+         NI    LDSWITCH,0              TURN OFF INTERNAL COMPUTE SWITCHC00232000
+                                       THIS IS A NEW REQUEST            00233000
+         XC    BUFFER(80),BUFFER       CLEAR READ BUFFER                00234000
+         SPACE 1                                                        00235000
+*********************************************************************** 00236000
+*                         ESD CARD HANDLING                           * 00237000
+*********************************************************************** 00238000
+LDESD001 EQU   *                                                        00239000
+         BAL   R4,LDIOSUB              GO TO IO SUBROUTINE TO READ     C00240000
+                                       FIRST ESD CARD                   00241000
+         CLC   BUFFER+1(L3),=C'ESD'    IS THIS AN ESD CARD              00242000
+         BNE   LDESD001                NO, FIND FIRST ESD               00243000
+         CLC   BUFFER+14(2),ONE1       IS THIS THE FIRST ESD CARD       00244000
+         BNE   LDESD001                NO, FIND FIRST ESD               00245000
+         SPACE 1                                                        00246000
+LDESD006 EQU   *                                                        00247000
+         CLC   BUFFER+16(8),NAME(PLISTREG) DOES THIS ESD CARD HAVE NAMEC00248000
+                                       OF REQUESTED UNIT TEST MODULE    00249000
+         BE    LDESD011                YES, GO TO ROUTINE THAT WILL    C00250000
+                                       CONTINUE ESD PROCESSING          00251000
+         CLC   BUFFER+32(8),NAME(PLISTREG) DOES THIS ESD CARD HAVE NAMEC00252000
+                                       OF REQUESTED UNIT TEST MODULE    00253000
+         BNE   LDESD001                NO, GO TO ROUTINE THAT WILL GET C00254000
+                                       NEXT CARD                        00255000
+         SPACE 1                                                        00256000
+LDESD011 EQU   *                                                        00257000
+         OI    LDSWITCH,CPTSW          TURN ON INTERNAL COMPUTE FLAG    00258000
+         MVC   B28WORK+1(L3),BUFFER+25 GET THE ADDR OF WHERE THIS      C00259000
+                                       MODULE WAS ASSEMBLED AT INTO    C00260000
+                                       WORK AREA                        00261000
+         SR    R7,R7                   CLEAR ESD LENGTH REG             00262000
+         L     R6,B28WORK              PUT ASSEMBLE ADDRESS INTO REG 6  00263000
+         ST    R6,ASSEMAD              SAVE THE ASSEMBLED ADDRESS FOR  C00264000
+                                       LATTER USE                       00265000
+         SPACE 1                                                        00266000
+LDESD026 EQU   *                                                        00267000
+         SR    ESDBTCNT,ESDBTCNT       CLEAR ESD BYTE COUNT REG         00268000
+         IC    ESDBTCNT,BUFFER+11      GET NUMBER OF BYTES OF ESD DATA C00269000
+                                       ON THIS CARD                     00270000
+         SR    R8,R8                   CLEAR REG 8                      00271000
+         LA    R5,16                   SET REG 5 TO CONTAIN LENGTH OF  C00272000
+                                       ESD DATA FIELD                   00273000
+         DR    R8,R5                   DIVIDE NO. OF BYTES OF ESD DATA C00274000
+                                       BY LNGTH OF ESD DATA FLD TO FINDC00275000
+                                       NUMBER OF FLDS IN ESD CARD       00276000
+         LA    R5,BUFFER+8             PRIME REG 5 WITH ADDRESS OF ESD C00277000
+                                       CARD TO SIMPLIFY LOOPING ON     C00278000
+                                       ESD DATA FIELDS ON ONE CARD      00279000
+         SPACE 1                                                        00280000
+LDESD031 EQU   *                                                        00281000
+         LA    R5,16(R5)               BUMP POINTER TO ESD CARD TO     C00282000
+                                       POINT TO MIDDLE OF ESD DATA     C00283000
+                                       FIELD                            00284000
+         TM    0(R5),ALL               IS THIS AN SD TYPE               00285000
+         BZ    LDESD036                YES, GO TO ROUTINE WHICH WILL   C00286000
+                                       SUM ESD LENGTH FIELDS            00287000
+         TM    0(R5),TYTST             DOES THIS ESD HAVE ANY LENGTH   C00288000
+                                       ATTRIBUTE                        00289000
+         BZ    LDESD041                NO, GO TO ROUTINE WHICH         C00290000
+                                       DETERMINES IF THERE ARE ANY MOREC00291000
+                                       ESD DATA FIELDS                  00292000
+         SPACE 1                                                        00293000
+LDESD036 EQU   *                                                        00294000
+         MVC   B28WORK+1(L3),5(R5)     MOVE LENGTH INTO WORK AREA       00295000
+         A     R7,B28WORK              ADD THIS LENGTH TO SUM OF       C00296000
+                                       PREVIOUS LENGTHS                 00297000
+         SPACE 1                                                        00298000
+LDESD041 EQU   *                                                        00299000
+         BCT   ESDBTCNT,LDESD031       DECREMENT NUMBER OF ESD DATA    C00300000
+                                       FIELDS BY ONE AND IF THERE ARE  C00301000
+                                       ANY LEFT, PROCESS THIS ONE       00302000
+         BAL   R4,LDIOSUB              GO TO IO SUBROUTINE TO READ NEXTC00303000
+                                       CARD                             00304000
+         CLC   BUFFER+1(L3),=C'ESD'    IS THIS CARD AN ESD              00305000
+         BE    LDESD026                YES, GO TO ROUTINE TO SUM LENGTHC00306000
+                                       ON ESD CARDS                     00307000
+         CLC   BUFFER+1(L3),=C'TXT'    IS THIS CARD A TXT               00308000
+         BNE   LDRLD046                NO, ORDER ERROR OR GARBAGE,     C00309000
+                                       GO TO ROUTINE THAT RETURNS 24   C00310000
+                                       IN REG 15                        00311000
+         EJECT                                                          00312000
+*********************************************************************** 00313000
+*                         TXT CARD HANDLING                           * 00314000
+*********************************************************************** 00315000
+LDTXT001 EQU   *                                                        00316000
+         NI    LDSWITCH,ALL-TWOREADS   SET FLAG INDICATING TWO READS   C00317000
+                                       ARE REQUIRED                     00318000
+         ST    R7,SIZEAREA             SAVE MODULE SIZE                 00319000
+         LH    R5,TCNT(PLISTREG)       TAKE TRUNCATED LOAD COUNT AND    00320000
+         LTR   R5,R5                   LOOK AT IT                       00321000
+         BZ    CMPTDONE                IF ZERO, GO TO RETURN TO CALLER C00322000
+                                       EXIT ROUTINE                     00323000
+         OI    LDSWITCH,TRNCL          SET TRUNCATED LOAD FLAG ON       00324000
+         SPACE 1                                                        00325000
+LDTXT006 EQU   *                                                        00326000
+         LA    R15,20                  PLACE ERROR CODE 20 IN REG 15   C00327000
+                                       FOR FAILURE TO DO COMPUTE        00328000
+         TM    LDSWITCH,CPTSW          HAS A COMPUTE BEEN DONE          00329000
+         BNO   LDRETERR                NO, GO TO ROUTINE THAT          C00330000
+                                       DETERMINES IF THIS IS OK         00331000
+         L     R6,ASSEMAD              GET ASSEMBLED ADDRESS OF MODULE  00332000
+         TM    FLAG(PLISTREG),PLNK     IS THIS MODULE A PLINK MODULE    00333000
+         BNO   LDTXT011                NO, BYPASS UPDATING REAL CORE AD 00334000
+         A     R6,RLCOREAD             ADD ADDRESS OF OLT TO ASSEMBLED C00335000
+                                       ADDRESS OF PLINK MODULE          00336000
+         ST    R6,RLCOREAD             SAVE NEW REAL CORE ADDRESS       00337000
+         SPACE 1                                                        00338000
+LDTXT011 EQU   *                                                        00339000
+         L     R6,RLCOREAD             GET REAL CORE ADDRESS OF MODULE  00340000
+         S     R6,ASSEMAD              SUBTRACT ASSEMBLED ADDRESS FROM C00341000
+                                       TARGET ADDRESS TO GET RELOCATIONC00342000
+                                       FACTOR                           00343000
+         ST    R6,RELFT                SAVE RELOCATION FACTOR           00344000
+         SPACE 1                                                        00345000
+LDTXT016 EQU   *                                                        00346000
+         LH    TXTBTCNT,BUFFER+22      GET BYTE COUNT OF FOLLOWING DATAC00347000
+                                       RECORD FROM TXTHDR CARD INTO    C00348000
+                                       REG 9                            00349000
+         TM    LDSWITCH,TRNCL          IS THIS A TRUNCATED LOAD- A CDS C00350000
+                                       LOAD                             00351000
+         BNO   LDTXT026                NO, GO TO ROUTINE THAT HANDLES  C00352000
+                                       PLACING TXT CARDS INTO CORE      00353000
+         LTR   R5,R5                   HAS IT BEEN DONE-LOOK AT        C00354000
+                                       TRUNCATED COUNT IN PARM LIST     00355000
+         BZ    LDRLD051                YES, GO TO SUCCESSFUL EXIT      C00356000
+                                       SUBROUTINE                       00357000
+         CR    R5,TXTBTCNT             CHECK BYTES REQUESTED VS LENGTH C00358000
+                                       OF TXT RECORD                    00359000
+         BH    LDTXT021                ANOTHER RECORD IS NEEDED, GO TO C00360000
+                                       CODE THAT PREPARES FOR THIS      00361000
+         LR    TXTBTCNT,R5             SET LENGTH EQUAL TO BYTES       C00362000
+                                       REQUESTED                        00363000
+         SPACE 1                                                        00364000
+LDTXT021 EQU   *                                                        00365000
+         SR    R5,TXTBTCNT             SET BYTES REQUESTED EQUAL TO    C00366000
+                                       DIFFERENCE OF ORIGINAL REQUEST  C00367000
+                                       AND LENGTH                       00368000
+         SPACE 1                                                        00369000
+LDTXT026 EQU   *                                                        00370000
+         MVC   B28WORK+1(L3),BUFFER+17 PUT ASSEMBLED ADDR OF FOLLOWING C00371000
+                                       TXT RECORD IN WORK AREA          00372000
+         L     R6,B28WORK              GET THIS ASSEMBLED ADDR IN REG 6 00373000
+         A     R6,RELFT                ADD RELOCATION FACTOR TO THIS   C00374000
+                                       ASSEMBLED ADDRESS                00375000
+         ST    R6,RDBUFAD              STORE THIS ADDR IN READ COMMAND  00376000
+         ST    R9,RDLNGTH              STORE LENGTH IN READ COMMAND     00377000
+         OI    LDSWITCH,TWOREADS       INDICATE 2 READS ARE NECESSARY   00378000
+LDTXT031 EQU   *                                                        00379000
+         BAL   R4,LDIOSUB              GO TO IO SUBROUTINE TO READ     C00380000
+                                       TXT DATA CARD INTO CORE AND     C00381000
+                                       READ NEXT TXTHDR CARD            00382000
+         CLC   BUFFER+1(L3),=C'TXT'    IS THIS A TXTHDR CARD            00383000
+         BNE   LDREP011                NO, GO SEE IF IT IS A REP        00384000
+         B     LDTXT016                YES, DECODE AND HANDLE THIS TXT C00385000
+                                       CARD                             00386000
+         EJECT                                                          00387000
+*********************************************************************** 00388000
+*                         REP CARD HANDLING                           * 00389000
+*********************************************************************** 00390000
+LDREP001 EQU   *                                                        00391000
+         LA    COUNT,6                 PUT NUMBER OF CHARACTERS TO BE  C00392000
+                                       CONVERTED INTO COUNT REG         00393000
+         LA    FROMADDR,BUFFER+6       PUT STARTING ADDRESS OF THE     C00394000
+                                       CONVERT IN THE FROMADDR REG      00395000
+         LA    TOADDR,B28WORK+1        PUT THE TO ADDRESS OF CONVERT   C00396000
+                                       IN TOADDR REG                    00397000
+         BAL   R4,LDCNV001             GO TO CONVERT ROUTINE AND OBTAINC00398000
+                                       WHERE REP SHOULD OCCUR           00399000
+         L     REPPTR,B28WORK          PLACE ADDRESS OF WHERE REP      C00400000
+                                       SHOULD START IN REPPTR           00401000
+         A     REPPTR,RELFT            ADD RELOCATION FACTOR TO THIS   C00402000
+                                       AND GET REAL CORE ADDRESS OF    C00403000
+                                       WHERE REP SHOULD START           00404000
+         L     R4,SIZEAREA             GET MODULE SIZE                  00405000
+         A     R4,RLCOREAD             ADD RELATIVE BEGINNING           00406000
+         BCTR  R4,0                                                     00407000
+         BCTR  R4,0                    BACK UP 2 BYTES IN CORE          00408000
+         ST    R4,ENDMIN2              SAVE END ADDRESS                 00409000
+         CR    REPPTR,R4               CHECK FOR END OF MODULE          00410000
+         BH    LDREP021                ERR, PASTEND OF MODULE           00411000
+         C     REPPTR,RLCOREAD         CHECK FOR BEGINNING OF MODULE    00412000
+         BL    LDREP021                NO, BEFORE MODULE                00413000
+         LA    FROMADDR,BUFFER+16      PUT STARTING ADDRESS OF REP ON  C00414000
+                                       THE REP CARD INTO THE FROMADDR  C00415000
+                                       REG SO CONVERSION CAN BE DONE    00416000
+         SPACE 1                                                        00417000
+LDREP006 EQU   *                                                        00418000
+         LA    COUNT,4                 PUT NUMBER OF CHARACTERS TO BE  C00419000
+                                       CONERTED INTO COUNT REG          00420000
+         LA    TOADDR,B28WORK+2        PUT TO ADDRESS OF CONVERT INTO  C00421000
+                                       TOADDR REG                       00422000
+         BAL   R4,LDCNV001             GO TO CONVERT ROUTINE AND       C00423000
+                                       CONVERT TWO BYTES OF THE REP     00424000
+         MVC   0(2,REPPTR),B28WORK+2   MOVE THIS TWO BYTES OF REP TO   C00425000
+                                       WHERE IT BELONGS IN CORE         00426000
+         CLI   0(FROMADDR),C','        IS A COMMA THE NEXT CHARACTER   C00427000
+                                       ON THE REP CARD                  00428000
+         BE    LDREP016                YES, GO TO ROUTINE WHICH WILL   C00429000
+                                       SET UP TO CONVERT NEXT TWO BYTESC00430000
+                                       OF REP DATA                      00431000
+         CLI   0(FROMADDR),C' '        NO, IS THE REP FINISHED OR IS   C00432000
+                                       THERE A BLANK AS NEXT CHARACTER C00433000
+                                       ON THE REP CARD                  00434000
+         BNE   LDREP021                NO, GO TO REP CARD ERROR EXIT   C00435000
+                                       ROUTINE                          00436000
+         BAL   R4,LDIOSUB              GO TO IO SUBROUTINE AND READ    C00437000
+                                       NEXT RECORD                      00438000
+         SPACE 1                                                        00439000
+LDREP011 EQU   *                                                        00440000
+         CLC   BUFFER+1(L3),=C'REP'    IS THIS NEXT RECORD A REP CARD   00441000
+         BE    LDREP001                YES, GO TO REP CARD HANDLING    C00442000
+                                       ROUTINE                          00443000
+         B     LDRLD041                GO TO RLD CARD HANDLING ROUTINE C00444000
+                                       AND SEE IF IT IS AN RLD RECORD   00445000
+         SPACE 1                                                        00446000
+LDREP016 EQU   *                                                        00447000
+         LA    FROMADDR,1(FROMADDR)    INCREMENT FROMADDR BY ONE TO    C00448000
+                                       POINT TO NEXT TWO BYTES OF REP  C00449000
+                                       DATA                             00450000
+         LA    REPPTR,2(REPPTR)        INCREMENT REAL CORE ADDR OF REP C00451000
+                                       BY TWO TO POINT TO WHERE NEXT   C00452000
+                                       TWO BYTES OF REP DATA SHOULD GO  00453000
+         C     REPPTR,ENDMIN2          IS NEW ADDRESS STILL IN MODULE   00454000
+         BNH   LDREP006                YES,GO TO ROUTINE TO DECODE NEXTX00455000
+                                       TWO BYTES OF REP DATA            00456000
+         SPACE 1                                                        00457000
+LDREP021 EQU   *                                                        00458000
+         LA    R14,MRT202               POINT TO MESSAGE ROUTINE        00459000
+         LA    R15,16                  PUT 16 IN RETURN CODE REGISTER, C00460000
+                                       INDICATING REP CARD ERROR        00461000
+         B     LDRETMSG                GO TO ERROR EXIT LINKAGE         00462000
+         EJECT                                                          00463000
+*********************************************************************** 00464000
+**********  CONVERT SUBROUTINE USED FOR REP CARD HANDLING    ********** 00465000
+*********************************************************************** 00466000
+         SPACE 1                                                        00467000
+LDCNV001 EQU   *                                                        00468000
+         SR    CHAR,CHAR               CLEAR REGISTER WHICH WILL BE    C00469000
+                                       USED FOR SEARCH OF CHARACTER    C00470000
+                                       TABLE                            00471000
+         SPACE 1                                                        00472000
+LDCNV006 EQU   *                                                        00473000
+         NI    LDSWITCH,FIRST          ZERO FLAG WHICH TELLS WHICH BYTEC00474000
+                                       OF DATA BEING CONVERTED. ZERO   C00475000
+                                       IMPLIES 1ST BYTE, ONE - 2ND BYTE 00476000
+         SR    REPBYTE,REPBYTE         CLEAR REGISTER WHICH WILL       C00477000
+                                       CONTAIN BYTE OF REP DATA BEING  C00478000
+                                       PROCESSED                        00479000
+         SPACE 1                                                        00480000
+LDCNV011 EQU   *                                                        00481000
+         IC    REPBYTE,0(FROMADDR)     PUT CHARACTER TO BE CONVERTED   C00482000
+                                       INTO REP DATA BYTE REG           00483000
+         LA    INDEX,16                PUT 16 INTO INDEX REGISTER IN   C00484000
+                                       PREPARATION FOR SEARCH OF TABLE  00485000
+         SPACE 1                                                        00486000
+LDCNV016 EQU   *                                                        00487000
+         IC    CHAR,CHARTBL-1(INDEX)   GET A CHARACTER FROM TABLE AND  C00488000
+                                       PUT IT IN REG USED FOR SEARCH    00489000
+         CLR   CHAR,REPBYTE            DOES CHAR ON REP CARD EQUAL     C00490000
+                                       THIS CHAR FROM TABLE             00491000
+         BE    LDCNV021                YES, GO TO ROUTINE WHICH HANDLESC00492000
+                                       A SUCCESSFUL MATCH               00493000
+         BCT   INDEX,LDCNV016          TRY NEXT CHARACTER IN TABLE, IF C00494000
+                                       ANY LEFT                         00495000
+         B     LDREP021                IF NONE ARE LEFT, GO TO ROUTINE C00496000
+                                       WHICH WILL INDICATE REP CARD    C00497000
+                                       ERROR                            00498000
+         SPACE 1                                                        00499000
+LDCNV021 EQU   *                                                        00500000
+         LA    FROMADDR,1(FROMADDR)    ADVANCE FROM ADDR REG BY ONE TO C00501000
+                                       POINT TO NEXT CHARACTER TO BE   C00502000
+                                       CONVERTED                        00503000
+         BCTR  INDEX,0                 DECREMENT INDEX BY ONE AS THIS  C00504000
+                                       IS THE HEX EQUIVALENT OF EBCDIC C00505000
+                                       CHARACTER ON REP CARD            00506000
+         SPACE 1                                                        00507000
+LDCNV026 EQU   *                                                        00508000
+         TM    LDSWITCH,SECOND         HAVE TWO BYTES OF REP DATA BEEN C00509000
+                                       CONVERTED                        00510000
+         BO    LDCNV031                YES, GO TO ROUTINE WHICH WILL   C00511000
+                                       PLACE REP DATA IN SPECIFIED AREA 00512000
+         LR    R14,INDEX               SAVE FIRST CONVERSION RESULT IN C00513000
+                                       REG 14                           00514000
+         SR    REPBYTE,REPBYTE         CLEAR REGISTER USED TO CONTAIN  C00515000
+                                       BYTE OF REP DATA BEING PROCESSED 00516000
+         OI    LDSWITCH,SECOND         SET FLAG WHICH INDICATES WHICH  C00517000
+                                       BYTE OF DATA IS BEING CONVERTED C00518000
+                                       TO 1, 1 IMPLIES THIS IS 2ND BYTE 00519000
+         SLL   R14,4                   LEFT JUSTIFY FIRST CONVERTED    C00520000
+                                       BYTE IN REG 14                   00521000
+         BCT   COUNT,LDCNV011          GO CONVERT NEXT BYTE OF REP DATAC00522000
+                                       IF THERE IS ANY                  00523000
+         LA    COUNT,1                 SINCE THERE ARE NONE, SET COUNT C00524000
+                                       TO 1 SO PROCESSING WILL NOT LOOPC00525000
+                                       FOREVER BELOW                    00526000
+         SPACE 1                                                        00527000
+LDCNV031 EQU   *                                                        00528000
+         OR    R14,INDEX               COMBINE TWO CONVERSIONS TO BE   C00529000
+                                       ONE BYTE                         00530000
+         STC   R14,0(TOADDR)           PUT TWO CONVERTED BY INTO AREA  C00531000
+                                       SPECIFIED BY TO ADDR REG         00532000
+         LA    TOADDR,1(TOADDR)        BUMP TO ADDR REG BY ONE TO POINTC00533000
+                                       TO NEXT BYTE IN TOADDR FIELD     00534000
+         BCT   R7,LDCNV006             GO CONVERT NEXT CHARACTER, IF   C00535000
+                                       THERE IS ONE                     00536000
+         BR    R4                      NONE LEFT, RETURN TO CALLER      00537000
+         SPACE 3                                                        00538000
+*********************************************************************** 00539000
+*                TABLE USED TO VALIDATE REP INFORMATION               * 00540000
+*********************************************************************** 00541000
+CHARTBL  DC    C'0123456789ABCDEF'                                      00542000
+         EJECT                                                          00543000
+*********************************************************************** 00544000
+*                         RLD CARD HANDLING                           * 00545000
+*********************************************************************** 00546000
+         SPACE 1                                                        00547000
+LDRLD001 EQU   *                                                        00548000
+         SR    RLDBTCNT,RLDBTCNT       CLEAR RLD BYTE COUNT REG         00549000
+         IC    RLDBTCNT,BUFFER+11      GET RLD DATA BYTE COUNT          00550000
+         SRL   RLDBTCNT,TWICE          DIVIDE COUNT BY FOUR AND GET    C00551000
+                                       NUMBER OF POSSIBLE 4 BYTE RLD   C00552000
+                                       DATA ITEMS                       00553000
+         LA    DATAPTR,BUFFER+16       GET ADDRESS OF FIRST BYTE OF    C00554000
+                                       RLD DATA                         00555000
+         BCT   RLDBTCNT,LDRLD016       SINCE THIS IS FIRST DATA FIELD, C00556000
+                                       DECREMENT NO. OF 4 BYTE RLD DATAC00557000
+                                       ITEMS BY 1, GO DECODE RLD DATA   00558000
+         SPACE 1                                                        00559000
+LDRLD006 EQU   *                                                        00560000
+         TM    D0(DATAPTR),SAMEPTR     DOES RLD HAVE SAME R OR P PTR    00561000
+         BO    LDRLD016                BRANCH IF YES                    00562000
+         SPACE 1                                                        00563000
+LDRLD011 EQU   *                                                        00564000
+         LA    DATAPTR,D4(DATAPTR)     BUMP RLD DATA POINTER BY 4 TO   C00565000
+                                       AVOID THE ESD ID INDICATORS AND C00566000
+                                       TO POINT TO DATA FIELD           00567000
+         BCTR  RLDBTCNT,0              DECREMENT NUMBER OF 4 BYTE RLD  C00568000
+                                       DATA ITEMS BY ONE                00569000
+         SPACE 1                                                        00570000
+LDRLD016 EQU   *                                                        00571000
+         LA    DATAPTR,D4(DATAPTR)     BUMP RLD DATA POINTER BY 4       00572000
+         MVC   B28WORK+1(L3),D1(DATAPTR) GET ADDRESS THAT MUST BE      C00573000
+                                       UPDATED                          00574000
+         L     R6,B28WORK              PLACE THIS ADDRESS IN REG 6      00575000
+         A     R6,RELFT                ADD RELOCATION FACTOR            00576000
+         SPACE 1                                                        00577000
+LDRLD021 EQU   *                                                        00578000
+         TM    D0(DATAPTR),HIHALF      IS THIS AN ADCON OR CCW          00579000
+         BNZ   LDRLD036                NO, BRANCH TO DECODE NEXT RLD   C00580000
+                                       DATA ITEM IF NECESSARY           00581000
+         XC    WORK(4),WORK            CLEAR WORK AREA                  00582000
+         IC    R7,D0(DATAPTR)          GET LENGTH OF DATA ITEM          00583000
+         N     R7,FULL15               STRIP INDICATORS FROM LENGTH     00584000
+         SRL   R7,TWICE                ADJUST LENGTH                    00585000
+         EX    R7,MVC01                MOVE DATA REQUIRING UPDATE TO   C00586000
+                                       WORK AREA                        00587000
+         L     R5,WORK                 PUT DATA REQUIRING UPDATE IN    C00588000
+                                       REG 5                            00589000
+         LA    R1,3                    PLACE MAX SIZE ADDRESS THAT     C00590000
+                                       COULD BE UPDATED, THREE IMPLIES C00591000
+                                       A FOUR BYTE ADDRESS              00592000
+         SR    R1,R7                   SUBTRACT LNGTH OF ITEM FROM MAX C00593000
+                                       LNGTH, REMAINDER IS NO. OF BYTESC00594000
+                                       NOT USED, I.E. 1 EQ. 3 BYTE ADDR 00595000
+         SLL   R1,3                    TAKE REMAINDER AND CONVERT IT TOC00596000
+                                       THE BIT SHIFT REQUIRED TO RIGHT C00597000
+                                       JUSTIFY ADDR BEING WORKED ON     00598000
+         SRL   R5,D0(R1)               RIGHT JUSTIFY THE ADDRESS IN    C00599000
+                                       REG 5                            00600000
+         TM    D0(DATAPTR),RLDFLG      TEST RLD FLAG BIT- POS OR NEG    00601000
+         BO    LDRLD026                BRANCH IF NEGATIVE               00602000
+         A     R5,RELFT                ADD RELOCATION FACTOR            00603000
+         B     LDRLD031                GO TO ROUTINE THAT STORES       C00604000
+                                       UPDATED ADDRESS IN THE PROGRAM   00605000
+         SPACE 1                                                        00606000
+LDRLD026 EQU   *                                                        00607000
+         S     R5,RELFT                SUBTRACT RELOCATION FACTOR       00608000
+         SPACE 1                                                        00609000
+LDRLD031 EQU   *                                                        00610000
+         SLL   R5,D0(R1)               LEFT JUSTIFY UPDATED ADDRESS     00611000
+         ST    R5,WORK                 STORE UPDATED ADDRESS IN WORK   C00612000
+                                       AREA                             00613000
+         EX    R7,MVC02                MOVE UPDATED ADDRESS IN WORK    C00614000
+                                       AREA TO ITS HOME IN PROGRAM      00615000
+         SPACE 1                                                        00616000
+LDRLD036 EQU   *                                                        00617000
+         BCT   RLDBTCNT,LDRLD006       DECREMENT NUMBER OF 4 BYTE RLD  C00618000
+                                       DATA ITEMS BY ONE, IF THERE ARE C00619000
+                                       ANY LEFT, GO DECODE THEM         00620000
+         SPACE 1                                                        00621000
+         BAL   R4,LDIOSUB              GO TO IO SUBROUTINE AND GET     C00622000
+                                       NEXT CARD                        00623000
+         SPACE 1                                                        00624000
+LDRLD041 EQU   *                                                        00625000
+         CLC   BUFFER+1(L3),=C'RLD'    IS THIS CARD AN RLD CARD         00626000
+         BE    LDRLD001                YES, GO TO RLD CARD HANDLER      00627000
+         CLC   BUFFER+1(L3),=C'END'    IS THIS CARD AN END CARD         00628000
+         BE    LDRLD051                YES, END LOADER, GO TO FINISH   C00629000
+                                       ROUTINE                          00630000
+         SPACE 1                                                        00631000
+LDRLD046 EQU   *                                                        00632000
+         LA    R14,MRT911               POINT TO MESSAGE ROUTINE        00633000
+         LA    R1,NAME(PLISTREG)        POINT TO MODULE NAME            00634000
+         LA    R15,24                  PUT 24 IN RETURN CODE REGISTER, C00635000
+                                       INDICATING ORDER ERROR OR       C00636000
+                                       GARBAGE                          00637000
+         B     LDRETMSG                GO TO ERROR EXIT LINKAGE         00638000
+         SPACE 1                                                        00639000
+LDRLD051 EQU   *                                                        00640000
+         L     R1,RLCOREAD             PLACE ADDRESS OF WHERE MODULE   C00641000
+                                       WAS LOADED IN REGISTER ONE       00642000
+         L     R0,SIZEAREA             GET SIZE OF THE MODULE           00643000
+         B     LDRET00                 GO TO SUCCESSFUL EXIT LINKAGE    00644000
+MVC01    MVC   WORK(0),D0(R6)          MOVE ADDRESS TO WORK AREA        00645000
+MVC02    MVC   D0(0,R6),WORK           MOVE UPDATED ADDRESS TO ITS     C00646000
+                                       PLACE IN PROGRAM                 00647000
+         EJECT                                                          00648000
+*********************************************************************** 00649000
+*                           IO SUBROUTINE                             * 00650000
+*********************************************************************** 00651000
+LDIOSUB  EQU   *                                                        00652000
+         LA    DCBPTR,OLTDCB           GET POINTER TO DCB FOR OLT      C00653000
+                                       LIBRARY IN DCB REG               00654000
+         TM    48(DCBPTR),OFLGS        IS OLT LIB OPEN                  00655000
+         BO    LDIO0010                YES, BYPASS DOING OPEN           00656000
+         OPEN  ((DCBPTR),(INPUT))      ATTEMPT TO OPEN OLT DCB          00657000
+         TM    48(DCBPTR),OFLGS        DID OLT LIB OPEN                 00658000
+         BO    LDIO0010                YES, CONTINUE                    00659000
+         LA    R1,=C'OLTCDSDD'         POINT TO DD CARD NAME            00660000
+LDIO0005 EQU   *                                                        00661000
+         LA    R14,MRT901              POINT TO MESSAGE ROUTINE         00662000
+         LA    R15,12                  SET MODULE NOT FOUND RC          00663000
+         NI    LDSWITCH,ALL-CPTSW      TURN OFF COMPUTE SWITCH          00664000
+         B     LDRETMSG                GO TO ERROR EXIT LINKAGE         00665000
+         SPACE 1                                                        00666000
+LDIO0010 EQU   *                                                        00667000
+         USING DEBBASIC,DEBREG     SET UP ADDRESSABILITY                00668000
+         L     DEBREG,D44(DCBPTR)  GET ASSOCIATED DEB ADDRESS           00669000
+         LA    DEBREG,D0(DEBREG)   CLEAR HIGH ORDER BYTE                00670000
+         TM    DEBFLGS1,DEBAPFIN   IS LIBRARY AUTHORIZED                00671000
+         BO    LDIO0015            YES,CONTINUE LOAD REQ                00672000
+LDIO0013 CLOSE ((DCBPTR))          CLOSE OUT THE DATA SET               00673000
+         LA    R15,8               SET THE READ ERROR RETURNCODE        00674000
+         B     MRT899              LEAVE MODULE                         00675000
+LDIO0015 EQU   *                                                        00676000
+         TM    FLAG(PLISTREG),SYMBOLIC IS THIS A SYMBOLIC CDS REQUEST   00677000
+         BNO   LDIO0020                NO, PERFORM REQUESTED LOAD       00678000
+         LA    DCBPTR,SYMDCB           GET POINTER TO DCB FOR SYMBOLIC C00679000
+                                       CDS IN DCB REG                   00680000
+         TM    48(DCBPTR),OFLGS        SEE IF ALREADY OPENED.           00681000
+         BO    LDIO0020                IF ON ITS OPEN ALREADY           00682000
+         OPEN  ((DCBPTR),(INPUT))      ATTEMPT TO OPEN OLT DCB          00683000
+         LA    R1,=C'SYMSYM  '         POINT TO DD CARD NAME            00684000
+         TM    48(DCBPTR),OFLGS        IS SYMBOLIC DCB OPEN             00685000
+         BNO   LDIO0005                NO, INDICATE SYMSYM DD CARD     C00686000
+                                       FAILED TO OPEN                   00687000
+         L     DEBREG,D44(DCBPTR)  GET ASSOCIATED DEB ADDRESS           00688000
+         LA    DEBREG,D0(DEBREG)   CLEAR HIGH ORDER BYTE                00689000
+         TM    DEBFLGS1,DEBAPFIN   IS LIBRARY AUTHORIZED                00690000
+         BNO   LDIO0013            NO, PRINT EIROR MESSAGE              00691000
+         DROP  DEBREG                                                   00692000
+         SPACE 1                                                        00693000
+LDIO0020 EQU   *                                                        00694000
+         TM    FLAG(PLISTREG),CMPTE    IS CALLER ASKING FOR A COMPUTE   00695000
+         BNO   LDIO0040                NO, READ NEXT RECORD OF MODULE   00696000
+         TM    LDSWITCH,CMPTSTRT       HAS COMPUTE BEEN STARTED         00697000
+         BO    LDIO0040                YES, GO TO ROUTINE TO READ NEXT C00698000
+                                       RECORD                           00699000
+         LA    NAMEPTR,NAME(PLISTREG)  GET POINTER TO REQUESTED DATA   C00700000
+                                       SET MEMBER NAME                  00701000
+         FIND  (DCBPTR),(NAMEPTR),D    ISSUE FIND FOR REQUESTED MEMBER  00702000
+         OI    LDSWITCH,CMPTSTRT       INDICATE COMPUTE HAS STARTED     00703000
+         LTR   R15,R15                 WAS FIND SUCCESSFUL              00704000
+         BZ    LDIO0050                SUCCESSFUL FIND, GO READ FIRST  C00705000
+                                       CARD IN MODULE                   00706000
+         SPACE 1                                                        00707000
+LDIO0030 EQU   *                                                        00708000
+         SR    R0,R0                   CLEAR REGISTER ZERO INDICATING  C00709000
+                                       MODULE NOT FOUND                 00710000
+         LA    R15,12                  PUT 0C IN REG 15 TO INDICATE    C00711000
+                                       MODULE NOT FOUND                 00712000
+         B     LDRESET                 RETURN TO CALLER                 00713000
+         SPACE 1                                                        00714000
+LDIO0040 EQU   *                                                        00715000
+         LA    TTRZPTR,TTRZ            GET POINTER TO TTRZ FOR POINT    00716000
+         POINT (DCBPTR),(TTRZPTR)      POINT TO RECORD THAT MUST BE    C00717000
+                                       READ                             00718000
+         SPACE 1                                                        00719000
+LDIO0050 EQU   *                                                        00720000
+         TM    LDSWITCH,TWOREADS       IS THIS REQUEST FOR TWO READS    00721000
+         BNO   LDIO0060                NO, SET UP TO PERFORM ONE READ   00722000
+         L     AREAPTR,RDBUFAD         GET POINTER TO BUFFER AREA IN   C00723000
+                                       AREA POINTER REG                 00724000
+         L     LNGTHREG,RDLNGTH        GET LENGTH OF READ IN LENGTH REG 00725000
+         B     LDIO0070                GO TO READ ROUTINE               00726000
+         SPACE 1                                                        00727000
+LDIO0060 EQU   *                                                        00728000
+         LA    AREAPTR,BUFFER          GET POINTER TO MY BUFFER AREA   C00729000
+                                       IN  AREA POINTER REG             00730000
+         LA    LNGTHREG,80             PUT LENGTH OF 80 IN LENGTH REG   00731000
+         SPACE 1                                                        00732000
+LDIO0070 EQU   *                                                        00733000
+         READ  DECB,SF,(DCBPTR),(AREAPTR),(LNGTHREG) READ A RECORD      00734000
+         CHECK DECB                    WAIT UNTIL READ COMPLETES        00735000
+         TM    LDSWITCH,IOERROR        WAS THERE AN I/O ERROR           00736000
+         BNO   LDIO0075                NO, CONTINUE NORMALLY            00737000
+         LA    R14,MRT205              POINT TO MESSAGE ROUTINE         00738000
+         NI    LDSWITCH,ALL-IOERROR    CLEAR I/O ERROR FLAG             00739000
+         LA    R15,8                   PLACE 08 RETURN CODE IN REG 15   00740000
+         B     LDRETMSG                RETURN TO CALLER INDICATING     C00741000
+                                       READ ERROR                       00742000
+         SPACE 1                                                        00743000
+LDIO0075 EQU   *                                                        00744000
+         NOTE  (DCBPTR)                FIND OUT WHERE THIS READ WAS     00745000
+         ST    R1,TTRZ                 SAVE IT TO PERFORM NEXT READ     00746000
+         MVI   TTRZ+3,X'01'            UPDATE TTRZ SO NEXT RECORD MAY  C00747000
+                                       BE READ                          00748000
+         TM    LDSWITCH,TWOREADS       IS THIS A REQUEST TO DO TWO     C00749000
+                                       READS                            00750000
+         BNO   LDIO0080                GO TO ROUTINE WHICH RETURNS TO  C00751000
+                                       CALLER                           00752000
+         NI    LDSWITCH,ALL-TWOREADS   CLEAR TWO READ REQUEST FLAG SO  C00753000
+                                       NEXT READ WILL BE LAST           00754000
+         B     LDIO0040                GO TO ROUTINE WHICH WILL POINT  C00755000
+                                       TO NEXT RECORD AND READ IT       00756000
+         SPACE 1                                                        00757000
+LDIO0080 EQU   *                                                        00758000
+         BR    R4                      RETURN TO CALLER                 00759000
+         EJECT                                                          00760000
+*********************************************************************** 00761000
+*                    RETURN TO CALLER EXIT ROUTINE                    * 00762000
+*********************************************************************** 00763000
+CMPTDONE EQU   *                                                        00764000
+         L     R1,ASSEMAD              GET THE DELTA INTO CORE FOR MOD. 00765000
+         A     R1,RLCOREAD             ADD BEGINNING OF AREA            00766000
+         LR    R0,R7                   PLACE SIZE OF MODULE IN REGISTERC00767000
+                                       ZERO                             00768000
+         B     LDRET00                 INDICATE TO CALLER SUCCESSFUL   C00769000
+                                       COMPUTE                          00770000
+         SPACE 1                                                        00771000
+LDEXT006 EQU   *                                                        00772000
+         A     R7,ONE                  ADD ONE TO SIZE OF MODULE        00773000
+         ST    R7,SIZEAREA             PLACE SIZE OF MODULE IN SIZE    C00774000
+                                       AREA                             00775000
+         NI    SIZEAREA+3,ALL-TMFLG    INDICATE TO TRANS. MGR. THAT    C00776000
+                                       THIS IS A NEW OLT BY SETTING    C00777000
+                                       LAST BIT IN MOD. SIZE FLD TO 0   00778000
+         L     R0,SIZEAREA             PLACE SIZE OF MODULE IN REGISTERC00779000
+                                       ZERO                             00780000
+         SPACE 1                                                        00781000
+LDRET00  EQU   *                                                        00782000
+         SR    R15,R15                 INDICATE TO CALLER SUCCESSFUL   C00783000
+                                       LOAD                             00784000
+         SPACE 1                                                        00785000
+LDRETERR EQU   *                                                        00786000
+         TM    FLAG(PLISTREG),CMPTE    IS THIS A COMPUTE REQUEST        00787000
+         BO    LDEXTRET                YES, EVERYTHING OK               00788000
+LDRESET  EQU   *                                                        00789000
+         NI    LDSWITCH,ALL-CPTSW      CLEAR INTERNAL COMPUTE FLAG      00790000
+         SPACE 1                                                        00791000
+LDEXTRET EQU   *                                                        00792000
+         ST    R15,RETCODE             SAVE RET CODE FOR DEBUGGING      00793000
+         B     C13C0091                EXIT LOADER MODULE               00794000
+         EJECT                                                          00795000
+*********************************************************************** 00796000
+*                           EODAD ROUTINE                             * 00797000
+*********************************************************************** 00798000
+ENDATA   EQU   *                                                        00799000
+         CLOSE ((DCBPTR))              CLOSE OLT LIB DCB                00800000
+         LA    R14,MRT203               POINT TO MESSAGE ROUTINE        00801000
+         LA    R15,24                  PLACE 24 RETURN CODE IN REG 15   00802000
+         B     LDRETMSG                RETURN TO CALLER INDICATING     C00803000
+                                       ORDER ERROR OR GARBAGE           00804000
+*********************************************************************** 00805000
+*                           SYNAD ROUTINE                             * 00806000
+*********************************************************************** 00807000
+ERROR    EQU   *                                                        00808000
+         OI    LDSWITCH,IOERROR        INDICATE TO SELF THAT AN I/O    C00809000
+                                       ERROR HAS OCCURRED               00810000
+         CLOSE ((DCBPTR))              CLOSE OLT LIB DCB                00811000
+         BR    R14                     RETURN TO CALLER                 00812000
+         EJECT                                                          00813000
+*********************************************************************** 00814000
+*                              DECLARES                               * 00815000
+*********************************************************************** 00816000
+SAVEAREA DC    18F'0'                  SAVE AREA                        00817000
+BUFFER   DC    20F'0'                  READ BUFFER                      00818000
+RLCOREAD DC    F'0'                    REAL CORE ADDRESS OF MODULE      00819000
+ASSEMAD  DC    F'0'                    ASSEMBLED ADDRESS OF MODULE      00820000
+B28WORK  DC    F'0'                    FULLWORD WORK AREA               00821000
+WORK     DC    F'0'                    FULLWORD WORK AREA               00822000
+RELFT    DC    F'0'                    RELOCATION FACTOR                00823000
+RDBUFAD  DC    F'0'                    BUFFER ADDRESS                   00824000
+RDLNGTH  DC    F'0'                    LENGTH OF READ                   00825000
+RETCODE  DC    F'0'                    RETURN CODE AREA                 00826000
+FULL15   DC    F'15'                   FULLWORD CONSTANT EQUAL 15       00827000
+ONE      DC    F'1'                    FULLWORD CONSTANT EQUAL 1        00828000
+ONE1     EQU   ONE+2                   HALFWORD CONSTANT EQUAL 1        00829000
+TTRZ     DC    F'0'                    TTRZ FOR READ ROUTINE            00830000
+SIZEAREA DC    F'0'                    SIZE WORK AREA                   00831000
+ENDMIN2  DC    F'0'                    END OF MODULE                    00832000
+LDSWITCH DC    X'00'                   INTERNAL FLAGS                   00833000
+*********************************************************************** 00834000
+*                          SYMBOLIC CDS DCB                           * 00835000
+*********************************************************************** 00836000
+SYMDCB   DCB   BLKSIZE=3600,LRECL=80,DDNAME=SYMSYM,DSORG=PO,           C00837000
+               MACRF=R,RECFM=UT,EODAD=ENDATA,SYNAD=ERROR                00838000
+*********************************************************************** 00839000
+*                           OLT LIB DCB                               * 00840000
+*********************************************************************** 00841000
+OLTDCB   DCB   BLKSIZE=3600,LRECL=80,DDNAME=OLTCDSDD,DSORG=PO,         C00842000
+               MACRF=R,RECFM=UT,EODAD=ENDATA,SYNAD=ERROR                00843000
+*********************************************************************** 00844000
+*                        DEB AREA DSECT                               * 00845000
+*********************************************************************** 00846000
+         IEZDEB                                                         00847000
+ISTCC013 CSECT                                                          00848000
+         LTORG                                                          00849000
+*LDRETMSG:                                                         0033 00850000
+*   RC=RCGEN;                       /* SAVE RETURNCODE PASSED        */ 00851000
+LDRETMSG LR    RC,RCGEN                                            0033 00852000
+*   GO TO EXITPTR;                  /* GO TO ROUTINE POINTED TO      */ 00853000
+         BR    EXITPTR                                             0034 00854000
+*MRT202:                                                           0035 00855000
+*                                                                  0035 00856000
+*   /*****************************************************************/ 00857000
+*   /*                                                               */ 00858000
+*   /* TCEC MSGN(202) INVOKED                                        */ 00859000
+*   /*                                                               */ 00860000
+*   /*****************************************************************/ 00861000
+*                                                                  0035 00862000
+*   $TCECM='1'B;                    /* SET TCEC SW IN RCA            */ 00863000
+MRT202   OI    $TCECM(WAPTR),B'00000001'                           0035 00864000
+*   R1=ADDR($TCA04);                /* SET UP PARM LIST $TR          */ 00865000
+         LA    R1,$TCA04                                           0036 00866000
+*   CALL #EXIT;                     /* CALL CECOM                    */ 00867000
+         L     @15,#EXITA(,WAPTR)                                  0037 00868000
+         BALR  @14,@15                                             0037 00869000
+*   DCL                                                            0038 00870000
+*     1 $TCA04,                     /* TCEC PARM LIST                */ 00871000
+*      2 $TCB04 FIXED(32) INIT(202),/* MSG NUMBER                    */ 00872000
+*      2 $TCC04 FIXED(32) INIT(0),  /* INCT LEN                      */ 00873000
+*      2 $TCD04 BIT(8) INIT('00000000'B),/* FLAG                     */ 00874000
+*      2 $TCE04 CHAR(4) INIT('FFFFFFFF'X);/* MSSAGE MASK             */ 00875000
+*   GO TO C13C0090;                 /* EXIT THE LOADER               */ 00876000
+         B     C13C0090                                            0039 00877000
+*MRT203:                                                           0040 00878000
+*                                                                  0040 00879000
+*   /*****************************************************************/ 00880000
+*   /*                                                               */ 00881000
+*   /* TCEC MSGN(203) INVOKED                                        */ 00882000
+*   /*                                                               */ 00883000
+*   /*****************************************************************/ 00884000
+*                                                                  0040 00885000
+*   $TCECM='1'B;                    /* SET TCEC SW IN RCA            */ 00886000
+MRT203   OI    $TCECM(WAPTR),B'00000001'                           0040 00887000
+*   R1=ADDR($TCA05);                /* SET UP PARM LIST $TR          */ 00888000
+         LA    R1,$TCA05                                           0041 00889000
+*   CALL #EXIT;                     /* CALL CECOM                    */ 00890000
+         L     @15,#EXITA(,WAPTR)                                  0042 00891000
+         BALR  @14,@15                                             0042 00892000
+*   DCL                                                            0043 00893000
+*     1 $TCA05,                     /* TCEC PARM LIST                */ 00894000
+*      2 $TCB05 FIXED(32) INIT(203),/* MSG NUMBER                    */ 00895000
+*      2 $TCC05 FIXED(32) INIT(0),  /* INCT LEN                      */ 00896000
+*      2 $TCD05 BIT(8) INIT('00000000'B),/* FLAG                     */ 00897000
+*      2 $TCE05 CHAR(4) INIT('FFFFFFFF'X);/* MSSAGE MASK             */ 00898000
+*   GO TO C13C0090;                 /* EXIT THE LOADER               */ 00899000
+         B     C13C0090                                            0044 00900000
+*MRT205:                                                           0045 00901000
+*                                                                  0045 00902000
+*   /*****************************************************************/ 00903000
+*   /*                                                               */ 00904000
+*   /* TCEC MSGN(205) INVOKED                                        */ 00905000
+*   /*                                                               */ 00906000
+*   /*****************************************************************/ 00907000
+*                                                                  0045 00908000
+*   $TCECM='1'B;                    /* SET TCEC SW IN RCA            */ 00909000
+MRT205   OI    $TCECM(WAPTR),B'00000001'                           0045 00910000
+*   R1=ADDR($TCA06);                /* SET UP PARM LIST $TR          */ 00911000
+         LA    R1,$TCA06                                           0046 00912000
+*   CALL #EXIT;                     /* CALL CECOM                    */ 00913000
+         L     @15,#EXITA(,WAPTR)                                  0047 00914000
+         BALR  @14,@15                                             0047 00915000
+*   DCL                                                            0048 00916000
+*     1 $TCA06,                     /* TCEC PARM LIST                */ 00917000
+*      2 $TCB06 FIXED(32) INIT(205),/* MSG NUMBER                    */ 00918000
+*      2 $TCC06 FIXED(32) INIT(0),  /* INCT LEN                      */ 00919000
+*      2 $TCD06 BIT(8) INIT('00000000'B),/* FLAG                     */ 00920000
+*      2 $TCE06 CHAR(4) INIT('FFFFFFFF'X);/* MSSAGE MASK             */ 00921000
+*   GO TO C13C0090;                 /* EXIT THE LOADER               */ 00922000
+         B     C13C0090                                            0049 00923000
+*MRT899:                                                           0050 00924000
+*                                                                  0050 00925000
+*   /*****************************************************************/ 00926000
+*   /*                                                               */ 00927000
+*   /* TCEC MSGN(899) INVOKED                                        */ 00928000
+*   /*                                                               */ 00929000
+*   /*****************************************************************/ 00930000
+*                                                                  0050 00931000
+*   $TCECM='1'B;                    /* SET TCEC SW IN RCA            */ 00932000
+MRT899   OI    $TCECM(WAPTR),B'00000001'                           0050 00933000
+*   R1=ADDR($TCA07);                /* SET UP PARM LIST $TR          */ 00934000
+         LA    R1,$TCA07                                           0051 00935000
+*   CALL #EXIT;                     /* CALL CECOM                    */ 00936000
+         L     @15,#EXITA(,WAPTR)                                  0052 00937000
+         BALR  @14,@15                                             0052 00938000
+*   DCL                                                            0053 00939000
+*     1 $TCA07,                     /* TCEC PARM LIST                */ 00940000
+*      2 $TCB07 FIXED(32) INIT(899),/* MSG NUMBER                    */ 00941000
+*      2 $TCC07 FIXED(32) INIT(0),  /* INCT LEN                      */ 00942000
+*      2 $TCD07 BIT(8) INIT('00000000'B),/* FLAG                     */ 00943000
+*      2 $TCE07 CHAR(4) INIT('FFFFFFFF'X);/* MSSAGE MASK             */ 00944000
+*   GO TO C13C0090;                 /* RETURN TO CALLER WITH A BAD 0054 00945000
+*                                      RETURN CODE                   */ 00946000
+         B     C13C0090                                            0054 00947000
+*MRT901:                                                           0055 00948000
+*   $INBUFR(1:8)=SUBCHAR;           /* PUT SUB CHAR. IN BUFFER       */ 00949000
+*                                                                  0055 00950000
+MRT901   MVC   $INBUFR(8,WAPTR),SUBCHAR(R1)                        0055 00951000
+*   /*****************************************************************/ 00952000
+*   /*                                                               */ 00953000
+*   /* TCEC MSGN(901)SUB(YES) INVOKED                                */ 00954000
+*   /*                                                               */ 00955000
+*   /*****************************************************************/ 00956000
+*                                                                  0056 00957000
+*   $TCECM='1'B;                    /* SET TCEC SW IN RCA            */ 00958000
+         OI    $TCECM(WAPTR),B'00000001'                           0056 00959000
+*   R1=ADDR($TCA08);                /* SET UP PARM LIST $TR          */ 00960000
+         LA    R1,$TCA08                                           0057 00961000
+*   CALL #EXIT;                     /* CALL CECOM                    */ 00962000
+         L     @15,#EXITA(,WAPTR)                                  0058 00963000
+         BALR  @14,@15                                             0058 00964000
+*   DCL                                                            0059 00965000
+*     1 $TCA08,                     /* TCEC PARM LIST                */ 00966000
+*      2 $TCB08 FIXED(32) INIT(901),/* MSG NUMBER                    */ 00967000
+*      2 $TCC08 FIXED(32) INIT(0),  /* INCT LEN                      */ 00968000
+*      2 $TCD08 BIT(8) INIT('10000000'B),/* FLAG                     */ 00969000
+*      2 $TCE08 CHAR(4) INIT('FFFFFFFF'X);/* MSSAGE MASK             */ 00970000
+*   GO TO C13C0090;                 /* EXIT THE LOADER               */ 00971000
+         B     C13C0090                                            0060 00972000
+*MRT911:                                                           0061 00973000
+*   $INBUFR(1:8)=SUBCHAR;           /* PUT SUB CHAR. IN BUFFER       */ 00974000
+*                                                                  0061 00975000
+MRT911   MVC   $INBUFR(8,WAPTR),SUBCHAR(R1)                        0061 00976000
+*   /*****************************************************************/ 00977000
+*   /*                                                               */ 00978000
+*   /* TCEC MSGN(911)SUB(YES) INVOKED                                */ 00979000
+*   /*                                                               */ 00980000
+*   /*****************************************************************/ 00981000
+*                                                                  0062 00982000
+*   $TCECM='1'B;                    /* SET TCEC SW IN RCA            */ 00983000
+         OI    $TCECM(WAPTR),B'00000001'                           0062 00984000
+*   R1=ADDR($TCA09);                /* SET UP PARM LIST $TR          */ 00985000
+         LA    R1,$TCA09                                           0063 00986000
+*   CALL #EXIT;                     /* CALL CECOM                    */ 00987000
+         L     @15,#EXITA(,WAPTR)                                  0064 00988000
+         BALR  @14,@15                                             0064 00989000
+*   DCL                                                            0065 00990000
+*     1 $TCA09,                     /* TCEC PARM LIST                */ 00991000
+*      2 $TCB09 FIXED(32) INIT(911),/* MSG NUMBER                    */ 00992000
+*      2 $TCC09 FIXED(32) INIT(0),  /* INCT LEN                      */ 00993000
+*      2 $TCD09 BIT(8) INIT('10000000'B),/* FLAG                     */ 00994000
+*      2 $TCE09 CHAR(4) INIT('FFFFFFFF'X);/* MSSAGE MASK             */ 00995000
+*C13C0090:                                                         0066 00996000
+*   RCGEN=RC;                       /* RESTORE RETURN TO BE GIVEN    */ 00997000
+C13C0090 LR    RCGEN,RC                                            0066 00998000
+*   GEN( NI LDSWITCH,ALL-CPTSW );   /* RESET THE COMPUTE REQUEST     */ 00999000
+          NI LDSWITCH,ALL-CPTSW                                         01000000
+*C13C0091:                                                         0068 01001000
+*   SAVPTR=SVECC013(2);             /* RESTORE SAVEAREA PTR          */ 01002000
+C13C0091 L     SAVPTR,SVECC013+4(,WAPTR)                           0068 01003000
+*   RETURN;                                                        0069 01004000
+@EL00001 DS    0H                                                  0069 01005000
+@EF00001 DS    0H                                                  0069 01006000
+@ER00001 L     @14,12(,@13)                                        0069 01007000
+         LM    @02,@12,28(@13)                                     0069 01008000
+         BR    @14                                                 0069 01009000
+*   END ISTCC013;                   /* END OF THE OS/VS LOADER       */ 01010000
+@DATA    DS    0H                                                       01011000
+         DS    0F                                                       01012000
+         DS    0F                                                       01013000
+         DS    0D                                                       01014000
+$TCA04   DS    CL13                                                     01015000
+         ORG   $TCA04                                                   01016000
+$TCB04   DC    A(202)                                                   01017000
+$TCC04   DC    A(0)                                                     01018000
+$TCD04   DC    B'00000000'                                              01019000
+$TCE04   DC    X'FFFFFFFF'                                              01020000
+         ORG   $TCA04+13                                                01021000
+         DS    CL3                                                      01022000
+$TCA05   DS    CL13                                                     01023000
+         ORG   $TCA05                                                   01024000
+$TCB05   DC    A(203)                                                   01025000
+$TCC05   DC    A(0)                                                     01026000
+$TCD05   DC    B'00000000'                                              01027000
+$TCE05   DC    X'FFFFFFFF'                                              01028000
+         ORG   $TCA05+13                                                01029000
+         DS    CL3                                                      01030000
+$TCA06   DS    CL13                                                     01031000
+         ORG   $TCA06                                                   01032000
+$TCB06   DC    A(205)                                                   01033000
+$TCC06   DC    A(0)                                                     01034000
+$TCD06   DC    B'00000000'                                              01035000
+$TCE06   DC    X'FFFFFFFF'                                              01036000
+         ORG   $TCA06+13                                                01037000
+         DS    CL3                                                      01038000
+$TCA07   DS    CL13                                                     01039000
+         ORG   $TCA07                                                   01040000
+$TCB07   DC    A(899)                                                   01041000
+$TCC07   DC    A(0)                                                     01042000
+$TCD07   DC    B'00000000'                                              01043000
+$TCE07   DC    X'FFFFFFFF'                                              01044000
+         ORG   $TCA07+13                                                01045000
+         DS    CL3                                                      01046000
+$TCA08   DS    CL13                                                     01047000
+         ORG   $TCA08                                                   01048000
+$TCB08   DC    A(901)                                                   01049000
+$TCC08   DC    A(0)                                                     01050000
+$TCD08   DC    B'10000000'                                              01051000
+$TCE08   DC    X'FFFFFFFF'                                              01052000
+         ORG   $TCA08+13                                                01053000
+         DS    CL3                                                      01054000
+$TCA09   DS    CL13                                                     01055000
+         ORG   $TCA09                                                   01056000
+$TCB09   DC    A(911)                                                   01057000
+$TCC09   DC    A(0)                                                     01058000
+$TCD09   DC    B'10000000'                                              01059000
+$TCE09   DC    X'FFFFFFFF'                                              01060000
+         ORG   $TCA09+13                                                01061000
+@00      EQU   00                      EQUATES FOR REGISTERS 0-15       01062000
+@01      EQU   01                                                       01063000
+@02      EQU   02                                                       01064000
+@03      EQU   03                                                       01065000
+@04      EQU   04                                                       01066000
+@05      EQU   05                                                       01067000
+@06      EQU   06                                                       01068000
+@07      EQU   07                                                       01069000
+@08      EQU   08                                                       01070000
+@09      EQU   09                                                       01071000
+@10      EQU   10                                                       01072000
+@11      EQU   11                                                       01073000
+@12      EQU   12                                                       01074000
+@13      EQU   13                                                       01075000
+@14      EQU   14                                                       01076000
+@15      EQU   15                                                       01077000
+WAPTR    EQU   @02                                                      01078000
+R1       EQU   @01                                                      01079000
+EXITPTR  EQU   @14                                                      01080000
+SAVPTR   EQU   @13                                                      01081000
+RCGEN    EQU   @15                                                      01082000
+RC       EQU   @10                                                      01083000
+TOLTEPWA EQU   0                                                        01084000
+$CDA     EQU   TOLTEPWA+100                                             01085000
+$RCA     EQU   $CDA+44                                                  01086000
+$OLTPTR  EQU   $CDA+52                                                  01087000
+$HIMOREC EQU   $CDA+60                                                  01088000
+$COMMFLG EQU   TOLTEPWA+224                                             01089000
+$FLAG8   EQU   $COMMFLG+7                                               01090000
+$TCECM   EQU   $FLAG8                                                   01091000
+$INBUFR  EQU   TOLTEPWA+2104                                            01092000
+#EXITA   EQU   TOLTEPWA+2632                                            01093000
+$CCOMDAT EQU   TOLTEPWA+2644                                            01094000
+$CFLGS   EQU   $CCOMDAT+16                                              01095000
+$24FEMSG EQU   TOLTEPWA+2681                                            01096000
+$24CATMG EQU   $24FEMSG+11                                              01097000
+@NM00022 EQU   TOLTEPWA+2776                                            01098000
+$OUNTPTR EQU   @NM00022+4                                               01099000
+$NSPTR   EQU   $OUNTPTR                                                 01100000
+$NSCNT   EQU   @NM00022+10                                              01101000
+$ENXX    EQU   @NM00022+15                                              01102000
+$IMITX   EQU   $ENXX                                                    01103000
+SVECC013 EQU   TOLTEPWA+3232                                            01104000
+SVEIC003 EQU   TOLTEPWA+3592                                            01105000
+SVESC022 EQU   TOLTEPWA+3736                                            01106000
+SVECC011 EQU   TOLTEPWA+4024                                            01107000
+#EXIT    EQU   0                                                        01108000
+SUBCHAR  EQU   0                                                        01109000
+BACKSAVE EQU   0                                                        01110000
+SVECC012 EQU   SVESC022                                                 01111000
+SVEIC00A EQU   SVEIC003                                                 01112000
+SVEIC004 EQU   SVEIC003                                                 01113000
+SVEIC005 EQU   SVEIC003                                                 01114000
+SVESC02A EQU   SVESC022                                                 01115000
+SVESC02B EQU   SVESC022                                                 01116000
+SVESC02D EQU   SVESC022                                                 01117000
+SVESC02E EQU   SVESC022                                                 01118000
+SVESC02F EQU   SVECC013                                                 01119000
+SVESC024 EQU   SVESC022                                                 01120000
+SVESC025 EQU   SVESC022                                                 01121000
+SVESC027 EQU   SVESC022                                                 01122000
+SVESC029 EQU   SVESC022                                                 01123000
+SVESC031 EQU   SVECC013                                                 01124000
+SVESC032 EQU   SVECC011                                                 01125000
+SVETC037 EQU   SVEIC003                                                 01126000
+         AGO   .@UNREFD                START UNREFERENCED COMPONENTS    01127000
+SVECC010 EQU   TOLTEPWA+3952                                            01128000
+SVETC035 EQU   TOLTEPWA+3880                                            01129000
+SVESC030 EQU   TOLTEPWA+3808                                            01130000
+SVESC020 EQU   TOLTEPWA+3664                                            01131000
+SVEIC002 EQU   TOLTEPWA+3520                                            01132000
+SVECC014 EQU   TOLTEPWA+3376                                            01133000
+SVESC120 EQU   TOLTEPWA+3304                                            01134000
+SVESC033 EQU   TOLTEPWA+3160                                            01135000
+@NM00024 EQU   TOLTEPWA+2980                                            01136000
+$RPLERR  EQU   TOLTEPWA+2977                                            01137000
+@NM00023 EQU   TOLTEPWA+2976                                            01138000
+$R13PR3  EQU   TOLTEPWA+2972                                            01139000
+$CEINT2  EQU   TOLTEPWA+2968                                            01140000
+$CEINT1  EQU   TOLTEPWA+2964                                            01141000
+$MSGGET  EQU   TOLTEPWA+2960                                            01142000
+$ACQLIST EQU   TOLTEPWA+2956                                            01143000
+$R4SAVE1 EQU   TOLTEPWA+2952                                            01144000
+$CLSISS  EQU   TOLTEPWA+2950                                            01145000
+$CLSCNT  EQU   TOLTEPWA+2948                                            01146000
+$CUTABLE EQU   TOLTEPWA+2868                                            01147000
+$BUFSZ2  EQU   TOLTEPWA+2864                                            01148000
+$RESID2  EQU   TOLTEPWA+2860                                            01149000
+$OLTCCW2 EQU   TOLTEPWA+2856                                            01150000
+$ENDBFR2 EQU   TOLTEPWA+2852                                            01151000
+$1STBFR2 EQU   TOLTEPWA+2848                                            01152000
+$TECB2   EQU   TOLTEPWA+2844                                            01153000
+$BUFSZ1  EQU   TOLTEPWA+2840                                            01154000
+$RESID1  EQU   TOLTEPWA+2836                                            01155000
+$OLTCCW1 EQU   TOLTEPWA+2832                                            01156000
+$ENDBFR1 EQU   TOLTEPWA+2828                                            01157000
+$1STBFR1 EQU   TOLTEPWA+2824                                            01158000
+$TECB1   EQU   TOLTEPWA+2820                                            01159000
+$WAITIME EQU   TOLTEPWA+2816                                            01160000
+$TRTN#   EQU   TOLTEPWA+2815                                            01161000
+$WIODEV  EQU   TOLTEPWA+2814                                            01162000
+$RQSTSZE EQU   TOLTEPWA+2812                                            01163000
+$RQSTPTR EQU   TOLTEPWA+2808                                            01164000
+$R4SAVE  EQU   TOLTEPWA+2804                                            01165000
+$PARTADR EQU   TOLTEPWA+2800                                            01166000
+$TBSDATA EQU   TOLTEPWA+2796                                            01167000
+$CTWIDTH EQU   TOLTEPWA+2795                                            01168000
+$CTLINE  EQU   TOLTEPWA+2794                                            01169000
+$APWIDTH EQU   TOLTEPWA+2793                                            01170000
+$APLINE  EQU   TOLTEPWA+2792                                            01171000
+$INDEX   EQU   $IMITX                                                   01172000
+$UMXX    EQU   @NM00022+14                                              01173000
+$NSXX    EQU   @NM00022+12                                              01174000
+$ATACNT  EQU   $NSCNT                                                   01175000
+$CTR     EQU   @NM00022+8                                               01176000
+$ATAPTR  EQU   $NSPTR                                                   01177000
+$DDRPTR  EQU   @NM00022                                                 01178000
+$DTORESP EQU   TOLTEPWA+2712                                            01179000
+$APNAME  EQU   TOLTEPWA+2704                                            01180000
+$24SYMNE EQU   $24CATMG+4                                               01181000
+$24DEVAD EQU   $24CATMG                                                 01182000
+$24RTN#  EQU   $24FEMSG+8                                               01183000
+$ESECTID EQU   $24FEMSG                                                 01184000
+$24FLGS  EQU   TOLTEPWA+2680                                            01185000
+$24SAVE2 EQU   TOLTEPWA+2676                                            01186000
+$24SAVE1 EQU   TOLTEPWA+2672                                            01187000
+$24UNADR EQU   TOLTEPWA+2668                                            01188000
+$24SAV13 EQU   TOLTEPWA+2664                                            01189000
+$24RETCD EQU   TOLTEPWA+2663                                            01190000
+$MACID   EQU   TOLTEPWA+2661                                            01191000
+$CSPARE  EQU   $CFLGS                                                   01192000
+$C2WAY   EQU   $CFLGS                                                   01193000
+$CINCT   EQU   $CCOMDAT+12                                              01194000
+$CINADR  EQU   $CCOMDAT+8                                               01195000
+$COUTCT  EQU   $CCOMDAT+4                                               01196000
+$COUTAD  EQU   $CCOMDAT                                                 01197000
+ROOTLOC  EQU   TOLTEPWA+2640                                            01198000
+$RETREG  EQU   TOLTEPWA+2636                                            01199000
+$WORK    EQU   TOLTEPWA+2376                                            01200000
+$EXTA    EQU   TOLTEPWA+2320                                            01201000
+$PASSONA EQU   TOLTEPWA+2264                                            01202000
+$TRMINPT EQU   TOLTEPWA+2184                                            01203000
+$BUFFER  EQU   TOLTEPWA+1976                                            01204000
+$TLTRPL3 EQU   TOLTEPWA+1856                                            01205000
+$TLTRPL2 EQU   TOLTEPWA+1736                                            01206000
+$TLTRPL1 EQU   TOLTEPWA+1616                                            01207000
+$SLTBL   EQU   TOLTEPWA+1468                                            01208000
+@NM00021 EQU   TOLTEPWA+1464                                            01209000
+$DEVTBLE EQU   TOLTEPWA+240                                             01210000
+@NM00020 EQU   $COMMFLG+15                                              01211000
+@NM00019 EQU   $COMMFLG+14                                              01212000
+@NM00018 EQU   $COMMFLG+13                                              01213000
+@NM00017 EQU   $COMMFLG+12                                              01214000
+@NM00016 EQU   $COMMFLG+11                                              01215000
+@NM00015 EQU   $COMMFLG+10                                              01216000
+@NM00014 EQU   $COMMFLG+9                                               01217000
+@NM00013 EQU   $COMMFLG+8                                               01218000
+$VS2     EQU   $FLAG8                                                   01219000
+$VS1     EQU   $FLAG8                                                   01220000
+$EDOS    EQU   $FLAG8                                                   01221000
+@NM00012 EQU   $FLAG8                                                   01222000
+$TWOWAY  EQU   $FLAG8                                                   01223000
+@NM00011 EQU   $FLAG8                                                   01224000
+@NM00010 EQU   $COMMFLG+6                                               01225000
+@NM00009 EQU   $COMMFLG+5                                               01226000
+@NM00008 EQU   $COMMFLG+4                                               01227000
+@NM00007 EQU   $COMMFLG+3                                               01228000
+@NM00006 EQU   $COMMFLG+2                                               01229000
+@NM00005 EQU   $COMMFLG+1                                               01230000
+@NM00004 EQU   $COMMFLG                                                 01231000
+@NM00003 EQU   $CDA+120                                                 01232000
+$CUCNT   EQU   $CDA+118                                                 01233000
+@NM00002 EQU   $CDA+117                                                 01234000
+$PRTFORM EQU   $CDA+116                                                 01235000
+$OPISCNT EQU   $CDA+114                                                 01236000
+$OPNDCNT EQU   $CDA+112                                                 01237000
+$GETMSZE EQU   $CDA+110                                                 01238000
+$GRCNTS  EQU   $CDA+108                                                 01239000
+$CTLCNT  EQU   $CDA+106                                                 01240000
+$ACTLVL  EQU   $CDA+105                                                 01241000
+$PRNTLVL EQU   $CDA+104                                                 01242000
+$ERRCNTA EQU   $CDA+102                                                 01243000
+$TLCNT   EQU   $CDA+100                                                 01244000
+$TIMEALW EQU   $CDA+96                                                  01245000
+$PTRAREA EQU   $CDA+92                                                  01246000
+$GETMPTR EQU   $CDA+88                                                  01247000
+$R13PTRT EQU   $CDA+84                                                  01248000
+$R13PTR  EQU   $CDA+80                                                  01249000
+$TEPEND  EQU   $CDA+76                                                  01250000
+$PLINKDL EQU   $CDA+72                                                  01251000
+$TEPBEGN EQU   $CDA+68                                                  01252000
+$FRELPTR EQU   $CDA+64                                                  01253000
+$HIGHADR EQU   $HIMOREC                                                 01254000
+$LOMOREC EQU   $CDA+56                                                  01255000
+$LOWADDR EQU   $OLTPTR                                                  01256000
+$ENDCOMM EQU   $CDA+48                                                  01257000
+$COMMON  EQU   $RCA                                                     01258000
+$SLASHAD EQU   $CDA+32                                                  01259000
+$PASSON  EQU   $CDA+28                                                  01260000
+$TOLBRTB EQU   $CDA+24                                                  01261000
+$SCTPTR8 EQU   $CDA+20                                                  01262000
+$SCTPTR  EQU   $CDA+16                                                  01263000
+$TBWDPTR EQU   $CDA+12                                                  01264000
+$TFWDPTR EQU   $CDA+8                                                   01265000
+@NM00001 EQU   $CDA                                                     01266000
+$SCTTBLE EQU   TOLTEPWA                                                 01267000
+.@UNREFD ANOP                          END UNREFERENCED COMPONENTS      01268000
+@ENDDATA EQU   *                                                        01269000
+         END   ISTCC013,(C'PLS1910',0701,75184)                         01270000

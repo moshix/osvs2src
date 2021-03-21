@@ -1,0 +1,685 @@
+         TITLE 'IEAVEEXT- EXTERNAL INTERRUPT HANDLER'                   00332402
+* /* START OF SPECIFICATIONS ****                                       00333202
+*                                                                       00336302
+*01*  MODULE-NAME = IEAVEEXT                                            00338302
+*                                                                       00340802
+*02*     CSECT-NAME = IEAVEEXT                                          00340902
+*                                                                       00341202
+*01*  DESCRIPTIVE-NAME = EXTERNAL FIRST LEVEL INTERRUPT HANDLER         00341302
+*                                                                       00341502
+*01*  COPYRIGHT = NONE                                                  00341902
+*                                                                       00343602
+*01*  STATUS = VERSION 1                                                00343902
+*                                                                       00344102
+*01*  FUNCTION = SEE ENTRY POINT PURPOSES BELOW                         00344202
+*                                                                       00344802
+*02*     OPERATION = THE EXTERNAL FLIH WILL RECEIVE CONTROL AFTER AN    00344902
+*        EXTERNAL INTERRUPT HAS OCCURED VIA THE EXTERNAL NEW PSW. ITS   00345302
+*        MAIN FUNCTION IS TO SAVE THE STATUS OF THE INTERRUPTED PGM     00345702
+*        DECIDE WHAT KIND OF AN EXTERNAL INTERRUPT OCCURED AND GIVE THE 00346102
+*        PROPER SLIH CONTROL. UPON COMPLETION OF THE INTERRUPT PROCESS  00346202
+*        IT WILL DECIDE WHETHER TO RETURN TO THE INTERRUPTED PROGRAM OR 00347202
+*        TO THE DISPATCHER.                                             00357202
+*                                                                       00365002
+*01*   NOTES = SEE ENTRY POINT DESCRIPTIONS BELOW.                      00366002
+*                                                                       00367002
+*02*        DEPENDENCIES =                                              00371202
+*                                                                       00371302
+*           GENERAL EXTERNAL FLIH DEPENDENCIES:                         00371602
+*           1. THE LOCAL LOCK MAY NOT BE REQUESTED OR ASSUMED HELD.     00372002
+*           2. NO INTERFACES CAN CHANGE CONTROL REGISTERS UNLESS THEY   00372202
+*           ARE RESTORED BEFORE RETURNING TO THE FLIH.                  00372402
+*           3. ALL SLIHS MUST INTERROGATE OR SAVE THE INTERRUPT CODE    00372902
+*           OR PROCESSOR ADDRESS PRIOR TO ISSUING A SETLOCK OBTAIN      00373002
+*           OR OPENING AN EMS/MFA WINDOW.                               00373202
+*           4. DISABLEMENT MUST BE PRESERVED(EXCEPT FOR THE PROCESSORS  00373602
+*           THAT HAVE BEEN IDENTIFIED THAT NEED TO OPEN AN EMS/MFA      00373702
+*           WINDOW.)                                                    00373802
+*                                                                       00374602
+*           MALFUNCTION ALERT PROCESSOR(IGFPXMFA):                      00385202
+*           1. DISABLEMENT MUST BE PRESERVED.                           00386002
+*           2. NO LOCKS MAY BE OBTAINED.                                00386802
+*                                                                       00387202
+*           EMERGENCY SIGNAL PROCESSOR(IEAVEES):                        00387602
+*           1. NO LOCKS MAY BE OBTAINED BY EITHER THE EMS PROCESSOR     00388402
+*           OR ITS CALLERS.                                             00389202
+*           2. THE FOLLOWING EMS ROUTINES MAY OPEN AN EMS/MFA WINDOW:   00390002
+*                PTLB PROCESSOR                                         00390402
+*                REFERENCE THE IPC SPEC 3.1.7.13.                       00390802
+*                                                                       00391202
+*           TIMER(IEA0TI00):                                            00391602
+*           1. DISABLEMENT MUST BE PRESERVED.                           00392402
+*                                                                       00392802
+*           EXTERNAL CALL PROCESSOR(IEAVEXS):                           00393202
+*           1. DISABLEMENT MUST BE PRESERVED.                           00394002
+*                                                                       00394402
+*           DISPATCHER(IEA0DS):                                         00398002
+*           1. THE DISPATCHER MUST SAVE ALL NECESSARY STATUS OTHER      00398802
+*           THAN THE GENERAL REGISTERS AND PSW IF SWITCHING AWAY FROM   00399602
+*           THE CURRENT TASK.                                           00400402
+*           2. FOR A LOCALLY LOCKED TCB THE INTERRUPT ID(X'FF..FF')     00401202
+*           MUST BE PLACED IN THE LOCKWORD ASCBLOCK AND THE CMS LOCK    00402002
+*           HELD INDICATOR MUST BE SET(ASCBCMSH) IF THE CMS LOCK WAS    00402802
+*           HELD.                                                       00403602
+*           3. THE DISPATCHER MUST STORE THE TOD CLOCK VALUE IN         00404402
+*           LCCADTOD WHEN DISPATCHING A TCB INCLUDING THE WAIT-TCB.     00405202
+*                                                                       00405602
+*           ALL SPIN ROUTINES:                                          00406002
+*           1. THE FOLLOWING ROUTINES MAY PERFORM A SPIN(EMS/MFA        00406802
+*           WINDOW):                                                    00407602
+*              A. LOCK MANAGER                                          00408402
+*              B. SIGP PROCESSOR                                        00409202
+*              C. PTLB PROCESSOR                                        00410002
+*              EACH OF THE ABOVE MUST SET THEIR UNIQUE SPIN BIT IN      00410802
+*           LCCASPIN BEFORE OPENING THE WINDOW AND CLEAR THE BIT AFTER  00411602
+*           CLOSING THE WINDOW. THIS INSURES THAT THE FLIH WILL RETURN  00412402
+*           TO THE SPIN AFTER ANY EMS/MFA SIGNAL HAS BEEN HANDLED.      00413202
+*           2. THE FOLLOWING ROUTINES HAVE A SPIN BIT FOR THE PURPOSES  00414002
+*           OF ALLOWING AN EXTERNAL INTERRUPT AND THEN GETTING RETURN   00414802
+*           TO THEIR ROUTINE AFTER INTERRUPTION PROCESSING HAS BEEN     00415602
+*           COMPLETED:                                                  00416402
+*                A. VARY-ON-LINE(ALLOWING TOD SYNCH CHECKS)             00417202
+*                                                                       00417602
+*           MACHINE CHECK AND RTM:                                      00418002
+*           1. MUST REMAIN DISABLED AND CAN NOT OPEN ANY WINDOWS.       00418802
+*                                                                       00419202
+*           FRRS:                                                       00419602
+*           1. SAME RESTRICTIONS AS THE ASSOCIATED MODULES.             00420402
+*                                                                       00421202
+*03*        CHARACTER-CODE-DEPENDENCIES = NONE .                        00422002
+*                                                                       00422802
+*02*     RESTRICTIONS = ONLY 2 LEVELS OF RECURSIONS PERMITED.           00423602
+*                                                                       00424402
+*02*     REGISTER-CONVENTIONS = REFERENCE EQUATE SECTION OF MODULE.     00425202
+*                                                                       00426002
+*02*     PATCH-LABEL = NONE(NUCLEUS RESIDENT)                           00426802
+*                                                                       00427602
+*01*  MODULE-TYPE = PROCEDURE                                           00428402
+*                                                                       00429202
+*02*     PROCESSOR = ASSEMBLER                                          00430002
+*                                                                       00430802
+*02*     MODULE-SIZE = REFERENCE ESD LENGTH AT BEGINNING OF MODULE.     00431602
+*                                                                       00432402
+*02*     ATTRIBUTES = NUCLEUS ,ZERO PROTEXT KEY, DISABLED, REFRESHABLE, 00433202
+*                     ADDRSPC=FIXED, SUPERVISOR MODE                    00434002
+*                                                                       00434802
+*01*  ENTRY-POINT = IEAQEX00                                            00435602
+*                                                                       00436402
+*02*     PURPOSE = THIS IS THE ONLY ENTRY TO THE EXTERNAL FLIH. IT WILL 00437202
+*        DECIDE WHAT TYPE OF INTERRUPTION HAS OCCURRED AND GIVE THE     00438002
+*        APPROPRIATE PROCESSOR CONTROL. 2 LEVELS OF RECURSION CAN BE    00438802
+*        HANDLED. CPU WAIT-TIME IS ACCUMULATED IF NECESSARY.            00439602
+*                                                                       00440402
+*02*     LINKAGE = SEE INPUT SECTION BELOW.                             00441202
+*                                                                       00442002
+*02*     INPUT =                                                        00442802
+*        INPUT ENVIRONMENT:                                             00443602
+*             STATE-DISABLED,SUPERVISOR                                 00444402
+*             KEY-0                                                     00445202
+*             LOCKS REQUIRED-NONE                                       00446002
+*        INPUT DATA:                                                    00446802
+*             ALL CONTROL-BLOCKS LISTED BELOW.                          00447602
+*        INPUT REGISTERS: NONE                                          00448402
+*                                                                       00450002
+*02*     OUTPUT = NONE UNIQUE TO THIS ENTRY.                            00450802
+*                                                                       00451602
+*01*  EXIT-NORMAL = IEA0DS                                              00452402
+*                                                                       00453202
+*02*     CONDITIONS = THE DISPATCHER IS ENTERED WHEN THE INTERRUPTION   00454002
+*        PROCESS HAS COMPLETED AND NEITHER SRB MODE IS INDICATED NOR    00454802
+*        ANY OF THE SPIN BITS IN THE WORD LCCASPIN IS ON.               00455602
+*                                                                       00456402
+*02*     OUTPUT =                                                       00457202
+*        OUTPUT DATA-NONE DIRECTLY                                      00458002
+*        OUTPUT REGISTERS- NONE                                         00458802
+*        OUTPUT ENVIRONMENT-                                            00459602
+*             STATE - DISABLED, SUPERVISOR                              00460002
+*             KEY - 0                                                   00460402
+*             LOCKS - LOCAL (AND CMS) LOCK(S) MAY BE HELD               00460802
+*                                                                       00461202
+*02*     RETURN-CODES = NONE                                            00462002
+*                                                                       00462802
+*01*  EXIT-NORMAL = BACK TO SRB ROUTINE(VIA LPSW)                       00463602
+*                                                                       00464402
+*02*     CONDITIONS = IF AN SRB ROUTINE HAS BEEN INTERRUPTED, RETURN IS 00465202
+*        BACK TO THE SRB ROUTINE AFTER THE INTERRUPTION HAS BEEN        00466002
+*        PROCESSED.                                                     00466802
+*                                                                       00467602
+*02*     OUTPUT = NO OUTPUT TO SRB ROUTINE.                             00468402
+*                                                                       00469202
+*02*     RETURN-CODES = NONE                                            00470002
+*                                                                       00470802
+*01*  EXIT-NORMAL = BACK TO SPIN ROUTINE (VIA LPSW)                     00471602
+*                                                                       00472402
+*02*     CONDITIONS = IF ANY OF THE SPIN BITS IN THE SPIN WORD IS ON,   00473202
+*        AFTER THE INTERRUPT HAS BEEN PROCESSED, RETURN IS TO THE       00474002
+*        INTERRUPTED SPINNING ROUTINE.                                  00474402
+*                                                                       00475602
+*02*     OUTPUT = NONE BACK TO THE SPIN ROUTINE.                        00476402
+*                                                                       00477202
+*02*     RETURN-CODES = NONE                                            00478002
+*                                                                       00478802
+*01*  EXIT-ERROR = NONE                                                 00479602
+*                                                                       00480402
+*01*  EXTERNAL-REFERENCES = SEE ROUTINES,DATA AREAS,CONTROL-BLOCKS      00481002
+*     BELOW.                                                            00483002
+*                                                                       00484002
+*02*     ROUTINES =                                                     00485002
+*             TREX (TRACE ROUTINE)                                      00488402
+*             IEAQWAIT (CPU WAIT-TIME COLLECTION ROUTINE)               00489202
+*             IEAVEES (EMS PROCESSOR)                                   00490002
+*             IEA0TI00 (TIMER SLIH)                                     00490802
+*             IEAVEXS (EXTERNAL CALL PROCESSOR)                         00491602
+*             IGFPXMFA (MFA PROCESSOR)                                  00492402
+*             IEEBC1PE (COMMUNICATIONS TASK SLIH)                       00493202
+*             GTF (GENERAL TRACE FACILITY)                              00494002
+*                                                                       00495102
+*02*     DATA-AREAS = ALL INCLUDED IN CONTROL-BLOCKS BELOW.             00497002
+*                                                                       00498902
+*02*     CONTROL-BLOCKS =                                               00500802
+*        PSA R/W                                                        00502702
+*        LCCA R/W                                                       00504602
+*        PCCA R                                                         00506502
+*        ASCB R                                                         00508402
+*        ASXB R                                                         00510302
+*        TCB R/W                                                        00512202
+*        CVT R                                                          00514102
+*        IHSA W                                                         00516002
+*        RB W                                                           00517902
+*                                                                       00519802
+*01*  TABLES = NONE                                                     00521702
+*                                                                       00523602
+*01*  MACROS =                                                          00525502
+*        HOOK                                                           00527402
+*                                                                       00527502
+*01*  CHANGE-ACTIVITY = Y02715,Y02751,Y02752                            00527802
+*                                                                       00533502
+*01*  MESSAGES = NONE                                                   00535402
+*                                                                       00546402
+*01*  ABEND-CODES = NONE                                                00546802
+*                                                                       00548802
+**** END OF SPECIFICATIONS ***/                                         00554402
+         EJECT                                                          00556402
+IEAVEEXT CSECT                                                          00564402
+         SPACE 2                                                        00573902
+*/*IEAVEEXT: CHART EXTES FLIH */                                        00574202
+*/* HEADER                                                              00574602
+*/*                                                                     00575002
+*/*                                                                     00575102
+*/*                                                                     00575202
+*/*                                                SECTION 3.1.8.3      00579802
+*/* EXTERNAL FLIH                                                       00581802
+*/*                                                PAGE # */            00583802
+         SPACE 2                                                        00584202
+*/*IEAQEX00: E IEAQEX00 */                                              00585202
+         SPACE 2                                                        00585302
+         MODID BR=NO                                                    00745202
+         ENTRY IEAQEX00                                                 00745602
+IEAQEX00 DS    0H                                                       00745802
+*********************************************************************** 00746202
+*                                                                     * 00746302
+*                      REGISTER EQUATES                               * 00751702
+*                                                                     * 00753702
+*********************************************************************** 00756102
+R0       EQU   0                       REGISTER REFERENCE               00763602
+R2       EQU   2                       REGISTER REFERENCE               00769002
+EXSLIHRT EQU   2                       SLIH RETURN ADDRESS REGISTER     00774402
+CCABASE  EQU   7                       LCCA BASE REGISTER               00779802
+R15      EQU   15                      REGISTER REFERENCE               00785202
+WORKREG  EQU   14                      ALL PURPOSE REGISTER             00790602
+BASEREG  EQU   9                       BASE REGISTER                    00796002
+CVTREG   EQU   13                      CVT BASE REGISTER                00801402
+XTRBASE  EQU   10                      TRACE ENTRY ADDRESS              00806802
+XTRET    EQU   11                      CVT TRACE ENTRY-RETURN ADDRESS   00812202
+EXSLIHET EQU   10                      SLIH ENTRY POINT ADDRESS         00817602
+CCABASE2 EQU   15                      LCCA BASE REGISTER WHEN EXITING  00823002
+XTCBREG  EQU   4                       TCB BASE REGISTER                00828402
+RBPTR    EQU   5                       RB BASE REGISTER                 00833802
+XWAIT    EQU   6                       IEAQWAIT ENTRY ADDRESS           00839202
+XWAITRT  EQU   2                       IEAQWAIT RETURN ADDRESS          00844602
+DISPRTN  EQU   15                      DISPATCHER ENTRY ADDRESS         00850002
+         SPACE 6                                                        00900002
+*********************************************************************** 00910002
+*                                                                     * 00920002
+*                      CONSTANT EQUATES                               * 00930002
+*                                                                     * 00940002
+*********************************************************************** 00942002
+C0       EQU   0                       CONSTANT VALUE                   01000002
+C1       EQU   1                       CONSTANT VALUE                   01002002
+C28      EQU   28                      CONSTANT VALUE                   01010002
+C48      EQU   48                      CONSTANT VALUE                   01050002
+L64      EQU   64                      LENGTH VALUE                     01100002
+L8       EQU   8                       LENGTH VALUE                     01150002
+L2       EQU   2                       LENGTH VALUE                     01200002
+M15      EQU   15                      MASK VALUE                       01300002
+CXFF     EQU   X'FF'                   CONSTANT VALUE                   01350002
+CXFA     EQU   X'FA'                   CONSTANT VALUE                   01360002
+TIMERCD  EQU   X'10'                   TIMER INTERRUPT CODE             01400002
+INTKEY   EQU   X'40'                   INTERRUPT KEY CODE               01450002
+         EJECT                                                          01455002
+*********************************************************************** 01460002
+*                                                                     * 01470002
+*                       IEAVEEXT MAINLINE                             * 01480002
+*                                                                     * 01490002
+*********************************************************************** 01492002
+         USING PSA,0                                                    01500002
+         SPACE 2                                                        01560002
+*/* P SAVE ONE REGISTER (7) TO SET LCCA ADDR IN PSAGPREG */             01562002
+         SPACE 2                                                        01570002
+         ST    CCABASE,PSAGPREG        SAVE ONE REGISTER IN THE PSA     01600002
+         L     CCABASE,PSALCCAV        GET VIRTUAL ADDRESS OF LOG. CCA  01650002
+         USING LCCA,CCABASE            ESTABLISH BASE TO LOGICAL CCA    01700002
+         SPACE 2                                                        01710002
+*/* P SAVE ALL GPRS IN LCCAXGR1 */                                      01712002
+         SPACE 2                                                        01720002
+         STM   R0,R15,LCCAXGR1         SAVE ALL REGS                    01750002
+         L     WORKREG,PSAGPREG        GET REGISTER SAVED INITALLY      01800002
+         ST    WORKREG,LCCAXGR1+C28    SAVE REGISTER USED               01850002
+         SPACE 2                                                        01860002
+*/* P ESTABLISH ADDRESSABILITY */                                       01862002
+         SPACE 2                                                        01870002
+         BALR  BASEREG,C0              ESTABLISH                        01900002
+         USING *,BASEREG               ADDRESSABILITY                   01950002
+         SPACE 2                                                        01952002
+*/*ADDRESS: P GET CVT ADDR IN REG 11 */                                 01952402
+         SPACE 2                                                        01954002
+ADDRESS  DC    0H'0'                                                    01960002
+         L     CVTREG,FLCCVT           GET CVT ADDRESS                  02050002
+         USING CVT,CVTREG              ESTABLISH BASE TO CVT            02100002
+         SPACE 2                                                        02100202
+*/*CKREC1: D (YES,XTRACE,NO,) IS THIS A RECURSION ENTRY? */             02100402
+         SPACE 2                                                        02100602
+CKREC1   DS    0H                      TEST LABEL              @VM07640 02100802
+         TM    LCCAIHR1,LCCAXRC1       IS THIS A RECURSION ENTRY        02101002
+         BO    XTRACE                  IF SO PROCESS RECURSIVE ENTRY    02101202
+         SPACE 2                                                        02101402
+*/*SPINTST1: D (YES,NOCLK,NO,) ANY SPIN BITS ON? */                     02102002
+         SPACE 2                                                        02102702
+SPINTST1 DS    0H                      TEST LABEL              @VM07640 02103402
+         TM    LCCASPN1,CXFF           ARE ANY SPIN BITS ON    @VM07640 02104102
+         BNZ   NOCLK                   IF SO DON'T STORE TOD CLOCK VAL  02104802
+         SPACE 2                                                        02105502
+*/* D (NO,CLK,YES,NOCLK) SRB MODE? */                                   02106202
+         SPACE 2                                                        02106902
+         TM    LCCADSF2,LCCASRBM       SRB MODE INDICATED      @VM07640 02108302
+         BO    NOCLK                   IF SRB DON'T STORE CLOCK@VM07640 02109102
+         SPACE 2                                                        02110002
+*/*CLK: P STORE TOD CLOCK IN LCCAITOD */                                02111002
+         SPACE 2                                                        02112002
+CLK      DS    0H                      TEST LABEL              @VM07640 02113002
+         STCK  LCCAITOD                STORE TOD CLOCK IN SMF AREA      02114002
+         SPACE 2                                                        02115002
+*/*NOCLK: D (NO,NORECURS,YES,) IS TRACE TO BE DONE? */                  02116002
+         SPACE 2                                                        02117002
+NOCLK    DS    0H                                                       02118002
+         CLI   CVTTRACE+C1,CXFA        IS TRACE TO BE ENTERED  @VM07640 02120002
+         BNE   NORECURS                IF NOT DONT TRACE       @VM07640 02125002
+         SPACE 2                                                        02130002
+*/* P GET TREX ENTRY POINT TO TRACE IN REG 10 */                        02140002
+         SPACE 2                                                        02142002
+         L     XTRBASE,ATREX           GET EXT TRACE ENTRY ADDR@VM07640 02150002
+         SPACE 2                                                        02210002
+*/*TRACEEP: L CVTTRACE-- VIA BALR 11,10 */                              02212002
+         SPACE 2                                                        02220002
+TRACEEP  DS    0H                      TEST LABEL              @VM07640 02250002
+         BALR  XTRET,XTRBASE           BRANCH TO BR INSTRUCTION IN CVT  02300002
+         SPACE 2                                                        02552902
+*/*NORECURS: P FLIP FRR STACK TO EXT FLIH 1 STACK */                    02554602
+         SPACE 2                                                        02554902
+NORECURS L     WORKREG,PSACSTK         GET CURRENT STACK PTR            02556502
+         ST    WORKREG,PSAESAV1        SAVE CURRENT STACK PTR           02559402
+         L     WORKREG,PSAESTK1        GET EXT FLIH STACK1 PTR          02562302
+         ST    WORKREG,PSACSTK         MAKE EXT STACK1 CURRENT          02573902
+         SPACE 2                                                        02576002
+*/* P SET EXT FLIH BIT */                                               02576102
+         SPACE 2                                                        02576402
+         OI    PSASUP1,PSAEXT          TURN ON EXTERNAL FLIH BIT        02576802
+         OI    LCCAIHR1,LCCAXRC1       TURN ON RECURSION1 FLAG          02650002
+         SPACE 2                                                        02660002
+*/* P MOVE GPRS TO LCCAXGR2 */                                          02662002
+         SPACE 2                                                        02670002
+         MVC   LCCAXGR2(L64),LCCAXGR1  MOVE REGISTERS INTO SAFE AREA    02700002
+         SPACE 2                                                        02710002
+*/* P MOVE EXOPSW TO PSAEXPS1 */                                        02712002
+         SPACE 2                                                        02720002
+         MVC   PSAEXPS1(L8),FLCEOPSW   SAVE EXTERNAL OLD PSW            02750002
+         LA    EXSLIHRT,EXRTN1         PUT ADDRESS OF RETURN ADDRESS IN 02800002
+*                                      SLIH RETURN REGISTER             02850002
+         SPACE 2                                                        02852002
+*/*INITPR: S (,EXRTN1) PROCESS:INVOKE SLIH */                           02852402
+         SPACE 2                                                        02854002
+INITPR   DS    0H                      TEST LABEL                       02860002
+         TITLE 'IEAVEEXT- PROCESS:INVOKE SLIH TO PROCESS INTERRUPT'     02862002
+         SPACE 2                                                        02870002
+*/*PROCESS: E PROCESS */                                                02872002
+         SPACE 2                                                        02880002
+PROCESS  DS    0H                      PROCESS INTERRUPTION             02900002
+         SPACE 2                                                        02910002
+*/*GTFHOOK: L ISSUE HOOK-- EID=IEAEINT TYPE=P */                        02910302
+         SPACE 2                                                        02910602
+GTFHOOK  DS    0H                      TEST LABEL                       02910902
+         HOOK  EID=IEAEINT,TYPE=BPN    GTF TRACE EXTERNAL INTERRUPT     02911202
+         SPACE 2                                                        02911502
+*/* D (YES,EMSIGP,NO,) EMERGENCY SIGNAL? */                             02912002
+         SPACE 2                                                        02920002
+         CLC   FLCEICOD(L2),EMSIGNAL   IS INTERRUT AN EMERGENCY SIGNAL  02950002
+         BE    EMSIGP                  BRANCH TO GO TO SIGP PROCESSOR   03000002
+         SPACE 2                                                        03010002
+*/* D (YES,EXTIME,NO,) TIMER TYPE? */                                   03012002
+         SPACE 2                                                        03020002
+         CLI   FLCEICOD,TIMERCD        IS INTERRUPT A TIMER TYPE        03050002
+         BE    EXTIME                  BRANCH TO GO TO TIMER SLIH       03100002
+         SPACE 2                                                        03110002
+*/* D (YES,EXTSIGP,NO,) EXTERNAL CALL? */                               03112002
+         SPACE 2                                                        03120002
+         CLC   FLCEICOD(L2),EXCALL     IS INTERRUPT AN EXTERNAL CALL    03150002
+         BE    EXTSIGP                 BRANCH TO GO TO SIGP PROCESSOR   03200002
+         SPACE 2                                                        03210002
+*/* D (YES,EXMFA,NO,) MALFUNCTION ALERT? */                             03212002
+         SPACE 2                                                        03220002
+         CLC   FLCEICOD(L2),MFA        IS INTERRUPT A MALFUNCTION ALERT 03250002
+         BE    EXMFA                   BRANCH TO MFA PROCESSOR.         03300002
+         SPACE 2                                                        03310002
+*/* D (YES,INTKEYTS,NO,) INTERRUPT KEY? */                              03312002
+         SPACE 2                                                        03320002
+         TM    FLCEICOD,CXFF           COULD INTERRUPT BE AN INTERRT    03350002
+*                                      KEY INTERRUPT                    03400002
+         SPACE 2                                                        03410002
+*/*%PEND: R RETURN */                                                   03412002
+         SPACE 2                                                        03420002
+         BNZR  EXSLIHRT                IF NO IGNORE INTERRUPT           03450002
+         TM    FLCEICOD+C1,INTKEY      IS INTERRUPT AN INTERRUPT KEY    03500002
+         BZR   EXSLIHRT                IF NOT IGNORE INTERRUPT          03550002
+         L     EXSLIHET,ASLKEY         GET COMM TASK ENTRY POINT        03600002
+         SPACE 2                                                        03602002
+*/*INTKEYTS: L (,%PEND) EP=IEEBC1PE-- COMM TASK */                      03602402
+         SPACE 2                                                        03604002
+INTKEYTS DS    0H                      TEST LABEL                       03610002
+         BR    EXSLIHET                BRANCH TO COMM TASK              03650002
+         SPACE 2                                                        03660002
+*/*EMSIGP: L (,%PEND) EP=IEAVEES-- EMERGENCY SIGNAL PROCESSOR */        03662002
+         SPACE 2                                                        03670002
+EMSIGP   L     EXSLIHET,ASEMSIG        GET SIGNAL SIGP ENTRY POINT      03700002
+         BR    EXSLIHET                BRANCH TO SIGP PROCESSOR         03750002
+         SPACE 2                                                        03760002
+*/*EXTIME: L (,%PEND) EP=IEA0TI00-- TIMER SLIH */                       03762002
+         SPACE 2                                                        03770002
+EXTIME   L     EXSLIHET,ASLTIMER       GET TIMESLIH ENTRY POINT         03800002
+         BR    EXSLIHET                BRANCH TO TIMER SLIH             03850002
+         SPACE 2                                                        03860002
+*/*EXTSIGP: L (,%PEND) EP=IEAVEXS-- EXTERNAL CALL PROCESSOR */          03862002
+         SPACE 2                                                        03870002
+EXTSIGP  L     EXSLIHET,ASEXCALL       GET EXTERNAL CALL ENTRY POINT    03900002
+         BR    EXSLIHET                BRANCH TO SIGP PROCESSOR.        03950002
+         SPACE 2                                                        03960002
+*/*EXMFA: L (,%PEND) EP=IGFPXMFA--  MFA PROCESSOR */                    03962002
+         SPACE 2                                                        03970002
+EXMFA    L     EXSLIHET,IEAVMFA        GET MFA PROCESSOR ENTRY POINT    04000002
+         BR    EXSLIHET                BRANCH TO MFA PROCESSOR          04050002
+         TITLE 'IEAVEEXT- EXTERNAL INTERRUPT HANDLER'                   04060002
+         SPACE 2                                                        04100002
+*/*EXRTN1: P RE-ESTABLISH ADDRESSABILITY */                             04100402
+         SPACE 2                                                        04102002
+EXRTN1   DS    0H                                                       04110002
+         USING *,EXSLIHRT              REESTABLISH ADDRESSABILITY       04150002
+         L     BASEREG,AADDRESS        GET ORIGINAL BASE ADDRESS        04160002
+         DROP  EXSLIHRT                                                 04170002
+         SPACE 2                                                        04180002
+*/* P CLEAR REC1 BIT */                                                 04182002
+         SPACE 2                                                        04190002
+         L     CCABASE,PSALCCAV        GET POINTER TO LOGICAL CCA       04200002
+         NI    LCCAIHR1,CXFF-LCCAXRC1  CLEAR RECURSION FLAG             04250002
+         SPACE 2                                                        04252002
+*/*SPINTST2: D (YES,EXINRTN,NO,SRBTST) ANY SPIN BITS ON? */             04252402
+         SPACE 2                                                        04254002
+SPINTST2 DS    0H                      TEST LABEL                       04260002
+         TM    LCCASPN1,CXFF           ARE ANY SPIN BITS ON             04300002
+         BNZ   EXINRTN                 IF SO BRANCH BACK TO INT. PROG.  04350002
+         SPACE 2                                                        04352002
+*/*SRBTST: D (NO,EXDISP,YES,EXINRTN) SRB MODE? */                       04352402
+         SPACE 2                                                        04354002
+SRBTST   DS    0H                      TEST LABEL                       04360002
+         TM    LCCADSF2,LCCASRBM       SRB MODE INDICATED               04400002
+         BZ    EXDISP                  IF NOT BRANCH TO RETURN TO DISP. 04450002
+         SPACE 2                                                        04460002
+*/*EXINRTN: P LOAD REGS FROM LCCAXGR2 */                                04462002
+         SPACE 2                                                        04470002
+EXINRTN  DS    0H                                                       04500002
+         LR    CCABASE2,CCABASE        LOAD BASE TO CCA INTO REG 15     04550002
+         LM    R0,R15,LCCAXGR2-LCCA(CCABASE2) RELOAD ALL REGISTERS      04750002
+         SPACE 2                                                        04760002
+*/* P CLEAR EXT BIT */                                                  04762002
+         SPACE 2                                                        04770002
+         NI    PSASUP1,CXFF-PSAEXT     CLEAR EXTERNAL FLIH FLAG         04800002
+         SPACE 2                                                        04800402
+*/* P RESTORE FRR STACK TO CALLER'S STACK */                            04800502
+         SPACE 2                                                        04800802
+         MVC   PSACSTK(4),PSAESAV1     RESTORE SAVED STACK PTR          04802002
+         SPACE 2                                                        04802102
+*/*FIN2: R LPSW FROM PSAEXPS1 */                                        04802402
+         SPACE 2                                                        04804002
+FIN2     DS    0H                      TEST LABEL                       04810002
+         LPSW  PSAEXPS1                RETURN TO INTERRUPTED PROGRAM    04850002
+         SPACE 2                                                        04860002
+*/*EXDISP: P GET TCB ADDR FROM PSATOLD */                               04862002
+         SPACE 2                                                        04870002
+EXDISP   DS    0H                                                       04900002
+         L     XTCBREG,PSATOLD         GET CURRENT TCB ADDRESS          04950002
+         L     DISPRTN,AIEA0DS         GET DISPATCHER ADDRESS           04952002
+         SPACE 2                                                        04952102
+*/*LLTST: L (NO,NOLOCAL,YES,) SETLOCK-- LOCAL LOCK HELD? */             04952402
+         SPACE 2                                                        04954002
+LLTST    DS    0H                      TEST LABEL                       04960002
+         SETLOCK TEST,TYPE=LOCAL,BRANCH=(NOTHELD,NOLOCAL)               04970002
+*                                      IS LOCAL LOCK HELD?              04980002
+         SPACE 2                                                        05152002
+*/*LLHELD: P GET ASCB ADDR FROM PSATOLD GET ASXB ADDR FROM ASCBASXB */  05152402
+         SPACE 2                                                        05154002
+LLHELD   DS    0H                      TEST LABEL                       05160002
+         L     WORKREG,PSAAOLD         GET CURRENT ASCB ADDRESS         05200002
+         USING ASCB,WORKREG            ESTABLISH BASE TO ASCB           05250002
+         L     WORKREG,ASCBASXB        GET ADDRESS OF THE ASXB          05300002
+         USING ASXB,WORKREG            ESTABLISH BASE TO ASXB           05350002
+         SPACE 2                                                        05352002
+*/* P GET IHSA ADDR FROM ASXBIHSA */                                    05352402
+         SPACE 2                                                        05354002
+         L     WORKREG,ASXBIHSA        GET IHSA AREA ADDRESS            05360002
+         USING IHSA,WORKREG                                             05370002
+         SPACE 2                                                        05380002
+*/* P (,EXWAIT) SAVE GPRS IN IHSAGPRS AND PSAEXPS1 IN IHSACPSW */       05382002
+         SPACE 2                                                        05390002
+         MVC   IHSAGPRS(L64),LCCAXGR2  MOVE REGS TO ASXB                05400002
+         MVC   IHSACPSW(L8),PSAEXPS1   MOVE PSW TO ASXB                 05450002
+ENDLL    DS    0H                      TEST LABEL                       05460002
+         B     EXWAIT                  CHECK IF WAIT-TCB                05500002
+         SPACE 2                                                        05510002
+*/*NOLOCAL: P SAVE GPRS IN TCBGRS AND PSAEXPS1 IN RBOPSW */             05512002
+         SPACE 2                                                        05520002
+NOLOCAL  DS    0H                                                       05550002
+         USING TCB,XTCBREG             ESTABLISH BASE TO TCB            05600002
+         MVC   TCBGRS(L64),LCCAXGR2    MOVE REGS TO TCB                 05650002
+         L     RBPTR,TCBRBP            GET CURRENT RB ADDRESS           05700002
+         USING RBSECT,RBPTR            ESTABLISH BASE TO RB             05750002
+         MVC   RBOPSW(L8),PSAEXPS1     MOVE PSW TO RB                   05800002
+         SPACE 2                                                        05810002
+*/*EXWAIT: D (NO,EXEXIT,YES,) CURRENT TCB = WAIT? */                    05812002
+         SPACE 2                                                        05820002
+EXWAIT   DS    0H                                                       05850002
+         C     XTCBREG,AWAITTCB        IS CURRENT TCB THE WAIT-TCB      05900002
+         BNE   EXEXIT                  BRANCH TO EXIT                   05950002
+         L     R2,PSAPCCAV             GET PCCA ADDRESS                 05960002
+         SPACE 2                                                        05962002
+*/* D (YES,EXEXIT,NO,) IS CLOCK BAD? */                                 05962402
+         SPACE 2                                                        05964002
+         TM    PCCATODE-PCCA(R2),PCCANUTD IS CLOCK FUNCTIONING          05970002
+         BO    EXEXIT                  IF NOT BRANCH AROUND IEAQWAIT    05980002
+         SPACE 2                                                        05990002
+*/* P REG2= PTR(RETURN)    REG6= PTR(IEAQWAIT) */                       05990402
+         SPACE 2                                                        05992002
+         L     XWAIT,AQWAIT            GET IEAQWAIT ADDRESS             06000002
+         SPACE 2                                                        06002002
+*/*WAITRTN: L EP=IEAQWAIT--  CALCULATE CPU WAIT TIME */                 06002402
+         SPACE 2                                                        06004002
+WAITRTN  DS    0H                      TEST LABEL                       06010002
+         BALR  XWAITRT,XWAIT           GO TO IEAQWAIT                   06050002
+         SPACE 2                                                        06060002
+*/*EXEXIT: P CLEAR EXTERNAL FLIH */                                     06062002
+         SPACE 2                                                        06070002
+EXEXIT   DS    0H                                                       06100002
+         NI    PSASUP1,CXFF-PSAEXT     CLEAR EXTERNAL FLIH BIT          06200002
+         SPACE 2                                                        06202002
+*/*FIN: R EXIT TO DISPATCHER */                                         06202402
+         SPACE 2                                                        06204002
+FIN      DS    0H                      TEST LABEL                       06210002
+         BR    DISPRTN                 EXIT TO DISPATCHER               06250002
+         TITLE 'IEAVEEXT- FIRST LEVEL OF RECURSION'                     06252002
+         SPACE 2                                                        06252702
+*/*XTRACE: D (NO,CKREC1,YES,) IS TRACE TO BE DONE? */                   06253402
+         SPACE 2                                                        06254102
+XTRACE   DS    0H                                                       06254802
+         CLI   CVTTRACE+C1,CXFA        IS TRACE TO BE ENTERED           06255502
+         BNE   RECURSE1                IF NOT DONT TRACE                06256202
+         SPACE 2                                                        06256902
+*/* P GET TREX ENTRY POINT TO TRACE IN REG 10 */                        06257602
+         SPACE 2                                                        06258302
+         L     XTRBASE,ATREX           GET EXT TRACE ENTRY ADDRESS      06259002
+         SPACE 2                                                        06260002
+*/*TRACEEP2: L CVTTRACE-- VIA BALR 11,10 */                             06265002
+         SPACE 2                                                        06270002
+TRACEEP2 DS    0H                      TEST LABEL                       06275002
+         BALR  XTRET,XTRBASE           BRANCH TO BR INSTRUCTION IN CVT  06280002
+         SPACE 2                                                        06285002
+*/*RECURSE1: D (YES,RECURSE2,NO,NOREC2) IS THIS A REC2? */              06290002
+         SPACE 2                                                        06295002
+RECURSE1 DS    0H                                                       06300002
+         TM    LCCAIHR1,LCCAXRC2       IS THIS A SECOND RECURSION       06350002
+         BO    RECURSE2                IF SO PROCESS 2ND RECURSION      06400002
+         SPACE 2                                                        06402002
+*/*NOREC2: P FLIP FRR STACK TO EXT FLIH STACK 2 */                      06402402
+         SPACE 2                                                        06404002
+NOREC2   DS    0H                      TEST LABEL                       06410002
+         L     WORKREG,PSAESTK2        GET EXT FLIH STACK2 PTR          06420002
+         ST    WORKREG,PSACSTK         MAKE EXT STACK2 CURRENT          06430002
+         SPACE 2                                                        06440002
+*/* P SET REC2 BIT */                                                   06442002
+         SPACE 2                                                        06444002
+         OI    LCCAIHR1,LCCAXRC2       TURN ON RECURSION2 FLAG          06450002
+         SPACE 2                                                        06460002
+*/* P MOVE GPRS TO LCCAXGR3 */                                          06462002
+         SPACE 2                                                        06470002
+         MVC   LCCAXGR3(L64),LCCAXGR1  MOVE REGS TO SAFE AREA           06500002
+         SPACE 2                                                        06502002
+*/* P MOVE EXOPSW TO PSAEXPS2 */                                        06510002
+         SPACE 2                                                        06520002
+         MVC   PSAEXPS2(L8),FLCEOPSW   SAVE EXTERNAL OLD PSW            06550002
+         LA    EXSLIHRT,PROCESS        PVT PROCESS ADDRESS IN REGISTER  06600002
+         SPACE 2                                                        06602002
+*/*REC1PR: S PROCESS:INVOKE SLIH */                                     06602402
+         SPACE 2                                                        06604002
+REC1PR   DS    0H                      TEST LABEL                       06610002
+         BALR  EXSLIHRT,EXSLIHRT       BRANCH TO PROCESS PUTTING RETURN 06650002
+*                                      ADDRESS IN REGISTER              06700002
+EXRTN2   DS    0H                                                       06750002
+         L     CCABASE2,PSALCCAV       GET CCA ADDRESS                  06800002
+         SPACE 2                                                        06810002
+*/* P CLEAR REC2 BIT */                                                 06812002
+         SPACE 2                                                        06820002
+         NI    LCCAIHR1-LCCA(CCABASE2),CXFF-LCCAXRC2  CLEAR RECURSION2  06850002
+*                                      FLAG                             06860002
+         SPACE 2                                                        06870002
+*/* P LOAD REGS FROM LCCAXGR3 */                                        06872002
+         SPACE 2                                                        06880002
+         LM    R0,R15,LCCAXGR3-LCCA(CCABASE2) LOAD REGISTERS            06900002
+         SPACE 2                                                        06900402
+*/* P RESTORE FRR STACK TO EXT STACK 1 */                               06900502
+         SPACE 2                                                        06900802
+         MVC   PSACSTK(4),PSAESTK1     RESTORE EXT STACK1 PTR           06902002
+         SPACE 2                                                        06902102
+*/*REC1FIN: R LPSW FROM PSAEXPS2 */                                     06902402
+         SPACE 2                                                        06904002
+REC1FIN  DS    0H                      TEST LABEL                       06910002
+         LPSW  PSAEXPS2                RETURN TO INTERRUPTED EXTERNAL   06950002
+*                                      INTERRUPT PROCESSOR              07000002
+         TITLE 'IEAVEEXT- SECOND LEVEL OF RECURSION'                    07002002
+         SPACE 2                                                        07010002
+*/*RECURSE2: P FLIP FRR STACK TO EXT FLIH STACK 3 */                    07012002
+         SPACE 2                                                        07020002
+RECURSE2 DS    0H                                                       07050002
+         L     WORKREG,PSAESTK3        GET EXT FLIH STACK3 PTR          07060002
+         ST    WORKREG,PSACSTK         MAKE EXT STACK3 CURRENT          07070002
+         LA    EXSLIHRT,PROCESS        PUT PROCESS ADDRESS IN REGISTER  07100002
+         SPACE 2                                                        07102002
+*/*REC2PR: S PROCESS:INVOKE SLIH */                                     07104002
+         SPACE 2                                                        07106002
+REC2PR   DS    0H                      TEST LABEL                       07110002
+         BALR  EXSLIHRT,EXSLIHRT       BRANCH TO PROCESS PUTTING RETURN 07150002
+*                                      ADDRESS IN REGISTER              07200002
+         SPACE 2                                                        07202002
+*/*REC2RTN: P LOAD REGS FROM LCCAXGR1 */                                07202402
+         SPACE 2                                                        07204002
+REC2RTN  DS    0H                      TEST LABEL                       07210002
+         L     CCABASE2,PSALCCAV       GET CCA ADDRESS                  07250002
+         LM    R0,R15,LCCAXGR1-LCCA(CCABASE2) LOAD REGISTERS            07300002
+         SPACE 2                                                        07300402
+*/* P RESTORE FRR STACK TO EXT FLIH STACK 2 */                          07300502
+         SPACE 2                                                        07300802
+         MVC   PSACSTK(4),PSAESTK2     RESTORE EXT STACK2 PTR           07302002
+         SPACE 2                                                        07302102
+*/*REC2FIN: R LPSW FROM EXOPSW */                                       07302402
+         SPACE 2                                                        07304002
+REC2FIN  DS    0H                      TEST LABEL                       07310002
+         LPSW  FLCEOPSW                RETURN TO INTERRUPTED EXTERNAL   07350002
+*                                      INTERRUPT PROCESSOR              07400002
+         SPACE 2                                                        07410002
+*/* FOOTING                                                             07412002
+*/*                                                                     07414002
+*/*  */                                                                 07416002
+*/*IEAVEEXT: END EXT FLIH */                                            07418002
+         TITLE 'IEAVEEXT- CONSTANTS AND STORAGE'                        07420002
+*********************************************************************** 07430002
+*                                                                     * 07440002
+*                     CONSTANTS & STORAGE                             * 07442002
+*                                                                     * 07444002
+*********************************************************************** 07446002
+         EXTRN TREX                                                     07450002
+ATREX    DC    A(TREX)                 TRACE ENTRY                      07500002
+IEACON2  DC    V(AHLMCIHB)             ADDRESS FOR GTF HOOK             07570002
+         EXTRN IEEBC1PE                                                 07580002
+ASLKEY   DC    A(IEEBC1PE)             COMM TASK ENTRY                  07600002
+         EXTRN IEAVEES                                                  07650002
+ASEMSIG  DC    A(IEAVEES)              EMERGENCY SIGP ENTRY             07700002
+         EXTRN IEA0TI00                                                 07750002
+ASLTIMER DC    A(IEA0TI00)             TIMER SLIH ENTRY                 07800002
+         EXTRN IEAVEXS                                                  07850002
+ASEXCALL DC    A(IEAVEXS)              EXTERNAL CALL SIGP ENTRY         07900002
+         ENTRY IEAVMFA                 ENTRY FOR NIP                    07950002
+IEAVMFA  DC    V(IGFPXMFA)             MFA ENTRY POINT                  08000002
+         EXTRN WAITTCB                                                  08050002
+AWAITTCB DC    A(WAITTCB)              WAIT-TCB ADDRESS                 08100002
+         EXTRN IEAQWAIT                                                 08150002
+AQWAIT   DC    A(IEAQWAIT)             SMF WAIT-TIME ROUTINE ENTRY      08200002
+         EXTRN IEA0DS                                                   08250002
+AIEA0DS  DC    A(IEA0DS)               DISPATCHER MAIN ENTRY            08300002
+AADDRESS DC    A(ADDRESS)              ADCON FOR ADDRESSABILITY         08310002
+MFA      DC    X'1200'                 MALFUNCTION ALERT INTERRUPT CODE 08450002
+EMSIGNAL DC    X'1201'                 EMERGENCY SIGNAL INTERRUPT CODE  08460002
+EXCALL   DC    X'1202'                 EXTERNAL CALL INTERRUPT CODE     08470002
+         TITLE 'IEAVEEXT- PSA MAPPING'                                  08472002
+         IHAPSA                                                         08480002
+         TITLE 'IEAVEEXT- LCCA DSECT MAPPING'                           08482002
+         IHALCCA                                                        08490002
+         TITLE 'IEAVEEXT- PCCA DSECT MAPPING'                           08490402
+         IHAPCCA                                                        08492002
+         TITLE 'IEAVEEXT- ASCB DSECT MAPPING'                           08492402
+         IHAASCB                                                        08494002
+         TITLE 'IEAVEEXT- ASXB DSECT MAPPING'                           08494402
+         IHAASXB                                                        08496002
+         TITLE 'IEAVEEXT- IHSA DSECT MAPPING'                           08496402
+         IHAIHSA                                                        08498002
+         TITLE 'IEAVEEXT- RB DSECT MAPPING'                             08498102
+         IKJRB                                                          08498402
+         TITLE 'IEAVEEXT- TCB DSECT MAPPING'                            08498502
+         IKJTCB                                                         08498802
+         TITLE 'IEAVEEXT- CVT DSECT MAPPING'                            08498902
+         CVT   DSECT=YES,PREFIX=NO,LIST=YES                             08499202
+         END                                                            08500002
