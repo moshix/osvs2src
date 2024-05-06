@@ -5,7 +5,7 @@
 OS/VS2 Source
 =============
 
-In XF assembler
+In XF assembler. Once built, you have a very basic, unpatched MVS 3.8 BSP system. 
 <br>
 <br>
 Does it work? Yes.<br>
@@ -14,5 +14,6 @@ Is it awesome? Indeed.
 enjoy!  
 <br>
 moshix  
-December 2022
+May 2024 <br><br>
+PS: You can find the XF assembler to build this source at: https://github.com/moshix/IFOX.
 
