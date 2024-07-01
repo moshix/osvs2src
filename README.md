@@ -11,6 +11,7 @@ In XF assembler. Once built, you have a very basic, unpatched MVS 3.8 BSP system
 Does it work? Yes.<br>
 Is it awesome? Indeed. 
 <br><br>
+Oh wait, the macro library is included, too! <br><br>
 enjoy!  
 <br>
 moshix  
