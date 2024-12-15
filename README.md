@@ -14,7 +14,7 @@ Is it awesome? Indeed.
 Oh wait, the macro library is included, too! <br><br>
 enjoy!  
 <br>
-moshix  
-May 2024 <br><br>
+     
+January 2025 <br><br>
 PS: You can find the XF assembler to build this source at: https://github.com/moshix/IFOX.
 
