@@ -12,8 +12,8 @@ enjoy!
 <br>
      
 January 2025 <br><br>
-PS: You can find the XF assembler to build this source at: https://github.com/moshix/IFOX. ...
-  ... but then you would another, earlier assembler to assemble XF, which in turn means you would need...my brain is fried. 
+PS: You can find the XF assembler to build this source at: https://github.com/moshix/IFOX. ...  
+  ... but then you would need another, earlier assembler to assemble XF, which in turn means you would need...my brain is fried. 
 
 
 May 2026, Elektrostaal
